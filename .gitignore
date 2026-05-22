@@ -31,3 +31,7 @@ Thumbs.db
 # Transient git scratch files (commit message scratch via PowerShell heredoc workaround)
 .git_commit_msg.tmp
 *.tmp
+
+# Third-party agent skill library — installed globally via `npx skills@latest add ...`,
+# do not vendor in this repo. See CLAUDE.md "Agent skills" section for install steps.
+mattpocock-skills-zh-CN/
