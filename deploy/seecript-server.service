@@ -1,0 +1,69 @@
+; Seecript backend systemd unit (template)
+;
+; Install steps (run on the production server):
+;   sudo cp __PROJECT_DIR__/deploy/seecript-server.service \
+;           /etc/systemd/system/seecript-server.service
+;   sudo sed -i 's|__PROJECT_DIR__|/opt/seecript|g; s|__RUN_USER__|seecript|g' \
+;           /etc/systemd/system/seecript-server.service
+;   sudo systemctl daemon-reload
+;   sudo systemctl enable --now seecript-server
+;
+; Health check after start:
+;   curl http://127.0.0.1:5001/api/health
+;
+; The leading semicolons in this header are NOT systemd syntax — they are placed only to
+; signal "comments" to readers. systemd ignores any line beginning with `#` or `;`.
+
+[Unit]
+Description=Seecript FastAPI backend (gunicorn + uvicorn workers)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=__RUN_USER__
+Group=__RUN_USER__
+WorkingDirectory=__PROJECT_DIR__/server
+
+# Loaded *before* ExecStart; gives us PORT/LLM_PROVIDER/etc. without exposing them in cmdline.
+EnvironmentFile=__PROJECT_DIR__/server/.env
+
+# 2 workers is plenty for a single-user v0.1 box. Increase to (CPU*2+1) when traffic grows.
+# `--access-logfile -` and `--error-logfile -` route logs to journalctl; we also write app logs
+# to __PROJECT_DIR__/var/logs/ from inside the app for easier grepping.
+# --timeout 120: Doubao 极速版 typically returns in 1-5s; the slow path is the DeepSeek LLM
+#   call (30-60s). 120s gives us a 2x safety factor. nginx is set to 90s read_timeout.
+ExecStart=__PROJECT_DIR__/server/venv/bin/gunicorn \
+    --workers 2 \
+    --worker-class uvicorn.workers.UvicornWorker \
+    --bind 127.0.0.1:5001 \
+    --timeout 120 \
+    --graceful-timeout 30 \
+    --access-logfile - \
+    --error-logfile - \
+    app.main:app
+
+# Graceful shutdown: gunicorn handles SIGTERM by waiting for in-flight requests to finish.
+KillSignal=SIGTERM
+TimeoutStopSec=35
+
+Restart=on-failure
+RestartSec=5
+StartLimitBurst=10
+StartLimitIntervalSec=60
+
+# Hardening — same defaults we use in chronic-medication-assistant, kept conservative.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=read-only
+# Writable paths (极速版 ASR 不再需要 var/asr-tmp，已删；只保留日志目录即可):
+#   server/logs/     — uvicorn stdout/stderr (gunicorn pipes to journal anyway)
+ReadWritePaths=__PROJECT_DIR__/server/logs
+
+# stdout/stderr -> journalctl -u seecript-server -f
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

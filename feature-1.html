@@ -1,0 +1,391 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>爆款拆解工坊 — Seecript</title>
+    <meta name="description" content="粘贴爆款视频台词，AI 提取 Hook / 节奏 / CTA 骨架，引导式问答生成原创脚本。" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=DM+Serif+Display:ital@0;1&family=Outfit:wght@400;500;600;700&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="styles.css" />
+    <link rel="stylesheet" href="app-screens.css" />
+  </head>
+  <body>
+    <header class="seecript-topbar" role="banner">
+      <div class="seecript-topbar__inner">
+        <a class="seecript-brand" href="index.html">Seecript</a>
+        <nav class="seecript-nav" aria-label="主功能">
+          <a href="workspace.html">工作台</a>
+          <a href="feature-2.html">人设生成</a>
+          <a href="feature-1.html" aria-current="page">爆款拆解</a>
+          <a href="feature-3.html">标题车间</a>
+          <a href="feature-4.html">评论分拣</a>
+          <a href="feature-5.html">分镜素材</a>
+        </nav>
+        <div class="seecript-nav seecript-nav--muted">
+          <a href="index.html">产品说明</a>
+        </div>
+      </div>
+    </header>
+
+    <main id="main">
+      <header class="seecript-hero">
+        <span class="seecript-badge">爆款拆解 · 脚本引擎</span>
+        <h1>爆款<em>逆向拆解</em>与脚本引擎</h1>
+        <p class="seecript-lead">
+          上传对标爆款视频 / 粘贴台词 → AI 拆出 Hook / Body / CTA 骨架 → 引导式问答收敛成属于你人设的原创脚本。
+        </p>
+      </header>
+
+      <div class="seecript-feature">
+        <aside class="seecript-side" aria-label="工作流">
+          <h3>工作流</h3>
+          <ul class="seecript-steps">
+            <li aria-current="step" data-step="0">选择人设</li>
+            <li data-step="1">输入对标内容</li>
+            <li data-step="2">AI 拆解骨架</li>
+            <li data-step="3">引导式问答</li>
+            <li data-step="4">生成原创脚本</li>
+            <li data-step="5"><a href="feature-3.html" style="color:inherit; text-decoration:none;">导出 / 进入标题车间</a></li>
+          </ul>
+        </aside>
+
+        <section class="seecript-stage">
+
+          <!-- 第 0 步：选择本次拆解使用的人设。
+               设计原因：以前 QA / Script 直接在 localStorage 里取「最新一条」人设记录的第一个方案，
+               用户没有选择权——一旦保存了多个人设就会拿错语气；此处显式让用户在每次拆解前确认。
+               人设由 SeecriptActivePersona 控制器（interactions.js）持久化到 sessionStorage，
+               同一会话内多次拆解保持同一人设；切换标签页/刷新会重置（避免老数据残留）。 -->
+          <article class="seecript-panel" aria-labelledby="step-persona" data-seecript-persona-step>
+            <div class="seecript-panel__head">
+              <div>
+                <h2 id="step-persona">第 0 步 · 选择本次拆解使用的人设</h2>
+                <p>第 3 步引导式问答与第 4 步脚本生成都会贴合这个人设的语气、差异化与受众。</p>
+              </div>
+              <button
+                class="btn btn-ghost sm"
+                type="button"
+                data-seecript-action="persona-chooser-open"
+              >选择 / 切换 →</button>
+            </div>
+
+            <!-- 状态切换由 SeecriptActivePersona 渲染：
+                 - 无人设记录 → 显示 [data-seecript-persona-empty]（CTA 跳人设生成页）
+                 - 已选定    → 显示 [data-seecript-persona-active]（人设摘要） -->
+            <div class="seecript-active-persona" data-seecript-persona-card>
+              <div class="seecript-active-persona__empty" data-seecript-persona-empty>
+                <div class="seecript-active-persona__icon">🎭</div>
+                <h4>你还没有可选的人设</h4>
+                <p>先去「人设生成」保存至少一个方案，本页再回来选。</p>
+                <a class="btn btn-primary sm" href="feature-2.html">去生成人设 →</a>
+              </div>
+              <div class="seecript-active-persona__active" data-seecript-persona-active hidden>
+                <div class="seecript-active-persona__head">
+                  <span class="seecript-pill" data-seecript-persona-name>—</span>
+                  <span class="seecript-active-persona__score" data-seecript-persona-score aria-label="推荐星级"></span>
+                  <span class="seecript-active-persona__meta" data-seecript-persona-meta></span>
+                </div>
+                <p class="seecript-active-persona__diff" data-seecript-persona-diff></p>
+                <p class="seecript-active-persona__rationale" data-seecript-persona-rationale></p>
+              </div>
+            </div>
+          </article>
+
+          <article class="seecript-panel" aria-labelledby="step-upload">
+            <div class="seecript-panel__head">
+              <div>
+                <h2 id="step-upload">第 1 步 · 输入对标内容</h2>
+                <p>从下方两种方式中<b>任选一种</b>提供对标素材。</p>
+              </div>
+              <span class="seecript-pill" id="seecript-asr-pill">豆包 ASR · DeepSeek</span>
+            </div>
+
+            <!-- 二选一 tab：上传视频 vs 粘贴台词 -->
+            <div class="seecript-input-tabs" role="tablist" aria-label="输入方式">
+              <button
+                type="button"
+                role="tab"
+                class="seecript-input-tab is-active"
+                data-input-tab="video"
+                aria-selected="true"
+                aria-controls="seecript-input-video"
+              >
+                上传视频 / 音频
+                <span class="seecript-input-tab__hint">浏览器抽轨 → ASR 自动转写</span>
+              </button>
+              <button
+                type="button"
+                role="tab"
+                class="seecript-input-tab"
+                data-input-tab="text"
+                aria-selected="false"
+                aria-controls="seecript-input-text"
+              >
+                粘贴台词文本
+                <span class="seecript-input-tab__hint">手工抄录 / 字幕导出</span>
+              </button>
+            </div>
+
+            <!-- 路径 A：上传视频 / 音频 -->
+            <div
+              id="seecript-input-video"
+              class="seecript-input-pane is-active"
+              role="tabpanel"
+              data-input-pane="video"
+            >
+              <div class="seecript-uploader" id="uploader">
+                <div class="seecript-uploader__icon">↓</div>
+                <p class="seecript-uploader__title">点击选择 / 拖拽 视频或音频</p>
+                <p class="seecript-uploader__hint">
+                  支持 mp4 / mov / mp3 / m4a / wav；<strong>建议时长约 1 分钟</strong>（更长亦可，解析更慢、体积更大），文件 ≤ 200 MB。
+                </p>
+                <input
+                  id="seecript-asr-file"
+                  type="file"
+                  accept="video/*,audio/*"
+                  style="margin-top: 0.6rem;"
+                />
+                <div id="seecript-asr-status" class="seecript-asr-status" hidden></div>
+              </div>
+            </div>
+
+            <!-- 路径 B：粘贴文本 -->
+            <div
+              id="seecript-input-text"
+              class="seecript-input-pane"
+              role="tabpanel"
+              data-input-pane="text"
+              hidden
+            >
+              <label
+                for="seecript-transcript-input"
+                style="display:block; font-size:0.85rem; color: var(--ink-muted); margin-bottom: 0.4rem;"
+              >
+                直接把视频台词粘贴到下方（含 / 不含时间戳均可），AI 会自动识别结构。
+              </label>
+              <textarea
+                id="seecript-transcript-input"
+                data-seecript-transcript
+                class="seecript-comment-input"
+                rows="7"
+                placeholder="例如：[00:00] 90% 的人冰箱都用错了... [00:30] 三步法的第一步..."
+              ></textarea>
+              <div style="display:flex; gap:0.6rem; margin-top:0.6rem; flex-wrap: wrap; align-items:center;">
+                <button class="btn btn-primary" type="button" data-seecript-action="extract-skeleton">
+                  用 AI 拆解骨架
+                </button>
+                <span style="font-size:0.78rem; color: var(--ink-muted);">
+                  · 文本长度 ≥ 20 字，上限约 5 万字（与后端一致）；台词过长时请分段拆解
+                </span>
+              </div>
+            </div>
+          </article>
+
+          <article class="seecript-panel" aria-labelledby="step-skeleton">
+            <div class="seecript-panel__head">
+              <div>
+                <h2 id="step-skeleton">第 2 步 · AI 拆解骨架</h2>
+                <p>包含 Hook 策略、叙事节奏与 CTA 设计的可迁移模板。</p>
+              </div>
+              <span class="seecript-pill">DeepSeek</span>
+            </div>
+
+            <!-- 空状态：拆解前显示明确指引；点击「用 AI 拆解骨架」后会被
+                 interactions.js 的 renderSkeleton 替换为真实的 Hook/Body/CTA
+                 卡片（包含可迁移模板）。 -->
+            <div class="seecript-skeleton-empty" data-seecript-skeleton-empty>
+              <div class="seecript-skeleton-empty__icon">⏳</div>
+              <h4>等待拆解</h4>
+              <p>
+                请先在<b>第 1 步</b>提供对标内容（上传视频自动转写，或直接粘贴台词），
+                <br />校对文本后点击 <b>「用 AI 拆解骨架」</b> 按钮，
+                <br />AI 会按 <b>Hook · Body · CTA</b> 三段结构拆解你的视频，并提炼可迁移的创作模板。
+              </p>
+              <p class="seecript-skeleton-empty__sample">
+                典型输出示例（仅示意 · 实际由 DeepSeek 基于你的内容生成）：
+              </p>
+              <ul class="seecript-skeleton-empty__sample-list">
+                <li>
+                  <code>Hook · 反常识陈述</code>「90% 的人冰箱都用错了……」 →
+                  <em>可迁移：用反常识观点撬动停留。</em>
+                </li>
+                <li>
+                  <code>Body · 4 段递进</code> ① 暴露问题 → ② 提出方法 → ③ 实拍演示 → ④ 自测题 →
+                  <em>情绪曲线：好奇 → 共鸣 → 反转 → 认同。</em>
+                </li>
+                <li>
+                  <code>CTA · 评论区话题</code>「把首字母打在评论区，下期挨个点评。」 →
+                  <em>可迁移：低门槛 + 个性化承诺。</em>
+                </li>
+              </ul>
+            </div>
+          </article>
+
+          <article class="seecript-panel" aria-labelledby="step-qa" data-seecript-qa-panel>
+            <div class="seecript-panel__head">
+              <div>
+                <h2 id="step-qa">第 3 步 · 引导式问答</h2>
+                <p>AI 基于骨架与人设出 3 道单选题，帮你做出 Hook / Body / CTA 三个关键创作决策。</p>
+              </div>
+              <span class="seecript-pill" data-seecript-qa-pill>≤ 3 轮收敛</span>
+            </div>
+
+            <!-- 空状态：尚未拆解骨架 / 未启动问答时显示。
+                 状态切换由 interactions.js 的 bindQAFlow 状态机驱动：
+                 [empty] → [brief 表单可填] → [running, round=1..3] → [done] → 自动触发脚本生成。
+
+                 brief 表单设计原因（v0.7 起）：
+                 - 之前 3 轮单选题虽然能收敛，但用户对「时长 / 节奏 / 风格」缺少前置约束，
+                   出现"问答时按 30s 短视频选了选项，最终脚本写了 1200 字"的不一致体验。
+                 - 这里在 QA 启动前加一个"创作要求"输入区——chip 快速选择 + 自由补充，
+                   填好后这套约束会随每一次 /api/qa/next 与 /api/script/generate 一起透传后端，
+                   让出题选项与最终脚本都贴合用户的真实需求。
+                 - 表单非必填（"跳过"按钮）——用户什么都不选，等同于以前的默认行为。 -->
+            <div class="seecript-qa-empty" data-seecript-qa-empty>
+              <div class="seecript-qa-empty__icon">💬</div>
+              <h4>等待第 2 步骨架完成</h4>
+              <p>
+                AI 拆解出 Hook / Body / CTA 之后，本步会自动出 3 道关键单选题 ——
+                <br />你的每个选择都会被第 4 步的脚本生成<b>原话或近义</b>用上。
+              </p>
+
+              <!-- brief 表单：只有骨架就绪后（SeecriptQAFlow.activate 调用时）才会取消 hidden -->
+              <div class="seecript-brief" data-seecript-brief hidden>
+                <div class="seecript-brief__head">
+                  <h5>开始问答前 · 告诉 AI 你的创作要求（可跳过）</h5>
+                  <p>这些选择会贯穿后续 3 轮出题与最终脚本生成，让产物贴合你的真实需求。</p>
+                </div>
+
+                <div class="seecript-brief__field">
+                  <label>视频时长</label>
+                  <div class="seecript-brief__chips" role="group" data-seecript-brief-group="duration">
+                    <button type="button" class="seecript-brief__chip" data-seecript-brief-value="15s">15s</button>
+                    <button type="button" class="seecript-brief__chip is-active" data-seecript-brief-value="30s">30s</button>
+                    <button type="button" class="seecript-brief__chip" data-seecript-brief-value="60s">60s</button>
+                    <button type="button" class="seecript-brief__chip" data-seecript-brief-value="90s">90s</button>
+                    <button type="button" class="seecript-brief__chip" data-seecript-brief-value="3min">3min</button>
+                  </div>
+                </div>
+
+                <div class="seecript-brief__field">
+                  <label>叙事节奏</label>
+                  <div class="seecript-brief__chips" role="group" data-seecript-brief-group="pace">
+                    <button type="button" class="seecript-brief__chip is-active" data-seecript-brief-value="紧凑">紧凑（快切快剪）</button>
+                    <button type="button" class="seecript-brief__chip" data-seecript-brief-value="标准">标准</button>
+                    <button type="button" class="seecript-brief__chip" data-seecript-brief-value="慢节奏">慢节奏（vlog 感）</button>
+                  </div>
+                </div>
+
+                <div class="seecript-brief__field">
+                  <label>风格调性</label>
+                  <div class="seecript-brief__chips" role="group" data-seecript-brief-group="style">
+                    <button type="button" class="seecript-brief__chip is-active" data-seecript-brief-value="中性">中性</button>
+                    <button type="button" class="seecript-brief__chip" data-seecript-brief-value="幽默">幽默</button>
+                    <button type="button" class="seecript-brief__chip" data-seecript-brief-value="严肃">严肃</button>
+                    <button type="button" class="seecript-brief__chip" data-seecript-brief-value="夸张">夸张</button>
+                    <button type="button" class="seecript-brief__chip" data-seecript-brief-value="温情">温情</button>
+                  </div>
+                </div>
+
+                <div class="seecript-brief__field">
+                  <label for="seecript-brief-extra">补充要求（可选 · 不超过 200 字）</label>
+                  <textarea
+                    id="seecript-brief-extra"
+                    data-seecript-brief-extra
+                    class="seecript-comment-input"
+                    rows="3"
+                    maxlength="200"
+                    placeholder="例如：面向通勤上班族，至少带 1 个真实数据，开场要有反差感…"
+                  ></textarea>
+                </div>
+              </div>
+
+              <button class="btn btn-ghost sm" type="button" data-seecript-action="qa-start" disabled>
+                等待骨架就绪…
+              </button>
+            </div>
+
+            <!-- 进行中：每一轮单题。bindQAFlow 会动态填入 question / options。 -->
+            <div class="seecript-qa" data-seecript-qa-current hidden>
+              <div class="seecript-qa__progress" data-seecript-qa-progress>
+                <span class="seecript-qa__progress-step is-active" data-step="1">1 · Hook</span>
+                <span class="seecript-qa__progress-step" data-step="2">2 · Body 切入</span>
+                <span class="seecript-qa__progress-step" data-step="3">3 · CTA</span>
+              </div>
+              <div class="seecript-qa__bot" data-seecript-qa-question>（loading）</div>
+              <div class="seecript-qa__rationale" data-seecript-qa-rationale hidden></div>
+              <div class="seecript-qa__opts" data-seecript-qa-opts></div>
+            </div>
+
+            <!-- 已答历史 -->
+            <div class="seecript-qa-history" data-seecript-qa-history hidden>
+              <h5>已确认的 3 个决策</h5>
+              <ol data-seecript-qa-history-list></ol>
+            </div>
+          </article>
+
+          <article class="seecript-panel" aria-labelledby="step-final" data-seecript-script-panel>
+            <div class="seecript-panel__head">
+              <div>
+                <h2 id="step-final">第 4 步 · 原创分镜脚本</h2>
+                <p>基于第 2 步骨架结构 + 第 3 步你的 3 个决策，AI 重写为可朗读的口播稿。</p>
+              </div>
+              <div style="display: flex; gap: 0.5rem; flex-wrap: wrap;">
+                <button class="btn btn-ghost sm" type="button" data-seecript-action="copy-script" disabled>复制纯文本</button>
+                <button class="btn btn-ghost sm" type="button" data-seecript-action="goto-t2v" disabled
+                  title="带着原创脚本进入「分镜素材生成」（素材描述默认为脚本全文，可在该页再编辑）">→ 分镜素材生成</button>
+                <a class="btn btn-primary sm" href="feature-3.html">下一步：标题车间 →</a>
+              </div>
+            </div>
+
+            <!-- 空状态：第 3 步未完成时显示 -->
+            <div class="seecript-script-empty" data-seecript-script-empty>
+              <div class="seecript-script-empty__icon">🎬</div>
+              <h4>等待问答收敛</h4>
+              <p>
+                完成第 3 步的 3 道单选题后，本步会自动调用 AI 生成<b>完整可朗读的原创分镜脚本</b>，
+                <br />包含 Hook 开场 + 与骨架时间轴对齐的 Body 段落 + CTA 收尾，可一键复制。
+              </p>
+            </div>
+
+            <!-- 真实脚本由 renderScript() 注入 -->
+            <div class="seecript-script" data-seecript-script-output hidden></div>
+          </article>
+        </section>
+      </div>
+    </main>
+
+    <!-- 人设选择弹窗（第 0 步的「选择 / 切换 →」按钮触发）。
+         - 列表数据来源：window.SeecriptHistory.listPersonas() 中所有记录的 personas[] 平铺
+         - 选中方案后写入 sessionStorage["seecript.activePersona"]，并触发 SeecriptActivePersona.render() -->
+    <div class="seecript-modal" data-seecript-persona-modal hidden role="dialog" aria-modal="true" aria-labelledby="persona-modal-title">
+      <div class="seecript-modal__backdrop" data-seecript-action="persona-chooser-close"></div>
+      <div class="seecript-modal__panel">
+        <header class="seecript-modal__head">
+          <h3 id="persona-modal-title">选择本次拆解使用的人设</h3>
+          <button class="seecript-modal__close" type="button" data-seecript-action="persona-chooser-close" aria-label="关闭">×</button>
+        </header>
+        <div class="seecript-modal__body" data-seecript-persona-list>
+          <!-- 由 SeecriptActivePersona.openModal() 渲染 -->
+        </div>
+        <footer class="seecript-modal__foot">
+          <span style="font-size: 0.82rem; color: var(--ink-mid);">没有合适的方案？</span>
+          <a class="btn btn-ghost sm" href="feature-2.html">去生成新人设 →</a>
+        </footer>
+      </div>
+    </div>
+
+    <footer class="seecript-footer">
+      Seecript · 创作者智能副驾 · <a href="index.html">产品说明</a>
+    </footer>
+    <script src="api.js" defer></script>
+    <script src="seecript-history.js" defer></script>
+    <script src="interactions.js" defer></script>
+    <script type="module" src="asr-uploader.js"></script>
+  </body>
+</html>

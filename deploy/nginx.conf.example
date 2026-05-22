@@ -1,0 +1,106 @@
+# Seecript nginx site config (template)
+#
+# Install steps (on the production server, after seecript-server.service is up on :__BACKEND_PORT__):
+#   sudo cp __PROJECT_DIR__/deploy/nginx.conf.example \
+#           /etc/nginx/sites-available/seecript.conf
+#   sudo sed -i \
+#       -e 's|__DOMAIN__|seecript.zlhu.asia|g' \
+#       -e 's|__FRONTEND_DIR__|/opt/seecript|g' \
+#       -e 's|__BACKEND_PORT__|5001|g' \
+#       /etc/nginx/sites-available/seecript.conf
+#   sudo ln -sf /etc/nginx/sites-available/seecript.conf /etc/nginx/sites-enabled/
+#   sudo nginx -t && sudo systemctl reload nginx
+#
+# Then issue a Let's Encrypt cert (Volcengine ASR REQUIRES https for the audio URL):
+#   sudo certbot --nginx -d __DOMAIN__
+# Certbot rewrites this file to add the 443 server block automatically.
+
+server {
+    listen 80;
+    listen [::]:80;
+    server_name __DOMAIN__;
+
+    # Larger uploads for audio extracted by ffmpeg.wasm (cap at 30 MB to match backend 25 MB).
+    client_max_body_size 30m;
+
+    # Gzip the small text files we ship.
+    # NOTE: text/html is gzipped by default (the nginx core does it implicitly), do NOT list
+    # it again here or we get: `nginx: [warn] duplicate MIME type "text/html"`.
+    gzip on;
+    gzip_types text/css application/javascript application/json image/svg+xml;
+    gzip_min_length 1024;
+
+    access_log /var/log/nginx/seecript.access.log;
+    error_log  /var/log/nginx/seecript.error.log;
+
+    # ---- Static frontend (no build step) ----
+    root __FRONTEND_DIR__;
+    index index.html;
+
+    # COOP/COEP for ffmpeg.wasm. The FastAPI middleware also adds these, but nginx may
+    # serve static HTML directly (via try_files) without proxying to FastAPI, so we set
+    # them here too.
+    #
+    # CRITICAL nginx gotcha: `add_header` does NOT inherit from a parent block if the
+    # child block has any `add_header` of its own. So we MUST repeat these inside every
+    # location that also calls `add_header` (Cache-Control, Cache-Control immutable, …),
+    # otherwise the browser will see neither and ffmpeg.wasm refuses to load.
+    # Reference: https://nginx.org/en/docs/http/ngx_http_headers_module.html#add_header
+    add_header Cross-Origin-Opener-Policy "same-origin" always;
+    add_header Cross-Origin-Embedder-Policy "credentialless" always;
+
+    location / {
+        try_files $uri $uri/ /index.html;
+        # Repeated COOP/COEP — see nginx gotcha note above. Without these two lines the
+        # browser strips them when serving HTML and ffmpeg.wasm fails with
+        # "cross-origin isolation is not enabled".
+        add_header Cross-Origin-Opener-Policy "same-origin" always;
+        add_header Cross-Origin-Embedder-Policy "credentialless" always;
+        add_header Cache-Control "public, max-age=300";
+    }
+
+    # Long-cache hashed assets if/when added (don't block on this for v0.2).
+    location /assets/ {
+        expires 30d;
+        access_log off;
+        # Repeated COOP/COEP — see note above.
+        add_header Cross-Origin-Opener-Policy "same-origin" always;
+        add_header Cross-Origin-Embedder-Policy "credentialless" always;
+        add_header Cache-Control "public, immutable";
+    }
+
+    # NOTE: 极速版 ASR (volc.bigasr.auc_turbo) base64-uploads inline → no need for a
+    # public /asr-tmp/ location any more. Earlier versions of this template had one;
+    # if you migrated from v0.3, delete /opt/seecript/server/var/asr-tmp safely.
+
+    # Block accidental exposure of sensitive paths via the static root.
+    location ~ ^/(server|deploy|scripts|docs|tests|venv|\.env|\.git) {
+        return 404;
+    }
+
+    # Block dotfiles.
+    location ~ /\.(?!well-known) {
+        deny all;
+    }
+
+    # ---- Backend API proxy ----
+    location /api/ {
+        proxy_pass http://127.0.0.1:__BACKEND_PORT__;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+
+        # 极速版 ASR 通常 1-5s 返回；DeepSeek 慢路径偶尔 30s+。给 90s 余量。
+        proxy_connect_timeout 10s;
+        proxy_send_timeout 90s;
+        proxy_read_timeout 90s;
+
+        # Allow the frontend to upload up to 30 MB (matches client_max_body_size above).
+        proxy_request_buffering off;
+
+        # Future-proof for SSE.
+        proxy_buffering off;
+    }
+}

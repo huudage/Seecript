@@ -1,0 +1,218 @@
+[
+  {
+    "seq": 1,
+    "file": "s-01.png",
+    "rid": "rId6",
+    "chapter": "二、核心功能 (Core Features)",
+    "near_text": "产品功能总览",
+    "size_bytes": 4802870
+  },
+  {
+    "seq": 2,
+    "file": "s-02.png",
+    "rid": "rId7",
+    "chapter": "二、核心功能 (Core Features)",
+    "near_text": "产品说明页展示",
+    "size_bytes": 250659
+  },
+  {
+    "seq": 3,
+    "file": "s-03.png",
+    "rid": "rId8",
+    "chapter": "二、核心功能 (Core Features)",
+    "near_text": "上半部分 是 3 字段输入区——职业背景 / 兴趣或可拍内容 / 可用资源",
+    "size_bytes": 147665
+  },
+  {
+    "seq": 4,
+    "file": "s-04.png",
+    "rid": "rId9",
+    "chapter": "二、核心功能 (Core Features)",
+    "near_text": "下半部分 是 3 张方案卡——每张含人设名、推荐星级、差异化逻辑、为什么值得做、对标账号、起号建议、变现预判",
+    "size_bytes": 200457
+  },
+  {
+    "seq": 5,
+    "file": "s-05.png",
+    "rid": "rId10",
+    "chapter": "二、核心功能 (Core Features)",
+    "near_text": "第 0 步 · 选定本次使用的人设",
+    "size_bytes": 169096
+  },
+  {
+    "seq": 6,
+    "file": "s-06.png",
+    "rid": "rId11",
+    "chapter": "二、核心功能 (Core Features)",
+    "near_text": "第 1 步 · 输入对标内容",
+    "size_bytes": 153801
+  },
+  {
+    "seq": 7,
+    "file": "s-07.png",
+    "rid": "rId12",
+    "chapter": "二、核心功能 (Core Features)",
+    "near_text": "第 2 步 · AI 拆解骨架",
+    "size_bytes": 149109
+  },
+  {
+    "seq": 8,
+    "file": "s-08.png",
+    "rid": "rId13",
+    "chapter": "二、核心功能 (Core Features)",
+    "near_text": "阶段 A · 创作要求（brief）表单",
+    "size_bytes": 151244
+  },
+  {
+    "seq": 9,
+    "file": "s-09.png",
+    "rid": "rId14",
+    "chapter": "二、核心功能 (Core Features)",
+    "near_text": "阶段 B · 3 轮单选问答",
+    "size_bytes": 189220
+  },
+  {
+    "seq": 10,
+    "file": "s-10.png",
+    "rid": "rId15",
+    "chapter": "二、核心功能 (Core Features)",
+    "near_text": "第 4 步 · 原创分镜脚本",
+    "size_bytes": 175356
+  },
+  {
+    "seq": 11,
+    "file": "s-11.png",
+    "rid": "rId16",
+    "chapter": "二、核心功能 (Core Features)",
+    "near_text": "上半部分 脚本输入区：textarea + 「生成发布元数据」主按钮 + 「从拆解工坊带入」副按钮",
+    "size_bytes": 169294
+  },
+  {
+    "seq": 12,
+    "file": "s-12.png",
+    "rid": "rId17",
+    "chapter": "二、核心功能 (Core Features)",
+    "near_text": "5 个标题卡 — 每张含类型标签（反常识/数字/身份/痛点/悬念）+ 字数 + 备注 + 「采用」按钮",
+    "size_bytes": 181992
+  },
+  {
+    "seq": 13,
+    "file": "s-13.png",
+    "rid": "rId18",
+    "chapter": "二、核心功能 (Core Features)",
+    "near_text": "标签矩阵 — 3 组标签 chip，「一键复制全部标签」一次性复制",
+    "size_bytes": 162269
+  },
+  {
+    "seq": 14,
+    "file": "s-14.png",
+    "rid": "rId19",
+    "chapter": "二、核心功能 (Core Features)",
+    "near_text": "解决痛点：③「评论越多越焦虑、分不清价值、回复语气出错」。",
+    "size_bytes": 162555
+  },
+  {
+    "seq": 15,
+    "file": "s-15.png",
+    "rid": "rId20",
+    "chapter": "二、核心功能 (Core Features)",
+    "near_text": "解决痛点：横跨①②③——给用户一个\"所有产物可回溯\"的中枢。",
+    "size_bytes": 212507
+  },
+  {
+    "seq": 16,
+    "file": "s-16.png",
+    "rid": "rId21",
+    "chapter": "四、交互流程 (User Flow)",
+    "near_text": "用户在 index.html 看完三大痛点 + 四步工作流总览图后，点击底部紫色「进入工作台」CTA → 跳到 workspace.html。首次访问两个看板均为空，引导用户先去人设生成。",
+    "size_bytes": 258192
+  },
+  {
+    "seq": 17,
+    "file": "s-17.png",
+    "rid": "rId22",
+    "chapter": "四、交互流程 (User Flow)",
+    "near_text": "进入 feature-2.html，填三段背景（职业 / 兴趣 / 资源），点「生成 3 个人设方案」 → 等 5-30 秒 → 3 张方案卡同时出现。",
+    "size_bytes": 146224
+  },
+  {
+    "seq": 18,
+    "file": "s-18.png",
+    "rid": "rId23",
+    "chapter": "四、交互流程 (User Flow)",
+    "near_text": "Step 2 · 一键采用人设 → 跳爆款拆解",
+    "size_bytes": 257555
+  },
+  {
+    "seq": 19,
+    "file": "s-19.png",
+    "rid": "rId24",
+    "chapter": "四、交互流程 (User Flow)",
+    "near_text": "Step 3 ·爆款拆解与脚本生成",
+    "size_bytes": 177814
+  },
+  {
+    "seq": 20,
+    "file": "s-20.png",
+    "rid": "rId25",
+    "chapter": "四、交互流程 (User Flow)",
+    "near_text": "Step 3 ·爆款拆解与脚本生成",
+    "size_bytes": 159697
+  },
+  {
+    "seq": 21,
+    "file": "s-21.png",
+    "rid": "rId26",
+    "chapter": "四、交互流程 (User Flow)",
+    "near_text": "Step 3 ·爆款拆解与脚本生成",
+    "size_bytes": 164088
+  },
+  {
+    "seq": 22,
+    "file": "s-22.png",
+    "rid": "rId27",
+    "chapter": "四、交互流程 (User Flow)",
+    "near_text": "Step 3 ·爆款拆解与脚本生成",
+    "size_bytes": 175624
+  },
+  {
+    "seq": 23,
+    "file": "s-23.png",
+    "rid": "rId28",
+    "chapter": "四、交互流程 (User Flow)",
+    "near_text": "阶段 A：填创作要求 brief（时长/节奏/风格 chips + 自由补充）",
+    "size_bytes": 150176
+  },
+  {
+    "seq": 24,
+    "file": "s-24.png",
+    "rid": "rId29",
+    "chapter": "四、交互流程 (User Flow)",
+    "near_text": "阶段 B：3 轮单选问答（每题都把 brief 透传给 AI）",
+    "size_bytes": 184703
+  },
+  {
+    "seq": 25,
+    "file": "s-25.png",
+    "rid": "rId30",
+    "chapter": "四、交互流程 (User Flow)",
+    "near_text": "阶段 B：3 轮单选问答（每题都把 brief 透传给 AI）",
+    "size_bytes": 172581
+  },
+  {
+    "seq": 26,
+    "file": "s-26.png",
+    "rid": "rId31",
+    "chapter": "四、交互流程 (User Flow)",
+    "near_text": "进 feature-3.html 时脚本已自动带入 textarea。点「生成发布元数据」 → 5 个标题 + 简介 + 标签矩阵就绪。每个产出都有专属复制 CTA。",
+    "size_bytes": 169633
+  },
+  {
+    "seq": 27,
+    "file": "s-27.png",
+    "rid": "rId19",
+    "chapter": "四、交互流程 (User Flow)",
+    "near_text": "发布几小时后用户从平台复制评论区文本，粘到 feature-4.html → 点「开始分拣」 → 几秒后高/中价值卡片就绪，灌水只显示数字。",
+    "size_bytes": 162555
+  }
+]

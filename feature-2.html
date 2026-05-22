@@ -1,0 +1,154 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>AI 人设生成 — Seecript</title>
+    <meta name="description" content="输入你的背景、兴趣和可用资源，AI 直接生成 3 个差异化人设方案与起号建议。" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=DM+Serif+Display:ital@0;1&family=Outfit:wght@400;500;600;700&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="styles.css" />
+    <link rel="stylesheet" href="app-screens.css" />
+  </head>
+  <body>
+    <header class="seecript-topbar" role="banner">
+      <div class="seecript-topbar__inner">
+        <a class="seecript-brand" href="index.html">Seecript</a>
+        <nav class="seecript-nav" aria-label="主功能">
+          <a href="workspace.html">工作台</a>
+          <a href="feature-2.html" aria-current="page">人设生成</a>
+          <a href="feature-1.html">爆款拆解</a>
+          <a href="feature-3.html">标题车间</a>
+          <a href="feature-4.html">评论分拣</a>
+          <a href="feature-5.html">分镜素材</a>
+        </nav>
+        <div class="seecript-nav seecript-nav--muted">
+          <a href="index.html">产品说明</a>
+        </div>
+      </div>
+    </header>
+
+    <main id="main">
+      <header class="seecript-hero">
+        <span class="seecript-badge">第一步 · AI 生成</span>
+        <h1>AI <em>人设生成</em></h1>
+        <p class="seecript-lead">
+          告诉我你的背景、兴趣与可用资源，AI 直接为你生成
+          <b>3 个差异化人设方案</b>——开始任何创作前的第一步。
+        </p>
+      </header>
+
+      <article class="seecript-panel">
+        <div class="seecript-panel__head">
+          <div>
+            <h2>1. 输入你的真实情况</h2>
+            <p>越具体越好，AI 会基于这些信息综合推导你的差异化定位。</p>
+          </div>
+        </div>
+
+        <div class="seecript-form-grid">
+          <div class="seecript-field">
+            <label for="bg">职业背景</label>
+            <input id="bg" type="text" value="行政文员 / 3 年" />
+          </div>
+          <div class="seecript-field">
+            <label for="hobby">兴趣 / 可拍内容</label>
+            <input id="hobby" type="text" value="日常做饭、二手收纳、咖啡" />
+          </div>
+          <div class="seecript-field">
+            <label for="resource">可用资源</label>
+            <input id="resource" type="text" value="周末 + 工作日晚 2h" />
+          </div>
+        </div>
+
+        <div style="display: flex; gap: 0.6rem; flex-wrap: wrap;">
+          <button class="btn btn-primary" type="button">生成 3 个人设方案</button>
+          <button class="btn btn-ghost" type="button">换一批</button>
+          <span style="font-size: 0.78rem; color: var(--ink-muted); align-self: center;">
+            · 每次生成都会调用真 AI，注意 Key 余额
+          </span>
+        </div>
+      </article>
+
+      <h2 class="seecript-sec-title">2. AI 推荐的 3 个差异化方案</h2>
+      <p class="seecript-sec-sub">基于你的输入，AI 综合分析后生成的差异化定位。</p>
+
+      <div class="seecript-personas">
+        <article class="seecript-persona">
+          <span class="seecript-pill" style="align-self: flex-start;">推荐 ★★★★★</span>
+          <h4>打工人月薪 8k 的<br />精致冰箱整理术</h4>
+          <p class="seecript-persona__why">
+            把「收纳」×「冰箱」×「打工人预算」三层叠加，差异化竞争位空白，且与生鲜/收纳品牌契合度高。
+          </p>
+          <dl>
+            <dt>差异化逻辑</dt>
+            <dd>预算约束 + 长期主义</dd>
+            <dt>对标账号</dt>
+            <dd>@小麦的整理日记、@省心生活</dd>
+            <dt>起号建议</dt>
+            <dd>前 10 条聚焦「冰箱开箱 + 周末囤货预算」</dd>
+            <dt>变现预判</dt>
+            <dd>生鲜电商 / 收纳品牌植入 高</dd>
+          </dl>
+        </article>
+
+        <article class="seecript-persona">
+          <span class="seecript-pill">推荐 ★★★★</span>
+          <h4>3 块钱也好喝的<br />打工人咖啡馆</h4>
+          <p class="seecript-persona__why">
+            自家厨房做咖啡的精致内容供给充足，但「平价 + 配方 DIY」缺位；用户兴趣命中。
+          </p>
+          <dl>
+            <dt>差异化逻辑</dt>
+            <dd>极致性价比 + DIY 配方</dd>
+            <dt>对标账号</dt>
+            <dd>@只喝咖啡不睡觉、@小厨房的精致</dd>
+            <dt>起号建议</dt>
+            <dd>固定「9.9 元配方挑战」系列</dd>
+            <dt>变现预判</dt>
+            <dd>挂车 / 餐饮品牌种草 中</dd>
+          </dl>
+        </article>
+
+        <article class="seecript-persona">
+          <span class="seecript-pill">推荐 ★★★</span>
+          <h4>租房改造<br />低预算图鉴</h4>
+          <p class="seecript-persona__why">
+            收纳兴趣可延展为整体居家改造，但赛道竞争较激烈；适合作为长尾备选。
+          </p>
+          <dl>
+            <dt>差异化逻辑</dt>
+            <dd>真实租房 + 低预算前后对比</dd>
+            <dt>对标账号</dt>
+            <dd>@小空间研究所、@30 平也精致</dd>
+            <dt>起号建议</dt>
+            <dd>「百元改造系列」每 2 周一次</dd>
+            <dt>变现预判</dt>
+            <dd>家居 / 二手平台合作 中</dd>
+          </dl>
+        </article>
+      </div>
+
+      <div class="seecript-disclaimer">
+        <b>说明：</b>方案中的对标账号仅为示意，无需对号入座。生成成功后会自动保存到工作台「我的人设」看板，后续可在拆解、标题车间、评论分拣中按该人设语气生成。
+      </div>
+
+      <p style="margin-top:1.5rem; text-align:center;">
+        <a class="btn btn-ghost" href="workspace.html">← 返回工作台</a>
+        <a class="btn btn-primary" href="feature-1.html" style="margin-left:0.6rem;">下一步：爆款拆解 →</a>
+      </p>
+    </main>
+
+    <footer class="seecript-footer">
+      Seecript · 创作者智能副驾 · <a href="index.html">产品说明</a>
+    </footer>
+    <script src="api.js" defer></script>
+    <script src="seecript-history.js" defer></script>
+    <script src="seecript-persona-editor.js" defer></script>
+    <script src="interactions.js" defer></script>
+  </body>
+</html>

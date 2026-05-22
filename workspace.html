@@ -1,0 +1,128 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>工作台 — Seecript</title>
+    <meta
+      name="description"
+      content="人设生成、爆款拆解、标题包装、评论分拣 一站式 AI 创作工作台。"
+    />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=DM+Serif+Display:ital@0;1&family=Outfit:wght@400;500;600;700&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="styles.css" />
+    <link rel="stylesheet" href="app-screens.css" />
+  </head>
+  <body>
+    <header class="seecript-topbar" role="banner">
+      <div class="seecript-topbar__inner">
+        <a class="seecript-brand" href="index.html">Seecript</a>
+        <nav class="seecript-nav" aria-label="主功能">
+          <a href="workspace.html" aria-current="page">工作台</a>
+          <a href="feature-2.html">人设生成</a>
+          <a href="feature-1.html">爆款拆解</a>
+          <a href="feature-3.html">标题车间</a>
+          <a href="feature-4.html">评论分拣</a>
+          <a href="feature-5.html">分镜素材</a>
+        </nav>
+        <div class="seecript-nav seecript-nav--muted">
+          <a href="index.html">产品说明</a>
+        </div>
+      </div>
+    </header>
+
+    <main id="main" aria-label="工作台">
+      <header class="seecript-hero">
+        <h1>让一个人，干出一个 <em>MCN 团队</em>的产出。</h1>
+        <p class="seecript-lead">
+          先定位人设 → 拆解对标爆款骨架 → 生成原创脚本 →（可选）分镜短视频素材 → 一键标题与标签 → 评论分拣。建议从「人设生成」开始。
+        </p>
+      </header>
+
+      <h2 class="seecript-sec-title">推荐工作流</h2>
+      <p class="seecript-sec-sub">建议按顺序操作：先做人设定位，再用爆款拆解填充内容。</p>
+
+      <div class="seecript-entries" role="list">
+        <a class="seecript-entry seecript-entry--primary" href="feature-2.html" role="listitem">
+          <span class="seecript-entry__tag">第一步</span>
+          <h3 class="seecript-entry__title">AI 人设生成</h3>
+          <p class="seecript-entry__p">
+            输入背景、兴趣与可用资源，AI 直接生成 3 个差异化人设方案与起号建议——开始任何创作前的必经第一步。
+          </p>
+          <span class="seecript-entry__cta">开始生成</span>
+        </a>
+        <a class="seecript-entry" href="feature-1.html" role="listitem">
+          <span class="seecript-entry__tag">第二步</span>
+          <h3 class="seecript-entry__title">爆款逆向拆解 · 脚本引擎</h3>
+          <p class="seecript-entry__p">
+            上传对标爆款视频，AI 自动提取 Hook / 节奏 / CTA 骨架，再用引导式问答生成属于你人设的原创分镜脚本。
+          </p>
+          <span class="seecript-entry__cta">开始拆解</span>
+        </a>
+        <a class="seecript-entry" href="feature-3.html" role="listitem">
+          <span class="seecript-entry__tag">第三步</span>
+          <h3 class="seecript-entry__title">标题与标签车间</h3>
+          <p class="seecript-entry__p">
+            脚本一键转 5 个备选标题、视频简介与标签矩阵（泛流量 + 精准长尾），针对短视频平台算法优化。
+          </p>
+          <span class="seecript-entry__cta">开始包装</span>
+        </a>
+        <a class="seecript-entry" href="feature-5.html" role="listitem">
+          <span class="seecript-entry__tag">可选</span>
+          <h3 class="seecript-entry__title">分镜素材生成</h3>
+          <p class="seecript-entry__p">
+            用脚本或自选描述生成竖屏短视频片段，下载 MP4 后在剪映等软件剪辑成片；完成拆解第 4 步后也可一键跳转至此页。
+          </p>
+          <span class="seecript-entry__cta">生成素材</span>
+        </a>
+        <a class="seecript-entry" href="feature-4.html" role="listitem">
+          <span class="seecript-entry__tag">第四步</span>
+          <h3 class="seecript-entry__title">评论分拣 · 互动副驾</h3>
+          <p class="seecript-entry__p">
+            粘贴评论区文本，AI 过滤灌水、识别高价值提问，并提供专业 / 幽默 / 共情三种语气回复草案。
+          </p>
+          <span class="seecript-entry__cta">开始分拣</span>
+        </a>
+      </div>
+
+      <div class="seecript-board-row" aria-label="历史项目">
+        <section class="seecript-board" aria-labelledby="board-personas">
+          <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:0.5rem;">
+            <h2 id="board-personas">我的人设方案</h2>
+            <a href="feature-2.html" class="btn btn-ghost sm">+ 生成新人设</a>
+          </div>
+          <p class="seecript-board__sub">由「AI 人设生成」生成的差异化定位备选；本地保存，仅在此浏览器可见。</p>
+          <ul class="seecript-list" data-history-list="personas">
+            <li class="seecript-history-empty">还没有人设方案。<a href="feature-2.html">先生成一组 →</a></li>
+          </ul>
+        </section>
+
+        <section class="seecript-board" aria-labelledby="board-scripts">
+          <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:0.5rem;">
+            <h2 id="board-scripts">我的脚本项目</h2>
+            <a href="feature-1.html" class="btn btn-ghost sm">+ 新建脚本</a>
+          </div>
+          <p class="seecript-board__sub">
+            完整走完爆款拆解 4 步（人设 → 台词 → 骨架 → 问答 → 脚本）后才会落地，每一条可<b>展开预览</b>、<b>复制脚本</b>或<b>带入标题车间</b>。
+          </p>
+          <ul class="seecript-list" data-history-list="scripts">
+            <li class="seecript-history-empty">还没有脚本项目。<a href="feature-1.html">去爆款拆解 →</a></li>
+          </ul>
+        </section>
+      </div>
+    </main>
+
+    <footer class="seecript-footer">
+      Seecript · 创作者智能副驾 ·
+      <a href="index.html">产品说明</a>
+    </footer>
+    <script src="api.js" defer></script>
+    <script src="seecript-history.js" defer></script>
+    <script src="seecript-persona-editor.js" defer></script>
+    <script src="interactions.js" defer></script>
+  </body>
+</html>

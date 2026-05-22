@@ -1,0 +1,33 @@
+# Runtime
+.server.pid
+logs/
+
+# Secrets — NEVER commit these
+.env
+server/.env
+server/.env.local
+server/.env.server-prod
+*.bak
+
+# Python
+server/venv/
+server/.venv/
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+.coverage
+htmlcov/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Editor
+.vscode/
+.idea/
+*.swp
+
+# Transient git scratch files (commit message scratch via PowerShell heredoc workaround)
+.git_commit_msg.tmp
+*.tmp

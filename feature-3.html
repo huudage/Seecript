@@ -1,0 +1,165 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>标题与标签车间 — Seecript</title>
+    <meta name="description" content="把脚本一键转成发布所需的标题/简介/标签矩阵，最大化长尾搜索曝光。" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=DM+Serif+Display:ital@0;1&family=Outfit:wght@400;500;600;700&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="styles.css" />
+    <link rel="stylesheet" href="app-screens.css" />
+  </head>
+  <body>
+    <header class="seecript-topbar" role="banner">
+      <div class="seecript-topbar__inner">
+        <a class="seecript-brand" href="index.html">Seecript</a>
+        <nav class="seecript-nav" aria-label="主功能">
+          <a href="workspace.html">工作台</a>
+          <a href="feature-2.html">人设生成</a>
+          <a href="feature-1.html">爆款拆解</a>
+          <a href="feature-3.html" aria-current="page">标题车间</a>
+          <a href="feature-4.html">评论分拣</a>
+          <a href="feature-5.html">分镜素材</a>
+        </nav>
+        <div class="seecript-nav seecript-nav--muted">
+          <a href="index.html">产品说明</a>
+        </div>
+      </div>
+    </header>
+
+    <main id="main">
+      <header class="seecript-hero">
+        <span class="seecript-badge">长尾 SEO · 短视频平台算法优化</span>
+        <h1>标题与<em>标签车间</em></h1>
+        <p class="seecript-lead">
+          创作完已无力做发布？把刚生成的脚本喂进来，针对短视频平台算法自动产出 5 个标题、视频简介与标签矩阵。<b>30 秒搞定 30 分钟的发布工作。</b>
+        </p>
+      </header>
+
+      <article class="seecript-panel">
+        <div class="seecript-panel__head">
+          <div>
+            <h2>1. 输入脚本</h2>
+            <p>AI 会按短视频平台算法的 Hook 前置、强情绪、标签密度规则生成。</p>
+          </div>
+          <span class="seecript-pill">短视频格式</span>
+        </div>
+
+        <textarea class="seecript-comment-input" rows="6" aria-label="脚本输入">
+【0:00–0:05 Hook】越贵的护肤品成分越好？我给你看看专柜热销和 39 元成分表的对比——你绝对会被气笑。
+【0:05–1:20 Body】闺蜜来家试用 → 摊出 3 张成分表 → 拆穿 1 个常见智商税 → 给出「3 看 2 不看」购买原则。
+【1:20–1:55 CTA】你最近被什么平价好物惊艳过？把名字打在评论区，下期我做《打工人值得屯的 10 件》。
+        </textarea>
+
+        <div style="display: flex; gap: 0.6rem; flex-wrap: wrap; margin-top: 0.8rem;">
+          <button class="btn btn-primary" type="button">生成发布元数据</button>
+          <button class="btn btn-ghost" type="button">从拆解工坊带入</button>
+        </div>
+      </article>
+
+      <h2 class="seecript-sec-title">2. 5 个标题备选 · 不同钩子风格</h2>
+      <p class="seecript-sec-sub">点「采用」即可写入剪贴板。</p>
+
+      <div class="seecript-output-grid">
+        <article class="seecript-output-card">
+          <span class="seecript-output-card__type">反常识型</span>
+          <p class="seecript-output-card__text">越贵越好？39 元成分表把专柜打哭了</p>
+          <div class="seecript-output-card__bar">
+            <span>22 字 · 强情绪</span>
+            <button class="btn btn-ghost sm" type="button">采用</button>
+          </div>
+        </article>
+        <article class="seecript-output-card">
+          <span class="seecript-output-card__type">数字型</span>
+          <p class="seecript-output-card__text">3 张成分表，看穿 5 个护肤智商税</p>
+          <div class="seecript-output-card__bar">
+            <span>17 字 · 高信息密度</span>
+            <button class="btn btn-ghost sm" type="button">采用</button>
+          </div>
+        </article>
+        <article class="seecript-output-card">
+          <span class="seecript-output-card__type">身份型</span>
+          <p class="seecript-output-card__text">打工人最该屯的 10 件平价好物（成分版）</p>
+          <div class="seecript-output-card__bar">
+            <span>20 字 · 受众明确</span>
+            <button class="btn btn-ghost sm" type="button">采用</button>
+          </div>
+        </article>
+        <article class="seecript-output-card">
+          <span class="seecript-output-card__type">痛点型</span>
+          <p class="seecript-output-card__text">月薪 8k 还买大牌？我替你算了笔账</p>
+          <div class="seecript-output-card__bar">
+            <span>17 字 · 触发共鸣</span>
+            <button class="btn btn-ghost sm" type="button">采用</button>
+          </div>
+        </article>
+        <article class="seecript-output-card">
+          <span class="seecript-output-card__type">悬念型</span>
+          <p class="seecript-output-card__text">我把闺蜜的大牌全拆了——结果惊呆她</p>
+          <div class="seecript-output-card__bar">
+            <span>18 字 · 故事感</span>
+            <button class="btn btn-ghost sm" type="button">采用</button>
+          </div>
+        </article>
+      </div>
+
+      <h2 class="seecript-sec-title">3. 视频简介（150 字内）</h2>
+
+      <article class="seecript-panel">
+        <p style="margin: 0; font-size: 0.95rem; line-height: 1.7;">
+          月薪 8k 也想精致护肤，但每次买大牌都心疼？我家闺蜜来摊牌了——3 张成分表对比一下，专柜热销和 39 元国货大牌的差别，可能比你想的少得多。文末附「3 看 2 不看」选购原则，建议收藏。
+        </p>
+        <div style="display: flex; gap: 0.5rem; margin-top: 1rem;">
+          <button class="btn btn-ghost sm" type="button">复制简介</button>
+          <button class="btn btn-ghost sm" type="button" title="按当前脚本重跑：标题/简介/标签会一起刷新">重新生成</button>
+        </div>
+      </article>
+
+      <h2 class="seecript-sec-title">4. 标签矩阵（泛流量 × 精准长尾）</h2>
+      <p class="seecript-sec-sub">建议同时用 2-3 个泛流量词 + 3-5 个精准长尾词 + 1-2 个话题挑战。</p>
+
+      <article class="seecript-panel">
+        <div class="seecript-tag-cluster">
+          <div class="seecript-tag-cluster__row">
+            <b>泛流量</b>
+            <span class="seecript-tag">#护肤</span>
+            <span class="seecript-tag">#美妆</span>
+            <span class="seecript-tag">#打工人</span>
+          </div>
+          <div class="seecript-tag-cluster__row">
+            <b>精准长尾</b>
+            <span class="seecript-tag seecript-tag--accent">#平价护肤推荐</span>
+            <span class="seecript-tag seecript-tag--accent">#护肤成分党</span>
+            <span class="seecript-tag seecript-tag--accent">#国货护肤</span>
+            <span class="seecript-tag seecript-tag--accent">#月薪八千护肤</span>
+            <span class="seecript-tag seecript-tag--accent">#护肤智商税</span>
+          </div>
+          <div class="seecript-tag-cluster__row">
+            <b>话题挑战</b>
+            <span class="seecript-tag">#平价好物挑战</span>
+            <span class="seecript-tag">#成分对比</span>
+          </div>
+        </div>
+        <div style="display: flex; gap: 0.5rem; margin-top: 1rem;">
+          <button class="btn btn-primary sm" type="button">一键复制全部标签</button>
+        </div>
+      </article>
+
+      <div class="seecript-disclaimer">
+        <b>短视频平台算法适配：</b>AI 已按主流短视频平台通用的 Hook 前置（前 3 秒钩子）、强情绪标题词、3-5 个泛流量标签 + 5-8 个精准长尾标签的密度规则生成。
+      </div>
+    </main>
+
+    <footer class="seecript-footer">
+      Seecript · 创作者智能副驾 · <a href="index.html">产品说明</a>
+    </footer>
+    <script src="api.js" defer></script>
+    <script src="seecript-history.js" defer></script>
+    <script src="interactions.js" defer></script>
+  </body>
+</html>
