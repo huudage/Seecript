@@ -35,3 +35,6 @@ Thumbs.db
 # Third-party agent skill library — installed globally via `npx skills@latest add ...`,
 # do not vendor in this repo. See CLAUDE.md "Agent skills" section for install steps.
 mattpocock-skills-zh-CN/
+
+# Claude Code machine-local settings (shared settings.json IS tracked)
+.claude/settings.local.json
