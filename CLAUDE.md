@@ -2,24 +2,24 @@
 
 ## 项目身份
 
-- 视频拆解与重组的助手（爆款结构迁移引擎）：从样例视频拆解 → 结构抽取 → 素材缺口补全 → 视频重组的 AI 创作平台。当前代码由 KOCopilot 全量改名 fork 而来（HEAD: ddea395，2026-05-22），正在围绕"工程训练营"赛题方向重构。
-- 技术栈：FastAPI（Python 3.10+） + 原生 JS / CSS；前端静态文件由后端同进程挂载在 `/`。
-- 默认 `LLM_PROVIDER=mock` / `ASR_PROVIDER=mock` / `T2V_PROVIDER=mock`，不配 Key 也能跑全流程。
-- 启动：Windows `./run.ps1`（推荐，用 `py -3`）；Bash 系 `./run.sh`（注意：`run.sh` 调 `python`，若 PATH 上只有 `py`/`python3-shim` 会失败）。
-- 测试：`server/` 下 `pytest`，预期 54 passed。
+- 视频拆解与重组的助手（爆款结构迁移引擎）：从样例视频拆解 → 结构抽取 → 素材缺口补全 → 视频重组的 AI 创作平台。当前代码由 KOCopilot 全量改名 fork 而来（HEAD: ddea395，2026-05-22），正在围绕"工程训练营"赛题方向重构；技术栈与路线图见 [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)。
+- 技术栈：FastAPI（Python 3.10+）后端 + React 18 + Vite + TypeScript 前端（独立 `web/`）；视频包装轨用 Remotion（独立 `remotion/`）。
+- 默认 `LLM_PROVIDER=mock` / `ASR_PROVIDER=mock`，不配 Key 也能跑全流程。
+- 启动：Windows `./run.ps1`；Bash 系 `./run.sh`。
+- 测试：`server/` 下 `pytest`。
 
-## 仓库布局速查
+## 仓库布局速查（重构进行中）
 
 ```
-seecript-history.js, seecript-persona-editor.js   ← 改名后；曾叫 koc-*
-deploy/seecript-server.service                    ← systemd 单元（曾叫 kocopilot-server）
-server/app/{main,config,schemas}.py               ← FastAPI 入口、Pydantic Settings、I/O 契约
-server/app/routers/                               ← 8 个端点：persona/skeleton/qa/script/seo/comments/asr/t2v
-server/app/services/{llm,asr,t2v}_client.py       ← 3 个抽象客户端 + Mock/真实双实现
+web/                                              ← 新前端骨架（React+Vite，阶段 1 落地）
+remotion/                                         ← 包装轨独立项目（阶段 3 落地）
+server/app/{main,config,schemas}.py               ← FastAPI 入口、Pydantic Settings、I/O 契约（schemas 待 #8 重写）
+server/app/routers/                               ← 重构后只剩 asr；新 7 个路由（library/decompose/material/gap/plan/render/edit）在 #8 落地
+server/app/services/{llm,asr}_client.py           ← 抽象客户端 + Mock/真实双实现；VLM/T2I/T2V 客户端在 #10 落地
 mattpocock-skills-zh-CN/                          ← 见下「Agent skills」
 ```
 
-CSS 类前缀已统一为 `.seecript-*`；JS 全局对象命名 `SeecriptApi` / `SeecriptHistory` / `SeecriptQAFlow` 等；保留行业术语 `KOC`（key opinion consumer）原样。
+> 阶段 0 已完成：旧"创作者副驾"形态的 6 个 HTML 页 + vanilla JS + persona/skeleton/qa/script/seo/comments/t2v 路由全部退役。
 
 ## Agent skills（mattpocock-skills-zh-CN）
 

@@ -23,20 +23,12 @@ def force_mock_provider(monkeypatch):
     """
     monkeypatch.setenv("LLM_PROVIDER", "mock")
     monkeypatch.setenv("ASR_PROVIDER", "mock")
-    monkeypatch.setenv("T2V_PROVIDER", "mock")
-    # Fast-forward mock T2V so polling tests don't sleep 8s each.
-    monkeypatch.setenv("T2V_MOCK_DURATION_SECONDS", "0.1")
     # Reset the lru_cache so the new env vars are picked up.
     from app.config import get_settings
-    import app.services.t2v_client as t2v_module
 
     get_settings.cache_clear()
-    # Also reset the T2V mock singleton — otherwise its in-memory task store
-    # leaks PROCESSING tasks across tests, causing flaky behavior.
-    t2v_module._mock_singleton = None
     yield
     get_settings.cache_clear()
-    t2v_module._mock_singleton = None
 
 
 @pytest.fixture

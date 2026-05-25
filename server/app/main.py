@@ -4,7 +4,6 @@ What this file is responsible for (Single Responsibility):
 - Construct the FastAPI app instance
 - Register middleware (CORS, request-id, exception handler)
 - Mount routers (one per business module)
-- Serve the static frontend so a single uvicorn process powers the whole demo
 
 What this file is NOT responsible for:
 - Business logic (lives in services/)
@@ -17,16 +16,14 @@ import logging
 import time
 import uuid
 from contextlib import asynccontextmanager
-from pathlib import Path
 
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
-from fastapi.staticfiles import StaticFiles
 
 from . import __version__
 from .config import get_settings
-from .routers import asr, comments, persona, qa, script, seo, skeleton, t2v
+from .routers import asr
 from .schemas import ErrorResponse, HealthResponse
 
 
@@ -52,14 +49,12 @@ async def lifespan(app: FastAPI):
     log = logging.getLogger("seecript.boot")
     settings = get_settings()
     log.info(
-        "Seecript v%s booting on %s:%s | LLM=%s | ASR=%s | T2V=%s | static=%s",
+        "Seecript v%s booting on %s:%s | LLM=%s | ASR=%s",
         __version__,
         settings.host,
         settings.port,
         settings.llm_provider,
         settings.asr_provider,
-        settings.t2v_provider,
-        settings.static_root.resolve(),
     )
     yield
     log.info("Seecript shutting down.")
@@ -73,7 +68,7 @@ def create_app() -> FastAPI:
 
     app = FastAPI(
         title="Seecript API",
-        description="AI 副驾后端：人设生成、爆款拆解、引导式问答、原创分镜脚本、SEO 元数据、评论分拣。",
+        description="爆款结构迁移引擎后端：样例拆解、结构迁移、素材缺口补全、视频重组。",
         version=__version__,
         lifespan=lifespan,
         # Disable docs in production for a tiny security gain; enable locally.
@@ -113,19 +108,12 @@ def create_app() -> FastAPI:
         )
         return response
 
-    # ---- Cross-Origin Isolation for ffmpeg.wasm ----
-    # ffmpeg.wasm 0.12 needs SharedArrayBuffer, which requires `crossOriginIsolated`.
-    # We use COEP=credentialless so remote CDN assets (jsdelivr, Google Fonts) can load
-    # without each having to set Cross-Origin-Resource-Policy. Tradeoff: those requests
-    # are sent without cookies, which is fine for static CDNs.
-    #
-    # This is a *blanket* policy; if you ever embed third-party iframes that need cookies
-    # (e.g. payment SDK), you'll need a route-specific exception.
+    # ---- Cross-Origin Isolation (predict 后续需要 ffmpeg.wasm/Remotion 浏览器加载 wasm) ----
+    # 保留 COOP/COEP；旧版 vendor/ffmpeg 已删，新前端如要在浏览器跑 wasm 仍需 crossOriginIsolated。
     @app.middleware("http")
     async def add_cross_origin_isolation(request: Request, call_next):
         response = await call_next(request)
         path = request.url.path
-        # Only HTML/JS documents need the isolation; static audio/api can skip.
         if path.startswith("/api/"):
             return response
         response.headers.setdefault("Cross-Origin-Opener-Policy", "same-origin")
@@ -143,25 +131,7 @@ def create_app() -> FastAPI:
             t2v_provider=settings.t2v_provider,
         )
 
-    app.include_router(persona.router, prefix="/api/persona", tags=["persona"])
-    app.include_router(skeleton.router, prefix="/api/skeleton", tags=["skeleton"])
-    app.include_router(qa.router, prefix="/api/qa", tags=["qa"])
-    app.include_router(script.router, prefix="/api/script", tags=["script"])
-    app.include_router(seo.router, prefix="/api/seo", tags=["seo"])
-    app.include_router(comments.router, prefix="/api/comments", tags=["comments"])
     app.include_router(asr.router, prefix="/api/asr", tags=["asr"])
-    app.include_router(t2v.router, prefix="/api/t2v", tags=["t2v"])
-
-    # ---- Static frontend (mounted last so /api/* takes precedence) ----
-    # 极速版 ASR 直传 base64，已经不再需要 /asr-tmp/ 公网回源路径，省一处配置。
-    static_root: Path = settings.static_root.resolve()
-    if static_root.exists():
-        # html=True so / falls back to index.html
-        app.mount("/", StaticFiles(directory=str(static_root), html=True), name="static")
-    else:
-        logging.getLogger("seecript.boot").warning(
-            "static_root %s does not exist; frontend will not be served", static_root
-        )
 
     return app
 

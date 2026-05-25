@@ -1,12 +1,5 @@
 """System prompts for each business module.
 
-Each prompt is kept in its own module so we can iterate independently and version-control
-changes per-module. All prompts are designed to elicit a strict JSON reply that matches the
-corresponding Pydantic schema in `app/schemas.py`.
+阶段 0 清理后清空——旧的人设/拆解/标题/评论/分镜五件套 prompts 已退役。
+新一版 prompts（样例拆解 / 缺口补全 / 自然语言编辑 等）将在阶段 3 落地到本目录。
 """
-from .persona import PERSONA_SYSTEM_PROMPT  # noqa: F401
-from .skeleton import SKELETON_SYSTEM_PROMPT  # noqa: F401
-from .seo import SEO_SYSTEM_PROMPT  # noqa: F401
-from .comments import COMMENTS_SYSTEM_PROMPT  # noqa: F401
-from .qa import QA_SYSTEM_PROMPT  # noqa: F401
-from .script import SCRIPT_SYSTEM_PROMPT  # noqa: F401
