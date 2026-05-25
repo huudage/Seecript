@@ -1,107 +1,247 @@
 /**
- * 与后端 schemas.py 镜像的 TS 类型。
- * 阶段 1 仅放骨架，正式契约在 #8 落地后再补全。
+ * 与后端 server/app/schemas.py 镜像的 TS 类型。
+ * 修改后端 schema 时务必同步这里，否则编辑器报错也就罢了，运行时会沉默断链。
  */
 
 export type SampleId = string
 export type PlanId = string
 export type JobId = string
+export type MaterialId = string
+export type SessionId = string
+export type GapId = string
+
+export type SectionKind = 'hook' | 'body' | 'cta'
+export type GapStatus = 'ok' | 'warn' | 'miss'
+export type FillAction = 'rerank' | 'copy' | 'aigc'
+export type Variant = 'A' | 'B'
+export type JobStatus = 'pending' | 'running' | 'succeeded' | 'failed' | 'cancelled'
+export type MediaType = 'video' | 'image' | 'audio'
+
+// =========================================================================
+// Module 1 — Library
+// =========================================================================
 
 export interface LibraryItem {
   id: SampleId
   title: string
   scene: string
-  duration: number
+  duration_seconds: number
   shot_count: number
   cover_url: string
 }
 
 export interface Shot {
-  id: string
+  index: number
   start: number
   end: number
-  thumbnail_url?: string
-  labels?: string[]
+  duration: number
+  thumbnail_url?: string | null
+  transcript?: string | null
+  tags: string[]
 }
 
 export interface RhythmCurve {
-  /** 镜头切换密度采样点，秒为 x 轴。 */
-  cuts: { t: number; density: number }[]
-  /** BGM 能量曲线。 */
-  bgm: { t: number; energy: number }[]
+  times: number[]
+  cut_density: number[]
+  bgm_energy: number[]
+  tempo_bpm?: number | null
 }
-
-export type SectionKind = 'hook' | 'body' | 'cta'
 
 export interface Section {
   kind: SectionKind
   start: number
   end: number
   summary: string
+  shot_indices: number[]
 }
 
 export interface PackagingProfile {
-  subtitle_style?: string
-  title_bar_style?: string
-  transition_types?: string[]
-  cover_style?: string
+  subtitle_style: string
+  has_title_bar: boolean
+  transition_types: string[]
+  cover_style?: string | null
+  sticker_density: number
 }
 
 export interface SampleManifest {
   sample_id: SampleId
+  title: string
   duration_seconds: number
+  video_url: string
   shots: Shot[]
   rhythm: RhythmCurve
   sections: Section[]
   packaging: PackagingProfile
 }
 
-export type GapStatus = 'ok' | 'warn' | 'miss'
+// =========================================================================
+// Module 2 — Decompose
+// =========================================================================
+
+export interface DecomposeSubmitResponse {
+  job_id: JobId
+}
+
+// =========================================================================
+// Module 3 — Material
+// =========================================================================
+
+export interface Material {
+  material_id: MaterialId
+  filename: string
+  media_type: MediaType
+  duration_seconds?: number | null
+  thumbnail_url?: string | null
+  tags: string[]
+  recommended_section?: SectionKind | null
+}
+
+export interface MaterialUploadResponse {
+  session_id: SessionId
+  materials: Material[]
+}
+
+// =========================================================================
+// Module 4 — Gap
+// =========================================================================
 
 export interface Gap {
-  id: string
-  slot_id: string
+  gap_id: GapId
+  section: SectionKind
+  slot_index: number
+  requirement: string
   status: GapStatus
-  /** 影响等级：1 = 锦上添花，5 = 必填。 */
-  impact: number
-  reason: string
+  impact: 'high' | 'medium' | 'low'
+  matched_material_id?: MaterialId | null
+  note?: string | null
 }
 
-export type FillAction = 'rerank' | 'copy' | 'aigc'
-
-export interface Scene {
-  scene_id: string
-  source: 'sample' | 'material' | 'aigc'
-  start: number
-  end: number
-  caption?: string
+export interface FillResult {
+  gap_id: GapId
+  action: FillAction
+  new_material_id?: MaterialId | null
+  narration?: string | null
+  note?: string | null
+  status: GapStatus
 }
 
-export interface PackagingItem {
-  kind: 'subtitle' | 'title_bar' | 'sticker' | 'transition'
-  start: number
-  end: number
+export interface GapFillRequest {
+  gap_id: GapId
+  action: FillAction
   params: Record<string, unknown>
 }
 
+// =========================================================================
+// Module 5 — Plan
+// =========================================================================
+
+export interface Scene {
+  scene_id: string
+  section: SectionKind
+  source: 'sample' | 'user_material' | 'aigc_t2v' | 'aigc_t2i'
+  source_ref: string
+  start: number
+  duration: number
+  in_point: number
+  out_point?: number | null
+  narration?: string | null
+}
+
+export interface PackagingItem {
+  item_id: string
+  kind: 'subtitle' | 'title_bar' | 'sticker' | 'transition' | 'cover'
+  start: number
+  end: number
+  text?: string | null
+  style: Record<string, unknown>
+}
+
 export interface BGMConfig {
-  url?: string
+  track_url?: string | null
   volume: number
+  fade_in: number
+  fade_out: number
 }
 
 export interface Plan {
   plan_id: PlanId
   sample_id: SampleId
+  session_id?: string | null
+  variant: Variant
+  duration_seconds: number
   main_track: Scene[]
   packaging_track: PackagingItem[]
   bgm: BGMConfig
-  variant: 'A' | 'B'
 }
+
+export interface PlanBuildRequest {
+  sample_id: SampleId
+  session_id: SessionId
+  selected_materials: MaterialId[]
+  fills: FillResult[]
+  variant: Variant
+}
+
+// =========================================================================
+// Module 6 — Render
+// =========================================================================
+
+export interface RenderSubmitRequest {
+  plan_id: PlanId
+  variant: Variant
+}
+
+export interface RenderSubmitResponse {
+  job_id: JobId
+}
+
+export interface RenderDonePayload {
+  plan_id: PlanId
+  variant: Variant
+  video_url: string
+  cover_url: string
+  duration_seconds: number
+  timings_ms?: Record<string, number>
+  notes?: string[]
+}
+
+// =========================================================================
+// Module 7 — Edit
+// =========================================================================
+
+export interface EditMark {
+  track: 'main' | 'packaging'
+  start: number
+  end: number
+  target_id?: string | null
+}
+
+export interface EditApplyRequest {
+  plan_id: PlanId
+  instruction: string
+  marks: EditMark[]
+}
+
+// =========================================================================
+// SSE
+// =========================================================================
+
+export interface ProgressEventPayload {
+  step: string
+  percent: number
+  payload: Record<string, unknown>
+}
+
+// =========================================================================
+// Health
+// =========================================================================
 
 export interface HealthResponse {
   status: 'healthy' | 'degraded'
   version: string
   llm_provider: string
-  asr_provider: string
+  vlm_provider: string
+  t2i_provider: string
   t2v_provider: string
+  asr_provider: string
 }
