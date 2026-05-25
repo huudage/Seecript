@@ -23,7 +23,7 @@ from fastapi.responses import JSONResponse
 
 from . import __version__
 from .config import get_settings
-from .routers import asr
+from .routers import asr, decompose, edit, gap, library, material, plan, render
 from .schemas import ErrorResponse, HealthResponse
 
 
@@ -127,11 +127,21 @@ def create_app() -> FastAPI:
             status="healthy",
             version=__version__,
             llm_provider=settings.llm_provider,
-            asr_provider=settings.asr_provider,
+            vlm_provider="mock",
+            t2i_provider="mock",
             t2v_provider=settings.t2v_provider,
+            asr_provider=settings.asr_provider,
         )
 
+    # 阶段 1：7 个业务路由 + asr。所有路由的 prefix 都是 /api/*。
     app.include_router(asr.router, prefix="/api/asr", tags=["asr"])
+    app.include_router(library.router, prefix="/api", tags=["library"])
+    app.include_router(decompose.router, prefix="/api", tags=["decompose"])
+    app.include_router(material.router, prefix="/api", tags=["material"])
+    app.include_router(gap.router, prefix="/api", tags=["gap"])
+    app.include_router(plan.router, prefix="/api", tags=["plan"])
+    app.include_router(render.router, prefix="/api", tags=["render"])
+    app.include_router(edit.router, prefix="/api", tags=["edit"])
 
     return app
 

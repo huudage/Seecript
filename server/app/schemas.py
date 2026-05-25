@@ -1,377 +1,316 @@
-"""Pydantic request/response schemas for all API endpoints.
+"""Pydantic v2 schemas — 爆款结构迁移引擎.
 
-Design rationale:
-- Single Responsibility: this file only defines I/O contracts; no business logic.
-- Each endpoint has a clearly named request/response pair (Interface Segregation).
-- Optional fields default to None / [] / "" so frontend can submit partial data during draft.
-- We keep field names snake_case in JSON to match Python conventions; frontend should adapt.
+模块映射（与 docs/ARCHITECTURE.md §5.3 一致）：
+- Library      : LibraryItem, SampleManifest, Shot, RhythmCurve, Section, PackagingProfile
+- Material     : Material, MaterialUploadResponse
+- Gap          : Gap, GapDetectRequest, GapFillRequest, FillResult
+- Plan         : Plan, Scene, PackagingItem, BGMConfig, PlanBuildRequest
+- Decompose    : DecomposeRequest, DecomposeSubmitResponse
+- Render       : RenderSubmitRequest, RenderSubmitResponse
+- Edit         : EditApplyRequest, EditMark
+- Jobs / SSE   : Job, ProgressEvent
+- Health / Err : HealthResponse, ErrorResponse, ASRResponse
+
+字段保留 snake_case；前端 TS 镜像参见 web/src/types/schemas.ts。
 """
-from typing import List, Literal, Optional
+from __future__ import annotations
+
+from typing import Any, Literal, Optional
 
 from pydantic import BaseModel, Field
 
-
-# 拆解骨架 / 问答 / 脚本链路共用：粘贴台词或 ASR 全文上限（中文台词约 1 分钟数千字，留足余量）。
-TRANSCRIPT_MAX_CHARS = 50000
-
-
 # =========================================================================
-# Health
+# Common
 # =========================================================================
+
+GapStatus = Literal["ok", "warn", "miss"]
+"""槽位匹配状态：✅ 完全命中 / ⚠️ 勉强命中 / ❌ 缺口需补全"""
+
+FillAction = Literal["rerank", "copy", "aigc"]
+"""缺口补全动作：结构重排 / 文案补全 / Seedream AIGC"""
+
+Variant = Literal["A", "B"]
+"""AB 双版本渲染标识"""
+
+JobStatus = Literal["pending", "running", "succeeded", "failed", "cancelled"]
+
+
 class HealthResponse(BaseModel):
     status: Literal["healthy", "degraded"]
     version: str
     llm_provider: str
-    asr_provider: str
+    vlm_provider: str = "mock"
+    t2i_provider: str = "mock"
     t2v_provider: str = "mock"
+    asr_provider: str
+
+
+class ErrorResponse(BaseModel):
+    detail: str
+    code: Optional[str] = None
+    trace_id: Optional[str] = None
 
 
 # =========================================================================
-# Module 2 — Persona Generation
+# Module 1 — 素材库 (Library)
 # =========================================================================
-class PersonaRequest(BaseModel):
-    background: str = Field(..., min_length=1, max_length=500, description="职业背景")
-    interests: str = Field(..., min_length=1, max_length=500, description="兴趣 / 可拍内容")
-    resources: str = Field(..., min_length=1, max_length=500, description="可用资源")
 
+class LibraryItem(BaseModel):
+    """`GET /api/library` 列表项。"""
 
-class PersonaPlan(BaseModel):
-    name: str = Field(..., description="人设名（短句标题）")
-    differentiation: str = Field(..., description="差异化逻辑")
-    rationale: str = Field(..., description="为什么这个人设值得做")
-    reference_accounts: List[str] = Field(default_factory=list, description="对标账号示意")
-    onboarding_advice: str = Field(..., description="起号建议")
-    monetization_outlook: str = Field(..., description="变现预判")
-    score: int = Field(..., ge=1, le=5, description="推荐星级 1-5")
-
-
-class PersonaResponse(BaseModel):
-    personas: List[PersonaPlan] = Field(..., min_length=1, max_length=5)
-    model_used: str
-    elapsed_ms: int
-
-
-# =========================================================================
-# Module 1 — Skeleton Extraction (脚本拆解)
-# =========================================================================
-class SkeletonRequest(BaseModel):
-    """v0.1：只接受文本输入；ASR 路径在 /api/asr/transcribe 单独提供。"""
-    transcript: str = Field(
-        ...,
-        min_length=20,
-        max_length=TRANSCRIPT_MAX_CHARS,
-        description="视频台词文本",
-    )
-    persona_hint: Optional[str] = Field(default=None, max_length=500, description="用户当前人设上下文（可选）")
-
-
-class NarrativeBeat(BaseModel):
-    timestamp: str = Field(..., description="时间区间，如 0:05-1:30")
+    id: str
     title: str
-    description: str
-    emotion_arc: Optional[str] = None
+    scene: str = Field(..., description="样例所属类型，如『营销/剪辑/Motion Graph』")
+    duration_seconds: float
+    shot_count: int
+    cover_url: str
 
 
-class HookSection(BaseModel):
-    strategy: Literal[
-        "痛点前置", "反常识陈述", "悬念提问", "视觉冲击", "身份认同", "数字罗列", "其他"
-    ]
-    text: str = Field(..., description="原视频前 3 秒台词原文")
-    explanation: str = Field(..., description="钩子设计原理与可迁移方法论")
+class Shot(BaseModel):
+    """PySceneDetect 输出的镜头切片。"""
+
+    index: int
+    start: float
+    end: float
+    duration: float
+    thumbnail_url: Optional[str] = None
+    transcript: Optional[str] = Field(default=None, description="本镜头对应的 ASR 口播片段")
+    tags: list[str] = Field(default_factory=list, description="VLM 帧打标（封面风格/转场/字幕样式等）")
 
 
-class CTASection(BaseModel):
-    strategy: Literal[
-        "点赞收藏", "评论区留言", "关注追更", "引导私域", "其他"
-    ]
-    text: str
-    explanation: str
+class RhythmCurve(BaseModel):
+    """节奏曲线 = 镜头切换频次 + BGM 能量。前端拿来画双线图。"""
+
+    times: list[float] = Field(..., description="采样时间点（秒）")
+    cut_density: list[float] = Field(..., description="单位时间镜头切换密度")
+    bgm_energy: list[float] = Field(..., description="librosa RMS 能量曲线，归一到 [0,1]")
+    tempo_bpm: Optional[float] = None
 
 
-class SkeletonResponse(BaseModel):
-    hook: HookSection
-    body: List[NarrativeBeat]
-    cta: CTASection
-    transferable_template: str = Field(..., description="去除原内容、保留结构的可复用模板")
-    model_used: str
-    elapsed_ms: int
+class Section(BaseModel):
+    """LLM 段落结构：Hook / Body / CTA 三段制。"""
+
+    kind: Literal["hook", "body", "cta"]
+    start: float
+    end: float
+    summary: str
+    shot_indices: list[int] = Field(default_factory=list, description="本段覆盖的镜头 index")
 
 
-# =========================================================================
-# Module 3 — SEO / Metadata
-# =========================================================================
-class SEORequest(BaseModel):
-    """Module 3 request payload.
+class PackagingProfile(BaseModel):
+    """画面包装统计（字幕样式 / 标题条 / 转场 / 封面风格）。"""
 
-    `platform` is currently locked to "douyin" (the multi-platform picker was
-    removed from the UI). The field is kept (instead of dropped) so older
-    clients that still send `platform=douyin` keep working, and so we have a
-    forward-compat seam for future platform-specific prompt files.
-    """
-
-    script: str = Field(..., min_length=20, max_length=10000)
-    platform: Literal["douyin"] = "douyin"
-    persona_hint: Optional[str] = Field(default=None, max_length=500)
+    subtitle_style: str = Field(..., description="主导字幕样式名，如『大字加描边』")
+    has_title_bar: bool = False
+    transition_types: list[str] = Field(default_factory=list)
+    cover_style: Optional[str] = None
+    sticker_density: float = Field(default=0.0, ge=0.0, le=1.0, description="贴纸/icon 出现密度")
 
 
-class TitleCandidate(BaseModel):
-    type: Literal["反常识型", "数字型", "身份型", "痛点型", "悬念型", "其他"]
-    text: str
-    char_count: int
-    notes: Optional[str] = None
+class SampleManifest(BaseModel):
+    """`GET /api/sample/{id}/manifest` —— 一个样例的完整预解析包。"""
 
-
-class TagCluster(BaseModel):
-    broad_traffic: List[str] = Field(default_factory=list, description="泛流量词")
-    long_tail: List[str] = Field(default_factory=list, description="精准长尾词")
-    challenge_topics: List[str] = Field(default_factory=list, description="话题挑战")
-
-
-class SEOResponse(BaseModel):
-    titles: List[TitleCandidate] = Field(..., min_length=3, max_length=8)
-    description: str = Field(..., max_length=200)
-    tags: TagCluster
-    platform: str
-    model_used: str
-    elapsed_ms: int
-
-
-# =========================================================================
-# Module 4 — Comments Sorting
-# =========================================================================
-class CommentsRequest(BaseModel):
-    raw_text: str = Field(..., min_length=10, max_length=20000, description="原始评论区文本（每行一条）")
-    persona_hint: Optional[str] = Field(default=None, max_length=500)
-
-
-class ReplyDraft(BaseModel):
-    tone: Literal["专业解读", "幽默调侃", "共情安抚"]
-    text: str = Field(..., max_length=300)
-
-
-class ClassifiedComment(BaseModel):
-    author: Optional[str] = None
-    text: str
-    classification: Literal["干货提问", "争议探讨", "高互动潜力", "下期选题", "敏感场", "中价值", "灌水"]
-    replies: List[ReplyDraft] = Field(default_factory=list)
-
-
-class CommentsResponse(BaseModel):
-    high_value: List[ClassifiedComment]
-    medium_value: List[ClassifiedComment]
-    low_value_count: int = Field(..., description="低价值灌水仅返回数量，不返回内容")
-    model_used: str
-    elapsed_ms: int
-
-
-# =========================================================================
-# Module 5 — Guided Q&A (引导式问答)
-# =========================================================================
-# 设计哲学：
-#   feature-1 的第 3 步把"对标拆解"转化为"原创素材"——不是让 AI 替用户写，
-#   而是用 ≤ 3 轮纯选项题让用户做出 3 个关键创作决策（Hook 角度 / Body 切入 / CTA 风格）。
-#
-# 为什么不开放自由输入：
-#   早期方案曾保留「让我自己输入…」自由文本出口，但实测发现：
-#   1. 用户一旦写自由文本，对话很容易"发散"，下一轮问题失去锚点；
-#   2. LLM 把自由文本回填到下一轮 prompt 里时，会出现"重复确认"循环；
-#   3. v0.x 阶段优先保收敛、保产物质量，自由输入留到后续版本再做。
-#   所以现在 100% 是"AI 出 3-4 个具体可朗读选项 → 用户单选 → 进入下一轮"。
-#
-# 轮次约束：
-#   MAX_QA_ROUNDS = 3 —— 3 轮足以覆盖 Hook / Body 关键差异化 / CTA 三个核心维度，
-#   超过 3 轮用户就会失去耐心。Router 在 answers 数组长度 ≥ 3 时直接返回 done=true
-#   而不再调用 LLM——确定性收敛。
-MAX_QA_ROUNDS = 3
-
-
-class QAAnswer(BaseModel):
-    """已答轮次的回放（前端把累积历史回传给后端，让 AI 出下一题时知道前面选了什么）。"""
-
-    round: int = Field(..., ge=1, le=MAX_QA_ROUNDS)
-    question: str = Field(..., max_length=500)
-    choice: str = Field(..., min_length=1, max_length=500, description="用户选中的那个 option.label 文本")
-
-
-class QARequest(BaseModel):
-    """每一轮问答的请求体；前端在每次 /next 调用时回传完整 history。"""
-
-    skeleton: dict = Field(..., description="第 2 步生成的骨架（hook/body/cta）原样回传")
-    transcript: Optional[str] = Field(
-        default=None,
-        max_length=TRANSCRIPT_MAX_CHARS,
-        description="原视频台词（可选，给 AI 补充上下文）",
-    )
-    persona_hint: Optional[str] = Field(default=None, max_length=500, description="当前人设")
-    # 用户在第 3 步开始前自行填的「创作要求」——时长 / 节奏 / 风格 / 自由补充。
-    # 这个字段只是『软约束』：影响 LLM 出题选项的取向（如时长 = 30s 时 options 就该短促有冲击），
-    # 不影响轮次硬收敛（Router 仍按 MAX_QA_ROUNDS 拦截）。
-    brief: Optional[str] = Field(default=None, max_length=1000, description="用户自填的创作要求（时长/节奏/风格/自由补充）")
-    answers: List[QAAnswer] = Field(default_factory=list, max_length=MAX_QA_ROUNDS)
-
-
-class QAOption(BaseModel):
-    """单选选项；不再有 freeform 出口，所有选项都是 AI 提前生成的可朗读具体内容。"""
-
-    label: str = Field(..., min_length=1, max_length=200)
-
-
-class QAResponse(BaseModel):
-    """单轮回复：要么是新一轮的题，要么是 done=True 进入脚本阶段。"""
-
-    round: int = Field(..., ge=1, le=MAX_QA_ROUNDS)
-    done: bool = Field(..., description="True 时前端跳到第 4 步生成脚本，忽略 question/options")
-    question: Optional[str] = Field(default=None, max_length=500)
-    rationale: Optional[str] = Field(default=None, max_length=300, description="给前端可选展示的『为什么问这个』")
-    options: List[QAOption] = Field(default_factory=list, max_length=4)
-    model_used: str
-    elapsed_ms: int
-
-
-# =========================================================================
-# Module 6 — Final Script (基于骨架 + Q&A 回答生成原创分镜脚本)
-# =========================================================================
-class ScriptRequest(BaseModel):
-    skeleton: dict = Field(..., description="第 2 步骨架原样回传")
-    answers: List[QAAnswer] = Field(default_factory=list, max_length=MAX_QA_ROUNDS)
-    persona_hint: Optional[str] = Field(default=None, max_length=500)
-    transcript: Optional[str] = Field(default=None, max_length=TRANSCRIPT_MAX_CHARS)
-    # 与 QARequest.brief 一致——前端把第 3 步开始前用户填的创作要求继续透传到第 4 步，
-    # 让脚本生成阶段做到「时长/节奏/风格」与出题阶段保持一致。
-    brief: Optional[str] = Field(default=None, max_length=1000, description="用户自填的创作要求（时长/节奏/风格/自由补充）")
-
-
-class ScriptScene(BaseModel):
-    """脚本里一个分镜片段。结构刻意与 NarrativeBeat 对齐，方便前端复用 .seecript-skeleton 卡片样式。"""
-
-    timestamp: str
+    sample_id: str
     title: str
-    narration: str = Field(..., description="该片段的具体口播文字（创作者可直接朗读）")
-    visual: Optional[str] = Field(default=None, max_length=500, description="画面/镜头建议")
-
-
-class ScriptResponse(BaseModel):
-    hook_narration: str = Field(..., max_length=500, description="开场 3 秒的口播台词")
-    scenes: List[ScriptScene] = Field(..., min_length=2, max_length=8)
-    cta_narration: str = Field(..., max_length=500)
-    full_text: str = Field(..., description="拼接后的完整脚本纯文本（供前端一键复制）")
-    model_used: str
-    elapsed_ms: int
+    duration_seconds: float
+    video_url: str
+    shots: list[Shot]
+    rhythm: RhythmCurve
+    sections: list[Section]
+    packaging: PackagingProfile
 
 
 # =========================================================================
-# ASR — separate endpoint (only used by Module 1's frontend uploader)
+# Module 2 — 拆解 (Decompose)
 # =========================================================================
+
+class DecomposeRequest(BaseModel):
+    sample_id: str = Field(..., description="样例 ID；命中内置样例则走缓存，新视频走完整链路")
+
+
+class DecomposeSubmitResponse(BaseModel):
+    job_id: str
+
+
+# =========================================================================
+# Module 3 — 新素材上传 (Material)
+# =========================================================================
+
+class Material(BaseModel):
+    """用户上传的素材分析结果（含 VLM 标签 + 段落推荐）。"""
+
+    material_id: str
+    filename: str
+    media_type: Literal["video", "image", "audio"]
+    duration_seconds: Optional[float] = None
+    thumbnail_url: Optional[str] = None
+    tags: list[str] = Field(default_factory=list, description="VLM 打标：物体/场景/风格")
+    recommended_section: Optional[Literal["hook", "body", "cta"]] = Field(
+        default=None, description="LLM 推荐它适合放在样例哪一段"
+    )
+
+
+class MaterialUploadResponse(BaseModel):
+    session_id: str
+    materials: list[Material]
+
+
+# =========================================================================
+# Module 4 — 缺口识别与补全 (Gap)
+# =========================================================================
+
+class Gap(BaseModel):
+    """槽位匹配产物。一个 Section 对应若干 Gap，每个 Gap 反映「样例需要 vs 用户素材」的差距。"""
+
+    gap_id: str
+    section: Literal["hook", "body", "cta"]
+    slot_index: int = Field(..., description="该 section 下的第几个分镜槽位")
+    requirement: str = Field(..., description="样例对该槽位的描述（如『3 秒痛点提问近景』）")
+    status: GapStatus
+    impact: Literal["high", "medium", "low"] = "medium"
+    matched_material_id: Optional[str] = None
+    note: Optional[str] = Field(default=None, description="状态原因，如『时长不足』『风格不符』")
+
+
+class GapDetectRequest(BaseModel):
+    plan_id: str
+
+
+class GapFillRequest(BaseModel):
+    gap_id: str
+    action: FillAction
+    params: dict[str, Any] = Field(
+        default_factory=dict,
+        description="动作参数：rerank={target_slot} / copy={prompt_hint} / aigc={prompt, ref_image_url?}",
+    )
+
+
+class FillResult(BaseModel):
+    gap_id: str
+    action: FillAction
+    new_material_id: Optional[str] = Field(default=None, description="aigc 生成产物或 rerank 选中的素材")
+    narration: Optional[str] = Field(default=None, description="copy 动作的补全文案")
+    note: Optional[str] = None
+    status: GapStatus = "ok"
+
+
+# =========================================================================
+# Module 5 — 方案 Plan
+# =========================================================================
+
+class Scene(BaseModel):
+    """主轨分镜：素材切片 + 字幕。FFmpeg concat 的最小单位。"""
+
+    scene_id: str
+    section: Literal["hook", "body", "cta"]
+    source: Literal["sample", "user_material", "aigc_t2v", "aigc_t2i"]
+    source_ref: str = Field(..., description="样例镜头 id / material_id / aigc 任务返回的 media_id")
+    start: float = Field(..., description="时间线上的起点（秒）")
+    duration: float
+    in_point: float = Field(default=0.0, description="源素材内的入点（秒）")
+    out_point: Optional[float] = Field(default=None, description="源素材内的出点；None 表示用到结尾")
+    narration: Optional[str] = Field(default=None, description="本场口播文字（drawtext 基础字幕）")
+
+
+class PackagingItem(BaseModel):
+    """包装轨元素：交给 Remotion 渲染成透明 WebM。"""
+
+    item_id: str
+    kind: Literal["subtitle", "title_bar", "sticker", "transition", "cover"]
+    start: float
+    end: float
+    text: Optional[str] = None
+    style: dict[str, Any] = Field(default_factory=dict, description="字体/颜色/位置/动画参数")
+
+
+class BGMConfig(BaseModel):
+    track_url: Optional[str] = None
+    volume: float = Field(default=0.6, ge=0.0, le=1.0)
+    fade_in: float = 0.0
+    fade_out: float = 0.0
+
+
+class Plan(BaseModel):
+    """`POST /api/plan/build` 产物 / 后续渲染与编辑的核心数据结构。"""
+
+    plan_id: str
+    sample_id: str
+    variant: Variant = "A"
+    duration_seconds: float
+    main_track: list[Scene]
+    packaging_track: list[PackagingItem] = Field(default_factory=list)
+    bgm: BGMConfig = Field(default_factory=BGMConfig)
+
+
+class PlanBuildRequest(BaseModel):
+    sample_id: str
+    session_id: str = Field(..., description="上传素材的 session 隔离 ID")
+    selected_materials: list[str] = Field(default_factory=list, description="用户挑中的 material_id 列表")
+    fills: list[FillResult] = Field(default_factory=list, description="已确认的缺口补全结果")
+    variant: Variant = "A"
+
+
+# =========================================================================
+# Module 6 — 渲染 (Render)
+# =========================================================================
+
+class RenderSubmitRequest(BaseModel):
+    plan_id: str
+    variant: Variant = "A"
+
+
+class RenderSubmitResponse(BaseModel):
+    job_id: str
+
+
+# =========================================================================
+# Module 7 — 自然语言编辑 (Edit)
+# =========================================================================
+
+class EditMark(BaseModel):
+    """用户在双轨编辑器上的选中标注，告诉 LLM『要改哪段』。"""
+
+    track: Literal["main", "packaging"]
+    start: float
+    end: float
+    target_id: Optional[str] = Field(default=None, description="scene_id 或 packaging_item.item_id")
+
+
+class EditApplyRequest(BaseModel):
+    plan_id: str
+    instruction: str = Field(..., min_length=1, max_length=1000, description="自然语言改片指令")
+    marks: list[EditMark] = Field(default_factory=list, description="选中区间；空表示对整段生效")
+
+
+# =========================================================================
+# Jobs & SSE
+# =========================================================================
+
+class Job(BaseModel):
+    job_id: str
+    kind: Literal["decompose", "render"]
+    status: JobStatus
+    percent: float = Field(default=0.0, ge=0.0, le=100.0)
+    created_at: float
+    updated_at: float
+    payload: dict[str, Any] = Field(default_factory=dict, description="终态结果（如 video_url / manifest）")
+    error: Optional[str] = None
+
+
+class ProgressEvent(BaseModel):
+    """SSE `event: progress` 的 data 字段；done/error 复用同结构。"""
+
+    step: str = Field(..., description="当前阶段标识，如『scene_detect』『vlm_tag』『ffmpeg_concat』")
+    percent: float = Field(..., ge=0.0, le=100.0)
+    payload: dict[str, Any] = Field(default_factory=dict, description="阶段产物或中间日志")
+
+
+# =========================================================================
+# ASR — 单独端点，被 /api/asr/transcribe 复用
+# =========================================================================
+
 class ASRResponse(BaseModel):
     transcript: str
     duration_seconds: float
     provider: str
     elapsed_ms: int
-
-
-# =========================================================================
-# Module 7 — Text-to-Video（智谱清影；默认 cogvideox-3）
-# =========================================================================
-# 设计决策：
-#   - 异步两段式（submit → poll query）：视频生成 30s-3min，blocking 调用必超时。
-#   - prompt 硬限 500 字符（智谱官方 512，留 12 字安全余量；与 config.t2v_max_prompt_chars 对齐）。
-#   - size：合并 CogVideoX-3 官方枚举 + CogVideoX-2 独有分辨率（用户若把 ZHIPU_VIDEO_MODEL
-#     改为 cogvideox-2，可选 720x480 / 960x1280 等；与 v3 叠用时以智谱接口校验为准）。
-#   - quality 默认 speed：速出优先；可切 quality。
-#   - with_audio 默认 false：创作者一般自配口播/BGM。
-#   - duration_seconds：可选；与 shot_preview_mode 配合见 routers/t2v.py。
-T2VSize = Literal[
-    # CogVideoX-3（开放平台 OpenAPI 枚举）
-    "1280x720",
-    "720x1280",
-    "1024x1024",
-    "1920x1080",
-    "1080x1920",
-    "2048x1080",
-    "3840x2160",
-    # CogVideoX-2 / flash 额外分辨率（仅旧模型可用）
-    "720x480",
-    "1280x960",
-    "960x1280",
-]
-
-
-class T2VSubmitRequest(BaseModel):
-    """文生视频 · 提交生成任务的请求体。"""
-
-    prompt: str = Field(
-        ...,
-        min_length=4,
-        max_length=500,
-        description="视频文本描述（≤ 500 字）。建议结构：主体（描述）+ 环境 + 镜头/光线 + 氛围。",
-    )
-    size: T2VSize = Field(
-        default="720x1280",
-        description="分辨率。默认 9:16 竖屏（与 cogvideox-3 OpenAPI 对齐）；短视频常用竖版。",
-    )
-    quality: Literal["speed", "quality"] = Field(
-        default="speed",
-        description="speed=30s 速出，quality=60-120s 高质。默认 speed。",
-    )
-    with_audio: bool = Field(
-        default=False,
-        description="是否生成 AI 音轨。默认 false，留给创作者自行配音/配 BGM。",
-    )
-    # 可选 user_id：路由层会拿请求 trace_id 做兜底，但前端可显式传一个稳定标识符（如浏览器指纹），
-    # 让智谱侧能跨多次请求识别同一个终端用户用于内容审核/限频（智谱要求 6-128 字符）。
-    user_id: Optional[str] = Field(
-        default=None,
-        min_length=6,
-        max_length=128,
-        description="终端用户唯一 ID（智谱内容审核用）；未提供则路由层自动生成。",
-    )
-    shot_preview_mode: bool = Field(
-        default=False,
-        description=(
-            "为 true 时：在服务端拼接「分镜演示」系统提示词（见 t2v_shot_prompts），"
-            "并将 cogvideox-3 单次生成时长固定为 10 秒（预期效果预览）。"
-            "此时 prompt 字段应只写所选分镜的画面/口播要点，不要自带长前缀。"
-        ),
-    )
-    duration_seconds: Optional[Literal[5, 10]] = Field(
-        default=None,
-        description="仅 cogvideox-3 写入智谱请求体；不设则用服务端环境变量默认。与 shot_preview_mode 同时出现时以分镜演示为准（10 秒）。",
-    )
-
-
-class T2VSubmitResponse(BaseModel):
-    """提交成功后立即返回；前端拿 task_id 去轮询 query。"""
-
-    task_id: str
-    request_id: str
-    model: str
-    provider: str
-    status: Literal["pending"] = "pending"
-    elapsed_ms: int
-
-
-class T2VQueryResponse(BaseModel):
-    """轮询单次结果。
-
-    - status="pending"：还在生成，前端继续等
-    - status="succeeded"：video_url / cover_image_url 就位
-    - status="failed"：fail_reason 给出原因（仅供前端展示，不重试，不扣额）
-    """
-
-    task_id: str
-    status: Literal["pending", "succeeded", "failed"]
-    model: str
-    provider: str
-    video_url: Optional[str] = None
-    cover_image_url: Optional[str] = None
-    fail_reason: Optional[str] = None
-    elapsed_ms: int
-
-
-# =========================================================================
-# Common error envelope
-# =========================================================================
-class ErrorResponse(BaseModel):
-    detail: str
-    code: Optional[str] = None
-    trace_id: Optional[str] = None
