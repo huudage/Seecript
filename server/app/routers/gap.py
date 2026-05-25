@@ -3,57 +3,52 @@
 `POST /api/gap/detect`  根据 plan_id 算槽位匹配，返回 Gap[]（含 ok/warn/miss）
 `POST /api/gap/fill`    对单个缺口做 rerank / copy / aigc 补全
 
-阶段 1：返回固定 5 个示例 gap，3 ok + 1 warn + 1 miss；fill 端 mock 一个成功结果。
-阶段 3 接入真实槽位匹配算法 + LLM/Seedream。
+阶段 3 现状：detect 走简化匹配（从 routers/library 的内置样例 manifest 取 sections，
+配套 mock 素材列表），fill 走真 LLM/T2I（mock 模式下都会回落到 fixture）。
 """
 from __future__ import annotations
 
 import logging
-import uuid
 
-from fastapi import APIRouter
+from fastapi import APIRouter, HTTPException
 
-from ..schemas import FillResult, Gap, GapDetectRequest, GapFillRequest
+from ..routers.library import _LIBRARY, _stub_manifest
+from ..schemas import FillResult, Gap, GapDetectRequest, GapFillRequest, Material
+from ..services.agent.gap_agent import detect_gaps, fill_gap
 
 log = logging.getLogger("seecript.gap")
 router = APIRouter()
 
 
-@router.post("/gap/detect", response_model=list[Gap])
-async def detect_gaps(req: GapDetectRequest) -> list[Gap]:
+def _mock_materials() -> list[Material]:
+    """阶段 3 还没接 session_id → materials 持久化，先用 mock 素材跑通 UI。"""
     return [
-        Gap(gap_id="gap-hook-0", section="hook", slot_index=0,
-            requirement="3 秒痛点提问近景", status="ok", impact="high",
-            matched_material_id="mat-mock-001", note="[mock] 用户素材 1 完美匹配"),
-        Gap(gap_id="gap-body-0", section="body", slot_index=0,
-            requirement="产品展示中景", status="ok", impact="medium",
-            matched_material_id="mat-mock-002"),
-        Gap(gap_id="gap-body-1", section="body", slot_index=1,
-            requirement="使用场景实拍", status="warn", impact="medium",
-            matched_material_id="mat-mock-003", note="[mock] 时长偏短，建议复用"),
-        Gap(gap_id="gap-body-2", section="body", slot_index=2,
-            requirement="对比效果特写", status="miss", impact="high",
-            note="[mock] 无匹配素材，建议 Seedream 生成"),
-        Gap(gap_id="gap-cta-0", section="cta", slot_index=0,
-            requirement="收尾大字幕", status="ok", impact="low",
-            matched_material_id="mat-mock-004"),
+        Material(material_id="mat-mock-001", filename="hook-1.mp4", media_type="video",
+                 duration_seconds=3.2, tags=["近景", "口播"], recommended_section="hook"),
+        Material(material_id="mat-mock-002", filename="body-1.mp4", media_type="video",
+                 duration_seconds=6.0, tags=["产品", "特写"], recommended_section="body"),
+        Material(material_id="mat-mock-003", filename="body-2.mp4", media_type="video",
+                 duration_seconds=5.0, tags=["对比", "实拍"], recommended_section="body"),
+        Material(material_id="mat-mock-004", filename="cta-1.mp4", media_type="video",
+                 duration_seconds=4.0, tags=["大字幕"], recommended_section="cta"),
     ]
 
 
+@router.post("/gap/detect", response_model=list[Gap])
+async def detect(req: GapDetectRequest) -> list[Gap]:
+    # 简化：plan_id 暂未与 manifest 绑定，先固定取第一个内置样例。
+    sample = _LIBRARY[0]
+    manifest = _stub_manifest(sample.id, sample)
+    return detect_gaps(manifest, _mock_materials())
+
+
 @router.post("/gap/fill", response_model=FillResult)
-async def fill_gap(req: GapFillRequest) -> FillResult:
-    log.info("[gap-fill] gap=%s action=%s params=%s", req.gap_id, req.action, req.params)
-    if req.action == "rerank":
-        return FillResult(gap_id=req.gap_id, action="rerank",
-                          new_material_id=f"mat-rerank-{uuid.uuid4().hex[:6]}",
-                          note="[mock] 已重排到其他槽位", status="ok")
-    if req.action == "copy":
-        return FillResult(gap_id=req.gap_id, action="copy",
-                          narration="[mock] 这是 LLM 生成的补全口播。",
-                          note="LLM 文案补全完成", status="ok")
-    if req.action == "aigc":
-        return FillResult(gap_id=req.gap_id, action="aigc",
-                          new_material_id=f"aigc-{uuid.uuid4().hex[:8]}",
-                          note="[mock] Seedream 4.0 生成完成", status="ok")
-    return FillResult(gap_id=req.gap_id, action=req.action, status="warn",
-                      note=f"unknown action: {req.action}")
+async def fill(req: GapFillRequest) -> FillResult:
+    # 阶段 3：用占位 Gap，下一阶段把 detect 结果存起来再按 gap_id lookup。
+    sample = _LIBRARY[0]
+    manifest = _stub_manifest(sample.id, sample)
+    gaps = detect_gaps(manifest, _mock_materials())
+    gap = next((g for g in gaps if g.gap_id == req.gap_id), None)
+    if gap is None:
+        raise HTTPException(status_code=404, detail=f"gap not found: {req.gap_id}")
+    return await fill_gap(gap, req.action, req.params)
