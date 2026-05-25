@@ -1,4 +1,4 @@
-"""Module 4 — 评论分拣副驾."""
+"""Module 4 — 评论分拣助手."""
 from __future__ import annotations
 
 import logging

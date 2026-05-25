@@ -278,7 +278,7 @@ class ASRResponse(BaseModel):
 #   - size：合并 CogVideoX-3 官方枚举 + CogVideoX-2 独有分辨率（用户若把 ZHIPU_VIDEO_MODEL
 #     改为 cogvideox-2，可选 720x480 / 960x1280 等；与 v3 叠用时以智谱接口校验为准）。
 #   - quality 默认 speed：速出优先；可切 quality。
-#   - with_audio 默认 false：KOC 一般自配口播/BGM。
+#   - with_audio 默认 false：创作者一般自配口播/BGM。
 #   - duration_seconds：可选；与 shot_preview_mode 配合见 routers/t2v.py。
 T2VSize = Literal[
     # CogVideoX-3（开放平台 OpenAPI 枚举）
@@ -307,7 +307,7 @@ class T2VSubmitRequest(BaseModel):
     )
     size: T2VSize = Field(
         default="720x1280",
-        description="分辨率。默认 9:16 竖屏（与 cogvideox-3 OpenAPI 对齐）；KOC 短视频常用竖版。",
+        description="分辨率。默认 9:16 竖屏（与 cogvideox-3 OpenAPI 对齐）；短视频常用竖版。",
     )
     quality: Literal["speed", "quality"] = Field(
         default="speed",

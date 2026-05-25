@@ -2,7 +2,7 @@
 
 ## 项目身份
 
-- 创作者智能副驾，由 KOCopilot 全量改名 fork 而来（HEAD: ddea395，2026-05-22）。
+- 视频拆解与重组的助手（爆款结构迁移引擎）：从样例视频拆解 → 结构抽取 → 素材缺口补全 → 视频重组的 AI 创作平台。当前代码由 KOCopilot 全量改名 fork 而来（HEAD: ddea395，2026-05-22），正在围绕"工程训练营"赛题方向重构。
 - 技术栈：FastAPI（Python 3.10+） + 原生 JS / CSS；前端静态文件由后端同进程挂载在 `/`。
 - 默认 `LLM_PROVIDER=mock` / `ASR_PROVIDER=mock` / `T2V_PROVIDER=mock`，不配 Key 也能跑全流程。
 - 启动：Windows `./run.ps1`（推荐，用 `py -3`）；Bash 系 `./run.sh`（注意：`run.sh` 调 `python`，若 PATH 上只有 `py`/`python3-shim` 会失败）。

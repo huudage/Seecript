@@ -18,7 +18,7 @@ log = logging.getLogger("seecript.persona")
 
 @router.post("/generate", response_model=PersonaResponse)
 async def generate_persona(req: PersonaRequest, request: Request) -> PersonaResponse:
-    """Generate 3 differentiated KOC persona plans from background/interests/resources."""
+    """Generate 3 differentiated creator persona plans from background/interests/resources."""
     trace_id = getattr(request.state, "trace_id", "-")
     started = time.perf_counter()
 
