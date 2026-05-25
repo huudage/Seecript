@@ -1,0 +1,78 @@
+@import "tailwindcss";
+
+/* --------------------------------------------------------------------------
+   Design tokens — shadcn 风格的 HSL 变量，配合 Tailwind v4 的 @theme inline。
+   后续 shadcn/ui 组件直接消费 `bg-background` / `text-foreground` 这些语义类。
+   -------------------------------------------------------------------------- */
+@theme inline {
+  --color-background: hsl(0 0% 100%);
+  --color-foreground: hsl(240 10% 4%);
+
+  --color-card: hsl(0 0% 100%);
+  --color-card-foreground: hsl(240 10% 4%);
+
+  --color-popover: hsl(0 0% 100%);
+  --color-popover-foreground: hsl(240 10% 4%);
+
+  --color-primary: hsl(262 83% 58%);
+  --color-primary-foreground: hsl(0 0% 100%);
+
+  --color-secondary: hsl(240 5% 96%);
+  --color-secondary-foreground: hsl(240 6% 10%);
+
+  --color-muted: hsl(240 5% 96%);
+  --color-muted-foreground: hsl(240 4% 46%);
+
+  --color-accent: hsl(270 76% 92%);
+  --color-accent-foreground: hsl(262 83% 35%);
+
+  --color-destructive: hsl(0 84% 60%);
+  --color-destructive-foreground: hsl(0 0% 100%);
+
+  --color-border: hsl(240 6% 90%);
+  --color-input: hsl(240 6% 90%);
+  --color-ring: hsl(262 83% 58%);
+
+  /* 缺口状态色 —— 与 React Flow 边线一致 */
+  --color-gap-ok: hsl(142 71% 45%);     /* ✅ */
+  --color-gap-warn: hsl(38 92% 50%);    /* ⚠️ */
+  --color-gap-miss: hsl(0 84% 60%);     /* ❌ */
+
+  --radius-lg: 0.75rem;
+  --radius-md: 0.5rem;
+  --radius-sm: 0.25rem;
+
+  --font-sans: "Inter", system-ui, "PingFang SC", "Microsoft YaHei", sans-serif;
+}
+
+@media (prefers-color-scheme: dark) {
+  @theme inline {
+    --color-background: hsl(240 10% 4%);
+    --color-foreground: hsl(0 0% 98%);
+    --color-card: hsl(240 6% 10%);
+    --color-card-foreground: hsl(0 0% 98%);
+    --color-popover: hsl(240 6% 10%);
+    --color-popover-foreground: hsl(0 0% 98%);
+    --color-secondary: hsl(240 4% 16%);
+    --color-secondary-foreground: hsl(0 0% 98%);
+    --color-muted: hsl(240 4% 16%);
+    --color-muted-foreground: hsl(240 5% 65%);
+    --color-accent: hsl(240 4% 16%);
+    --color-accent-foreground: hsl(0 0% 98%);
+    --color-border: hsl(240 4% 16%);
+    --color-input: hsl(240 4% 16%);
+  }
+}
+
+html, body, #root {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  font-family: var(--font-sans);
+  background-color: var(--color-background);
+  color: var(--color-foreground);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}

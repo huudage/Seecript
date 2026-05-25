@@ -19,6 +19,13 @@ __pycache__/
 .coverage
 htmlcov/
 
+# Node — web/ 与 remotion/
+node_modules/
+web/dist/
+web/.vite/
+remotion/dist/
+*.tsbuildinfo
+
 # OS
 .DS_Store
 Thumbs.db
