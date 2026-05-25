@@ -1,32 +1,45 @@
 import { create } from 'zustand'
 
-import type { Gap, Plan, PlanId } from '@/types/schemas'
+import type { FillResult, Gap, Plan, PlanId, Variant } from '@/types/schemas'
 
 /**
- * Plan 当前构建状态：选中的 Plan、缺口列表、变体（A/B）。
- * 真正的时间线 / 包装轨数据放 plan.main_track / plan.packaging_track；
+ * Plan 当前构建状态：Plan / 缺口列表 / 已确认的补全 / A·B 变体。
  * 编辑动作走 useEditStore（撤销栈在那边）。
  */
 interface PlanState {
   plan: Plan | null
   gaps: Gap[]
-  variant: 'A' | 'B'
+  fills: FillResult[]
+  variant: Variant
 
   setPlan: (plan: Plan | null) => void
   setGaps: (gaps: Gap[]) => void
-  setVariant: (variant: 'A' | 'B') => void
+  upsertFill: (fill: FillResult) => void
+  removeFill: (gapId: string) => void
+  setVariant: (variant: Variant) => void
   reset: () => void
 }
 
 export const usePlanStore = create<PlanState>((set) => ({
   plan: null,
   gaps: [],
+  fills: [],
   variant: 'A',
 
   setPlan: (plan) => set({ plan }),
   setGaps: (gaps) => set({ gaps }),
+  upsertFill: (fill) =>
+    set((state) => {
+      const idx = state.fills.findIndex((f) => f.gap_id === fill.gap_id)
+      if (idx < 0) return { fills: [...state.fills, fill] }
+      const next = state.fills.slice()
+      next[idx] = fill
+      return { fills: next }
+    }),
+  removeFill: (gapId) =>
+    set((state) => ({ fills: state.fills.filter((f) => f.gap_id !== gapId) })),
   setVariant: (variant) => set({ variant }),
-  reset: () => set({ plan: null, gaps: [], variant: 'A' }),
+  reset: () => set({ plan: null, gaps: [], fills: [], variant: 'A' }),
 }))
 
 export type PlanIdOrNull = PlanId | null
