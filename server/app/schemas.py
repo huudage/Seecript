@@ -235,6 +235,10 @@ class Plan(BaseModel):
 
     plan_id: str
     sample_id: str
+    session_id: Optional[str] = Field(
+        default=None,
+        description="生成本 Plan 时的素材 session 隔离 ID，渲染时用来反查上传文件。",
+    )
     variant: Variant = "A"
     duration_seconds: float
     main_track: list[Scene]
