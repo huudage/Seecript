@@ -23,6 +23,9 @@ def force_mock_provider(monkeypatch):
     """
     monkeypatch.setenv("LLM_PROVIDER", "mock")
     monkeypatch.setenv("ASR_PROVIDER", "mock")
+    monkeypatch.setenv("VLM_PROVIDER", "mock")
+    monkeypatch.setenv("T2I_PROVIDER", "mock")
+    monkeypatch.setenv("T2V_PROVIDER", "mock")
     # Reset the lru_cache so the new env vars are picked up.
     from app.config import get_settings
 
