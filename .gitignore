@@ -1,6 +1,7 @@
 # Runtime
 .server.pid
 logs/
+server/var/
 
 # Secrets — NEVER commit these
 .env

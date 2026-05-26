@@ -238,6 +238,27 @@ class Plan(BaseModel):
 
 - 仓库由 KOCopilot fork 改名而来（HEAD: ddea395，2026-05-22）
 - 上一版形态为"创作者副驾"（人设/拆解/标题/评论/分镜五件套），已退役
-- 当前正按本文档的栈与路线图重构
+- **2026-05-26：阶段 0–5 全部落地，7 模块 mock 模式端到端跑通**
+
+### 8.1 落地清单（按模块）
+
+| 模块 | 后端 | 前端 | 测试 |
+|---|---|---|---|
+| 1 · 素材库 | `routers/library.py` 静态 3 样例 + manifest stub | `pages/Library.tsx` 卡片 + 选样例 | `test_library_and_manifest` |
+| 2 · 样例拆解 | `routers/decompose.py` + `services/agent/decompose_agent.py`（PySceneDetect / librosa / ASR / VLM / LLM） | `pages/Decompose.tsx` SSE 进度 + 节奏曲线 + 段落条 + 镜头网格 | （前端集成验证） |
+| 3 · 新内容 + 缺口 | `routers/material.py` 上传 + VLM 标签；`routers/gap.py` detect/fill（rerank/copy/aigc） | `pages/Compose.tsx` UploadDropzone + Gap 列表 + 三种动作 | `test_material_upload_and_plan_build` |
+| 4 · 迁移可视化 | 复用 `gap.detect` 输出 | `pages/Migrate.tsx` React Flow 双列 + 状态着色 | （前端集成验证） |
+| 5 · 视频生成 | `services/render/pipeline.py` 6 步流水线 + 真实/mock fallback；`services/render/seedance_chain.py` 首尾帧拼接 | `pages/Render.tsx` 6 步进度条 + `<video>` 预览 + 分步耗时 | `test_render_submit_and_stream` |
+| 6 · 画面包装 | `remotion/` 独立 Node 项目 + `services/render` 子进程调用 | `pages/Render.tsx` 包装轨横向时间线 | （Remotion 单独 `npm test`） |
+| 7 · 自然语言编辑 | `routers/edit.py` 5 个原子 tool + `LLMClient.complete_with_tools` | `pages/Render.tsx` 底部 textarea + marks + 撤销/重做（`stores/edit.ts`） | `test_edit_apply_creates_new_plan` |
+
+### 8.2 端到端验收
+
+```bash
+cd server
+python -m pytest tests/ -v                # 35 passed（含 6 个 e2e）
+```
+
+详细演示剧本见 [`docs/DEMO.md`](DEMO.md)。
 
 

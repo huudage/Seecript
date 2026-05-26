@@ -2,71 +2,93 @@
 
 > 视频拆解与重组的助手（爆款结构迁移引擎）：从样例视频拆解 → 结构抽取 → 素材缺口补全 → 视频重组的 AI 创作平台。默认 mock 模式不依赖任何外部 API Key 即可端到端跑通。
 
-> ⚠️ **重构进行中** — 上一版"创作者副驾"形态（人设/拆解/标题/评论/分镜五件套）已于阶段 0 全量退役；当前正按 [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) 重建。本 README 仅保留运行/部署/测试的稳定信息，技术架构以 `ARCHITECTURE.md` 为准。
+> **当前状态（2026-05-26）**：阶段 0–5 全部落地，7 模块 mock 模式端到端跑通。技术架构以 [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) 为准；演示剧本见 [`docs/DEMO.md`](docs/DEMO.md)。
 
 ---
 
-## 1. 仓库结构（重构进行中）
+## 1. 模块速览
+
+| # | 模块 | 路由 / 路径 | 关键技术 |
+|---|---|---|---|
+| 1 | 素材库 | `/library` · `GET /api/library` | 3 个内置样例 + 预解析 manifest |
+| 2 | 样例拆解 | `/decompose` · `POST /api/decompose` SSE | PySceneDetect + librosa + ASR + VLM + LLM 段落 |
+| 3 | 新内容 + 缺口补全 | `/compose` · `POST /api/material/upload` `gap/detect` `gap/fill` | VLM 标签 + 槽位匹配 + 三种补全（rerank/copy/aigc） |
+| 4 | 迁移可视化 | `/migrate` | React Flow 双列 + 状态着色（绿命中 / 黄勉强 / 红虚线缺口） |
+| 5 | 视频生成 | `/render` · `POST /api/render/submit` SSE | FFmpeg 主轨 + Seedance 首尾帧扩展 + 6 步流水线 |
+| 6 | 画面包装 | 同上 | Remotion 透明 WebM + ffmpeg overlay |
+| 7 | 自然语言编辑 | 同上 · `POST /api/edit/apply` | LLM tool calling 5 原子 tool + 撤销栈 |
+
+---
+
+## 2. 仓库结构
 
 ```
 seecript/
-├── web/                                # 新前端：React 18 + Vite + TS（阶段 1 落地）
-├── remotion/                           # 视频包装轨独立项目（阶段 3 落地）
+├── web/                                # React 19 + Vite + TS + Tailwind v4 + Zustand
+│   └── src/
+│       ├── pages/                      # Library / Decompose / Compose / Migrate / Render
+│       ├── stores/                     # session / plan / edit
+│       ├── api/                        # client.ts (fetch) + sse.ts (EventSource)
+│       └── types/schemas.ts            # 与后端 schemas 镜像
+│
+├── remotion/                           # 包装轨独立 Node 项目（透明 WebM）
 │
 ├── server/
 │   ├── app/
-│   │   ├── main.py                     # FastAPI 入口（中间件 + 路由）
-│   │   ├── config.py                   # Pydantic Settings（.env → 类型安全配置）
-│   │   ├── schemas.py                  # I/O 契约（#8 待重写为新七模块 schema）
-│   │   ├── routers/                    # 当前仅 asr；新七路由（library/decompose/material/gap/plan/render/edit）在 #8 落地
+│   │   ├── main.py                     # FastAPI + middleware + 8 路由
+│   │   ├── schemas.py                  # 7 模块完整 Pydantic v2 契约
+│   │   ├── routers/                    # asr / library / decompose / material / gap / plan / render / edit
 │   │   └── services/
-│   │       ├── llm_client.py           # LLMClient 抽象 + Mock + DeepSeek（保留）
-│   │       ├── asr_client.py           # ASRClient 抽象 + Mock + 火山豆包（保留）
-│   │       └── prompts/                # #11/#12/#22 重新落地
-│   ├── tests/                          # pytest（mock 路径）
-│   ├── requirements.txt · requirements-dev.txt
-│   └── .env.example                    # 配置模板
+│   │       ├── llm_client.py           # LLMClient 抽象 + Mock + DeepSeek + Doubao Ark
+│   │       ├── vlm_client.py · t2i_client.py · t2v_client.py · asr_client.py
+│   │       ├── video/                  # scene_detect / audio / ocr / ffmpeg
+│   │       ├── agent/                  # decompose_agent / gap_agent
+│   │       ├── render/                 # pipeline.py（6 步）+ seedance_chain.py（首尾帧拼接）
+│   │       ├── jobs/                   # 内存 JobStore + asyncio.Queue + SSE
+│   │       └── plans/                  # PlanStore（plan_id → Plan）
+│   ├── tests/                          # 35 用例（mock 路径）
+│   ├── samples/                        # 3 个内置样例（视频 + 预解析 JSON）
+│   └── var/uploads/                    # 用户上传（session 隔离）
 │
-├── deploy/                             # systemd / nginx 模板
-├── scripts/                            # deploy.sh · health-check.sh · install-on-medi-server.sh
 ├── docs/
-│   ├── ARCHITECTURE.md                 # 当前架构权威文档（赛题交付物）
-│   ├── PRD.md                          # 上一版 PRD（顶部已贴重构横幅）
-│   └── INFRA.md                        # 生产服务器基础设施事实
-├── run.ps1 · run.sh                    # 启动 uvicorn（含 venv 自举）
-├── stop.ps1 · stop.sh                  # 优雅停止
-└── CLAUDE.md                           # Claude Code 会话备忘
+│   ├── ARCHITECTURE.md                 # 技术架构（赛题交付物，权威）
+│   ├── DEMO.md                         # 5 分钟串讲剧本 + 联调验收
+│   ├── PRD.md                          # 上一版 PRD（已贴重构横幅）
+│   └── INFRA.md                        # 生产服务器约定
+└── deploy/ · scripts/ · run.* · stop.*
 ```
 
 ---
 
-## 2. 本地运行
+## 3. 本地运行
 
-环境：**Python 3.10+**，命令行能调到 `python` 或 `py`。
+环境：**Python 3.10+** · **Node 20+**（前端）。
 
-### Windows
+### 后端
 
 ```powershell
-.\run.ps1
+.\run.ps1                                # Windows
+# 或
+./run.sh                                 # Linux / macOS / WSL
 ```
 
-首次运行自动 ① 创建 `server/venv` ② `pip install -r server/requirements.txt` ③ 从 `.env.example` 拷一份 `server/.env`（默认 `*_PROVIDER=mock`）④ 启动 uvicorn。
+首次：自举 venv → 装依赖 → 拷 `.env`（默认 `*_PROVIDER=mock`）→ 起 uvicorn。
 
 | 操作 | 命令 |
 |---|---|
 | 健康检查 | <http://127.0.0.1:8090/api/health> |
 | API 文档 | <http://127.0.0.1:8090/docs> |
 | 换端口 | `$env:PORT=8091; .\run.ps1` |
-| 跳过 pip（依赖未变） | `$env:SKIP_INSTALL=1; .\run.ps1` |
-| 停服 | `.\stop.ps1` |
-| 日志 | `./logs/uvicorn.log` · `./logs/uvicorn.err.log` |
+| 跳过 pip | `$env:SKIP_INSTALL=1; .\run.ps1` |
+| 停服 | `.\stop.ps1` / `./stop.sh` |
+| 日志 | `./logs/uvicorn.log` |
 
-### Linux / macOS / WSL
+### 前端
 
 ```bash
-chmod +x run.sh stop.sh
-./run.sh
-./stop.sh
+cd web
+pnpm install                             # 或 npm i
+pnpm dev                                 # http://127.0.0.1:5173，/api/* 走 vite proxy → 8090
 ```
 
 ### 切换到真实 provider
@@ -74,31 +96,39 @@ chmod +x run.sh stop.sh
 编辑 `server/.env`：
 
 ```ini
-LLM_PROVIDER=deepseek
-DEEPSEEK_API_KEY=sk-xxxxxxxxxxxx
+LLM_PROVIDER=doubao_ark
+DOUBAO_ARK_API_KEY=ark-xxxxxxxx
+DOUBAO_ARK_LLM_ENDPOINT=ep-xxxxxxxx
+
+VLM_PROVIDER=doubao_ark
+T2I_PROVIDER=seedream
+T2V_PROVIDER=seedance
 
 ASR_PROVIDER=doubao
 DOUBAO_API_KEY=<volc-uuid-key>
 ```
 
-重启服务即生效。每个开关相互独立，可以只接其中一个。字段全集见 `server/.env.example`。
-
-> 阶段 0 后前端已迁出后端进程；`run.*` 仅起 FastAPI。阶段 1 落地后会追加 `web/` 的 vite dev server。
+每个开关独立，可以只接其中一个。字段全集见 `server/.env.example`。**Key 文件须 `chmod 600`，前端永不持有 Key。**
 
 ---
 
-## 3. 测试
+## 4. 测试
 
 ```bash
 cd server
-python -m pytest -v
+python -m pytest tests/ -v               # 35 passed
 ```
+
+包括：
+- `test_e2e_pipeline.py` — 7 模块端到端联调
+- `test_llm_client.py` / `test_asr_client.py` — provider 抽象 + mock fallback
+- `test_asr_endpoint.py` — multipart + 大小/格式校验
 
 所有测试默认走 mock 路径，不消耗任何外部 API 配额。
 
 ---
 
-## 4. 部署到生产
+## 5. 部署到生产
 
 ```bash
 sudo REPO_URL=git@github.com:you/seecript.git \
@@ -106,29 +136,21 @@ sudo REPO_URL=git@github.com:you/seecript.git \
      bash scripts/install-on-medi-server.sh
 ```
 
-脚本会交互式询问部署域名、仓库 URL、DeepSeek / 豆包 API Key（任一可空，对应 provider 自动降级 mock）。
-
 后续升级：
 
 ```bash
-bash scripts/deploy.sh
-# 备份 → git pull → pip install → systemctl restart → 健康检查 → 失败自动回滚
-```
-
-端到端验收：
-
-```bash
+bash scripts/deploy.sh                   # 备份 → git pull → pip install → restart → health-check → 失败回滚
 bash scripts/health-check.sh https://seecript.example.com
 ```
 
-服务器基础设施约定见 [`docs/INFRA.md`](docs/INFRA.md)。手动步骤见 `deploy/` 模板。
+服务器基础设施约定见 [`docs/INFRA.md`](docs/INFRA.md)。
 
 ---
 
-## 5. 关联文档
+## 6. 关联文档
 
-- [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) — 爆款结构迁移引擎技术架构（赛题交付物，权威）
-- [`docs/PRD.md`](docs/PRD.md) — 上一版"创作者副驾"PRD（已贴重构横幅）
-- [`docs/INFRA.md`](docs/INFRA.md) — 生产服务器基础设施约定
-- [`server/.env.example`](server/.env.example) — 所有配置项含义说明
+- [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) — 7 模块技术架构（赛题交付物，权威）
+- [`docs/DEMO.md`](docs/DEMO.md) — 演示走查手册 + 联调命令
+- [`docs/INFRA.md`](docs/INFRA.md) — 生产基础设施约定
+- [`server/.env.example`](server/.env.example) — 所有配置项
 - [`CLAUDE.md`](CLAUDE.md) — Claude Code 会话备忘
