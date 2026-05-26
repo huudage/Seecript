@@ -127,8 +127,6 @@ def create_app() -> FastAPI:
             status="healthy",
             version=__version__,
             llm_provider=settings.llm_provider,
-            vlm_provider=settings.vlm_provider,
-            t2i_provider=settings.t2i_provider,
             t2v_provider=settings.t2v_provider,
             asr_provider=settings.asr_provider,
         )

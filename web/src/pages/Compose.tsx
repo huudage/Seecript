@@ -13,8 +13,8 @@ import type {
   MaterialUploadResponse,
   Plan,
   PlanBuildRequest,
-  SectionKind,
 } from '@/types/schemas'
+import { SECTION_SHORT } from '@/lib/sections'
 import { cn } from '@/lib/utils'
 
 const STATUS_COLOR: Record<GapStatus, string> = {
@@ -23,11 +23,10 @@ const STATUS_COLOR: Record<GapStatus, string> = {
   miss: 'bg-rose-500/15 text-rose-700 dark:text-rose-300',
 }
 const STATUS_LABEL: Record<GapStatus, string> = { ok: '✅ 命中', warn: '⚠️ 勉强', miss: '❌ 缺口' }
-const SECTION_LABEL: Record<SectionKind, string> = { hook: 'Hook', body: 'Body', cta: 'CTA' }
 const ACTIONS: { value: FillAction; label: string; hint: string }[] = [
   { value: 'rerank', label: '结构重排', hint: '从已有素材里挑一个最匹配的' },
   { value: 'copy', label: '文案补全', hint: 'LLM 写一段画外口播' },
-  { value: 'aigc', label: 'AIGC 生成', hint: 'Seedream 生成补位画面' },
+  { value: 'aigc', label: 'AIGC 生成', hint: 'Seedance T2V 生成 5-8s 短片填补槽位' },
 ]
 
 export default function ComposePage() {
@@ -177,7 +176,7 @@ export default function ComposePage() {
                     {m.filename}
                   </p>
                   <p className="text-muted-foreground">
-                    {m.recommended_section ? `推荐 ${SECTION_LABEL[m.recommended_section]}` : '未分类'}
+                    {m.recommended_section ? `推荐 ${SECTION_SHORT[m.recommended_section]}` : '未分类'}
                     {m.duration_seconds != null ? ` · ${m.duration_seconds.toFixed(1)}s` : ''}
                   </p>
                   {m.tags.length > 0 && (
@@ -230,7 +229,7 @@ export default function ComposePage() {
                 <div key={gap.gap_id} className="rounded-md border border-border bg-background/40 p-3">
                   <div className="flex flex-wrap items-center gap-2 text-xs">
                     <span className="rounded bg-secondary px-1.5 py-0.5 font-medium">
-                      {SECTION_LABEL[gap.section]} · slot {gap.slot_index}
+                      {SECTION_SHORT[gap.section]} · slot {gap.slot_index}
                     </span>
                     <span className={cn('rounded px-1.5 py-0.5 font-medium', STATUS_COLOR[gap.status])}>
                       {STATUS_LABEL[gap.status]}

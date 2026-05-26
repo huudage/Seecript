@@ -7,24 +7,21 @@ import { createSSE, type SSEHandle } from '@/api/sse'
 import { PageShell } from '@/components/layout/PageShell'
 import { useSessionStore } from '@/stores/session'
 import type {
+  DecomposeRequest,
   DecomposeSubmitResponse,
   ProgressEventPayload,
   SampleManifest,
-  SectionKind,
+  VideoType,
 } from '@/types/schemas'
+import {
+  SECTION_BG,
+  SECTION_LABEL,
+  VIDEO_TYPE_HINT,
+  VIDEO_TYPE_LABEL,
+} from '@/lib/sections'
 import { cn } from '@/lib/utils'
 
-const SECTION_COLORS: Record<SectionKind, string> = {
-  hook: 'bg-pink-500/80',
-  body: 'bg-sky-500/80',
-  cta: 'bg-amber-500/80',
-}
-
-const SECTION_LABEL: Record<SectionKind, string> = {
-  hook: 'Hook 开场',
-  body: 'Body 主体',
-  cta: 'CTA 收尾',
-}
+const VIDEO_TYPE_OPTIONS: VideoType[] = ['marketing', 'editing', 'motion_graph']
 
 interface DoneEvent {
   job_id: string
@@ -33,6 +30,8 @@ interface DoneEvent {
 
 export default function DecomposePage() {
   const selectedSampleId = useSessionStore((s) => s.selectedSampleId)
+  const videoType = useSessionStore((s) => s.videoType)
+  const setVideoType = useSessionStore((s) => s.setVideoType)
   const manifest = useSessionStore((s) => s.manifest)
   const setManifest = useSessionStore((s) => s.setManifest)
   const navigate = useNavigate()
@@ -51,9 +50,8 @@ export default function DecomposePage() {
     setRunning(true)
     setProgress({ step: 'submit', percent: 2, note: '提交任务' })
     try {
-      const { job_id } = await api.post<DecomposeSubmitResponse>('/decompose', {
-        sample_id: selectedSampleId,
-      })
+      const req: DecomposeRequest = { sample_id: selectedSampleId, video_type: videoType }
+      const { job_id } = await api.post<DecomposeSubmitResponse>('/decompose', req)
       sseRef.current = createSSE<DoneEvent, ProgressEventPayload>(
         `/decompose/stream?job_id=${job_id}`,
         {
@@ -79,7 +77,7 @@ export default function DecomposePage() {
       setError(err instanceof Error ? err.message : String(err))
       setRunning(false)
     }
-  }, [selectedSampleId, setManifest])
+  }, [selectedSampleId, setManifest, videoType])
 
   useEffect(() => {
     return () => {
@@ -103,8 +101,43 @@ export default function DecomposePage() {
   return (
     <PageShell
       title="样例拆解"
-      subtitle={`样例 ${selectedSampleId} · PySceneDetect → librosa → ASR → VLM → LLM 段落结构`}
+      subtitle={`样例 ${selectedSampleId} · PySceneDetect → librosa VAD → ASR（按需）→ 多模态 LLM 帧标签 + 段落结构`}
     >
+      <div className="mb-6 rounded-lg border border-border bg-card p-4">
+        <div className="mb-2 flex items-center justify-between text-xs text-muted-foreground">
+          <span className="font-semibold text-foreground">视频类型</span>
+          <span>决定段落 prompt（marketing / editing / motion_graph）</span>
+        </div>
+        <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
+          {VIDEO_TYPE_OPTIONS.map((vt) => (
+            <label
+              key={vt}
+              className={cn(
+                'flex cursor-pointer flex-col gap-1 rounded-md border px-3 py-2 transition-colors',
+                videoType === vt
+                  ? 'border-primary bg-primary/5'
+                  : 'border-border bg-background hover:bg-secondary/50',
+                running && 'pointer-events-none opacity-60',
+              )}
+            >
+              <div className="flex items-center gap-2 text-sm font-medium">
+                <input
+                  type="radio"
+                  name="video_type"
+                  value={vt}
+                  checked={videoType === vt}
+                  onChange={() => setVideoType(vt)}
+                  disabled={running}
+                  className="accent-primary"
+                />
+                <span>{VIDEO_TYPE_LABEL[vt]}</span>
+              </div>
+              <span className="text-[11px] text-muted-foreground">{VIDEO_TYPE_HINT[vt]}</span>
+            </label>
+          ))}
+        </div>
+      </div>
+
       <div className="mb-6 flex flex-wrap items-center gap-3">
         <button
           onClick={run}
@@ -166,7 +199,12 @@ function ManifestView({ manifest }: { manifest: SampleManifest }) {
   return (
     <div className="space-y-6">
       <div className="rounded-lg border border-border bg-card p-4">
-        <h2 className="mb-3 text-sm font-semibold">段落结构</h2>
+        <div className="mb-3 flex items-center justify-between">
+          <h2 className="text-sm font-semibold">段落结构 · {VIDEO_TYPE_LABEL[manifest.video_type]}</h2>
+          <span className="text-xs text-muted-foreground">
+            {manifest.has_voice ? '🎙 含口播' : '🎵 纯 BGM'}
+          </span>
+        </div>
         <SectionsBar manifest={manifest} />
       </div>
 
@@ -184,8 +222,8 @@ function ManifestView({ manifest }: { manifest: SampleManifest }) {
                 />
                 <YAxis tick={{ fontSize: 10, fill: 'hsl(240 4% 46%)' }} />
                 <Tooltip
-                  formatter={(v: number) => v.toFixed(2)}
-                  labelFormatter={(v: number) => `t=${v.toFixed(2)}s`}
+                  formatter={(value) => (typeof value === 'number' ? value.toFixed(2) : String(value ?? ''))}
+                  labelFormatter={(label) => (typeof label === 'number' ? `t=${label.toFixed(2)}s` : String(label))}
                   contentStyle={{ fontSize: 12 }}
                 />
                 <Line type="monotone" dataKey="cut" name="切镜密度" stroke="hsl(262 83% 58%)" dot={false} strokeWidth={2} />
@@ -265,7 +303,10 @@ function SectionsBar({ manifest }: { manifest: SampleManifest }) {
           return (
             <div
               key={idx}
-              className={cn('flex items-center justify-center text-xs font-medium text-white', SECTION_COLORS[sec.kind])}
+              className={cn(
+                'flex items-center justify-center text-xs font-medium text-white',
+                SECTION_BG[sec.kind],
+              )}
               style={{ width: `${widthPct}%` }}
               title={`${SECTION_LABEL[sec.kind]}: ${sec.summary}`}
             >

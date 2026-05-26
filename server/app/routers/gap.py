@@ -4,7 +4,7 @@
 `POST /api/gap/fill`    对单个缺口做 rerank / copy / aigc 补全
 
 阶段 3 现状：detect 走简化匹配（从 routers/library 的内置样例 manifest 取 sections，
-配套 mock 素材列表），fill 走真 LLM/T2I（mock 模式下都会回落到 fixture）。
+配套 mock 素材列表），fill 走真 LLM/T2V（mock 模式下都会回落到 fixture）。
 """
 from __future__ import annotations
 

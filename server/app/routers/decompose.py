@@ -11,7 +11,7 @@ import logging
 from fastapi import APIRouter, BackgroundTasks, HTTPException, Query
 from fastapi.responses import StreamingResponse
 
-from ..schemas import DecomposeRequest, DecomposeSubmitResponse
+from ..schemas import DecomposeRequest, DecomposeSubmitResponse, VideoType
 from ..services.agent.decompose_agent import decompose
 from ..services.jobs import job_store
 
@@ -19,9 +19,9 @@ log = logging.getLogger("seecript.decompose")
 router = APIRouter()
 
 
-async def _run_decompose(job_id: str, sample_id: str) -> None:
+async def _run_decompose(job_id: str, sample_id: str, video_type: VideoType) -> None:
     try:
-        await decompose(sample_id, job_id=job_id)
+        await decompose(sample_id, job_id=job_id, video_type=video_type)
     except Exception as exc:  # pragma: no cover
         log.exception("[%s] decompose failed: %s", job_id, exc)
         job_store.fail(job_id, str(exc))
@@ -29,8 +29,11 @@ async def _run_decompose(job_id: str, sample_id: str) -> None:
 
 @router.post("/decompose", response_model=DecomposeSubmitResponse)
 async def submit_decompose(req: DecomposeRequest, bg: BackgroundTasks) -> DecomposeSubmitResponse:
-    job_id = job_store.create("decompose", payload={"sample_id": req.sample_id})
-    bg.add_task(_run_decompose, job_id, req.sample_id)
+    job_id = job_store.create(
+        "decompose",
+        payload={"sample_id": req.sample_id, "video_type": req.video_type},
+    )
+    bg.add_task(_run_decompose, job_id, req.sample_id, req.video_type)
     return DecomposeSubmitResponse(job_id=job_id)
 
 

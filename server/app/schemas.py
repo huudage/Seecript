@@ -27,7 +27,7 @@ GapStatus = Literal["ok", "warn", "miss"]
 """槽位匹配状态：✅ 完全命中 / ⚠️ 勉强命中 / ❌ 缺口需补全"""
 
 FillAction = Literal["rerank", "copy", "aigc"]
-"""缺口补全动作：结构重排 / 文案补全 / Seedream AIGC"""
+"""缺口补全动作：结构重排 / 文案补全 / Seedance T2V 短片生成"""
 
 Variant = Literal["A", "B"]
 """AB 双版本渲染标识"""
@@ -35,12 +35,44 @@ Variant = Literal["A", "B"]
 JobStatus = Literal["pending", "running", "succeeded", "failed", "cancelled"]
 
 
+VideoType = Literal["marketing", "editing", "motion_graph"]
+"""视频类型——上传/选样例时用户必选；驱动 LLM 段落 prompt 三选一。
+
+- marketing      营销/带货：hook → body → cta（痛点钩子→产品演示→行动引导）
+- editing        剪辑/Vlog：opening → climax → closing（氛围铺垫→情绪高潮→余韵收尾）
+- motion_graph   Motion Graph：intro → build → drop → outro（标题→铺陈→爆点→落版）
+"""
+
+
+SectionKind = Literal[
+    # marketing
+    "hook", "body", "cta",
+    # editing
+    "opening", "climax", "closing",
+    # motion_graph
+    "intro", "build", "drop", "outro",
+]
+"""段落 kind 9 元枚举——按 video_type 在三组里取一组。"""
+
+
+_MARKETING_KINDS: tuple[str, ...] = ("hook", "body", "cta")
+_EDITING_KINDS: tuple[str, ...] = ("opening", "climax", "closing")
+_MOTION_GRAPH_KINDS: tuple[str, ...] = ("intro", "build", "drop", "outro")
+
+
+def kinds_for_video_type(video_type: VideoType) -> tuple[str, ...]:
+    """给定视频类型，返回该类型对应的段落 kind 序列。"""
+    if video_type == "editing":
+        return _EDITING_KINDS
+    if video_type == "motion_graph":
+        return _MOTION_GRAPH_KINDS
+    return _MARKETING_KINDS  # marketing 兜底
+
+
 class HealthResponse(BaseModel):
     status: Literal["healthy", "degraded"]
     version: str
     llm_provider: str
-    vlm_provider: str = "mock"
-    t2i_provider: str = "mock"
     t2v_provider: str = "mock"
     asr_provider: str
 
@@ -60,7 +92,8 @@ class LibraryItem(BaseModel):
 
     id: str
     title: str
-    scene: str = Field(..., description="样例所属类型，如『营销/剪辑/Motion Graph』")
+    video_type: VideoType = Field(..., description="样例视频类型，决定段落 schema")
+    scene: str = Field(..., description="样例所属类型的中文标签，如『营销/剪辑/Motion Graph』")
     duration_seconds: float
     shot_count: int
     cover_url: str
@@ -88,9 +121,9 @@ class RhythmCurve(BaseModel):
 
 
 class Section(BaseModel):
-    """LLM 段落结构：Hook / Body / CTA 三段制。"""
+    """LLM 段落结构。具体 kind 序列按 video_type 三选一（见 kinds_for_video_type）。"""
 
-    kind: Literal["hook", "body", "cta"]
+    kind: SectionKind
     start: float
     end: float
     summary: str
@@ -112,8 +145,10 @@ class SampleManifest(BaseModel):
 
     sample_id: str
     title: str
+    video_type: VideoType = Field(default="marketing", description="样例视频类型，决定段落 schema")
     duration_seconds: float
     video_url: str
+    has_voice: bool = Field(default=True, description="VAD 探测：是否有口播；纯 BGM 视频跳过 ASR/逐句字幕")
     shots: list[Shot]
     rhythm: RhythmCurve
     sections: list[Section]
@@ -126,6 +161,7 @@ class SampleManifest(BaseModel):
 
 class DecomposeRequest(BaseModel):
     sample_id: str = Field(..., description="样例 ID；命中内置样例则走缓存，新视频走完整链路")
+    video_type: VideoType = Field(default="marketing", description="视频类型，驱动段落 prompt")
 
 
 class DecomposeSubmitResponse(BaseModel):
@@ -137,16 +173,16 @@ class DecomposeSubmitResponse(BaseModel):
 # =========================================================================
 
 class Material(BaseModel):
-    """用户上传的素材分析结果（含 VLM 标签 + 段落推荐）。"""
+    """用户上传的素材分析结果（含 多模态 LLM 标签 + 段落推荐）。"""
 
     material_id: str
     filename: str
     media_type: Literal["video", "image", "audio"]
     duration_seconds: Optional[float] = None
     thumbnail_url: Optional[str] = None
-    tags: list[str] = Field(default_factory=list, description="VLM 打标：物体/场景/风格")
-    recommended_section: Optional[Literal["hook", "body", "cta"]] = Field(
-        default=None, description="LLM 推荐它适合放在样例哪一段"
+    tags: list[str] = Field(default_factory=list, description="多模态 LLM 打标：物体/场景/风格")
+    recommended_section: Optional[SectionKind] = Field(
+        default=None, description="LLM 推荐它适合放在样例哪一段（按 video_type 解读 kind）"
     )
 
 
@@ -163,7 +199,7 @@ class Gap(BaseModel):
     """槽位匹配产物。一个 Section 对应若干 Gap，每个 Gap 反映「样例需要 vs 用户素材」的差距。"""
 
     gap_id: str
-    section: Literal["hook", "body", "cta"]
+    section: SectionKind
     slot_index: int = Field(..., description="该 section 下的第几个分镜槽位")
     requirement: str = Field(..., description="样例对该槽位的描述（如『3 秒痛点提问近景』）")
     status: GapStatus
@@ -181,7 +217,7 @@ class GapFillRequest(BaseModel):
     action: FillAction
     params: dict[str, Any] = Field(
         default_factory=dict,
-        description="动作参数：rerank={target_slot} / copy={prompt_hint} / aigc={prompt, ref_image_url?}",
+        description="动作参数：rerank={target_slot} / copy={prompt_hint} / aigc={prompt, first_frame_url?, duration_seconds?}",
     )
 
 
@@ -202,9 +238,9 @@ class Scene(BaseModel):
     """主轨分镜：素材切片 + 字幕。FFmpeg concat 的最小单位。"""
 
     scene_id: str
-    section: Literal["hook", "body", "cta"]
-    source: Literal["sample", "user_material", "aigc_t2v", "aigc_t2i"]
-    source_ref: str = Field(..., description="样例镜头 id / material_id / aigc 任务返回的 media_id")
+    section: SectionKind
+    source: Literal["sample", "user_material", "aigc_t2v"]
+    source_ref: str = Field(..., description="样例镜头 id / material_id / Seedance 任务返回的 media_id")
     start: float = Field(..., description="时间线上的起点（秒）")
     duration: float
     in_point: float = Field(default=0.0, description="源素材内的入点（秒）")

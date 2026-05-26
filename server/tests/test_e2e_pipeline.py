@@ -45,20 +45,37 @@ def _build_plan(client) -> dict:
 
 
 def test_library_and_manifest(client):
-    """模块 1：素材库列表 + 单样例 manifest。"""
+    """模块 1：素材库列表 + 单样例 manifest。三类型 video_type 都走通。"""
     r = client.get("/api/library")
     assert r.status_code == 200
     items = r.json()
     assert len(items) >= 3
-    sid = items[0]["id"]
+    # 库里至少各有一个 marketing / editing / motion_graph
+    seen_types = {it["video_type"] for it in items}
+    assert seen_types == {"marketing", "editing", "motion_graph"}
 
-    r = client.get(f"/api/sample/{sid}/manifest")
-    assert r.status_code == 200
-    manifest = r.json()
-    assert manifest["sample_id"] == sid
-    assert len(manifest["shots"]) > 0
-    assert len(manifest["sections"]) == 3
-    assert {s["kind"] for s in manifest["sections"]} == {"hook", "body", "cta"}
+    # 每个样例的 manifest 段落 kind 必须落在该 video_type 允许的枚举里
+    expected_kinds: dict[str, set[str]] = {
+        "marketing": {"hook", "body", "cta"},
+        "editing": {"opening", "climax", "closing"},
+        "motion_graph": {"intro", "build", "drop", "outro"},
+    }
+    for item in items:
+        r = client.get(f"/api/sample/{item['id']}/manifest")
+        assert r.status_code == 200, f"manifest {item['id']}: {r.text}"
+        manifest = r.json()
+        assert manifest["sample_id"] == item["id"]
+        assert manifest["video_type"] == item["video_type"]
+        assert len(manifest["shots"]) > 0
+        kinds = {s["kind"] for s in manifest["sections"]}
+        assert kinds == expected_kinds[item["video_type"]], (
+            f"{item['id']} sections {kinds} != expected {expected_kinds[item['video_type']]}"
+        )
+        # motion_graph 是纯 BGM（无口播）
+        if item["video_type"] == "motion_graph":
+            assert manifest["has_voice"] is False
+        else:
+            assert manifest["has_voice"] is True
 
 
 def test_material_upload_and_plan_build(client):

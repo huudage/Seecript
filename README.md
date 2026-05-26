@@ -10,13 +10,15 @@
 
 | # | 模块 | 路由 / 路径 | 关键技术 |
 |---|---|---|---|
-| 1 | 素材库 | `/library` · `GET /api/library` | 3 个内置样例 + 预解析 manifest |
-| 2 | 样例拆解 | `/decompose` · `POST /api/decompose` SSE | PySceneDetect + librosa + ASR + VLM + LLM 段落 |
-| 3 | 新内容 + 缺口补全 | `/compose` · `POST /api/material/upload` `gap/detect` `gap/fill` | VLM 标签 + 槽位匹配 + 三种补全（rerank/copy/aigc） |
+| 1 | 素材库 | `/library` · `GET /api/library` | 3 个内置样例（marketing/editing/motion_graph）+ 预解析 manifest |
+| 2 | 样例拆解 | `/decompose` · `POST /api/decompose` SSE | PySceneDetect + librosa BGM + librosa VAD 门控 ASR + 多模态 LLM 帧打标 + 多模态 LLM 段落（按 video_type 三选一） |
+| 3 | 新内容 + 缺口补全 | `/compose` · `POST /api/material/upload` `gap/detect` `gap/fill` | 多模态 LLM 标签 + 槽位匹配（9 个 SectionKind）+ 三种补全（rerank / copy / Seedance T2V） |
 | 4 | 迁移可视化 | `/migrate` | React Flow 双列 + 状态着色（绿命中 / 黄勉强 / 红虚线缺口） |
 | 5 | 视频生成 | `/render` · `POST /api/render/submit` SSE | FFmpeg 主轨 + Seedance 首尾帧扩展 + 6 步流水线 |
 | 6 | 画面包装 | 同上 | Remotion 透明 WebM + ffmpeg overlay |
 | 7 | 自然语言编辑 | 同上 · `POST /api/edit/apply` | LLM tool calling 5 原子 tool + 撤销栈 |
+
+> **AI 干预点 3 类**：① 多模态 LLM（doubao-seed-2.0-lite）—— 段落 / 帧打标 / 文案 / NL 编辑 tool call 四个调用点共用；② VAD-门控 ASR（豆包 bigasr_auc_turbo）—— 纯 BGM 视频自动跳过；③ Seedance T2V（doubao-seedance-1.0-pro）—— aigc 缺口短片 + 长视频首尾帧。原设独立 VLM / T2I client 已退役。
 
 ---
 
@@ -39,14 +41,14 @@ seecript/
 │   │   ├── schemas.py                  # 7 模块完整 Pydantic v2 契约
 │   │   ├── routers/                    # asr / library / decompose / material / gap / plan / render / edit
 │   │   └── services/
-│   │       ├── llm_client.py           # LLMClient 抽象 + Mock + DeepSeek + Doubao Ark
-│   │       ├── vlm_client.py · t2i_client.py · t2v_client.py · asr_client.py
-│   │       ├── video/                  # scene_detect / audio / ocr / ffmpeg
+│   │       ├── llm_client.py           # LLMClient 抽象（含 complete_multimodal）+ Mock + DeepSeek + Doubao Ark
+│   │       ├── asr_client.py · t2v_client.py     # ASR（VAD 门控）+ Seedance T2V（submit/poll）
+│   │       ├── video/                  # scene_detect / audio / voice_detect / ocr / ffmpeg
 │   │       ├── agent/                  # decompose_agent / gap_agent
 │   │       ├── render/                 # pipeline.py（6 步）+ seedance_chain.py（首尾帧拼接）
 │   │       ├── jobs/                   # 内存 JobStore + asyncio.Queue + SSE
 │   │       └── plans/                  # PlanStore（plan_id → Plan）
-│   ├── tests/                          # 35 用例（mock 路径）
+│   ├── tests/                          # 49 用例（mock 路径）
 │   ├── samples/                        # 3 个内置样例（视频 + 预解析 JSON）
 │   └── var/uploads/                    # 用户上传（session 隔离）
 │
@@ -97,16 +99,16 @@ pnpm dev                                 # http://127.0.0.1:5173，/api/* 走 vi
 
 ```ini
 LLM_PROVIDER=doubao_ark
-DOUBAO_ARK_API_KEY=ark-xxxxxxxx
-DOUBAO_ARK_LLM_ENDPOINT=ep-xxxxxxxx
+ARK_API_KEY=ark-xxxxxxxx
+ARK_LLM_MODEL=ep-xxxxxxxx         # doubao-seed-2.0-lite endpoint_id（多模态：段落/打标/文案/编辑共用）
 
-VLM_PROVIDER=doubao_ark
-T2I_PROVIDER=seedream
-T2V_PROVIDER=seedance
+T2V_PROVIDER=doubao_ark           # doubao-seedance-1.0-pro，aigc 缺口 + 长视频首尾帧
 
 ASR_PROVIDER=doubao
 DOUBAO_API_KEY=<volc-uuid-key>
 ```
+
+> 原 `VLM_PROVIDER` / `T2I_PROVIDER` 已退役：画面理解由多模态 LLM 接管，aigc 缺口由 T2V 直出 5-8s 短片。
 
 每个开关独立，可以只接其中一个。字段全集见 `server/.env.example`。**Key 文件须 `chmod 600`，前端永不持有 Key。**
 
@@ -116,13 +118,14 @@ DOUBAO_API_KEY=<volc-uuid-key>
 
 ```bash
 cd server
-python -m pytest tests/ -v               # 35 passed
+python -m pytest tests/ -v               # 49 passed
 ```
 
 包括：
-- `test_e2e_pipeline.py` — 7 模块端到端联调
-- `test_llm_client.py` / `test_asr_client.py` — provider 抽象 + mock fallback
-- `test_asr_endpoint.py` — multipart + 大小/格式校验
+- `test_e2e_pipeline.py` — 7 模块端到端联调（三类型 video_type 全覆盖）
+- `test_agent_routing.py` — decompose 三类型 prompt 路由 + gap_agent T2V 分支
+- `test_llm_client.py` — provider 抽象 + mock fallback（含 4 个多模态路由）
+- `test_asr_client.py` / `test_asr_endpoint.py` — provider 抽象 + multipart 校验
 
 所有测试默认走 mock 路径，不消耗任何外部 API 配额。
 

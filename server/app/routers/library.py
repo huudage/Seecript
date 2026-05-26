@@ -3,7 +3,8 @@
 `GET  /api/library`                  返回 3 个内置样例的卡片信息
 `GET  /api/sample/{id}/manifest`     返回单个样例的完整预解析 manifest
 
-阶段 1：纯静态 mock，3 个写死的样例。阶段 4 接到 server/samples/ 实际预解析 JSON。
+阶段 1：纯静态 mock，3 个写死的样例（marketing / editing / motion_graph 各一）。
+阶段 4 接到 server/samples/ 实际预解析 JSON。
 """
 from __future__ import annotations
 
@@ -16,6 +17,8 @@ from ..schemas import (
     SampleManifest,
     Section,
     Shot,
+    VideoType,
+    kinds_for_video_type,
 )
 
 router = APIRouter()
@@ -26,6 +29,7 @@ _LIBRARY: list[LibraryItem] = [
     LibraryItem(
         id="sample-marketing-01",
         title="护肤新品种草｜30 秒大字幕痛点开场",
+        video_type="marketing",
         scene="营销",
         duration_seconds=30.5,
         shot_count=12,
@@ -34,6 +38,7 @@ _LIBRARY: list[LibraryItem] = [
     LibraryItem(
         id="sample-vlog-01",
         title="一日咖啡店探店｜剪辑感节奏 vlog",
+        video_type="editing",
         scene="剪辑",
         duration_seconds=48.0,
         shot_count=22,
@@ -42,12 +47,51 @@ _LIBRARY: list[LibraryItem] = [
     LibraryItem(
         id="sample-motion-01",
         title="新功能上线动效宣传｜Motion Graph",
+        video_type="motion_graph",
         scene="Motion Graph",
         duration_seconds=18.2,
         shot_count=9,
         cover_url="/samples/sample-motion-01/cover.jpg",
     ),
 ]
+
+
+# 3-段 / 4-段视频的占位 summary——按 video_type 写一组。
+_STUB_SECTION_SUMMARIES: dict[VideoType, list[str]] = {
+    "marketing": ["痛点提问 + 大字幕", "产品演示 + 对比", "点赞收藏"],
+    "editing": ["环境/氛围铺垫", "情绪/动作高潮", "余韵收尾"],
+    "motion_graph": ["标题/Logo 入场", "信息铺陈动画", "视觉爆点", "落版收尾"],
+}
+
+
+def _stub_sections(item: LibraryItem) -> list[Section]:
+    """按 video_type 切段——3 类型用 15/70/15，motion_graph 4 段等分。"""
+    kinds = kinds_for_video_type(item.video_type)
+    summaries = _STUB_SECTION_SUMMARIES[item.video_type]
+    n_seg = len(kinds)
+    total = item.duration_seconds
+    if n_seg == 3:
+        boundaries = [0.0, total * 0.15, total * 0.85, total]
+    else:
+        step = total / n_seg
+        boundaries = [step * i for i in range(n_seg)] + [total]
+
+    sections: list[Section] = []
+    for i, kind in enumerate(kinds):
+        start = boundaries[i]
+        end = boundaries[i + 1]
+        # 把 shot_indices 按 start <= shot_start < end 的比例分摊
+        first = int(item.shot_count * (start / total))
+        last = int(item.shot_count * (end / total))
+        if i == n_seg - 1:
+            last = item.shot_count  # 最后一段兜底到所有镜头
+        shot_idx = list(range(first, max(first + 1, last)))
+        sections.append(Section(
+            kind=kind, start=start, end=end,
+            summary=summaries[i] if i < len(summaries) else f"{kind} 段",
+            shot_indices=shot_idx,
+        ))
+    return sections
 
 
 def _stub_manifest(sample_id: str, item: LibraryItem) -> SampleManifest:
@@ -59,7 +103,7 @@ def _stub_manifest(sample_id: str, item: LibraryItem) -> SampleManifest:
             end=(i + 1) * (item.duration_seconds / item.shot_count),
             duration=item.duration_seconds / item.shot_count,
             thumbnail_url=f"/samples/{sample_id}/shot-{i:02d}.jpg",
-            transcript=f"[mock] 镜头 {i + 1} 口播片段。",
+            transcript=f"[mock] 镜头 {i + 1} 口播片段。" if item.video_type != "motion_graph" else None,
             tags=["近景", "口播"] if i % 3 == 0 else ["特写", "产品"],
         )
         for i in range(item.shot_count)
@@ -70,27 +114,23 @@ def _stub_manifest(sample_id: str, item: LibraryItem) -> SampleManifest:
         bgm_energy=[round((i % 5) / 5.0, 2) for i in range(item.shot_count)],
         tempo_bpm=120.0,
     )
-    sections = [
-        Section(kind="hook", start=0.0, end=item.duration_seconds * 0.15, summary="痛点提问 + 大字幕",
-                shot_indices=[i for i in range(item.shot_count) if i < item.shot_count * 0.15]),
-        Section(kind="body", start=item.duration_seconds * 0.15, end=item.duration_seconds * 0.85,
-                summary="产品演示 + 对比", shot_indices=list(range(int(item.shot_count * 0.15),
-                                                                int(item.shot_count * 0.85)))),
-        Section(kind="cta", start=item.duration_seconds * 0.85, end=item.duration_seconds, summary="点赞收藏",
-                shot_indices=[i for i in range(item.shot_count) if i >= item.shot_count * 0.85]),
-    ]
+    sections = _stub_sections(item)
     packaging = PackagingProfile(
-        subtitle_style="大字加描边",
-        has_title_bar=item.scene == "营销",
-        transition_types=["cut", "fade"] if item.scene != "Motion Graph" else ["cut", "wipe", "scale"],
-        cover_style="纯色大字" if item.scene == "营销" else "实拍画面 + 标题条",
-        sticker_density=0.6 if item.scene == "Motion Graph" else 0.2,
+        subtitle_style="大字加描边" if item.video_type != "motion_graph" else "无字幕",
+        has_title_bar=item.video_type == "marketing",
+        transition_types=["cut", "fade"] if item.video_type != "motion_graph" else ["cut", "wipe", "scale"],
+        cover_style="纯色大字" if item.video_type == "marketing" else (
+            "合成画面 + 大字标题" if item.video_type == "motion_graph" else "实拍画面 + 标题条"
+        ),
+        sticker_density=0.6 if item.video_type == "motion_graph" else 0.2,
     )
     return SampleManifest(
         sample_id=sample_id,
         title=item.title,
+        video_type=item.video_type,
         duration_seconds=item.duration_seconds,
         video_url=f"/samples/{sample_id}/video.mp4",
+        has_voice=item.video_type != "motion_graph",
         shots=shots,
         rhythm=rhythm,
         sections=sections,

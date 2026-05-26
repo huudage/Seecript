@@ -10,12 +10,38 @@ export type MaterialId = string
 export type SessionId = string
 export type GapId = string
 
-export type SectionKind = 'hook' | 'body' | 'cta'
+/**
+ * 视频类型 —— 用户在上传/选样例时挑选，驱动拆解 Agent 段落 prompt 三选一。
+ * - marketing      hook → body → cta
+ * - editing        opening → climax → closing
+ * - motion_graph   intro → build → drop → outro
+ */
+export type VideoType = 'marketing' | 'editing' | 'motion_graph'
+
+export type SectionKind =
+  // marketing
+  | 'hook' | 'body' | 'cta'
+  // editing
+  | 'opening' | 'climax' | 'closing'
+  // motion_graph
+  | 'intro' | 'build' | 'drop' | 'outro'
+
 export type GapStatus = 'ok' | 'warn' | 'miss'
 export type FillAction = 'rerank' | 'copy' | 'aigc'
 export type Variant = 'A' | 'B'
 export type JobStatus = 'pending' | 'running' | 'succeeded' | 'failed' | 'cancelled'
 export type MediaType = 'video' | 'image' | 'audio'
+
+/** 给定 video_type 返回对应的段落 kind 序列，跟后端 kinds_for_video_type 对齐。 */
+export const KINDS_BY_VIDEO_TYPE: Record<VideoType, SectionKind[]> = {
+  marketing: ['hook', 'body', 'cta'],
+  editing: ['opening', 'climax', 'closing'],
+  motion_graph: ['intro', 'build', 'drop', 'outro'],
+}
+
+export function kindsForVideoType(videoType: VideoType): SectionKind[] {
+  return KINDS_BY_VIDEO_TYPE[videoType] ?? KINDS_BY_VIDEO_TYPE.marketing
+}
 
 // =========================================================================
 // Module 1 — Library
@@ -24,6 +50,7 @@ export type MediaType = 'video' | 'image' | 'audio'
 export interface LibraryItem {
   id: SampleId
   title: string
+  video_type: VideoType
   scene: string
   duration_seconds: number
   shot_count: number
@@ -66,8 +93,10 @@ export interface PackagingProfile {
 export interface SampleManifest {
   sample_id: SampleId
   title: string
+  video_type: VideoType
   duration_seconds: number
   video_url: string
+  has_voice: boolean
   shots: Shot[]
   rhythm: RhythmCurve
   sections: Section[]
@@ -77,6 +106,11 @@ export interface SampleManifest {
 // =========================================================================
 // Module 2 — Decompose
 // =========================================================================
+
+export interface DecomposeRequest {
+  sample_id: SampleId
+  video_type: VideoType
+}
 
 export interface DecomposeSubmitResponse {
   job_id: JobId
@@ -138,7 +172,7 @@ export interface GapFillRequest {
 export interface Scene {
   scene_id: string
   section: SectionKind
-  source: 'sample' | 'user_material' | 'aigc_t2v' | 'aigc_t2i'
+  source: 'sample' | 'user_material' | 'aigc_t2v'
   source_ref: string
   start: number
   duration: number
@@ -240,8 +274,6 @@ export interface HealthResponse {
   status: 'healthy' | 'degraded'
   version: string
   llm_provider: string
-  vlm_provider: string
-  t2i_provider: string
   t2v_provider: string
   asr_provider: string
 }

@@ -8,17 +8,21 @@ Providers：
 - `DeepSeekLLMClient`  保留旧 provider；DeepSeek 也是 OpenAI 兼容
 
 接口：
-- `complete`            纯文本回复
-- `complete_json`       封装：reply → json.loads（带一次 retry）
-- `complete_with_tools` Module 7 自然语言改片专用：返回 tool_calls 列表（function-call schema）
+- `complete`             纯文本回复
+- `complete_json`        封装：reply → json.loads（带一次 retry）
+- `complete_with_tools`  Module 7 自然语言改片专用：返回 tool_calls 列表
+- `complete_multimodal`  多模态：文字 + 图像（缩略图列表）→ 文字回复
+                         doubao-seed-2.0-lite 已替代独立 VLM client，画面理解全走这里。
 """
 from __future__ import annotations
 
+import base64
 import json
 import logging
 import time
 from abc import ABC, abstractmethod
-from typing import Any, Dict, List, Optional
+from pathlib import Path
+from typing import Any, Dict, List, Optional, Sequence
 
 import httpx
 
@@ -99,6 +103,28 @@ class LLMClient(ABC):
             "use Doubao Ark or Mock provider for module 7."
         )
 
+    async def complete_multimodal(
+        self,
+        system: str,
+        user_text: str,
+        images: Sequence[str | Path],
+        *,
+        temperature: Optional[float] = None,
+        max_tokens: Optional[int] = None,
+    ) -> str:
+        """多模态：文字 + 图像列表 → 文字回复。
+
+        - `images` 元素可以是本地路径（自动转 data URL）或 http(s)/data URL（直接透传）。
+        - 默认实现回落到纯文本 `complete`，把"看不到图"的事实写进 system prompt——
+          mock provider 走这条；DoubaoArk override 真正塞 image_url。
+        """
+        fallback_system = system + "\n\n（注：当前 provider 不支持图像输入，仅按文字描述推断。）"
+        fallback_user = user_text + f"\n\n[图像数量：{len(images)}，描述略]"
+        return await self.complete(
+            fallback_system, fallback_user,
+            temperature=temperature, max_tokens=max_tokens,
+        )
+
 
 def _extract_json(text: str) -> Any:
     s = text.strip()
@@ -120,6 +146,33 @@ def _extract_json(text: str) -> Any:
     return json.loads(s)
 
 
+def _image_ref_to_url(ref: str | Path) -> str:
+    """把图像引用归一化成可放进 OpenAI multimodal `image_url.url` 的字符串。
+
+    规则：
+    - http(s):// 或 data: 开头视为已经就绪，直接透传
+    - 其它视为本地路径，读字节 → data:image/<ext>;base64,<...>；不存在则降级成
+      占位文本 data URL（提示模型"该帧暂缺"，避免抛错打断流水线）。
+    """
+    s = str(ref)
+    if s.startswith(("http://", "https://", "data:")):
+        return s
+    p = Path(s)
+    if not p.exists() or p.is_dir():
+        # 占位：16×16 灰色 PNG 的 base64。Ark 等服务端要求最小 14×14，
+        # 用更小的图（如 1×1）会被拒 InvalidParameter；这里给 16×16 保险。
+        placeholder = (
+            "iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAIAAACQkWg2AAAAI0lEQVR4nGM8c"
+            "eIEAymAiSTVDKMaiANMRKqDg1ENxACSQwkAXUkCeDMzQHkAAAAASUVORK5CYII="
+        )
+        return f"data:image/png;base64,{placeholder}"
+    ext = p.suffix.lower().lstrip(".") or "jpeg"
+    if ext == "jpg":
+        ext = "jpeg"
+    b64 = base64.b64encode(p.read_bytes()).decode("ascii")
+    return f"data:image/{ext};base64,{b64}"
+
+
 # --------------------------------------------------------------------------
 # Mock
 # --------------------------------------------------------------------------
@@ -127,9 +180,9 @@ class MockLLMClient(LLMClient):
     """离线 fixture。按 system prompt 中独有的输出 schema 字段名指纹路由。
 
     指纹键值（每个出现且仅出现在唯一 prompt 中）：
-    - "sections"            → 拆解 Agent 段落结构（hook/body/cta）
+    - "sections"            → 拆解 Agent 段落结构（按 video_type 路由到 marketing/editing/motion_graph 三组 kind）
     - "gap_fill_narration"  → 缺口补全 · 文案
-    - "frame_tags"          → VLM 帧打标 fallback（VLMClient 也可走 LLMClient.complete）
+    - "frame_tags"          → 多模态帧打标 fallback（seed-2.0-lite 走 LLMClient.complete_multimodal）
     - "edit_tool_calls"     → Module 7 工具调用回放
     其它走 detail fallback。
     """
@@ -184,6 +237,37 @@ class MockLLMClient(LLMClient):
             ],
             "content": None,
         }
+
+    async def complete_multimodal(
+        self,
+        system: str,
+        user_text: str,
+        images: Sequence[str | Path],
+        *,
+        temperature: Optional[float] = None,
+        max_tokens: Optional[int] = None,
+    ) -> str:
+        """Mock 多模态：忽略实际图像内容，按 system 指纹路由到 fixture。
+
+        - "frame_tags" 在 system → 返回 _MOCK_FRAME_TAGS_JSON
+        - "sections" 在 system → 返回 _MOCK_DECOMPOSE_SECTIONS_JSON（按段落 schema 走默认营销）
+        - 其它走父类 fallback（拼"看不到图"提示再 complete）
+        """
+        import asyncio
+        await asyncio.sleep(0.4)
+        if "frame_tags" in system:
+            return _MOCK_FRAME_TAGS_JSON
+        if "sections" in system:
+            # 多模态走段落分析时，按 system 中暗示的视频类型选 fixture
+            if "motion_graph" in system or "motion graph" in system.lower():
+                return _MOCK_SECTIONS_MOTION_GRAPH_JSON
+            if "editing" in system or "vlog" in system.lower():
+                return _MOCK_SECTIONS_EDITING_JSON
+            return _MOCK_DECOMPOSE_SECTIONS_JSON
+        return await super().complete_multimodal(
+            system, user_text, images,
+            temperature=temperature, max_tokens=max_tokens,
+        )
 
 
 # --------------------------------------------------------------------------
@@ -304,6 +388,45 @@ class _OpenAICompatLLMClient(LLMClient):
             parsed.append({"name": fn.get("name", ""), "arguments": args})
         return {"tool_calls": parsed, "content": msg.get("content")}
 
+    async def complete_multimodal(
+        self,
+        system: str,
+        user_text: str,
+        images: Sequence[str | Path],
+        *,
+        temperature: Optional[float] = None,
+        max_tokens: Optional[int] = None,
+    ) -> str:
+        """OpenAI 兼容多模态：user message content 是 text + image_url 数组。
+
+        所有 doubao-seed-2.0-lite 多模态画面理解任务（关键帧打标 / 段落分段 / 缺口判定）都走这个入口。
+        """
+        if not images:
+            return await self.complete(
+                system, user_text, temperature=temperature, max_tokens=max_tokens,
+            )
+        content: list[dict] = [{"type": "text", "text": user_text}]
+        for ref in images:
+            content.append({
+                "type": "image_url",
+                "image_url": {"url": _image_ref_to_url(ref)},
+            })
+        data = await self._chat(
+            [
+                {"role": "system", "content": system},
+                {"role": "user", "content": content},
+            ],
+            temperature=self._default_temperature if temperature is None else temperature,
+            max_tokens=self._default_max_tokens if max_tokens is None else max_tokens,
+        )
+        choices: List[Dict[str, Any]] = data.get("choices") or []
+        if not choices:
+            raise LLMError(f"{self.name} empty choices", code="LLM_BAD_RESPONSE")
+        msg_content = choices[0].get("message", {}).get("content")
+        if not isinstance(msg_content, str) or not msg_content.strip():
+            raise LLMError(f"{self.name} empty multimodal content", code="LLM_BAD_RESPONSE")
+        return msg_content
+
 
 # --------------------------------------------------------------------------
 # Doubao Ark (火山方舟) — 默认 LLM provider
@@ -411,6 +534,41 @@ _MOCK_FRAME_TAGS_JSON = """
     {"frame_id": "f-001", "tags": ["室内", "近景", "口播", "纯色背景"], "subtitle_style": "大字加描边"},
     {"frame_id": "f-002", "tags": ["产品特写", "环形光", "白色桌面"], "subtitle_style": "大字加描边"},
     {"frame_id": "f-003", "tags": ["对比镜头", "实拍", "户外"], "subtitle_style": "无字幕"}
+  ]
+}
+"""
+
+_MOCK_SECTIONS_EDITING_JSON = """
+{
+  "sections": [
+    {"kind": "opening", "start": 0.0, "end": 6.0,
+     "summary": "环境/氛围铺垫——晨光下的城市远景，慢推镜头铺底",
+     "shot_indices": [0, 1, 2]},
+    {"kind": "climax", "start": 6.0, "end": 24.0,
+     "summary": "情绪高潮：人物动作 + 卡点切镜，节奏 BPM≈128",
+     "shot_indices": [3, 4, 5, 6, 7, 8]},
+    {"kind": "closing", "start": 24.0, "end": 30.0,
+     "summary": "余韵收尾：慢摇 + 渐黑 + 落版字",
+     "shot_indices": [9, 10]}
+  ]
+}
+"""
+
+_MOCK_SECTIONS_MOTION_GRAPH_JSON = """
+{
+  "sections": [
+    {"kind": "intro", "start": 0.0, "end": 3.0,
+     "summary": "标题动画入场——logo 弹跳 + 副标题滑入",
+     "shot_indices": [0]},
+    {"kind": "build", "start": 3.0, "end": 14.0,
+     "summary": "信息铺陈：图标分层、数据条逐项弹出",
+     "shot_indices": [1, 2, 3, 4]},
+    {"kind": "drop", "start": 14.0, "end": 24.0,
+     "summary": "视觉爆点：粒子炸开 + 大字幕震屏",
+     "shot_indices": [5, 6, 7]},
+    {"kind": "outro", "start": 24.0, "end": 30.0,
+     "summary": "落版/Logo 收：浮层淡出 + 二维码露出",
+     "shot_indices": [8, 9]}
   ]
 }
 """

@@ -91,6 +91,54 @@ class TestMockLLMClient:
         assert len(result["tool_calls"]) >= 1
         assert result["tool_calls"][0]["name"] == "edit_scene_narration"
 
+    @pytest.mark.asyncio
+    async def test_multimodal_frame_tags_routes_to_fixture(self):
+        """多模态接口在 system 含 'frame_tags' 时返回打标 fixture。"""
+        c = MockLLMClient()
+        text = await c.complete_multimodal(
+            "你是短视频画面打标助手……返回 frame_tags JSON",
+            "请给这些关键帧打标",
+            ["data:image/png;base64,iVBORw0KGgo="],
+        )
+        data = json.loads(text)
+        assert "frame_tags" in data
+
+    @pytest.mark.asyncio
+    async def test_multimodal_sections_marketing(self):
+        """system 含 'sections' 默认走 marketing fixture（hook/body/cta）。"""
+        c = MockLLMClient()
+        text = await c.complete_multimodal(
+            "你是营销结构分析师，请输出 sections JSON",
+            "镜头列表 …",
+            [""],
+        )
+        data = json.loads(text)
+        assert {s["kind"] for s in data["sections"]} == {"hook", "body", "cta"}
+
+    @pytest.mark.asyncio
+    async def test_multimodal_sections_editing(self):
+        """system 含 'editing' / 'Vlog' 走剪辑 fixture（opening/climax/closing）。"""
+        c = MockLLMClient()
+        text = await c.complete_multimodal(
+            "你是剪辑/Vlog 视频结构分析师，请输出 sections JSON · editing",
+            "镜头列表 …",
+            [""],
+        )
+        data = json.loads(text)
+        assert {s["kind"] for s in data["sections"]} == {"opening", "climax", "closing"}
+
+    @pytest.mark.asyncio
+    async def test_multimodal_sections_motion_graph(self):
+        """system 含 'motion_graph' 走 MG fixture（intro/build/drop/outro）。"""
+        c = MockLLMClient()
+        text = await c.complete_multimodal(
+            "你是 Motion Graph 视频结构分析师，请输出 sections JSON · motion_graph",
+            "镜头列表 …",
+            [""],
+        )
+        data = json.loads(text)
+        assert {s["kind"] for s in data["sections"]} == {"intro", "build", "drop", "outro"}
+
 
 class TestFactory:
     def test_returns_mock_when_provider_mock(self, monkeypatch):

@@ -3,6 +3,7 @@
 子模块：
 - scene_detect.py     PySceneDetect 镜头切分
 - audio_analysis.py   librosa BGM 能量曲线 + tempo + onset
+- voice_detect.py     librosa 人声 VAD —— 决定要不要走 ASR
 - ocr.py              PaddleOCR mobile 中文字幕识别
 - ffmpeg.py           FFmpeg subprocess 包装（concat / extract_frame / overlay / probe）
 - remotion.py         Remotion 子进程渲染包装轨

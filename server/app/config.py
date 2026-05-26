@@ -35,15 +35,18 @@ class Settings(BaseSettings):
 
     # === LLM ===
     # 默认 mock（不依赖任何 Key）；接到火山方舟时切到 `doubao_ark`，旧的 deepseek 仍保留。
+    # doubao-seed-2.0-lite 是多模态模型——VLM 帧打标、段落分析、缺口判定全走它，
+    # 不再保留独立 VLM/T2I 客户端。
     llm_provider: Literal["mock", "doubao_ark", "deepseek"] = Field(default="mock")
     # --- Doubao Ark (火山方舟) ---
     # base_url 走 OpenAI 兼容根路径；model 实际填 endpoint_id（如 ep-20260508213828-7ntjl）。
     ark_api_key: str = Field(default="")
     ark_base_url: str = Field(default="https://ark.cn-beijing.volces.com/api/v3")
-    ark_llm_model: str = Field(default="ep-doubao-seed-2.0-lite")
-    ark_vlm_model: str = Field(default="ep-doubao-seed-1.6-vision")
-    ark_t2i_model: str = Field(default="ep-doubao-seedream-4.0")
-    ark_t2v_model: str = Field(default="ep-doubao-seedance-1.0-pro")
+    ark_llm_model: str = Field(default="doubao-seed-2-0-lite")
+    ark_t2v_model: str = Field(default="doubao-seedance-2-0-260128")
+    # Seedance 与 LLM 通常用同一个方舟账号；如果走独立计费 Key 单独配 ARK_T2V_API_KEY，
+    # 留空时 t2v_api_key 属性自动回落到 ark_api_key。
+    ark_t2v_api_key: str = Field(default="")
     # --- DeepSeek (向后兼容) ---
     deepseek_api_key: str = Field(default="")
     deepseek_base_url: str = Field(default="https://api.deepseek.com")
@@ -52,15 +55,6 @@ class Settings(BaseSettings):
     llm_temperature: float = Field(default=0.7, ge=0.0, le=2.0)
     llm_timeout_seconds: int = Field(default=60, ge=5, le=300)
     llm_max_tokens: int = Field(default=2048, ge=128, le=8192)
-
-    # === VLM (视频/图像理解) ===
-    vlm_provider: Literal["mock", "doubao_ark"] = Field(default="mock")
-    vlm_timeout_seconds: int = Field(default=60, ge=5, le=300)
-
-    # === T2I (文生图) ===
-    t2i_provider: Literal["mock", "doubao_ark"] = Field(default="mock")
-    t2i_timeout_seconds: int = Field(default=60, ge=5, le=300)
-    t2i_default_size: str = Field(default="1024x1024")
 
     # === ASR (Doubao 极速版 / turbo / flash) ===
     # 极速版 = 一次请求拿结果 + 支持 base64 inline 上传 → 不再需要公网 URL（PUBLIC_BASE_URL 已废弃）。
@@ -73,13 +67,18 @@ class Settings(BaseSettings):
     # 极速版上限 100MB / 2h，但我们再按出口带宽做收敛（推荐 ≤ 20MB），timeout 60s 给足余量。
     asr_timeout_seconds: int = Field(default=60, ge=10, le=300)
 
-    # === T2V（视频生成，doubao-seedance-1.0-pro 首尾帧模式）===
-    # 默认 mock：开箱即用；切到 doubao_ark 需在 .env 设 ARK_API_KEY。
+    # === T2V（视频生成，doubao-seedance-2.0 多模态参考帧/参考视频/参考音频）===
+    # 默认 mock：开箱即用；切到 doubao_ark 需在 .env 设 ARK_API_KEY 或独立 ARK_T2V_API_KEY。
+    # Seedance 2.0 用 ratio 而不是 size；duration 受模型最低时长约束（5s 起，3s 会被拒）。
     t2v_provider: Literal["mock", "doubao_ark"] = Field(default="mock")
     t2v_timeout_seconds: int = Field(default=30, ge=5, le=120)
     t2v_max_prompt_chars: int = Field(default=500, ge=20, le=512)
     # mock 模式下"假装生成时间"——让前端轮询 UI 真有进度感（默认 8s）。
     t2v_mock_duration_seconds: float = Field(default=8.0, ge=0.0, le=120.0)
+    # 画幅与音频开关给 gap_agent / seedance_chain 提供默认值。
+    t2v_default_ratio: str = Field(default="16:9")
+    t2v_generate_audio: bool = Field(default=False)
+    t2v_watermark: bool = Field(default=False)
 
     # === CORS ===
     cors_origins: str = Field(default="*")
@@ -98,7 +97,7 @@ class Settings(BaseSettings):
         extra="ignore",
     )
 
-    @field_validator("vlm_provider", "t2i_provider", "t2v_provider", mode="before")
+    @field_validator("t2v_provider", mode="before")
     @classmethod
     def _normalize_provider(cls, value: object) -> object:
         if isinstance(value, str):
@@ -112,6 +111,11 @@ class Settings(BaseSettings):
         if not raw:
             return []
         return [o.strip() for o in raw.split(",") if o.strip()]
+
+    @property
+    def t2v_api_key(self) -> str:
+        """Effective Seedance Key — 独立 ARK_T2V_API_KEY 优先，未配置回落到 ARK_API_KEY。"""
+        return self.ark_t2v_api_key or self.ark_api_key
 
     @property
     def is_production(self) -> bool:

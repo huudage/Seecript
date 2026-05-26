@@ -5,6 +5,7 @@ import { api, ApiError } from '@/api/client'
 import { PageShell } from '@/components/layout/PageShell'
 import { useSessionStore } from '@/stores/session'
 import type { LibraryItem } from '@/types/schemas'
+import { VIDEO_TYPE_LABEL } from '@/lib/sections'
 import { cn } from '@/lib/utils'
 
 export default function LibraryPage() {
@@ -30,7 +31,7 @@ export default function LibraryPage() {
   }, [])
 
   const handlePick = (item: LibraryItem) => {
-    selectSample(item.id)
+    selectSample(item.id, item.video_type)
     navigate('/decompose')
   }
 
@@ -80,6 +81,9 @@ export default function LibraryPage() {
               >
                 <div className="absolute right-2 top-2 rounded-full bg-foreground/80 px-2 py-0.5 text-xs font-medium text-background">
                   {item.scene}
+                </div>
+                <div className="absolute left-2 top-2 rounded-full bg-primary/90 px-2 py-0.5 text-[10px] font-medium text-primary-foreground">
+                  {VIDEO_TYPE_LABEL[item.video_type]}
                 </div>
               </div>
               <div className="flex flex-1 flex-col gap-2 p-4">

@@ -1,15 +1,29 @@
-"""T2V (Text-to-Video) client — 用于长视频首尾帧扩展。
+"""T2V (Text-to-Video) client — Seedance 2.0 多模态视频生成。
 
-接ARCHITECTURE 阶段 5：`doubao-seedance-1.0-pro` 图生视频-首尾帧模式，
-单段 2-12s，把前段的尾帧作为下一段首帧依次拼出 30-60s。
+接 ARCHITECTURE 阶段 5：`doubao-seedance-2-0-260128`，支持
+prompt + 多张 reference_image + reference_video + reference_audio + generate_audio。
+对外保留 first_frame / last_frame 旧字段（自动归入 reference_images），
+让 seedance_chain.py 的首尾帧拼接逻辑无需改写。
 
 Providers：
 - `MockT2VClient`         离线 fixture，submit 立即返回 task_id；query 按 wall-clock 假装进度。
-- `DoubaoArkT2VClient`    火山方舟 Seedance 提交/查询两段式 API。
+- `DoubaoArkT2VClient`    火山方舟 Seedance 2.0 提交/查询两段式 API。
 
-接口对齐 ARCHITECTURE §5.2：
-- `submit(prompt, first_frame, last_frame=None, duration_seconds, size)` → SubmitResult
-- `query(task_id)` → QueryResult
+请求 body 字段以 Volc Ark Seedance 2.0 控制台返回为准：
+    POST /contents/generations/tasks
+    {
+      "model": "doubao-seedance-2-0-260128",
+      "content": [
+        {"type": "text",      "text": "..."},
+        {"type": "image_url", "image_url": {"url": "..."}, "role": "reference_image"},
+        {"type": "video_url", "video_url": {"url": "..."}, "role": "reference_video"},
+        {"type": "audio_url", "audio_url": {"url": "..."}, "role": "reference_audio"}
+      ],
+      "ratio": "16:9",
+      "duration": 5,
+      "generate_audio": false,
+      "watermark": false
+    }
 """
 from __future__ import annotations
 
@@ -17,8 +31,8 @@ import logging
 import time
 import uuid
 from abc import ABC, abstractmethod
-from dataclasses import dataclass
-from typing import Literal, Optional
+from dataclasses import dataclass, field
+from typing import List, Literal, Optional
 
 import httpx
 
@@ -65,12 +79,37 @@ class T2VClient(ABC):
         *,
         first_frame: Optional[str] = None,
         last_frame: Optional[str] = None,
+        reference_images: Optional[List[str]] = None,
+        reference_video: Optional[str] = None,
+        reference_audio: Optional[str] = None,
         duration_seconds: int = 5,
-        size: str = "1280x720",
+        ratio: Optional[str] = None,
+        generate_audio: Optional[bool] = None,
+        watermark: Optional[bool] = None,
     ) -> SubmitResult: ...
 
     @abstractmethod
     async def query(self, task_id: str) -> QueryResult: ...
+
+
+def _merge_reference_images(
+    first_frame: Optional[str],
+    last_frame: Optional[str],
+    reference_images: Optional[List[str]],
+) -> List[dict]:
+    """归一化所有图像引用 → [{url, role}] 列表，保持原序：first_frame → refs → last_frame。
+
+    旧调用方（gap_agent / seedance_chain）只传 first_frame/last_frame；
+    新调用方可以直接传 reference_images 多图。
+    """
+    items: list[dict] = []
+    if first_frame:
+        items.append({"url": first_frame, "role": "first_frame"})
+    for url in (reference_images or []):
+        items.append({"url": url, "role": "reference_image"})
+    if last_frame:
+        items.append({"url": last_frame, "role": "last_frame"})
+    return items
 
 
 class MockT2VClient(T2VClient):
@@ -88,8 +127,13 @@ class MockT2VClient(T2VClient):
         *,
         first_frame: Optional[str] = None,
         last_frame: Optional[str] = None,
+        reference_images: Optional[List[str]] = None,
+        reference_video: Optional[str] = None,
+        reference_audio: Optional[str] = None,
         duration_seconds: int = 5,
-        size: str = "1280x720",
+        ratio: Optional[str] = None,
+        generate_audio: Optional[bool] = None,
+        watermark: Optional[bool] = None,
     ) -> SubmitResult:
         started = time.perf_counter()
         task_id = f"mock-t2v-{uuid.uuid4().hex[:10]}"
@@ -118,31 +162,36 @@ class MockT2VClient(T2VClient):
 
 
 class DoubaoArkT2VClient(T2VClient):
-    """火山方舟 Seedance 1.0 Pro。
+    """火山方舟 Seedance 2.0。
 
     Submit  POST {base_url}/contents/generations/tasks
-                  {"model": <endpoint_id>, "content": [{"type":"text","text":prompt},
-                   {"type":"image_url","image_url":{"url":first_frame},"role":"first_frame"},
-                   {"type":"image_url","image_url":{"url":last_frame},"role":"last_frame"}],
-                   "duration": duration_seconds, "size": size}
-            → {"id": "..."}
+                  body 见模块顶部 docstring。
+            → {"id": "cgt-..."}
     Query   GET  {base_url}/contents/generations/tasks/{id}
             → {"status": "queued|running|succeeded|failed",
-               "content": {"video_url": "...", "cover_url": "..."}, "error": {...}}
+               "content": {"video_url": "...", "cover_url": "..."},
+               "error": {"code": "...", "message": "..."}}
 
-    注意：以上字段以方舟控制台返回为准；首尾帧 role 的具体写法在 PRD 中保留为占位，
-    实际接入时按 ARK 文档微调。
+    注意：Seedance 2.0 拒绝 duration<5；纯文本提交不需要任何 image_url；
+    带 reference_audio 时大概率要把 generate_audio=true，否则音轨被丢弃。
     """
 
     name = "doubao_ark"
 
     def __init__(self, settings: Settings) -> None:
-        if not settings.ark_api_key:
-            raise T2VError("ARK_API_KEY empty but T2V_PROVIDER=doubao_ark.", code="T2V_NO_KEY")
-        self._api_key = settings.ark_api_key
+        api_key = settings.t2v_api_key
+        if not api_key:
+            raise T2VError(
+                "ARK_T2V_API_KEY / ARK_API_KEY 都为空，但 T2V_PROVIDER=doubao_ark。",
+                code="T2V_NO_KEY",
+            )
+        self._api_key = api_key
         self._base_url = settings.ark_base_url.rstrip("/")
         self._model = settings.ark_t2v_model
         self._timeout = settings.t2v_timeout_seconds
+        self._default_ratio = settings.t2v_default_ratio
+        self._default_generate_audio = settings.t2v_generate_audio
+        self._default_watermark = settings.t2v_watermark
 
     def _headers(self) -> dict[str, str]:
         return {"Authorization": f"Bearer {self._api_key}", "Content-Type": "application/json"}
@@ -153,19 +202,47 @@ class DoubaoArkT2VClient(T2VClient):
         *,
         first_frame: Optional[str] = None,
         last_frame: Optional[str] = None,
+        reference_images: Optional[List[str]] = None,
+        reference_video: Optional[str] = None,
+        reference_audio: Optional[str] = None,
         duration_seconds: int = 5,
-        size: str = "1280x720",
+        ratio: Optional[str] = None,
+        generate_audio: Optional[bool] = None,
+        watermark: Optional[bool] = None,
     ) -> SubmitResult:
         url = f"{self._base_url}/contents/generations/tasks"
         content: list[dict] = [{"type": "text", "text": prompt}]
-        if first_frame:
-            content.append({"type": "image_url", "role": "first_frame",
-                            "image_url": {"url": first_frame}})
-        if last_frame:
-            content.append({"type": "image_url", "role": "last_frame",
-                            "image_url": {"url": last_frame}})
-        body = {"model": self._model, "content": content,
-                "duration": duration_seconds, "size": size}
+        for img in _merge_reference_images(first_frame, last_frame, reference_images):
+            content.append({
+                "type": "image_url",
+                "role": img["role"],
+                "image_url": {"url": img["url"]},
+            })
+        if reference_video:
+            content.append({
+                "type": "video_url",
+                "role": "reference_video",
+                "video_url": {"url": reference_video},
+            })
+        if reference_audio:
+            content.append({
+                "type": "audio_url",
+                "role": "reference_audio",
+                "audio_url": {"url": reference_audio},
+            })
+
+        body: dict = {
+            "model": self._model,
+            "content": content,
+            "ratio": ratio or self._default_ratio,
+            "duration": int(duration_seconds),
+            "generate_audio": (
+                self._default_generate_audio if generate_audio is None else bool(generate_audio)
+            ),
+            "watermark": (
+                self._default_watermark if watermark is None else bool(watermark)
+            ),
+        }
         started = time.perf_counter()
         try:
             async with httpx.AsyncClient(timeout=self._timeout) as client:
@@ -216,8 +293,8 @@ class DoubaoArkT2VClient(T2VClient):
 def get_t2v_client(settings: Optional[Settings] = None) -> T2VClient:
     s = settings or get_settings()
     if s.t2v_provider == "doubao_ark":
-        if not s.ark_api_key:
-            log.warning("T2V_PROVIDER=doubao_ark but ARK_API_KEY empty -> using mock")
+        if not s.t2v_api_key:
+            log.warning("T2V_PROVIDER=doubao_ark but no T2V/ARK key set -> using mock")
             return MockT2VClient(mock_duration_seconds=s.t2v_mock_duration_seconds)
         return DoubaoArkT2VClient(s)
     return MockT2VClient(mock_duration_seconds=s.t2v_mock_duration_seconds)

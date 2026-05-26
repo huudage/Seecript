@@ -17,14 +17,9 @@ import { PageShell } from '@/components/layout/PageShell'
 import { usePlanStore } from '@/stores/plan'
 import { useSessionStore } from '@/stores/session'
 import type { Gap, GapStatus, Scene, SectionKind } from '@/types/schemas'
+import { SECTION_HEX, SECTION_SHORT } from '@/lib/sections'
 import { cn } from '@/lib/utils'
 
-const SECTION_LABEL: Record<SectionKind, string> = { hook: 'Hook', body: 'Body', cta: 'CTA' }
-const SECTION_COLOR: Record<SectionKind, string> = {
-  hook: '#ec4899',
-  body: '#0ea5e9',
-  cta: '#f59e0b',
-}
 const STATUS_STROKE: Record<GapStatus, string> = {
   ok: '#10b981',
   warn: '#f59e0b',
@@ -55,16 +50,16 @@ function SectionNode({ data }: NodeProps<Node<SectionNodeData>>) {
       className="rounded-md border-2 px-3 py-2 shadow-sm"
       style={{
         background: '#fff',
-        borderColor: SECTION_COLOR[data.section],
+        borderColor: SECTION_HEX[data.section],
         minWidth: 180,
       }}
     >
-      <div className="text-xs font-bold uppercase" style={{ color: SECTION_COLOR[data.section] }}>
-        样例 · {SECTION_LABEL[data.section]}
+      <div className="text-xs font-bold uppercase" style={{ color: SECTION_HEX[data.section] }}>
+        样例 · {SECTION_SHORT[data.section]}
       </div>
       <div className="mt-1 text-sm font-medium text-slate-800">{data.label}</div>
       <div className="text-xs text-slate-500">{data.slotCount} 槽位 · {data.summary}</div>
-      <Handle type="source" position={Position.Right} style={{ background: SECTION_COLOR[data.section] }} />
+      <Handle type="source" position={Position.Right} style={{ background: SECTION_HEX[data.section] }} />
     </div>
   )
 }
@@ -75,19 +70,19 @@ function SceneNode({ data }: NodeProps<Node<SceneNodeData>>) {
       className="rounded-md border-2 px-3 py-2 shadow-sm"
       style={{
         background: '#fff',
-        borderColor: SECTION_COLOR[data.section],
+        borderColor: SECTION_HEX[data.section],
         minWidth: 200,
       }}
     >
-      <div className="text-xs font-medium" style={{ color: SECTION_COLOR[data.section] }}>
-        新方案 · {SECTION_LABEL[data.section]} · {data.duration.toFixed(1)}s
+      <div className="text-xs font-medium" style={{ color: SECTION_HEX[data.section] }}>
+        新方案 · {SECTION_SHORT[data.section]} · {data.duration.toFixed(1)}s
       </div>
       <div className="mt-1 text-sm font-medium text-slate-800">{data.label}</div>
       <div className="text-xs text-slate-500">来源：{data.source}</div>
       {data.narration && (
         <div className="mt-1 line-clamp-2 text-[11px] text-slate-600">{data.narration}</div>
       )}
-      <Handle type="target" position={Position.Left} style={{ background: SECTION_COLOR[data.section] }} />
+      <Handle type="target" position={Position.Left} style={{ background: SECTION_HEX[data.section] }} />
     </div>
   )
 }

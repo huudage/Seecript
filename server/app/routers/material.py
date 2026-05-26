@@ -1,8 +1,8 @@
-"""Module 3 — 新内容上传 + VLM 打标。
+"""Module 3 — 新内容上传 + 多模态 LLM 打标。
 
 `POST /api/material/upload`  multipart，落地到 `server/var/uploads/<session_id>/`。
 
-阶段 1：只做文件落盘 + mock 标签，不调真 VLM。阶段 2 接 VLMClient.tag_frames。
+阶段 1：只做文件落盘 + mock 标签，不调真 LLM。阶段 2 接多模态 LLM (seed-2.0-lite) 打标。
 """
 from __future__ import annotations
 

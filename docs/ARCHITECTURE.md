@@ -9,8 +9,8 @@
 | # | 模块 | 关键技术 |
 |---|---|---|
 | 1 | 素材库 | 静态 3 个内置样例（营销/剪辑/Motion Graph），预解析 manifest 缓存 |
-| 2 | 样例拆解（BGM/整体结构） | PySceneDetect 镜头切分 + librosa BGM 能量曲线 + ASR 口播 + VLM 帧打标 + LLM 段落结构（Hook/Body/CTA） |
-| 3 | 新内容输入 + 缺口识别 + 补全 | VLM 素材打标 + 槽位匹配算法 + 三种补全（结构重排 / 文案补全 / Seedream AIGC） |
+| 2 | 样例拆解（BGM/整体结构） | PySceneDetect 镜头切分 + librosa BGM 能量曲线 + librosa VAD 门控 ASR（无口播跳过）+ 多模态 LLM 帧打标 + 多模态 LLM 段落结构（按 video_type 三选一：marketing=hook/body/cta · editing=opening/climax/closing · motion_graph=intro/build/drop/outro） |
+| 3 | 新内容输入 + 缺口识别 + 补全 | 多模态 LLM 素材打标 + 槽位匹配算法 + 三种补全（结构重排 / 文案补全 / Seedance T2V 短片生成） |
 | 4 | 迁移过程可视化 | React Flow 流程图（样例槽位 → 新方案分镜的连线，缺口红虚线 / 补全绿标）+ 三栏可调宽度布局 |
 | 5 | 视频生成 | FFmpeg 主轨拼接 + doubao-seedance-1.0-pro 首尾帧扩展长视频 + SSE 推进度 + AB 双版本 |
 | 6 | 画面包装生成 | Remotion 包装轨道（字幕/标题条/转场/封面）独立子进程渲染 → ffmpeg overlay 叠加 |
@@ -46,13 +46,13 @@
 
 ### 2.3 AI 模型
 
+赛题原设 6 个 AI 干预点，落地时合并为 **3 类**（独立 VLM / T2I client 全部退役，画面理解全走多模态 LLM；图生静态画面这一步不再需要——缺口画面缺口直接走 T2V 生成 5-8s 短片）：
+
 | 用途 | 模型 | 说明 |
 |---|---|---|
-| 段落结构/Hook/CTA/补全文案 | Doubao-Seed-2.0-lite | 赛题给的 EP，OpenAI 兼容 |
-| 视频内容理解 | Doubao-Seed-1.6-vision (VLM) | 关键帧抽样后批量打标：封面风格 / 转场类型 / 字幕样式 / 物体场景 |
-| ASR 口播转写 | 豆包 bigasr_auc_turbo | 复用已有客户端 |
-| 文生图（缺口补全 + 首尾帧） | Seedream 4.0 | 配合 seedance 做长视频首尾帧 |
-| 视频生成 | doubao-seedance-1.0-pro | 图生视频-首尾帧模式，单段 2-12s，前段尾帧 → 下一段首帧 → 拼 30-60s |
+| 段落结构 / 帧打标 / 缺口文案 / NL 编辑 tool call | Doubao-Seed-2.0-lite（多模态）| 同一模型四个调用点：①按 video_type 三选一 prompt 给段落结构；②关键帧缩略图批量打标；③缺口文案补全；④NL 编辑 tool call。OpenAI 兼容，赛题给的 EP |
+| ASR 口播转写（VAD 门控） | 豆包 bigasr_auc_turbo | librosa 人声 VAD（300-3400Hz 频带能量阈值 0.35）先判定是否有口播；纯 BGM 视频跳过 ASR 直接走"靠画面+节奏"段落分析 |
+| 视频生成（aigc 缺口 + 长视频首尾帧） | doubao-seedance-1.0-pro | submit + 轮询 query 两段式；gap_agent aigc 分支生成 5-8s 短片填补槽位；长视频用首尾帧模式串接 30-60s |
 
 ### 2.4 视频合成（混合方案）
 
@@ -74,18 +74,19 @@
 2. 拆解（命中样例 → 复用缓存；新视频走完整链路）
                                           PySceneDetect ──► 镜头切分
                                           librosa ──────────► BGM 能量曲线
-                                          ASR ──────────────► 口播文本 ──► LLM ──► Hook/Body/CTA
-                                          VLM 抽帧 ─────────► 封面风格/转场/字幕样式
+                                          librosa VAD ──────► 有口播？──►(是) ASR 转写
+                                                                       └►(否) 跳过 ASR
+                                          多模态 LLM (seed-2.0-lite) ──► 帧打标 + 按 video_type 三选一 prompt 给段落结构
                                           ↑ SSE /api/decompose/stream 推每一步进度
 
 3. 上传新素材 ─────────────────────────►  POST /api/material/upload (multipart)
-                                          VLM ──────────────► 素材打标 + 段落推荐
+                                          多模态 LLM ──────► 素材打标 + 段落推荐
 
 4. 缺口识别 ──────────────────────────►  POST /api/gap/detect
-                                          槽位匹配算法 (Python 纯计算)
+                                          槽位匹配算法 (Python 纯计算，支持 9 个 SectionKind)
 
 5. 缺口补全 ──────────────────────────►  POST /api/gap/fill (action: rerank|copy|aigc)
-                                          LLM 文案 / Seedream 文生图 ──► 缺失画面
+                                          LLM 文案 / Seedance T2V (submit → 轮询) ──► 缺失画面
 
 6. 方案生成 ──────────────────────────►  POST /api/plan/build
                                           组装分镜时间线 (Pydantic)
@@ -130,12 +131,10 @@ seecript/
 │   │   ├── schemas.py                  # 重写：sample/decomp/material/slot/plan/render/edit
 │   │   ├── routers/                    # library / decompose / material / gap / plan / render / edit
 │   │   ├── services/
-│   │   │   ├── llm_client.py           # 保留 LLMClient 抽象 + 加 Doubao Seed-2.0-lite
-│   │   │   ├── asr_client.py           # 保留
-│   │   │   ├── vlm_client.py           # 新：Doubao Seed-1.6-vision
-│   │   │   ├── t2i_client.py           # 新：Seedream 4.0
-│   │   │   ├── t2v_client.py           # 改：doubao-seedance-1.0-pro 首尾帧
-│   │   │   ├── video/                  # scene_detect / audio_analysis / ocr / ffmpeg / remotion
+│   │   │   ├── llm_client.py           # LLMClient 抽象 + Doubao Seed-2.0-lite（多模态）
+│   │   │   ├── asr_client.py           # 保留 + VAD gate（纯 BGM 跳过）
+│   │   │   ├── t2v_client.py           # doubao-seedance-1.0-pro 首尾帧 submit+poll
+│   │   │   ├── video/                  # scene_detect / audio_analysis / voice_detect / ocr / ffmpeg / remotion
 │   │   │   ├── agent/                  # decompose_agent / gap_agent
 │   │   │   └── jobs/                   # 内存 JobStore + SSE 通道
 │   │   └── prompts/                    # 重写所有 prompt
@@ -145,7 +144,7 @@ seecript/
 │
 ├── docs/
 │   ├── ARCHITECTURE.md                 # 本文档
-│   └── AI-DESIGN.md                    # 6 个 LLM/VLM 干预点详解
+│   └── AI-DESIGN.md                    # 3 类 AI 干预点详解（多模态 LLM / VAD-门控 ASR / Seedance T2V）
 │
 └── run.ps1 / run.sh                    # 改：起后端 + 起前端 vite + 准备 remotion node_modules
 ```
@@ -172,9 +171,8 @@ seecript/
 
 所有外部模型走统一的 client 抽象基类，保留 `Mock` 实现保证 mock 模式端到端跑通：
 
-- `LLMClient`：`complete` / `complete_json` / `complete_with_tools`
-- `VLMClient`：`tag_frames(images, taxonomy)` / `describe(image)`
-- `T2IClient`：`generate(prompt, ref_image=None, size, style)`
+- `LLMClient`：`complete` / `complete_json` / `complete_with_tools` / `complete_multimodal`
+  - `complete_multimodal(system, user_text, images)` 是新加的多模态入口，OpenAI 兼容的 `content: [{type:"text"}, {type:"image_url"}]` 结构。**取代了原先独立的 VLMClient 和 T2IClient**：画面理解（帧打标、段落分析、素材打标）全走这里。
 - `T2VClient`：`submit(prompt, first_frame, last_frame=None, duration_seconds, size)` + `query(task_id)`
 - `ASRClient`：`transcribe(audio_bytes, lang)`
 
@@ -183,16 +181,18 @@ seecript/
 ```python
 class SampleManifest(BaseModel):
     sample_id: str
+    video_type: Literal["marketing", "editing", "motion_graph"]  # 决定段落 kind 三选一
     duration_seconds: float
-    shots: list[Shot]                      # PySceneDetect 输出
+    has_voice: bool                        # librosa VAD 判定，纯 BGM 视频为 False
+    shots: list[Shot]                      # PySceneDetect 输出，含多模态 LLM 帧标签
     rhythm: RhythmCurve                    # 镜头切换频次 + BGM 能量
-    sections: list[Section]                # Hook / Body / CTA 三段
+    sections: list[Section]                # marketing=hook/body/cta · editing=opening/climax/closing · motion_graph=intro/build/drop/outro
     packaging: PackagingProfile            # 字幕样式 / 标题条 / 转场统计 / 封面风格
 
 class Plan(BaseModel):
     plan_id: str
     sample_id: str
-    main_track: list[Scene]                # 主轨分镜（素材切片 + 时长 + 字幕）
+    main_track: list[Scene]                # 主轨分镜（素材切片 + 时长 + 字幕），source ∈ {sample, user_material, aigc_t2v}
     packaging_track: list[PackagingItem]   # 包装轨（字幕/标题条/贴纸/转场）
     bgm: BGMConfig
     variant: Literal["A", "B"]
@@ -238,15 +238,15 @@ class Plan(BaseModel):
 
 - 仓库由 KOCopilot fork 改名而来（HEAD: ddea395，2026-05-22）
 - 上一版形态为"创作者副驾"（人设/拆解/标题/评论/分镜五件套），已退役
-- **2026-05-26：阶段 0–5 全部落地，7 模块 mock 模式端到端跑通**
+- **2026-05-26：阶段 0–5 全部落地，7 模块 mock 模式端到端跑通；本日同步把 6 个 AI 干预点合并为 3 类（独立 VLM/T2I client 退役，多模态 LLM 接管画面理解；aigc 缺口由 Seedance T2V 直接生成短片）。**
 
 ### 8.1 落地清单（按模块）
 
 | 模块 | 后端 | 前端 | 测试 |
 |---|---|---|---|
-| 1 · 素材库 | `routers/library.py` 静态 3 样例 + manifest stub | `pages/Library.tsx` 卡片 + 选样例 | `test_library_and_manifest` |
-| 2 · 样例拆解 | `routers/decompose.py` + `services/agent/decompose_agent.py`（PySceneDetect / librosa / ASR / VLM / LLM） | `pages/Decompose.tsx` SSE 进度 + 节奏曲线 + 段落条 + 镜头网格 | （前端集成验证） |
-| 3 · 新内容 + 缺口 | `routers/material.py` 上传 + VLM 标签；`routers/gap.py` detect/fill（rerank/copy/aigc） | `pages/Compose.tsx` UploadDropzone + Gap 列表 + 三种动作 | `test_material_upload_and_plan_build` |
+| 1 · 素材库 | `routers/library.py` 静态 3 样例（marketing/editing/motion_graph 各一）+ manifest stub | `pages/Library.tsx` 卡片 + 选样例（带 video_type 标识） | `test_library_and_manifest`（覆盖 3 类型） |
+| 2 · 样例拆解 | `routers/decompose.py` + `services/agent/decompose_agent.py`（PySceneDetect / librosa BGM+VAD / 条件 ASR / 多模态 LLM 打标 / 多模态 LLM 段落三选一 prompt） | `pages/Decompose.tsx` SSE 进度 + 节奏曲线 + 段落条（9 个 kind 着色）+ 镜头网格 + video_type radio | `test_agent_routing::test_decompose_routes_by_video_type` |
+| 3 · 新内容 + 缺口 | `routers/material.py` 上传 + 多模态 LLM 标签；`routers/gap.py` detect/fill（rerank/copy/aigc=Seedance T2V） | `pages/Compose.tsx` UploadDropzone + Gap 列表 + 三种动作 | `test_material_upload_and_plan_build` + `test_agent_routing::test_gap_agent_aigc_*` |
 | 4 · 迁移可视化 | 复用 `gap.detect` 输出 | `pages/Migrate.tsx` React Flow 双列 + 状态着色 | （前端集成验证） |
 | 5 · 视频生成 | `services/render/pipeline.py` 6 步流水线 + 真实/mock fallback；`services/render/seedance_chain.py` 首尾帧拼接 | `pages/Render.tsx` 6 步进度条 + `<video>` 预览 + 分步耗时 | `test_render_submit_and_stream` |
 | 6 · 画面包装 | `remotion/` 独立 Node 项目 + `services/render` 子进程调用 | `pages/Render.tsx` 包装轨横向时间线 | （Remotion 单独 `npm test`） |
@@ -256,7 +256,7 @@ class Plan(BaseModel):
 
 ```bash
 cd server
-python -m pytest tests/ -v                # 35 passed（含 6 个 e2e）
+python -m pytest tests/ -v                # 49 passed（含 6 个 e2e + 10 个 agent 路由 + 19 个 LLM/Mock + 14 个 ASR）
 ```
 
 详细演示剧本见 [`docs/DEMO.md`](DEMO.md)。
