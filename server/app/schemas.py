@@ -87,6 +87,13 @@ class ErrorResponse(BaseModel):
 # Module 1 — 素材库 (Library)
 # =========================================================================
 
+LibrarySource = Literal["system", "user"]
+"""样例库来源：
+- system  内置爆款样例（server/samples/*，所有用户共享）
+- user    用户上传到自己样例库的样例（按 session 隔离；本期 MVP 只占位，下期接持久化）
+"""
+
+
 class LibraryItem(BaseModel):
     """`GET /api/library` 列表项。"""
 
@@ -97,6 +104,10 @@ class LibraryItem(BaseModel):
     duration_seconds: float
     shot_count: int
     cover_url: str
+    source: LibrarySource = Field(
+        default="system",
+        description="system=内置样例（所有用户共享），user=用户上传到样例库的样例。",
+    )
 
 
 class Shot(BaseModel):
@@ -184,6 +195,10 @@ class Material(BaseModel):
     recommended_section: Optional[SectionKind] = Field(
         default=None, description="LLM 推荐它适合放在样例哪一段（按 video_type 解读 kind）"
     )
+    sort_order: int = Field(
+        default=0,
+        description="前端拖拽排序产物，plan/build 时按它排 selected_materials；越小越靠前。",
+    )
 
 
 class MaterialUploadResponse(BaseModel):
@@ -206,10 +221,23 @@ class Gap(BaseModel):
     impact: Literal["high", "medium", "low"] = "medium"
     matched_material_id: Optional[str] = None
     note: Optional[str] = Field(default=None, description="状态原因，如『时长不足』『风格不符』")
+    sample_thumbnail_url: Optional[str] = Field(
+        default=None,
+        description="样例中该槽对应镜头的缩略图——前端点槽位时弹出『样例长这样』。",
+    )
 
 
 class GapDetectRequest(BaseModel):
     plan_id: str
+    session_id: Optional[str] = Field(
+        default=None,
+        description="上传素材的 session 隔离 ID；为空走 mock 素材（兼容旧调用）。",
+    )
+    allow_mock: bool = Field(
+        default=True,
+        description="True：session 为空时回退到内置 mock 素材（默认，方便 demo）；"
+                    "False：纯文本流程，缺素材时所有 gap 都标 miss，引导用户走 copy/aigc 补全。",
+    )
 
 
 class GapFillRequest(BaseModel):
@@ -226,6 +254,10 @@ class FillResult(BaseModel):
     action: FillAction
     new_material_id: Optional[str] = Field(default=None, description="aigc 生成产物或 rerank 选中的素材")
     narration: Optional[str] = Field(default=None, description="copy 动作的补全文案")
+    alternatives: list[str] = Field(
+        default_factory=list,
+        description="copy 动作 LLM 返回的备选文案，给前端三选一（普通采纳 / 删改 / 换一个）。",
+    )
     note: Optional[str] = None
     status: GapStatus = "ok"
 
@@ -275,6 +307,10 @@ class Plan(BaseModel):
         default=None,
         description="生成本 Plan 时的素材 session 隔离 ID，渲染时用来反查上传文件。",
     )
+    brief: Optional[str] = Field(
+        default=None,
+        description="构建 Plan 时用户给的主题/卖点；供 /api/edit 阶段二次理解上下文。",
+    )
     variant: Variant = "A"
     duration_seconds: float
     main_track: list[Scene]
@@ -285,6 +321,11 @@ class Plan(BaseModel):
 class PlanBuildRequest(BaseModel):
     sample_id: str
     session_id: str = Field(..., description="上传素材的 session 隔离 ID")
+    brief: Optional[str] = Field(
+        default=None,
+        max_length=500,
+        description="用户输入的主题/卖点文本，驱动 LLM 段落 prompt + 缺口需求生成。",
+    )
     selected_materials: list[str] = Field(default_factory=list, description="用户挑中的 material_id 列表")
     fills: list[FillResult] = Field(default_factory=list, description="已确认的缺口补全结果")
     variant: Variant = "A"

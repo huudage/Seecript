@@ -20,6 +20,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+from fastapi.staticfiles import StaticFiles
 
 from . import __version__
 from .config import get_settings
@@ -140,6 +141,18 @@ def create_app() -> FastAPI:
     app.include_router(plan.router, prefix="/api", tags=["plan"])
     app.include_router(render.router, prefix="/api", tags=["render"])
     app.include_router(edit.router, prefix="/api", tags=["edit"])
+
+    # ---- Static: 样例素材 ----
+    # 把 server/samples/ 暴露成 /samples/...；前端 cover_url / shot 缩略图 / video.mp4
+    # 都通过这个前缀加载。samples 目录不存在时跳过挂载（避免本地未拷贝样例就启不来）。
+    samples_dir = settings.log_dir.parent / "samples"
+    if samples_dir.exists():
+        app.mount("/samples", StaticFiles(directory=str(samples_dir)), name="samples")
+    else:
+        logging.getLogger("seecript.boot").warning(
+            "[boot] %s 不存在，/samples 静态路由未挂载（cover/缩略图将 404）",
+            samples_dir,
+        )
 
     return app
 

@@ -55,6 +55,7 @@ export interface LibraryItem {
   duration_seconds: number
   shot_count: number
   cover_url: string
+  source: 'system' | 'user'
 }
 
 export interface Shot {
@@ -128,6 +129,7 @@ export interface Material {
   thumbnail_url?: string | null
   tags: string[]
   recommended_section?: SectionKind | null
+  sort_order: number
 }
 
 export interface MaterialUploadResponse {
@@ -148,6 +150,7 @@ export interface Gap {
   impact: 'high' | 'medium' | 'low'
   matched_material_id?: MaterialId | null
   note?: string | null
+  sample_thumbnail_url?: string | null
 }
 
 export interface FillResult {
@@ -155,6 +158,7 @@ export interface FillResult {
   action: FillAction
   new_material_id?: MaterialId | null
   narration?: string | null
+  alternatives: string[]
   note?: string | null
   status: GapStatus
 }
@@ -201,6 +205,7 @@ export interface Plan {
   plan_id: PlanId
   sample_id: SampleId
   session_id?: string | null
+  brief?: string | null
   variant: Variant
   duration_seconds: number
   main_track: Scene[]
@@ -211,9 +216,17 @@ export interface Plan {
 export interface PlanBuildRequest {
   sample_id: SampleId
   session_id: SessionId
+  brief?: string | null
   selected_materials: MaterialId[]
   fills: FillResult[]
   variant: Variant
+}
+
+export interface GapDetectRequest {
+  plan_id: PlanId
+  session_id?: SessionId | null
+  /** false 时缺素材不回退 mock，所有 gap 都标 miss，逼用户走 copy/aigc 补全。 */
+  allow_mock?: boolean
 }
 
 // =========================================================================

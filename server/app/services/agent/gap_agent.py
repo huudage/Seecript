@@ -39,7 +39,7 @@ log = logging.getLogger("seecript.agent.gap")
 
 _COPY_SYSTEM = (
     "你是短视频口播作者。根据『槽位需求』和『可参考素材标签』，"
-    "生成一句口语化的中文口播（不超过 40 字），"
+    "生成一句口语化的中文口播主推文案（不超过 40 字），同时再写 2 句风格不同的备选。"
     "返回 JSON：{\"gap_fill_narration\": str, \"alternatives\": [str, str]}。"
 )
 
@@ -66,13 +66,56 @@ def detect_gaps(manifest: SampleManifest, materials: list[Material]) -> list[Gap
         rec = m.recommended_section if m.recommended_section in allowed_kinds else fallback_kind
         by_section.setdefault(rec, []).append(m)
 
+    # shot index → thumbnail_url 反查，给 Gap.sample_thumbnail_url 用
+    shot_thumb: dict[int, str | None] = {s.index: s.thumbnail_url for s in manifest.shots}
+
+    def _section_thumb(section_kind: str, shot_indices: list[int], slot: int) -> str | None:
+        """优先用该 section 的第 slot 个镜头，越界回落到首个有缩略图的镜头。"""
+        if shot_indices:
+            target = shot_indices[min(slot, len(shot_indices) - 1)]
+            url = shot_thumb.get(target)
+            if url:
+                return url
+            for idx in shot_indices:
+                if shot_thumb.get(idx):
+                    return shot_thumb[idx]
+        return None
+
+    # spillover 池：把所有"非本 section"的素材按 sort_order 拼成一个队列，
+    # 跨段借用时按需 pop，避免每个 slot 都借同一条 mat-mock-001。
+    # 注意：dict 在 Python 3.7+ 保留插入顺序，by_section 的 key 顺序与 allowed_kinds 一致。
+    spillover_queue = [m for lst in by_section.values() for m in lst]
+    spillover_used: set[str] = set()
+    fallback_idx = 0  # 队列耗尽后用它轮转，不要总是回到第一条
+
+    def _take_spillover(exclude_section: str) -> Material | None:
+        nonlocal fallback_idx
+        # 优先：未用过 + 非本 section
+        for m in spillover_queue:
+            if m.material_id in spillover_used:
+                continue
+            if m.recommended_section == exclude_section:
+                continue
+            spillover_used.add(m.material_id)
+            return m
+        # 全用完：在"非本 section"的候选里轮转
+        candidates = [m for m in spillover_queue if m.recommended_section != exclude_section]
+        if not candidates:
+            candidates = spillover_queue
+        if not candidates:
+            return None
+        pick = candidates[fallback_idx % len(candidates)]
+        fallback_idx += 1
+        return pick
+
     gaps: list[Gap] = []
     for sec in manifest.sections:
         # 简化：每 section 拿 sub-段数量 = min(3, len(shot_indices))
         slot_count = max(1, min(3, len(sec.shot_indices)))
         section_impact = "high" if sec.kind in _HIGH_IMPACT_KINDS else "medium"
         for slot in range(slot_count):
-            requirement = _slot_requirement(sec.kind, slot, manifest)
+            requirement = _slot_requirement(sec.kind, slot, slot_count, manifest)
+            thumb = _section_thumb(sec.kind, sec.shot_indices, slot)
             pool = by_section.get(sec.kind, [])
             if slot < len(pool):
                 m = pool[slot]
@@ -85,10 +128,11 @@ def detect_gaps(manifest: SampleManifest, materials: list[Material]) -> list[Gap
                     impact=section_impact,
                     matched_material_id=m.material_id,
                     note=f"匹配素材 {m.filename}",
+                    sample_thumbnail_url=thumb,
                 ))
             else:
-                # 试图从其他 section 借
-                spillover = next((p for k, lst in by_section.items() if k != sec.kind for p in lst), None)
+                # 试图从其他 section 借（轮转，不重复占用同一条）
+                spillover = _take_spillover(sec.kind)
                 if spillover:
                     gaps.append(Gap(
                         gap_id=f"gap-{sec.kind}-{slot}",
@@ -98,7 +142,8 @@ def detect_gaps(manifest: SampleManifest, materials: list[Material]) -> list[Gap
                         status="warn",
                         impact="medium",
                         matched_material_id=spillover.material_id,
-                        note="跨段借用，建议重排或 Seedance T2V 补全",
+                        note=f"跨段借用 {spillover.filename}，建议重排或 Seedance T2V 补全",
+                        sample_thumbnail_url=thumb,
                     ))
                 else:
                     gaps.append(Gap(
@@ -109,6 +154,7 @@ def detect_gaps(manifest: SampleManifest, materials: list[Material]) -> list[Gap
                         status="miss",
                         impact=section_impact,
                         note="无可用素材，建议 Seedance T2V 生成",
+                        sample_thumbnail_url=thumb,
                     ))
     return gaps
 
@@ -131,14 +177,18 @@ _SECTION_REQUIREMENT_HINTS: dict[str, str] = {
 }
 
 
-def _slot_requirement(section: SectionKind, slot: int, manifest: SampleManifest) -> str:
-    """根据 PackagingProfile + section 给出该槽的语义描述。"""
+def _slot_requirement(section: SectionKind, slot: int, slot_count: int, manifest: SampleManifest) -> str:
+    """根据 PackagingProfile + section + slot 给出该槽的语义描述。
+
+    所有 section 都显示 `N/total` 编号（让前端清单不会出现"3 行长得一模一样"的视觉重复）；
+    body/climax/build 这类多段主体多加一个 #N 强调段内顺序。
+    """
     style = manifest.packaging.subtitle_style
-    base = _SECTION_REQUIREMENT_HINTS.get(section, f"主体 #{slot + 1} · 演示/对比中景")
-    if slot > 0 and section in ("body", "climax", "build"):
-        # 主体段的第 2/3 槽位编号往上加
-        return f"{base} #{slot + 1}（{style}）"
-    return f"{base}（{style}）"
+    base = _SECTION_REQUIREMENT_HINTS.get(section, f"主体 · 演示/对比中景")
+    pos = f"{slot + 1}/{slot_count}"  # 1/3、2/3、3/3，比 0-index 直觉
+    if section in ("body", "climax", "build") and slot > 0:
+        return f"{base} #{slot + 1} · {pos}（{style}）"
+    return f"{base} · {pos}（{style}）"
 
 
 async def fill_gap(gap: Gap, action: FillAction, params: dict[str, Any]) -> FillResult:
@@ -160,15 +210,21 @@ async def fill_gap(gap: Gap, action: FillAction, params: dict[str, Any]) -> Fill
             f"可参考素材标签：{params.get('tag_hint', '无')}\n"
             f"创作者补充：{params.get('prompt_hint', '')}"
         )
+        narration = ""
+        alternatives: list[str] = []
         try:
             data = await llm.complete_json(_COPY_SYSTEM, user)
-            narration = (data.get("gap_fill_narration") or "").strip() if isinstance(data, dict) else ""
+            if isinstance(data, dict):
+                narration = (data.get("gap_fill_narration") or "").strip()
+                raw_alts = data.get("alternatives") or []
+                if isinstance(raw_alts, list):
+                    alternatives = [str(a).strip() for a in raw_alts if str(a).strip()][:3]
         except Exception as exc:
             log.warning("llm copy failed: %s", exc)
-            narration = ""
         return FillResult(
             gap_id=gap.gap_id, action="copy",
             narration=narration or "[fallback] 这里加一句口播，把刚才的对比强调一下。",
+            alternatives=alternatives,
             status="ok", note="LLM 文案补全完成",
         )
 

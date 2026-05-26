@@ -11,12 +11,15 @@ interface PlanState {
   gaps: Gap[]
   fills: FillResult[]
   variant: Variant
+  /** Compose 页右栏点击的 gap_id；驱动 GapPreviewDialog + 补全面板的目标。 */
+  selectedGapId: string | null
 
   setPlan: (plan: Plan | null) => void
   setGaps: (gaps: Gap[]) => void
   upsertFill: (fill: FillResult) => void
   removeFill: (gapId: string) => void
   setVariant: (variant: Variant) => void
+  setSelectedGapId: (gapId: string | null) => void
   reset: () => void
 }
 
@@ -25,6 +28,7 @@ export const usePlanStore = create<PlanState>((set) => ({
   gaps: [],
   fills: [],
   variant: 'A',
+  selectedGapId: null,
 
   setPlan: (plan) => set({ plan }),
   setGaps: (gaps) => set({ gaps }),
@@ -39,7 +43,9 @@ export const usePlanStore = create<PlanState>((set) => ({
   removeFill: (gapId) =>
     set((state) => ({ fills: state.fills.filter((f) => f.gap_id !== gapId) })),
   setVariant: (variant) => set({ variant }),
-  reset: () => set({ plan: null, gaps: [], fills: [], variant: 'A' }),
+  setSelectedGapId: (gapId) => set({ selectedGapId: gapId }),
+  reset: () =>
+    set({ plan: null, gaps: [], fills: [], variant: 'A', selectedGapId: null }),
 }))
 
 export type PlanIdOrNull = PlanId | null

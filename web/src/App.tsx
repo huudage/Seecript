@@ -1,6 +1,7 @@
-import { NavLink, Route, Routes, Navigate } from 'react-router-dom'
+import { NavLink, Route, Routes } from 'react-router-dom'
 import { cn } from '@/lib/utils'
 
+import HomePage from '@/pages/Home'
 import LibraryPage from '@/pages/Library'
 import DecomposePage from '@/pages/Decompose'
 import ComposePage from '@/pages/Compose'
@@ -8,11 +9,12 @@ import MigratePage from '@/pages/Migrate'
 import RenderPage from '@/pages/Render'
 
 const navItems = [
-  { to: '/library', label: '素材库' },
-  { to: '/decompose', label: '样例拆解' },
-  { to: '/compose', label: '新素材 / 缺口' },
-  { to: '/migrate', label: '迁移映射' },
-  { to: '/render', label: '生成 / 编辑' },
+  { to: '/', label: '首页', end: true },
+  { to: '/library', label: '素材库', end: false },
+  { to: '/decompose', label: '样例拆解', end: false },
+  { to: '/compose', label: '新素材 / 缺口', end: false },
+  { to: '/migrate', label: '迁移映射', end: false },
+  { to: '/render', label: '生成 / 编辑', end: false },
 ] as const
 
 export default function App() {
@@ -28,6 +30,7 @@ export default function App() {
               <NavLink
                 key={item.to}
                 to={item.to}
+                end={item.end}
                 className={({ isActive }) =>
                   cn(
                     'rounded-md px-3 py-1.5 transition-colors',
@@ -46,7 +49,7 @@ export default function App() {
 
       <main className="flex-1">
         <Routes>
-          <Route index element={<Navigate to="/library" replace />} />
+          <Route index element={<HomePage />} />
           <Route path="/library" element={<LibraryPage />} />
           <Route path="/decompose" element={<DecomposePage />} />
           <Route path="/compose" element={<ComposePage />} />

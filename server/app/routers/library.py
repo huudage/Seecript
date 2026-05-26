@@ -1,6 +1,8 @@
 """Module 1 — 素材库。
 
-`GET  /api/library`                  返回 3 个内置样例的卡片信息
+`GET  /api/library`                  返回样例卡片列表（默认 system + user 合并）
+`GET  /api/library?source=system`    只返回内置爆款样例
+`GET  /api/library?source=user`      只返回用户上传到样例库的样例（MVP 占位空数组）
 `GET  /api/sample/{id}/manifest`     返回单个样例的完整预解析 manifest
 
 阶段 1：纯静态 mock，3 个写死的样例（marketing / editing / motion_graph 各一）。
@@ -8,10 +10,13 @@
 """
 from __future__ import annotations
 
-from fastapi import APIRouter, HTTPException
+from typing import Optional
+
+from fastapi import APIRouter, HTTPException, Query
 
 from ..schemas import (
     LibraryItem,
+    LibrarySource,
     PackagingProfile,
     RhythmCurve,
     SampleManifest,
@@ -24,36 +29,48 @@ from ..schemas import (
 router = APIRouter()
 
 
-# 三个内置样例：营销 / 剪辑 / Motion Graph。所有 url 走 /samples 静态映射或占位。
-_LIBRARY: list[LibraryItem] = [
+# 三个内置系统样例：营销 / 剪辑 / Motion Graph。
+# duration_seconds 与 shot_count 必须和 server/samples/<id>/ 里的 video.mp4 + shot-NN.jpg 真实对应。
+_SYSTEM_LIBRARY: list[LibraryItem] = [
     LibraryItem(
         id="sample-marketing-01",
-        title="护肤新品种草｜30 秒大字幕痛点开场",
+        title="营销样例｜痛点开场 + 产品演示 + 行动引导",
         video_type="marketing",
         scene="营销",
-        duration_seconds=30.5,
-        shot_count=12,
+        duration_seconds=18.4,
+        shot_count=8,
         cover_url="/samples/sample-marketing-01/cover.jpg",
+        source="system",
     ),
     LibraryItem(
         id="sample-vlog-01",
-        title="一日咖啡店探店｜剪辑感节奏 vlog",
+        title="剪辑样例｜Vlog 节奏 · 氛围铺垫到高潮收尾",
         video_type="editing",
         scene="剪辑",
-        duration_seconds=48.0,
+        duration_seconds=118.2,
         shot_count=22,
         cover_url="/samples/sample-vlog-01/cover.jpg",
+        source="system",
     ),
     LibraryItem(
         id="sample-motion-01",
-        title="新功能上线动效宣传｜Motion Graph",
+        title="Motion Graph 样例｜标题入场 + 信息铺陈 + 爆点落版",
         video_type="motion_graph",
         scene="Motion Graph",
-        duration_seconds=18.2,
-        shot_count=9,
+        duration_seconds=31.2,
+        shot_count=12,
         cover_url="/samples/sample-motion-01/cover.jpg",
+        source="system",
     ),
 ]
+
+
+# 用户样例库：当前 MVP 不持久化，留空。下一期可接入 user_library_store + 上传转录流程。
+_USER_LIBRARY: list[LibraryItem] = []
+
+
+# 旧代码（gap.py 等）仍引用 _LIBRARY，给个聚合别名保持兼容。
+_LIBRARY = _SYSTEM_LIBRARY + _USER_LIBRARY
 
 
 # 3-段 / 4-段视频的占位 summary——按 video_type 写一组。
@@ -139,13 +156,22 @@ def _stub_manifest(sample_id: str, item: LibraryItem) -> SampleManifest:
 
 
 @router.get("/library", response_model=list[LibraryItem])
-async def list_library() -> list[LibraryItem]:
-    return _LIBRARY
+async def list_library(
+    source: Optional[LibrarySource] = Query(
+        default=None,
+        description="可选过滤：system=只返回内置样例；user=只返回用户上传到样例库的样例；不传=合并返回。",
+    ),
+) -> list[LibraryItem]:
+    if source == "system":
+        return _SYSTEM_LIBRARY
+    if source == "user":
+        return _USER_LIBRARY
+    return _SYSTEM_LIBRARY + _USER_LIBRARY
 
 
 @router.get("/sample/{sample_id}/manifest", response_model=SampleManifest)
 async def get_sample_manifest(sample_id: str) -> SampleManifest:
-    for item in _LIBRARY:
+    for item in _SYSTEM_LIBRARY + _USER_LIBRARY:
         if item.id == sample_id:
             return _stub_manifest(sample_id, item)
     raise HTTPException(status_code=404, detail=f"sample not found: {sample_id}")

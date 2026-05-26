@@ -4,8 +4,10 @@ import { Link } from 'react-router-dom'
 import { api } from '@/api/client'
 import { createSSE } from '@/api/sse'
 import { PageShell } from '@/components/layout/PageShell'
+import { TimelineTrack } from '@/components/timeline/TimelineTrack'
 import { useEditStore } from '@/stores/edit'
 import { usePlanStore } from '@/stores/plan'
+import { useProjectsStore } from '@/stores/projects'
 import type {
   EditApplyRequest,
   PackagingItem,
@@ -78,6 +80,9 @@ export default function RenderPage() {
   const variant = usePlanStore((s) => s.variant)
   const setVariant = usePlanStore((s) => s.setVariant)
 
+  const currentProjectId = useProjectsStore((s) => s.currentProjectId)
+  const upsertProject = useProjectsStore((s) => s.upsertProject)
+
   const editHistory = useEditStore((s) => s.history)
   const editCursor = useEditStore((s) => s.cursor)
   const pushEdit = useEditStore((s) => s.push)
@@ -120,6 +125,14 @@ export default function RenderPage() {
           setDone(d)
           setStep('done')
           setPercent(100)
+          if (currentProjectId) {
+            upsertProject({
+              id: currentProjectId,
+              last_video_url: d.video_url,
+              last_cover_url: d.cover_url,
+              status: 'rendered',
+            })
+          }
         },
         onError: (e) => setError(e.detail),
       })
@@ -127,7 +140,7 @@ export default function RenderPage() {
       setError(err instanceof Error ? err.message : '提交失败')
       setStep('idle')
     }
-  }, [plan, variant])
+  }, [plan, variant, currentProjectId, upsertProject])
 
   /* -- 自然语言编辑 -- */
   const [instruction, setInstruction] = useState('')
@@ -492,60 +505,6 @@ function Stat({ label, value, mono }: { label: string; value: string; mono?: boo
     <div className="rounded-md border border-border bg-background/40 px-2 py-1.5">
       <div className="text-[10px] uppercase tracking-wider text-muted-foreground">{label}</div>
       <div className={cn('truncate text-sm', mono && 'font-mono')}>{value}</div>
-    </div>
-  )
-}
-
-interface TimelineItem {
-  key: string
-  start: number
-  end: number
-  color: string
-  text: string
-}
-
-function TimelineTrack({
-  label,
-  duration,
-  items,
-  empty,
-}: {
-  label: string
-  duration: number
-  items: TimelineItem[]
-  empty?: string
-}) {
-  return (
-    <div>
-      <div className="mb-1 flex items-center justify-between text-[11px] text-muted-foreground">
-        <span>{label}</span>
-        <span className="font-mono">{duration.toFixed(1)}s · {items.length}</span>
-      </div>
-      <div className="relative h-8 overflow-hidden rounded-md border border-border bg-background/40">
-        {items.length === 0 ? (
-          <div className="flex h-full items-center justify-center text-[11px] text-muted-foreground">
-            {empty ?? '空'}
-          </div>
-        ) : (
-          items.map((it) => {
-            const left = Math.max(0, (it.start / duration) * 100)
-            const width = Math.max(0.5, ((it.end - it.start) / duration) * 100)
-            return (
-              <div
-                key={it.key}
-                className={cn(
-                  'absolute top-0 flex h-full items-center overflow-hidden border-r border-white/40 px-1 text-[10px] text-white',
-                  it.color,
-                )}
-                style={{ left: `${left}%`, width: `${width}%` }}
-                title={`${it.text} · ${it.start.toFixed(1)}–${it.end.toFixed(1)}s`}
-              >
-                <span className="truncate">{it.text}</span>
-              </div>
-            )
-          })
-        )}
-      </div>
     </div>
   )
 }

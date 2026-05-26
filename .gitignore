@@ -2,6 +2,8 @@
 .server.pid
 logs/
 server/var/
+server/.dev.log
+server/.dev.err
 
 # Secrets — NEVER commit these
 .env

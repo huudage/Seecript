@@ -23,28 +23,30 @@ router = APIRouter()
 @router.post("/plan/build", response_model=Plan)
 async def build_plan(req: PlanBuildRequest) -> Plan:
     plan_id = f"plan-{uuid.uuid4().hex[:10]}"
-    log.info("[plan] build plan=%s sample=%s materials=%d fills=%d variant=%s session=%s",
+    log.info("[plan] build plan=%s sample=%s materials=%d fills=%d variant=%s session=%s brief=%s",
              plan_id, req.sample_id, len(req.selected_materials), len(req.fills),
-             req.variant, req.session_id)
+             req.variant, req.session_id, (req.brief or "")[:30])
 
     # 优先用 fills 里 aigc 生成的 new_material_id，其次落到用户上传材料。
+    # 都没有时，回落到样例的具体镜头索引（source="sample"），让"纯文本"流程也能跑通。
     fill_by_section = {f.gap_id.split("-")[1] if "-" in f.gap_id else "body": f
                        for f in req.fills if f.new_material_id}
 
-    def _pick(section: str, fallback: str, idx: int = 0) -> tuple[str, str]:
+    def _pick(section: str, sample_shot_idx: int, idx: int = 0) -> tuple[str, str]:
         # 返回 (source, source_ref)
         fill = fill_by_section.get(section)
         if fill and fill.new_material_id:
-            return ("aigc_t2i", fill.new_material_id)
+            return ("aigc_t2v", fill.new_material_id)
         if idx < len(req.selected_materials):
             return ("user_material", req.selected_materials[idx])
-        return ("user_material", fallback)
+        # 无素材时直接借样例镜头，避免引用不存在的 mat-mock-XXX
+        return ("sample", f"sample-shot-{sample_shot_idx:02d}")
 
-    src0, ref0 = _pick("hook", "mat-mock-001", 0)
-    src1, ref1 = _pick("body", "mat-mock-002", 1)
-    src2, ref2 = _pick("body", "mat-mock-003", 2)
-    src3, ref3 = ("sample", "sample-shot-007")
-    src4, ref4 = _pick("cta", "mat-mock-004", 3)
+    src0, ref0 = _pick("hook", 0, 0)
+    src1, ref1 = _pick("body", 3, 1)
+    src2, ref2 = _pick("body", 5, 2)
+    src3, ref3 = ("sample", "sample-shot-07")
+    src4, ref4 = _pick("cta", 10, 3)
 
     main_track = [
         Scene(scene_id="sc-0", section="hook", source=src0, source_ref=ref0,  # type: ignore[arg-type]
@@ -72,6 +74,7 @@ async def build_plan(req: PlanBuildRequest) -> Plan:
         plan_id=plan_id,
         sample_id=req.sample_id,
         session_id=req.session_id,
+        brief=req.brief,
         variant=req.variant,
         duration_seconds=22.0,
         main_track=main_track,
