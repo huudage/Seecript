@@ -255,7 +255,9 @@ async def _fill_with_seedance(gap: Gap, params: dict[str, Any]) -> FillResult:
     generate_audio = params.get("generate_audio")
     watermark = params.get("watermark")
     poll_interval = float(params.get("poll_interval_seconds") or 4.0)
-    max_wait = float(params.get("max_wait_seconds") or 90.0)
+    # 默认 180s——Seedance 排队 + 渲染中位数约 60-120s，宽到 180s 减少超时返回 warn 的概率。
+    # 仍超时时返回 task_id，前端 /api/gap/aigc-refresh 可再次轮询。
+    max_wait = float(params.get("max_wait_seconds") or 180.0)
 
     try:
         submit = await t2v.submit(
@@ -312,3 +314,40 @@ async def _fill_with_seedance(gap: Gap, params: dict[str, Any]) -> FillResult:
                 note=f"Seedance 仍在渲染（{last_status}，已 {int(time.time() - started)}s），请稍后刷新（task={task_id}）",
             )
         await asyncio.sleep(poll_interval)
+
+
+async def refresh_aigc_task(gap: Gap, task_id: str) -> FillResult:
+    """前端轮询入口：根据已有 task_id 再去查 Seedance 一次状态。
+
+    - succeeded → 回写 FillResult(status=ok, new_material_id=task_id)
+    - failed    → status=warn + fail_reason
+    - pending/processing → 仍 warn，note 带最新状态，前端可再点一次刷新
+    """
+    t2v = get_t2v_client()
+    try:
+        q = await t2v.query(task_id)
+    except T2VError as exc:
+        log.warning("[gap-refresh] t2v query failed task=%s: %s", task_id, exc)
+        return FillResult(
+            gap_id=gap.gap_id, action="aigc",
+            new_material_id=task_id, status="warn",
+            note=f"Seedance 查询失败：{exc}（task={task_id}，请稍后再试）",
+        )
+
+    if q.status == "succeeded":
+        return FillResult(
+            gap_id=gap.gap_id, action="aigc",
+            new_material_id=task_id, status="ok",
+            note=f"Seedance 生成完成（{q.provider}）",
+        )
+    if q.status == "failed":
+        return FillResult(
+            gap_id=gap.gap_id, action="aigc",
+            new_material_id=task_id, status="warn",
+            note=f"Seedance 生成失败：{q.fail_reason or 'unknown'}",
+        )
+    return FillResult(
+        gap_id=gap.gap_id, action="aigc",
+        new_material_id=task_id, status="warn",
+        note=f"Seedance 仍在 {q.status}，请稍后再点刷新（task={task_id}）",
+    )

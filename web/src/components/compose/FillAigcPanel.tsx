@@ -7,9 +7,9 @@ import { cn } from '@/lib/utils'
 /**
  * AIGC 补全：触发 Seedance T2V 生成 5-8s 短片。
  *
- * - 后端 /gap/fill 内部自带轮询（最长 90s）；前端就显示一个 spinner + 进度提示
- * - 已有 fill：直接展示 new_material_id / note；提供"重新生成"按钮
- * - 当前不实现细粒度 SSE，按计划 E 节"阶段 6 再补"
+ * - 后端 /gap/fill 内部自带轮询（最长 180s），超时也会带 task_id 回来
+ * - 已有 fill：展示状态；status=warn 且能解析出 task_id 时给"刷新任务"按钮
+ *   走 /gap/aigc-refresh 再查一次而不是重新提交，省 Seedance 配额
  */
 export function FillAigcPanel({
   gap,
@@ -23,6 +23,7 @@ export function FillAigcPanel({
   const [prompt, setPrompt] = useState<string>(gap.requirement)
   const [duration, setDuration] = useState<number>(5)
   const [loading, setLoading] = useState(false)
+  const [refreshing, setRefreshing] = useState(false)
   const [err, setErr] = useState<string | null>(null)
 
   const handleRun = useCallback(async () => {
@@ -42,6 +43,27 @@ export function FillAigcPanel({
       setLoading(false)
     }
   }, [duration, gap.gap_id, gap.requirement, onResult, prompt])
+
+  // task_id 优先取 new_material_id；超时 note 里也带 "task=cgt-..." 兜底解析。
+  const taskId = fill?.new_material_id || extractTaskId(fill?.note)
+  const canRefresh = !!fill && fill.status !== 'ok' && !!taskId
+
+  const handleRefresh = useCallback(async () => {
+    if (!fill || !taskId) return
+    setRefreshing(true)
+    setErr(null)
+    try {
+      const result = await api.post<FillResult>('/gap/aigc-refresh', {
+        gap_id: fill.gap_id,
+        task_id: taskId,
+      })
+      onResult(result)
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : '刷新失败')
+    } finally {
+      setRefreshing(false)
+    }
+  }, [fill, onResult, taskId])
 
   return (
     <div className="space-y-2 rounded-md border border-border bg-background/40 p-3">
@@ -82,14 +104,14 @@ export function FillAigcPanel({
             (loading || !prompt.trim()) && 'cursor-not-allowed opacity-60',
           )}
         >
-          {loading ? '生成中…（最长 90s）' : fill ? '重新生成' : '开始生成'}
+          {loading ? '生成中…（最长 180s）' : fill ? '重新生成' : '开始生成'}
         </button>
       </div>
 
       {err && <p className="text-[11px] text-destructive">{err}</p>}
 
       {fill && (
-        <div className="rounded border border-border bg-secondary/50 p-2 text-xs">
+        <div className="space-y-2 rounded border border-border bg-secondary/50 p-2 text-xs">
           <p>
             状态：
             <span
@@ -106,9 +128,28 @@ export function FillAigcPanel({
           {fill.new_material_id && (
             <p className="font-mono text-[11px] text-muted-foreground">task = {fill.new_material_id}</p>
           )}
-          {fill.note && <p className="mt-1 text-muted-foreground">{fill.note}</p>}
+          {fill.note && <p className="text-muted-foreground">{fill.note}</p>}
+          {canRefresh && (
+            <button
+              onClick={handleRefresh}
+              disabled={refreshing}
+              className={cn(
+                'rounded-md border border-primary/60 bg-primary/10 px-2 py-1 text-[11px] font-medium text-primary transition-colors hover:bg-primary/20',
+                refreshing && 'cursor-not-allowed opacity-60',
+              )}
+            >
+              {refreshing ? '查询中…' : '刷新任务状态'}
+            </button>
+          )}
         </div>
       )}
     </div>
   )
+}
+
+/** 从超时 note 里抓 "task=cgt-xxx" 兜底；优先用 new_material_id 字段。 */
+function extractTaskId(note: string | null | undefined): string | null {
+  if (!note) return null
+  const m = note.match(/task=([\w-]+)/)
+  return m?.[1] ?? null
 }

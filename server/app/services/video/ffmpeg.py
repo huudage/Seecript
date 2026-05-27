@@ -99,6 +99,51 @@ def extract_frame(video_path: str | Path, time_seconds: float, dst: str | Path) 
     return out
 
 
+def trim(
+    src: str | Path,
+    dst: str | Path,
+    *,
+    start: float,
+    duration: float,
+    reencode: bool = True,
+) -> Path:
+    """按 [start, start+duration] 切片视频。
+
+    - reencode=True：用 libx264 重编码，scene 拼接时所有切片用统一参数，concat 才不会色彩/分辨率错乱
+    - reencode=False：-c copy 流复制（更快，但要求所有输入参数一致）
+    """
+    if not ffmpeg_available():
+        raise FFmpegError("ffmpeg not found in PATH")
+    src_p = Path(src)
+    if not src_p.exists():
+        raise FileNotFoundError(src_p)
+    out = Path(dst)
+    out.parent.mkdir(parents=True, exist_ok=True)
+
+    if reencode:
+        cmd = [
+            "ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
+            "-ss", f"{start:.3f}", "-i", str(src_p),
+            "-t", f"{duration:.3f}",
+            "-c:v", "libx264", "-preset", "veryfast", "-crf", "22",
+            "-c:a", "aac", "-b:a", "128k",
+            "-pix_fmt", "yuv420p",
+            str(out),
+        ]
+    else:
+        cmd = [
+            "ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
+            "-ss", f"{start:.3f}", "-i", str(src_p),
+            "-t", f"{duration:.3f}",
+            "-c", "copy",
+            str(out),
+        ]
+    proc = subprocess.run(cmd, capture_output=True, text=True, check=False)
+    if proc.returncode != 0:
+        raise FFmpegError(f"trim failed: {proc.stderr.strip()}")
+    return out
+
+
 def concat(inputs: list[str | Path], dst: str | Path, *, reencode: bool = False) -> Path:
     """concat demuxer。reencode=True 时用 -c copy（要求同编码），否则统一转 H.264 + AAC。"""
     if not ffmpeg_available():

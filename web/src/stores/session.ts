@@ -16,13 +16,15 @@ import type {
  */
 interface SessionState {
   selectedSampleId: SampleId | null
+  /** 当前样例来源：system=从内置素材库挑的（video_type 锁定），user=用户自传的视频（待选 type）。 */
+  sampleSource: 'system' | 'user' | null
   videoType: VideoType
   manifest: SampleManifest | null
   sessionId: SessionId | null
   materials: Material[]
   brief: string
 
-  selectSample: (id: SampleId | null, videoType?: VideoType) => void
+  selectSample: (id: SampleId | null, videoType?: VideoType, source?: 'system' | 'user') => void
   setVideoType: (videoType: VideoType) => void
   setManifest: (manifest: SampleManifest | null) => void
   setSession: (sessionId: SessionId | null) => void
@@ -36,16 +38,20 @@ interface SessionState {
 
 export const useSessionStore = create<SessionState>((set) => ({
   selectedSampleId: null,
+  sampleSource: null,
   videoType: 'marketing',
   manifest: null,
   sessionId: null,
   materials: [],
   brief: '',
 
-  selectSample: (id, videoType) =>
+  selectSample: (id, videoType, source) =>
     set((state) => ({
       selectedSampleId: id,
+      sampleSource: id ? (source ?? state.sampleSource ?? 'system') : null,
       videoType: videoType ?? state.videoType,
+      // 切到新样例时清空旧 manifest，避免拆解结果错位。
+      manifest: id !== state.selectedSampleId ? null : state.manifest,
     })),
   setVideoType: (videoType) => set({ videoType }),
   setManifest: (manifest) => set({ manifest }),
@@ -78,6 +84,7 @@ export const useSessionStore = create<SessionState>((set) => ({
   reset: () =>
     set({
       selectedSampleId: null,
+      sampleSource: null,
       videoType: 'marketing',
       manifest: null,
       sessionId: null,

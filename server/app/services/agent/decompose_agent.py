@@ -37,6 +37,20 @@ from ...schemas import (
 log = logging.getLogger("seecript.agent.decompose")
 
 
+# server/samples/<sample_id>/shot-NN.jpg 实际存在范围——agent 拿到 shot 索引后
+# 先查盘上有没有对应的 jpg，没有就置 None，避免前端 404。
+_SAMPLES_ROOT = Path(__file__).resolve().parents[3] / "samples"
+
+
+def _shot_thumbnail_url(sample_id: str, index: int) -> Optional[str]:
+    if not sample_id:
+        return None
+    candidate = _SAMPLES_ROOT / sample_id / f"shot-{index:02d}.jpg"
+    if candidate.is_file():
+        return f"/samples/{sample_id}/shot-{index:02d}.jpg"
+    return None
+
+
 # ----------------------------- Prompt 模板 -----------------------------------
 
 _SECTIONS_TASK_HINT = (
@@ -109,7 +123,7 @@ async def decompose(
             start=s.start,
             end=s.end,
             duration=s.duration,
-            thumbnail_url=f"/samples/{sample_id}/shot-{s.index:02d}.jpg",
+            thumbnail_url=_shot_thumbnail_url(sample_id, s.index),
         )
         for s in raw_shots
     ]

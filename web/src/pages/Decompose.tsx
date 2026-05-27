@@ -28,12 +28,21 @@ interface DoneEvent {
   payload: { sample_id: string; manifest: SampleManifest }
 }
 
+interface DecomposeUploadResponse {
+  sample_id: string
+  filename: string
+  size_bytes: number
+  video_url: string
+}
+
 export default function DecomposePage() {
   const selectedSampleId = useSessionStore((s) => s.selectedSampleId)
+  const sampleSource = useSessionStore((s) => s.sampleSource)
   const videoType = useSessionStore((s) => s.videoType)
   const setVideoType = useSessionStore((s) => s.setVideoType)
   const manifest = useSessionStore((s) => s.manifest)
   const setManifest = useSessionStore((s) => s.setManifest)
+  const selectSample = useSessionStore((s) => s.selectSample)
   const navigate = useNavigate()
 
   const [progress, setProgress] = useState<{ step: string; percent: number; note?: string }>({
@@ -41,8 +50,39 @@ export default function DecomposePage() {
     percent: 0,
   })
   const [running, setRunning] = useState(false)
+  const [uploading, setUploading] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [uploadedFile, setUploadedFile] = useState<{ filename: string; size_bytes: number } | null>(null)
   const sseRef = useRef<SSEHandle | null>(null)
+  const fileInputRef = useRef<HTMLInputElement | null>(null)
+
+  // sampleSource:
+  //   'system' = 从素材库挑的内置样例 → video_type 锁定，直接拆解
+  //   'user'   = 用户上传到 server/var/uploads/decompose/<sample_id>/ 的视频 → video_type 可选
+  //   null     = 没选/没传任何样例 → 引导用户去素材库或上传
+  const isSystemSample = sampleSource === 'system'
+  const isUserSample = sampleSource === 'user'
+
+  const handlePickFile = useCallback(
+    async (file: File | null) => {
+      if (!file) return
+      setError(null)
+      setUploading(true)
+      try {
+        const fd = new FormData()
+        fd.append('file', file)
+        const resp = await api.post<DecomposeUploadResponse>('/decompose/upload', fd)
+        // 切换到 user 来源；videoType 保持当前选择，让用户在 radios 里改。
+        selectSample(resp.sample_id, videoType, 'user')
+        setUploadedFile({ filename: resp.filename, size_bytes: resp.size_bytes })
+      } catch (err) {
+        setError(err instanceof Error ? err.message : '上传失败')
+      } finally {
+        setUploading(false)
+      }
+    },
+    [selectSample, videoType],
+  )
 
   const run = useCallback(async () => {
     if (!selectedSampleId) return
@@ -85,66 +125,112 @@ export default function DecomposePage() {
     }
   }, [])
 
-  if (!selectedSampleId) {
-    return (
-      <PageShell title="样例拆解" subtitle="先去素材库挑一个样例。">
-        <div className="rounded-lg border border-dashed border-border bg-card p-8 text-sm text-muted-foreground">
-          尚未选中样例。
-          <Link to="/library" className="ml-2 text-primary underline-offset-4 hover:underline">
-            返回素材库
-          </Link>
-        </div>
-      </PageShell>
-    )
-  }
-
   return (
     <PageShell
       title="样例拆解"
-      subtitle={`样例 ${selectedSampleId} · PySceneDetect → librosa VAD → ASR（按需）→ 多模态 LLM 帧标签 + 段落结构`}
+      subtitle="从素材库挑样例（已知类型直接拆），或上传一段自己的视频自选类型再拆。PySceneDetect → librosa VAD → ASR（按需）→ 多模态 LLM 帧标签 + 段落结构。"
     >
+      {/* ====== 来源块：系统样例锁定卡 / 用户上传卡 / 双入口 ====== */}
       <div className="mb-6 rounded-lg border border-border bg-card p-4">
-        <div className="mb-2 flex items-center justify-between text-xs text-muted-foreground">
-          <span className="font-semibold text-foreground">视频类型</span>
-          <span>决定段落 prompt（marketing / editing / motion_graph）</span>
-        </div>
-        <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
-          {VIDEO_TYPE_OPTIONS.map((vt) => (
-            <label
-              key={vt}
-              className={cn(
-                'flex cursor-pointer flex-col gap-1 rounded-md border px-3 py-2 transition-colors',
-                videoType === vt
-                  ? 'border-primary bg-primary/5'
-                  : 'border-border bg-background hover:bg-secondary/50',
-                running && 'pointer-events-none opacity-60',
+        {isSystemSample && selectedSampleId && (
+          <div className="space-y-2">
+            <div className="flex items-center justify-between text-xs text-muted-foreground">
+              <span className="font-semibold text-foreground">来源 · 系统样例（已锁定类型）</span>
+              <Link to="/library" className="text-primary underline-offset-4 hover:underline">
+                换一个样例 →
+              </Link>
+            </div>
+            <div className="flex items-center gap-2 text-sm">
+              <span className="font-mono text-xs text-muted-foreground">{selectedSampleId}</span>
+              <span className="rounded-full border border-primary bg-primary/10 px-2 py-0.5 text-xs font-medium text-primary">
+                {VIDEO_TYPE_LABEL[videoType]}
+              </span>
+              <span className="text-[11px] text-muted-foreground">{VIDEO_TYPE_HINT[videoType]}</span>
+            </div>
+          </div>
+        )}
+
+        {isUserSample && selectedSampleId && (
+          <div className="space-y-3">
+            <div className="flex items-center justify-between text-xs text-muted-foreground">
+              <span className="font-semibold text-foreground">来源 · 用户上传</span>
+              <button
+                onClick={() => {
+                  selectSample(null)
+                  setUploadedFile(null)
+                  setManifest(null)
+                }}
+                className="text-primary underline-offset-4 hover:underline"
+                disabled={running}
+              >
+                重新上传 →
+              </button>
+            </div>
+            <div className="flex items-center gap-2 text-xs">
+              <span className="rounded-md bg-secondary/50 px-2 py-1 font-mono">{selectedSampleId}</span>
+              {uploadedFile && (
+                <span className="text-muted-foreground">
+                  {uploadedFile.filename} · {(uploadedFile.size_bytes / 1024 / 1024).toFixed(1)}MB
+                </span>
               )}
-            >
-              <div className="flex items-center gap-2 text-sm font-medium">
-                <input
-                  type="radio"
-                  name="video_type"
-                  value={vt}
-                  checked={videoType === vt}
-                  onChange={() => setVideoType(vt)}
-                  disabled={running}
-                  className="accent-primary"
-                />
-                <span>{VIDEO_TYPE_LABEL[vt]}</span>
-              </div>
-              <span className="text-[11px] text-muted-foreground">{VIDEO_TYPE_HINT[vt]}</span>
-            </label>
-          ))}
-        </div>
+            </div>
+            <VideoTypePicker
+              value={videoType}
+              onChange={setVideoType}
+              disabled={running}
+            />
+          </div>
+        )}
+
+        {!selectedSampleId && (
+          <div className="space-y-4">
+            <p className="text-xs text-muted-foreground">
+              选个起点：去素材库挑一段内置爆款样例，或者上传一段自己的视频开始拆解。
+            </p>
+            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+              <Link
+                to="/library"
+                className="flex flex-col items-start gap-1 rounded-lg border border-border bg-background p-4 transition-colors hover:border-primary hover:bg-primary/5"
+              >
+                <span className="text-sm font-semibold">从素材库挑样例</span>
+                <span className="text-[11px] text-muted-foreground">
+                  内置 3 类爆款样例（营销 / 剪辑 / Motion Graph），点选即拆解。
+                </span>
+              </Link>
+              <button
+                onClick={() => fileInputRef.current?.click()}
+                disabled={uploading}
+                className={cn(
+                  'flex flex-col items-start gap-1 rounded-lg border border-dashed border-border bg-background p-4 text-left transition-colors hover:border-primary hover:bg-primary/5',
+                  uploading && 'cursor-not-allowed opacity-60',
+                )}
+              >
+                <span className="text-sm font-semibold">
+                  {uploading ? '上传中…' : '上传自己的视频'}
+                </span>
+                <span className="text-[11px] text-muted-foreground">
+                  mp4 / mov / webm，单文件 ≤ 200MB；上传后选类型再拆。
+                </span>
+              </button>
+            </div>
+            <input
+              ref={fileInputRef}
+              type="file"
+              hidden
+              accept="video/mp4,video/quicktime,video/webm"
+              onChange={(e) => void handlePickFile(e.target.files?.[0] ?? null)}
+            />
+          </div>
+        )}
       </div>
 
       <div className="mb-6 flex flex-wrap items-center gap-3">
         <button
           onClick={run}
-          disabled={running}
+          disabled={running || !selectedSampleId}
           className={cn(
             'rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground transition-opacity',
-            running && 'cursor-not-allowed opacity-60',
+            (running || !selectedSampleId) && 'cursor-not-allowed opacity-60',
           )}
         >
           {manifest ? '重新拆解' : '开始拆解'}
@@ -168,6 +254,53 @@ export default function DecomposePage() {
 
       {manifest && <ManifestView manifest={manifest} />}
     </PageShell>
+  )
+}
+
+function VideoTypePicker({
+  value,
+  onChange,
+  disabled,
+}: {
+  value: VideoType
+  onChange: (v: VideoType) => void
+  disabled?: boolean
+}) {
+  return (
+    <div className="space-y-2">
+      <div className="flex items-center justify-between text-xs text-muted-foreground">
+        <span className="font-semibold text-foreground">视频类型</span>
+        <span>决定段落 prompt（marketing / editing / motion_graph）</span>
+      </div>
+      <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
+        {VIDEO_TYPE_OPTIONS.map((vt) => (
+          <label
+            key={vt}
+            className={cn(
+              'flex cursor-pointer flex-col gap-1 rounded-md border px-3 py-2 transition-colors',
+              value === vt
+                ? 'border-primary bg-primary/5'
+                : 'border-border bg-background hover:bg-secondary/50',
+              disabled && 'pointer-events-none opacity-60',
+            )}
+          >
+            <div className="flex items-center gap-2 text-sm font-medium">
+              <input
+                type="radio"
+                name="video_type"
+                value={vt}
+                checked={value === vt}
+                onChange={() => onChange(vt)}
+                disabled={disabled}
+                className="accent-primary"
+              />
+              <span>{VIDEO_TYPE_LABEL[vt]}</span>
+            </div>
+            <span className="text-[11px] text-muted-foreground">{VIDEO_TYPE_HINT[vt]}</span>
+          </label>
+        ))}
+      </div>
+    </div>
   )
 }
 

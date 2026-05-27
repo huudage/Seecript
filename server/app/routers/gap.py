@@ -14,10 +14,11 @@ from __future__ import annotations
 import logging
 
 from fastapi import APIRouter, HTTPException
+from pydantic import BaseModel
 
 from ..routers.library import _LIBRARY, _stub_manifest
 from ..schemas import FillResult, Gap, GapDetectRequest, GapFillRequest, Material
-from ..services.agent.gap_agent import detect_gaps, fill_gap
+from ..services.agent.gap_agent import detect_gaps, fill_gap, refresh_aigc_task
 from ..services.materials import gap_store, material_store
 from ..services.plans import plan_store
 
@@ -79,3 +80,25 @@ async def fill(req: GapFillRequest) -> FillResult:
             detail=f"gap not found: {req.gap_id}（请先调用 /gap/detect）",
         )
     return await fill_gap(gap, req.action, req.params)
+
+
+class AigcRefreshRequest(BaseModel):
+    """`POST /api/gap/aigc-refresh` —— 用 task_id 再查一次 Seedance 任务状态。
+
+    用于上次 fill 已超时返回 warn + task_id 后，前端按钮触发重查；
+    避免反复重新提交，省 Seedance 配额。
+    """
+
+    gap_id: str
+    task_id: str
+
+
+@router.post("/gap/aigc-refresh", response_model=FillResult)
+async def aigc_refresh(req: AigcRefreshRequest) -> FillResult:
+    gap = gap_store.get(req.gap_id)
+    if gap is None:
+        raise HTTPException(
+            status_code=404,
+            detail=f"gap not found: {req.gap_id}（请先调用 /gap/detect）",
+        )
+    return await refresh_aigc_task(gap, req.task_id)

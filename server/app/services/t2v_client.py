@@ -1,7 +1,9 @@
 """T2V (Text-to-Video) client — Seedance 2.0 多模态视频生成。
 
-接 ARCHITECTURE 阶段 5：`doubao-seedance-2-0-260128`，支持
-prompt + 多张 reference_image + reference_video + reference_audio + generate_audio。
+接 ARCHITECTURE 阶段 5：默认 `doubao-seedance-2-0-fast-260128`（fast 变体，480p/720p、
+4-15s、低延迟低成本，适合 demo / 高频迭代）；如需 1080p 或更高保真切回标准版
+`doubao-seedance-2-0-260128`。两者请求体结构完全相同，差别只在模型名。
+支持 prompt + 多张 reference_image + reference_video + reference_audio + generate_audio。
 对外保留 first_frame / last_frame 旧字段（自动归入 reference_images），
 让 seedance_chain.py 的首尾帧拼接逻辑无需改写。
 
@@ -12,7 +14,7 @@ Providers：
 请求 body 字段以 Volc Ark Seedance 2.0 控制台返回为准：
     POST /contents/generations/tasks
     {
-      "model": "doubao-seedance-2-0-260128",
+      "model": "doubao-seedance-2-0-fast-260128",
       "content": [
         {"type": "text",      "text": "..."},
         {"type": "image_url", "image_url": {"url": "..."}, "role": "reference_image"},

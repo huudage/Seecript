@@ -71,6 +71,7 @@ export default function ComposePage() {
   const [filling, setFilling] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [previewGapId, setPreviewGapId] = useState<string | null>(null)
+  const [briefTouched, setBriefTouched] = useState(false)
 
   const sortedMaterials = useMemo(
     () => materials.slice().sort((a, b) => a.sort_order - b.sort_order),
@@ -131,6 +132,11 @@ export default function ComposePage() {
         setError('请先在素材库挑一个样例')
         return null
       }
+      if (brief.trim().length === 0) {
+        setBriefTouched(true)
+        setError('请先输入主题——LLM 需要它作为语义锚定，否则缺口推断会失真。')
+        return null
+      }
       setError(null)
       setAnalyzing(true)
       try {
@@ -152,7 +158,23 @@ export default function ComposePage() {
           allow_mock: sortedMaterials.length > 0,
         }
         const detected = await api.post<Gap[]>('/gap/detect', detectReq)
-        setGaps(detected)
+        // 把已采纳的 fill 叠加到 gap 状态上：后端 detect 只看 materials，不知道
+        // 用户刚采纳的 copy/aigc/rerank。这里在前端做合并，让红色 ❌ 立刻变 ✅。
+        const useFills = extraFills ?? fills
+        const fillMap = new Map(useFills.map((f) => [f.gap_id, f]))
+        const merged = detected.map((g): Gap => {
+          const f = fillMap.get(g.gap_id)
+          if (!f || f.status !== 'ok') return g
+          const label =
+            f.action === 'copy' ? '文案补全' : f.action === 'aigc' ? 'AIGC 生成' : '已重排'
+          return {
+            ...g,
+            status: 'ok',
+            note: f.note ?? `已采纳 ${label}`,
+            matched_material_id: f.new_material_id ?? g.matched_material_id,
+          }
+        })
+        setGaps(merged)
 
         // 自动存档到首页项目列表
         if (currentProjectId) {
@@ -163,8 +185,8 @@ export default function ComposePage() {
             materials: sortedMaterials,
             plan: builtPlan,
             plan_id: builtPlan.plan_id,
-            gaps: detected,
-            fills: extraFills ?? fills,
+            gaps: merged,
+            fills: useFills,
             status: 'planned',
           })
         }
@@ -270,7 +292,15 @@ export default function ComposePage() {
       <div className="grid gap-4 xl:grid-cols-[minmax(360px,1fr)_minmax(420px,1.4fr)]">
         {/* ===================== 左 · 输入区 ===================== */}
         <section className="space-y-3 rounded-lg border border-border bg-card p-4">
-          <BriefInput value={brief} onChange={setBrief} />
+          <BriefInput
+            value={brief}
+            onChange={(v) => {
+              setBrief(v)
+              if (v.trim().length > 0) setBriefTouched(false)
+            }}
+            required
+            showError={briefTouched}
+          />
 
           <div className="space-y-2">
             <div className="flex items-center justify-between">
@@ -316,10 +346,11 @@ export default function ComposePage() {
 
           <button
             onClick={handleAnalyze}
-            disabled={analyzing}
+            disabled={analyzing || brief.trim().length === 0}
+            title={brief.trim().length === 0 ? '请先输入主题/卖点' : undefined}
             className={cn(
               'w-full rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground transition-colors',
-              analyzing && 'cursor-not-allowed opacity-60',
+              (analyzing || brief.trim().length === 0) && 'cursor-not-allowed opacity-60',
             )}
           >
             {analyzing ? '智能分析中…' : plan ? '重新分析' : '智能分析'}

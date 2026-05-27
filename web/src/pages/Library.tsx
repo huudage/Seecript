@@ -48,7 +48,7 @@ export default function LibraryPage() {
   )
 
   const handlePick = (item: LibraryItem) => {
-    selectSample(item.id, item.video_type)
+    selectSample(item.id, item.video_type, item.source)
     createFromCurrent({
       sample_id: item.id,
       sample_title: item.title,

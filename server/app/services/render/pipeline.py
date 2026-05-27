@@ -22,7 +22,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from ...config import get_settings
-from ...schemas import Plan
+from ...schemas import Plan, Scene
 from ..jobs import job_store
 from ..video import ffmpeg as ffmpeg_svc
 from ..video import remotion as remotion_svc
@@ -59,15 +59,70 @@ def _uploads_root() -> Path:
     return settings.log_dir.parent / "var" / "uploads"
 
 
-def _resolve_scene_path(plan: Plan, source_ref: str) -> Path | None:
-    """从 source_ref 里反查素材实际路径。session_id 在 Plan 上可选携带。"""
-    if plan.session_id:
+def _samples_root() -> Path:
+    """server/samples/<sample_id>/video.mp4 —— 系统内置样例视频根目录。"""
+    settings = get_settings()
+    return settings.log_dir.parent / "samples"
+
+
+def _resolve_scene_path(plan: Plan, scene: Scene) -> Path | None:
+    """从 Scene 反查素材实际路径。
+
+    - source="user_material": session_id 隔离的上传目录里按 material_id 子串匹配
+    - source="sample"        : plan.sample_id 对应 server/samples/<id>/video.mp4
+                                （后续 _trim_segments 会按 in_point/out_point 切片）
+    - source="aigc_t2v"      : Seedance 把视频托管在 Volcengine CDN，pipeline
+                                里没法直接拼，目前回退到样例镜头（上层 plan/build
+                                里已经把 source 改回 sample 了；这里兜底再处理）
+    """
+    source_ref = scene.source_ref
+    if scene.source == "user_material" and plan.session_id:
         d = _uploads_root() / plan.session_id
         if d.exists():
             for f in d.iterdir():
                 if source_ref in f.name:
                     return f
+        return None
+
+    if scene.source == "sample":
+        # 从内置样例库直接取整段 video.mp4；in_point / out_point 在 _trim_segments 里切。
+        sample_id = plan.sample_id
+        sample_video = _samples_root() / sample_id / "video.mp4"
+        if sample_video.is_file():
+            return sample_video
+        # 用户上传到 var/uploads/decompose/<sample_id>/ 的视频也走这条
+        user_video = _uploads_root() / "decompose" / sample_id / "video.mp4"
+        if user_video.is_file():
+            return user_video
+        return None
+
+    # aigc_t2v 远程托管，跳过；上层会让它走 sample 兜底
     return None
+
+
+def _trim_segment(src: Path, scene: Scene, dst: Path) -> Path | None:
+    """对 source="sample" 的整段视频按 in_point/out_point 切片，
+    避免把整段样例 video.mp4 直接当成一个 scene 拼进主轨——那会导致每段都是相同长视频。
+
+    切片用 ffmpeg -ss/-t 复制流（reencode=False），失败则返回 None 让上层走 mock。
+    """
+    if not ffmpeg_svc.ffmpeg_available():
+        return None
+
+    duration = max(0.5, float(scene.duration or 1.0))
+    in_point = max(0.0, float(scene.in_point or 0.0))
+
+    # 没有 out_point 的场景：直接按 duration 切；out_point 给定时按区间切。
+    if scene.out_point is not None and scene.out_point > in_point:
+        duration = float(scene.out_point) - in_point
+
+    try:
+        ffmpeg_svc.trim(src, dst, start=in_point, duration=duration, reencode=True)  # type: ignore[attr-defined]
+        return dst
+    except (AttributeError, ffmpeg_svc.FFmpegError) as exc:
+        # ffmpeg.trim 不存在或调用失败：回落到整段 src（让 concat 至少能跑）
+        log.warning("[trim] segment trim failed for %s: %s", src.name, exc)
+        return None
 
 
 def _touch_placeholder(dst: Path, content: bytes = b"") -> Path:
@@ -98,11 +153,30 @@ async def run_pipeline(job_id: str, plan: Plan) -> RenderResult:
     t0 = time.time()
     job_store.publish(job_id, "ffmpeg_concat", 28.0, {"note": "FFmpeg 拼接主轨"})
     main_path = out_dir / "main.mp4"
+    segments_dir = out_dir / "segments"
+    segments_dir.mkdir(parents=True, exist_ok=True)
+
     inputs: list[Path] = []
-    for sc in plan.main_track:
-        p = _resolve_scene_path(plan, sc.source_ref)
-        if p is not None:
-            inputs.append(p)
+    for i, sc in enumerate(plan.main_track):
+        src = _resolve_scene_path(plan, sc)
+        if src is None:
+            notes.append(f"scene {i} ({sc.section}/{sc.source}/{sc.source_ref}) unresolved")
+            continue
+        # source="sample" 是整段 video.mp4 → 必须按 in_point/out_point 切片再拼，
+        # 不然每个 scene 都会拼进整段长视频。
+        if sc.source == "sample":
+            seg_dst = segments_dir / f"scene-{i:02d}.mp4"
+            trimmed = _trim_segment(src, sc, seg_dst)
+            if trimmed is not None:
+                inputs.append(trimmed)
+            else:
+                # trim 失败：直接拿整段当 fallback，至少能拼起来
+                notes.append(f"scene {i} trim fallback to full sample video")
+                inputs.append(src)
+        else:
+            # user_material：素材本身就是单段，直接拼
+            inputs.append(src)
+
     if inputs and ffmpeg_svc.ffmpeg_available():
         try:
             await asyncio.to_thread(ffmpeg_svc.concat, inputs, main_path, reencode=True)

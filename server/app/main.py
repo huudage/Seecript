@@ -154,6 +154,18 @@ def create_app() -> FastAPI:
             samples_dir,
         )
 
+    # ---- Static: 用户上传 + 渲染产物 ----
+    # /uploads/{session_id}/...  → server/var/uploads/...
+    # /outputs/{job_id}/...      → server/var/outputs/...
+    # 先确保目录存在，再挂载，避免 StaticFiles 启动检查失败。
+    uploads_dir = settings.log_dir.parent / "var" / "uploads"
+    uploads_dir.mkdir(parents=True, exist_ok=True)
+    app.mount("/uploads", StaticFiles(directory=str(uploads_dir)), name="uploads")
+
+    outputs_dir = settings.log_dir.parent / "var" / "outputs"
+    outputs_dir.mkdir(parents=True, exist_ok=True)
+    app.mount("/outputs", StaticFiles(directory=str(outputs_dir)), name="outputs")
+
     return app
 
 

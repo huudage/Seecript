@@ -116,20 +116,24 @@ export default function RenderPage() {
       })
       setJobId(resp.job_id)
       sseRef.current?.close()
-      sseRef.current = createSSE<RenderDonePayload>(`/render/stream?job_id=${resp.job_id}`, {
+      sseRef.current = createSSE<{ job_id: string; payload: RenderDonePayload }>(
+        `/render/stream?job_id=${resp.job_id}`,
+        {
         onProgress: (p) => {
           setStep(p.step)
           setPercent(p.percent)
         },
         onDone: (d) => {
-          setDone(d)
+          // 后端 JobStore.complete 包装成 {job_id, payload}；这里取里层结果。
+          const result = d.payload
+          setDone(result)
           setStep('done')
           setPercent(100)
           if (currentProjectId) {
             upsertProject({
               id: currentProjectId,
-              last_video_url: d.video_url,
-              last_cover_url: d.cover_url,
+              last_video_url: result.video_url,
+              last_cover_url: result.cover_url,
               status: 'rendered',
             })
           }

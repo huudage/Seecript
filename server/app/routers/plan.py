@@ -9,15 +9,34 @@
 from __future__ import annotations
 
 import logging
+import re
 import uuid
 
 from fastapi import APIRouter
 
+from ..routers.library import _LIBRARY
 from ..schemas import BGMConfig, PackagingItem, Plan, PlanBuildRequest, Scene
 from ..services.plans import plan_store
 
 log = logging.getLogger("seecript.plan")
 router = APIRouter()
+
+
+_SAMPLE_SHOT_RE = re.compile(r"sample-shot-(\d+)")
+
+
+def _sample_shot_window(sample_id: str, shot_idx: int) -> tuple[float, float]:
+    """根据样例的 duration_seconds + shot_count 估算第 shot_idx 个镜头的 (in_point, duration)。
+
+    内置样例的实际 PySceneDetect 结果可能不等分，但 LibraryItem.duration / shot_count
+    给的是真实平均；用这个做 fallback 让 render 切出来的片段不会全都在 t=0。
+    """
+    sample = next((s for s in _LIBRARY if s.id == sample_id), None)
+    if sample is None or sample.shot_count <= 0:
+        return (0.0, 3.0)
+    avg = sample.duration_seconds / sample.shot_count
+    idx = max(0, min(shot_idx, sample.shot_count - 1))
+    return (idx * avg, avg)
 
 
 @router.post("/plan/build", response_model=Plan)
@@ -48,25 +67,57 @@ async def build_plan(req: PlanBuildRequest) -> Plan:
     src3, ref3 = ("sample", "sample-shot-07")
     src4, ref4 = _pick("cta", 10, 3)
 
+    def _build_scene(
+        scene_id: str,
+        section: str,
+        source: str,
+        source_ref: str,
+        timeline_start: float,
+        timeline_duration: float,
+        narration: str,
+    ) -> Scene:
+        """source="sample" 时把 in_point/out_point 写实，让 render 的 trim 真切到对应镜头。"""
+        in_point = 0.0
+        out_point: float | None = None
+        actual_duration = timeline_duration
+        if source == "sample":
+            m = _SAMPLE_SHOT_RE.search(source_ref)
+            if m:
+                shot_idx = int(m.group(1))
+                in_point, shot_duration = _sample_shot_window(req.sample_id, shot_idx)
+                # 如果样例镜头本身比时间线段短：scene 时长跟着镜头走，避免拼接超出真实素材
+                actual_duration = min(timeline_duration, shot_duration)
+                out_point = in_point + actual_duration
+        return Scene(
+            scene_id=scene_id,
+            section=section,  # type: ignore[arg-type]
+            source=source,  # type: ignore[arg-type]
+            source_ref=source_ref,
+            start=timeline_start,
+            duration=actual_duration,
+            in_point=in_point,
+            out_point=out_point,
+            narration=narration,
+        )
+
     main_track = [
-        Scene(scene_id="sc-0", section="hook", source=src0, source_ref=ref0,  # type: ignore[arg-type]
-              start=0.0, duration=3.0, narration="痛点开场"),
-        Scene(scene_id="sc-1", section="body", source=src1, source_ref=ref1,  # type: ignore[arg-type]
-              start=3.0, duration=6.0, narration="产品展示"),
-        Scene(scene_id="sc-2", section="body", source=src2, source_ref=ref2,  # type: ignore[arg-type]
-              start=9.0, duration=4.0, narration="对比卖点"),
-        Scene(scene_id="sc-3", section="body", source=src3, source_ref=ref3,  # type: ignore[arg-type]
-              start=13.0, duration=5.0, narration="样例镜头复用"),
-        Scene(scene_id="sc-4", section="cta", source=src4, source_ref=ref4,  # type: ignore[arg-type]
-              start=18.0, duration=4.0, narration="点赞收藏"),
+        _build_scene("sc-0", "hook", src0, ref0, 0.0, 3.0, "痛点开场"),
+        _build_scene("sc-1", "body", src1, ref1, 3.0, 6.0, "产品展示"),
+        _build_scene("sc-2", "body", src2, ref2, 9.0, 4.0, "对比卖点"),
+        _build_scene("sc-3", "body", src3, ref3, 13.0, 5.0, "样例镜头复用"),
+        _build_scene("sc-4", "cta", src4, ref4, 18.0, 4.0, "点赞收藏"),
     ]
+
+    # 计算实际总时长（按各 scene actual_duration 求和），防止 main_track 只剩 8s
+    # 但 plan.duration 写死 22s 导致 seedance_chain 多扩了 14s 黑屏。
+    actual_total = sum(sc.duration for sc in main_track)
 
     packaging_track = [
         PackagingItem(item_id="pkg-title", kind="title_bar", start=0.0, end=3.0,
                       text="痛点开场", style={"size": 64, "color": "#FFF"}),
-        PackagingItem(item_id="pkg-sub-1", kind="subtitle", start=3.0, end=18.0,
+        PackagingItem(item_id="pkg-sub-1", kind="subtitle", start=3.0, end=actual_total - 4.0,
                       text="动态字幕跟随口播", style={"size": 48, "stroke": "#000"}),
-        PackagingItem(item_id="pkg-cta", kind="sticker", start=18.0, end=22.0,
+        PackagingItem(item_id="pkg-cta", kind="sticker", start=actual_total - 4.0, end=actual_total,
                       text="点赞收藏", style={"size": 56, "color": "#FFE600"}),
     ]
 
@@ -76,7 +127,7 @@ async def build_plan(req: PlanBuildRequest) -> Plan:
         session_id=req.session_id,
         brief=req.brief,
         variant=req.variant,
-        duration_seconds=22.0,
+        duration_seconds=actual_total,
         main_track=main_track,
         packaging_track=packaging_track,
         bgm=BGMConfig(track_url=None, volume=0.6),

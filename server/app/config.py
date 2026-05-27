@@ -43,7 +43,9 @@ class Settings(BaseSettings):
     ark_api_key: str = Field(default="")
     ark_base_url: str = Field(default="https://ark.cn-beijing.volces.com/api/v3")
     ark_llm_model: str = Field(default="doubao-seed-2-0-lite")
-    ark_t2v_model: str = Field(default="doubao-seedance-2-0-260128")
+    # Seedance 2.0 fast：480p/720p、4-15s、低成本低延迟，适合 demo 高频迭代。
+    # 标准版 doubao-seedance-2-0-260128 支持 1080p 但单价 + 排队耗时都更高。
+    ark_t2v_model: str = Field(default="doubao-seedance-2-0-fast-260128")
     # Seedance 与 LLM 通常用同一个方舟账号；如果走独立计费 Key 单独配 ARK_T2V_API_KEY，
     # 留空时 t2v_api_key 属性自动回落到 ark_api_key。
     ark_t2v_api_key: str = Field(default="")
