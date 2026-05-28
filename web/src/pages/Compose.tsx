@@ -2,14 +2,16 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
 
 import { api } from '@/api/client'
+import { AdaptedSectionList } from '@/components/compose/AdaptedSectionList'
 import { BriefInput } from '@/components/compose/BriefInput'
 import { FillAigcPanel } from '@/components/compose/FillAigcPanel'
 import { FillCopyPanel } from '@/components/compose/FillCopyPanel'
 import { FillRerankPanel } from '@/components/compose/FillRerankPanel'
-import { GapList } from '@/components/compose/GapList'
 import { GapPreviewDialog } from '@/components/compose/GapPreviewDialog'
 import { MaterialGrid } from '@/components/compose/MaterialGrid'
+import { PackagingPanel } from '@/components/compose/PackagingPanel'
 import { StoryboardPreview } from '@/components/compose/StoryboardPreview'
+import { VideoGoalInput } from '@/components/compose/VideoGoalInput'
 import { PageShell } from '@/components/layout/PageShell'
 import { SECTION_BG, SECTION_SHORT } from '@/lib/sections'
 import { cn } from '@/lib/utils'
@@ -25,8 +27,8 @@ import type {
   MaterialUploadResponse,
   Plan,
   PlanBuildRequest,
+  SampleManifest,
 } from '@/types/schemas'
-import { kindsForVideoType } from '@/types/schemas'
 
 const ACTION_TABS: { value: FillAction; label: string; hint: string }[] = [
   { value: 'rerank', label: '结构重排', hint: '从已上传素材里挑一个最匹配的填进 slot' },
@@ -41,9 +43,12 @@ export default function ComposePage() {
   const selectedSampleId = useSessionStore((s) => s.selectedSampleId)
   const videoType = useSessionStore((s) => s.videoType)
   const sessionId = useSessionStore((s) => s.sessionId)
+  const manifest = useSessionStore((s) => s.manifest)
   const materials = useSessionStore((s) => s.materials)
   const brief = useSessionStore((s) => s.brief)
   const setBrief = useSessionStore((s) => s.setBrief)
+  const videoGoal = useSessionStore((s) => s.videoGoal)
+  const setVideoGoal = useSessionStore((s) => s.setVideoGoal)
   const setSession = useSessionStore((s) => s.setSession)
   const appendMaterials = useSessionStore((s) => s.appendMaterials)
   const removeMaterial = useSessionStore((s) => s.removeMaterial)
@@ -144,6 +149,7 @@ export default function ComposePage() {
           sample_id: selectedSampleId,
           session_id: sessionId ?? 'no-session',
           brief: brief.trim() || null,
+          video_goal: videoGoal.trim() || null,
           selected_materials: sortedMaterials.map((m) => m.material_id),
           fills: extraFills ?? fills,
           variant: 'A',
@@ -199,7 +205,7 @@ export default function ComposePage() {
         setAnalyzing(false)
       }
     },
-    [brief, currentProjectId, fills, selectedSampleId, sessionId, setGaps, setPlan, sortedMaterials, upsertProject],
+    [brief, currentProjectId, fills, selectedSampleId, sessionId, setGaps, setPlan, sortedMaterials, upsertProject, videoGoal],
   )
 
   const handleAnalyze = useCallback(() => void runAnalyze(), [runAnalyze])
@@ -302,6 +308,8 @@ export default function ComposePage() {
             showError={briefTouched}
           />
 
+          <VideoGoalInput value={videoGoal} onChange={setVideoGoal} />
+
           <div className="space-y-2">
             <div className="flex items-center justify-between">
               <label className="text-xs font-semibold">
@@ -364,17 +372,20 @@ export default function ComposePage() {
               <h2 className="text-sm font-semibold">样例结构</h2>
               <span className="text-[10px] text-muted-foreground">{videoType}</span>
             </div>
-            <SectionsBar videoType={videoType} />
+            <SectionsBar manifest={manifest} />
           </div>
 
           <div className="space-y-2">
             <div className="flex items-center justify-between">
-              <h2 className="text-sm font-semibold">缺口清单（{gaps.length}）</h2>
+              <h2 className="text-sm font-semibold">
+                适配结构（{plan?.adapted_sections?.length ?? 0} 段 / 缺口 {gaps.length}）
+              </h2>
               {fills.length > 0 && (
                 <span className="text-[10px] text-muted-foreground">已采纳 {fills.length}</span>
               )}
             </div>
-            <GapList
+            <AdaptedSectionList
+              adaptedSections={plan?.adapted_sections ?? []}
               gaps={gaps}
               selectedGapId={selectedGapId}
               filledGapIds={filledGapIds}
@@ -480,6 +491,12 @@ export default function ComposePage() {
             </div>
           )}
         </section>
+
+        {plan && (
+          <div className="xl:col-span-2">
+            <PackagingPanel plan={plan} onPlanUpdated={setPlan} />
+          </div>
+        )}
       </div>
 
       {/* 底部 next steps */}
@@ -547,21 +564,51 @@ function UploadDropzone({
   )
 }
 
-function SectionsBar({ videoType }: { videoType: 'marketing' | 'editing' | 'motion_graph' }) {
-  const kinds = kindsForVideoType(videoType)
+function SectionsBar({ manifest }: { manifest: SampleManifest | null }) {
+  // 没拆解过就用 4 元骨架占位；拆过就按真实 section 时长比例画。
+  if (!manifest || manifest.sections.length === 0) {
+    const fallback: Array<{ role: 'opening' | 'development' | 'climax' | 'closing'; theme: string }> = [
+      { role: 'opening', theme: '开场' },
+      { role: 'development', theme: '发展' },
+      { role: 'climax', theme: '高潮' },
+      { role: 'closing', theme: '收尾' },
+    ]
+    return (
+      <div className="flex h-8 overflow-hidden rounded-md border border-border">
+        {fallback.map((f) => (
+          <div
+            key={f.role}
+            className={cn(
+              'flex flex-1 items-center justify-center text-[11px] font-medium text-white',
+              SECTION_BG[f.role],
+            )}
+          >
+            {SECTION_SHORT[f.role]}
+          </div>
+        ))}
+      </div>
+    )
+  }
+
+  const total = manifest.duration_seconds || 1
   return (
     <div className="flex h-8 overflow-hidden rounded-md border border-border">
-      {kinds.map((k) => (
-        <div
-          key={k}
-          className={cn(
-            'flex flex-1 items-center justify-center text-[11px] font-medium text-white',
-            SECTION_BG[k],
-          )}
-        >
-          {SECTION_SHORT[k]}
-        </div>
-      ))}
+      {manifest.sections.map((sec, i) => {
+        const widthPct = ((sec.end - sec.start) / total) * 100
+        return (
+          <div
+            key={i}
+            className={cn(
+              'flex items-center justify-center px-1 text-[11px] font-medium text-white',
+              SECTION_BG[sec.role],
+            )}
+            style={{ width: `${widthPct}%` }}
+            title={`${SECTION_SHORT[sec.role]} · ${sec.theme}`}
+          >
+            <span className="truncate">{sec.theme || SECTION_SHORT[sec.role]}</span>
+          </div>
+        )
+      })}
     </div>
   )
 }

@@ -15,6 +15,7 @@ export default function LibraryPage() {
   const [items, setItems] = useState<LibraryItem[] | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [tab, setTab] = useState<Tab>('system')
+  const [previewItem, setPreviewItem] = useState<LibraryItem | null>(null)
   const selectSample = useSessionStore((s) => s.selectSample)
   const selectedSampleId = useSessionStore((s) => s.selectedSampleId)
   const createFromCurrent = useProjectsStore((s) => s.createFromCurrent)
@@ -110,12 +111,20 @@ export default function LibraryPage() {
       {visible && visible.length > 0 && (
         <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
           {visible.map((item) => (
-            <button
+            <div
               key={item.id}
+              role="button"
+              tabIndex={0}
               onClick={() => handlePick(item)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' || e.key === ' ') {
+                  e.preventDefault()
+                  handlePick(item)
+                }
+              }}
               className={cn(
-                'group flex flex-col overflow-hidden rounded-lg border bg-card text-left transition-all',
-                'hover:shadow-lg hover:-translate-y-0.5',
+                'group flex cursor-pointer flex-col overflow-hidden rounded-lg border bg-card text-left transition-all',
+                'hover:shadow-lg hover:-translate-y-0.5 focus:outline-none focus:ring-2 focus:ring-primary/40',
                 selectedSampleId === item.id
                   ? 'border-primary ring-2 ring-primary/40'
                   : 'border-border',
@@ -135,6 +144,25 @@ export default function LibraryPage() {
                 <div className="absolute left-2 top-2 rounded-full bg-primary/90 px-2 py-0.5 text-[10px] font-medium text-primary-foreground">
                   {VIDEO_TYPE_LABEL[item.video_type]}
                 </div>
+                <button
+                  type="button"
+                  onClick={(e) => {
+                    e.stopPropagation()
+                    setPreviewItem(item)
+                  }}
+                  aria-label={`预览 ${item.title}`}
+                  title="预览样例视频"
+                  className="absolute bottom-2 right-2 flex h-9 w-9 items-center justify-center rounded-full bg-foreground/85 text-background opacity-90 shadow-md transition-all hover:scale-110 hover:bg-foreground hover:opacity-100"
+                >
+                  <svg
+                    xmlns="http://www.w3.org/2000/svg"
+                    viewBox="0 0 24 24"
+                    fill="currentColor"
+                    className="h-4 w-4 translate-x-[1px]"
+                  >
+                    <path d="M8 5v14l11-7z" />
+                  </svg>
+                </button>
               </div>
               <div className="flex flex-1 flex-col gap-2 p-4">
                 <h3 className="line-clamp-2 text-sm font-semibold leading-snug">
@@ -145,10 +173,64 @@ export default function LibraryPage() {
                   <span>{item.shot_count} 镜头</span>
                 </div>
               </div>
-            </button>
+            </div>
           ))}
         </div>
       )}
+
+      {previewItem && (
+        <PreviewModal item={previewItem} onClose={() => setPreviewItem(null)} />
+      )}
     </PageShell>
+  )
+}
+
+function PreviewModal({ item, onClose }: { item: LibraryItem; onClose: () => void }) {
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') onClose()
+    }
+    document.addEventListener('keydown', onKey)
+    return () => document.removeEventListener('keydown', onKey)
+  }, [onClose])
+
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 px-4 py-8"
+      onClick={onClose}
+    >
+      <div
+        className="relative flex w-full max-w-3xl flex-col overflow-hidden rounded-lg bg-card shadow-xl"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="flex items-center justify-between border-b border-border px-4 py-3">
+          <div className="min-w-0">
+            <h3 className="truncate text-sm font-semibold">{item.title}</h3>
+            <p className="text-xs text-muted-foreground">
+              {VIDEO_TYPE_LABEL[item.video_type]} · {item.duration_seconds.toFixed(1)}s · {item.shot_count} 镜头
+            </p>
+          </div>
+          <button
+            type="button"
+            onClick={onClose}
+            aria-label="关闭预览"
+            className="ml-3 flex h-8 w-8 shrink-0 items-center justify-center rounded-md text-muted-foreground hover:bg-secondary hover:text-foreground"
+          >
+            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} className="h-4 w-4">
+              <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
+            </svg>
+          </button>
+        </div>
+        <video
+          key={item.id}
+          src={`/samples/${item.id}/video.mp4`}
+          controls
+          autoPlay
+          className="aspect-video w-full bg-black"
+        >
+          您的浏览器不支持视频播放。
+        </video>
+      </div>
+    </div>
   )
 }

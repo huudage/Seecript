@@ -52,8 +52,8 @@ def test_detect_persists_to_gap_store(client, session_with_plan):
     assert r.status_code == 200, r.text
     gaps = r.json()
     assert len(gaps) > 0
-    # editing 类型的 sample → kind 必须落在 opening/climax/closing
-    assert {g["section"] for g in gaps}.issubset({"opening", "climax", "closing"})
+    # SectionRole 4 元枚举：opening/development/climax/closing —— 任意视频都从这 4 个里选
+    assert {g["section"] for g in gaps}.issubset({"opening", "development", "climax", "closing"})
 
     # 找一个 gap，调 fill action=copy；不再因为 detect 没跑过而 404
     target = gaps[0]
@@ -118,8 +118,8 @@ def test_session_empty_falls_back_to_mock(client):
     r = client.post("/api/gap/detect", json={"plan_id": plan_id})  # 不传 session_id
     assert r.status_code == 200
     gaps = r.json()
-    # mock 素材里 hook/body/cta 都有，每段至少 1 gap
-    assert any(g["section"] == "hook" for g in gaps)
+    # mock 素材覆盖 opening/development/closing 三个 role，每段至少 1 gap
+    assert any(g["section"] == "opening" for g in gaps)
 
 
 def test_plan_uses_aigc_t2v_not_t2i(client, session_with_plan):
@@ -131,7 +131,7 @@ def test_plan_uses_aigc_t2v_not_t2i(client, session_with_plan):
         "selected_materials": [],
         "fills": [
             {
-                "gap_id": "gap-hook-0",
+                "gap_id": "gap-opening-0",
                 "action": "aigc",
                 "new_material_id": "mock-task-xyz",
                 "status": "ok",

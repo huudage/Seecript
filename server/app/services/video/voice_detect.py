@@ -23,9 +23,12 @@
 from __future__ import annotations
 
 import logging
+import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
+
+from . import ffmpeg as ffmpeg_util
 
 log = logging.getLogger("seecript.video.voice_detect")
 
@@ -79,7 +82,23 @@ def detect_voice(
         )
 
     try:
-        y, sr = librosa.load(str(path), sr=22050, mono=True)
+        # mp4/mov 这类容器 librosa+soundfile 读不了，走 ffmpeg 抽单声道 wav 中转
+        video_exts = {".mp4", ".mov", ".mkv", ".webm", ".avi", ".m4v"}
+        tmp_wav: Path | None = None
+        try:
+            if path.suffix.lower() in video_exts:
+                tmp_wav = Path(tempfile.mkstemp(suffix=".wav", prefix="seecript_vad_")[1])
+                ffmpeg_util.extract_audio_wav(path, tmp_wav, sample_rate=22050)
+                load_target = tmp_wav
+            else:
+                load_target = path
+            y, sr = librosa.load(str(load_target), sr=22050, mono=True)
+        finally:
+            if tmp_wav is not None and tmp_wav.exists():
+                try:
+                    tmp_wav.unlink()
+                except OSError:
+                    pass
     except Exception as exc:  # noqa: BLE001 — 解码失败回退到保守判定
         log.warning("[voice_detect] load failed, fallback has_voice=True: %s", exc)
         return VoiceDetectResult(

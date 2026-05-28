@@ -23,6 +23,29 @@ from pathlib import Path
 log = logging.getLogger("seecript.video.ffmpeg")
 
 
+# winget 装的 ffmpeg 在用户 PATH 里，但子进程（uvicorn / python -m）很容易没继承到。
+# 启动时主动探测一下常见安装位置，找到就 prepend 到 os.environ["PATH"]，subprocess 都受益。
+def _bootstrap_ffmpeg_path() -> None:
+    import os
+    if shutil.which("ffmpeg") and shutil.which("ffprobe"):
+        return
+    candidates = [
+        r"C:\Users\admin\AppData\Local\Microsoft\WinGet\Packages\Gyan.FFmpeg_Microsoft.Winget.Source_8wekyb3d8bbwe\ffmpeg-8.1.1-full_build\bin",
+        r"C:\Program Files\ffmpeg\bin",
+        r"C:\ffmpeg\bin",
+        r"/usr/local/bin",
+        r"/opt/homebrew/bin",
+    ]
+    for c in candidates:
+        if Path(c, "ffmpeg.exe").is_file() or Path(c, "ffmpeg").is_file():
+            os.environ["PATH"] = c + os.pathsep + os.environ.get("PATH", "")
+            log.info("ffmpeg located at %s, prepended to PATH", c)
+            return
+
+
+_bootstrap_ffmpeg_path()
+
+
 class FFmpegError(RuntimeError):
     pass
 
@@ -96,6 +119,27 @@ def extract_frame(video_path: str | Path, time_seconds: float, dst: str | Path) 
     proc = subprocess.run(cmd, capture_output=True, text=True, check=False)
     if proc.returncode != 0:
         raise FFmpegError(f"extract_frame failed: {proc.stderr.strip()}")
+    return out
+
+
+def extract_audio_wav(video_path: str | Path, dst: str | Path, *, sample_rate: int = 22050) -> Path:
+    """抽视频音轨成单声道 PCM wav，librosa/soundfile 才能正常读 mp4 的音频。"""
+    if not ffmpeg_available():
+        raise FFmpegError("ffmpeg not found in PATH")
+    src = Path(video_path)
+    if not src.exists():
+        raise FileNotFoundError(src)
+    out = Path(dst)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    cmd = [
+        "ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
+        "-i", str(src), "-vn",
+        "-ac", "1", "-ar", str(sample_rate),
+        "-c:a", "pcm_s16le", str(out),
+    ]
+    proc = subprocess.run(cmd, capture_output=True, text=True, check=False)
+    if proc.returncode != 0:
+        raise FFmpegError(f"extract_audio_wav failed: {proc.stderr.strip()}")
     return out
 
 

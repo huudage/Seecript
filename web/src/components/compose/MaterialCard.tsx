@@ -51,6 +51,20 @@ export function MaterialCard({
           {material.media_type}
         </span>
 
+        {/* 高光评分 chip：≥0.75 金、≥0.5 银、低于 0.5 不显示。hover 显示理由。 */}
+        {material.highlight_score >= 0.5 && (
+          <span
+            className={cn(
+              'absolute right-1 bottom-7 rounded px-1.5 py-0.5 text-[10px] font-bold text-black',
+              material.highlight_score >= 0.75 ? 'bg-yellow-300' : 'bg-slate-200',
+            )}
+            title={material.highlight_reason ?? '高光评分'}
+          >
+            {material.highlight_score >= 0.75 ? '⭐ ' : ''}
+            {Math.round(material.highlight_score * 100)}
+          </span>
+        )}
+
         {/* 推荐段落色条 */}
         {material.recommended_section && (
           <span

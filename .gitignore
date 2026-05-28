@@ -4,6 +4,13 @@ logs/
 server/var/
 server/.dev.log
 server/.dev.err
+.dev-server.log
+.dev-server.err
+.dev-server.out
+
+# Local scratch — agent progress notes & one-off curl payloads
+.scratch/
+server/.scratch/
 
 # Secrets — NEVER commit these
 .env

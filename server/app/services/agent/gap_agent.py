@@ -2,17 +2,17 @@
 
 两个核心函数：
 - detect_gaps(manifest, materials) → list[Gap]
-    简化版槽位匹配：按 section + slot 顺位枚举样例需求，挨个找匹配的 user material。
+    简化版槽位匹配：按 section.role + slot 顺位枚举样例需求，挨个找匹配的 user material。
     匹配规则（阶段 3 简化版）：
-      * 推荐 section 命中 → status=ok
-      * section 不一致但媒体类型可用 → status=warn
+      * 推荐 role 命中 → status=ok
+      * role 不一致但媒体类型可用 → status=warn
       * 没有任何素材可用 → status=miss
-    支持 3 种 video_type（marketing / editing / motion_graph）下的 9 个 section kind。
+    现在以 SectionRole 为单位（opening/development/climax/closing），不再按 video_type 三选一。
 - fill_gap(gap, action, params) → FillResult
     分发到 rerank（纯 Python） / copy（LLM 文案） / aigc（Seedance T2V 短片生成）。
-    aigc 路径走 doubao-seedance-1.0-pro：submit → 轮询 → 返回 task_id 作为新素材引用。
+    aigc 路径走 doubao-seedance-2-0-fast-260128：submit → 轮询 → 返回 task_id 作为新素材引用。
 
-阶段 3 此版本足以驱动前端 UI；阶段 5 比赛前再做槽位匹配的真算法（cos-sim + section 推荐）。
+阶段 3 此版本足以驱动前端 UI；阶段 5 比赛前再做槽位匹配的真算法（cos-sim + role 推荐 + theme 语义匹配）。
 """
 from __future__ import annotations
 
@@ -25,13 +25,13 @@ from typing import Any
 from ..llm_client import get_llm_client
 from ..t2v_client import T2VError, get_t2v_client
 from ...schemas import (
+    AdaptedSection,
     FillAction,
     FillResult,
     Gap,
     Material,
     SampleManifest,
-    SectionKind,
-    kinds_for_video_type,
+    SectionRole,
 )
 
 log = logging.getLogger("seecript.agent.gap")
@@ -44,33 +44,57 @@ _COPY_SYSTEM = (
 )
 
 
-# 给定 section kind 的「重要度」—— 影响 Gap.impact 字段。
-# 开/收尾、痛点钩子、行动引导、视觉爆点 都算 high；铺垫主体类算 medium。
-_HIGH_IMPACT_KINDS: set[str] = {"hook", "cta", "opening", "closing", "intro", "outro", "drop"}
+# 给定 section role 的「重要度」—— 影响 Gap.impact 字段。
+# 开场/收尾/高潮 这三类都算 high；development（铺陈/主体）算 medium。
+_HIGH_IMPACT_ROLES: set[SectionRole] = {"opening", "climax", "closing"}
 
 
-def detect_gaps(manifest: SampleManifest, materials: list[Material]) -> list[Gap]:
-    """简化版槽位匹配。每个 section 默认 2-3 个槽，挨个分配 material。
+# 段落 role → 槽位语义模板。和旧 _SECTION_REQUIREMENT_HINTS 等价，但只剩 4 个 role；
+# theme 在 _slot_requirement 里以前缀方式叠加，反映本段真实在讲什么。
+_ROLE_REQUIREMENT_HINTS: dict[SectionRole, str] = {
+    "opening": "开场 · 钩子/氛围铺垫（强构图近景或大字标题）",
+    "development": "主体铺陈 · 演示/对比/信息展开（中景或叙事镜头）",
+    "climax": "高潮 · 情绪/视觉/冲突顶点（强构图特写或快剪）",
+    "closing": "收尾 · 行动引导/余韵/落版（大字幕或定格）",
+}
 
-    支持 3 种 video_type：
-    - marketing      hook / body / cta
-    - editing        opening / climax / closing
-    - motion_graph   intro / build / drop / outro
+
+def detect_gaps(
+    adapted_sections: list[AdaptedSection],
+    manifest: SampleManifest,
+    materials: list[Material],
+) -> list[Gap]:
+    """槽位匹配——按改编后的 AdaptedSection 迭代，每段拿 1-3 个槽位。
+
+    新版（v3）：段落源从 manifest.sections 切换到 plan.adapted_sections（LLM 基于 brief +
+    video_goal 改编后的结构）。每个 Gap 携带：
+    - `section_id` 关联回 AdaptedSection，前端按段分组
+    - `requirement` 接入 content_description 前缀（让创作者看到本段该呈现什么）
+    - `sample_thumbnail_url` 从 source_shot_indices 反查样例缩略图
     """
-    allowed_kinds = kinds_for_video_type(manifest.video_type)
+    # adapted 中真实出现的 roles（去重保序），用于按 role 归类素材
+    seen_roles: list[SectionRole] = []
+    for sec in adapted_sections:
+        if sec.role not in seen_roles:
+            seen_roles.append(sec.role)
+    if not seen_roles:
+        seen_roles = ["development"]
 
-    # 按 recommended_section 归类素材；不在允许枚举里的回落到主体段（每类的第二个 kind）
-    fallback_kind = allowed_kinds[1] if len(allowed_kinds) >= 2 else allowed_kinds[0]
-    by_section: dict[str, list[Material]] = {k: [] for k in allowed_kinds}
+    fallback_role: SectionRole = (
+        "development" if "development" in seen_roles else seen_roles[len(seen_roles) // 2]
+    )
+    by_role: dict[SectionRole, list[Material]] = {r: [] for r in seen_roles}
     for m in materials:
-        rec = m.recommended_section if m.recommended_section in allowed_kinds else fallback_kind
-        by_section.setdefault(rec, []).append(m)
+        rec = m.recommended_section if m.recommended_section in seen_roles else fallback_role
+        by_role.setdefault(rec, []).append(m)
 
-    # shot index → thumbnail_url 反查，给 Gap.sample_thumbnail_url 用
+    for role, pool in by_role.items():
+        if role in _HIGH_IMPACT_ROLES:
+            pool.sort(key=lambda m: (-m.highlight_score, m.sort_order))
+
     shot_thumb: dict[int, str | None] = {s.index: s.thumbnail_url for s in manifest.shots}
 
-    def _section_thumb(section_kind: str, shot_indices: list[int], slot: int) -> str | None:
-        """优先用该 section 的第 slot 个镜头，越界回落到首个有缩略图的镜头。"""
+    def _section_thumb(shot_indices: list[int], slot: int) -> str | None:
         if shot_indices:
             target = shot_indices[min(slot, len(shot_indices) - 1)]
             url = shot_thumb.get(target)
@@ -81,25 +105,20 @@ def detect_gaps(manifest: SampleManifest, materials: list[Material]) -> list[Gap
                     return shot_thumb[idx]
         return None
 
-    # spillover 池：把所有"非本 section"的素材按 sort_order 拼成一个队列，
-    # 跨段借用时按需 pop，避免每个 slot 都借同一条 mat-mock-001。
-    # 注意：dict 在 Python 3.7+ 保留插入顺序，by_section 的 key 顺序与 allowed_kinds 一致。
-    spillover_queue = [m for lst in by_section.values() for m in lst]
+    spillover_queue = [m for lst in by_role.values() for m in lst]
     spillover_used: set[str] = set()
-    fallback_idx = 0  # 队列耗尽后用它轮转，不要总是回到第一条
+    fallback_idx = 0
 
-    def _take_spillover(exclude_section: str) -> Material | None:
+    def _take_spillover(exclude_role: SectionRole) -> Material | None:
         nonlocal fallback_idx
-        # 优先：未用过 + 非本 section
         for m in spillover_queue:
             if m.material_id in spillover_used:
                 continue
-            if m.recommended_section == exclude_section:
+            if m.recommended_section == exclude_role:
                 continue
             spillover_used.add(m.material_id)
             return m
-        # 全用完：在"非本 section"的候选里轮转
-        candidates = [m for m in spillover_queue if m.recommended_section != exclude_section]
+        candidates = [m for m in spillover_queue if m.recommended_section != exclude_role]
         if not candidates:
             candidates = spillover_queue
         if not candidates:
@@ -109,19 +128,30 @@ def detect_gaps(manifest: SampleManifest, materials: list[Material]) -> list[Gap
         return pick
 
     gaps: list[Gap] = []
-    for sec in manifest.sections:
-        # 简化：每 section 拿 sub-段数量 = min(3, len(shot_indices))
-        slot_count = max(1, min(3, len(sec.shot_indices)))
-        section_impact = "high" if sec.kind in _HIGH_IMPACT_KINDS else "medium"
+    # 同 role 在 adapted 中可能多次（多段 development）—gap_id 加 seq 避免冲突
+    role_section_counter: dict[SectionRole, int] = {}
+    for sec in adapted_sections:
+        section_seq = role_section_counter.get(sec.role, 0)
+        role_section_counter[sec.role] = section_seq + 1
+
+        slot_count = max(1, min(3, len(sec.source_shot_indices) or 1))
+        section_impact = "high" if sec.role in _HIGH_IMPACT_ROLES else "medium"
+        gap_id_prefix = f"gap-{sec.role}-{section_seq}" if section_seq > 0 else f"gap-{sec.role}"
+
         for slot in range(slot_count):
-            requirement = _slot_requirement(sec.kind, slot, slot_count, manifest)
-            thumb = _section_thumb(sec.kind, sec.shot_indices, slot)
-            pool = by_section.get(sec.kind, [])
+            requirement = _slot_requirement(
+                sec.role, sec.theme, sec.content_description,
+                slot, slot_count, manifest,
+            )
+            thumb = _section_thumb(sec.source_shot_indices, slot)
+            pool = by_role.get(sec.role, [])
+
             if slot < len(pool):
                 m = pool[slot]
                 gaps.append(Gap(
-                    gap_id=f"gap-{sec.kind}-{slot}",
-                    section=sec.kind,
+                    gap_id=f"{gap_id_prefix}-{slot}",
+                    section=sec.role,
+                    section_id=sec.section_id,
                     slot_index=slot,
                     requirement=requirement,
                     status="ok",
@@ -131,12 +161,12 @@ def detect_gaps(manifest: SampleManifest, materials: list[Material]) -> list[Gap
                     sample_thumbnail_url=thumb,
                 ))
             else:
-                # 试图从其他 section 借（轮转，不重复占用同一条）
-                spillover = _take_spillover(sec.kind)
+                spillover = _take_spillover(sec.role)
                 if spillover:
                     gaps.append(Gap(
-                        gap_id=f"gap-{sec.kind}-{slot}",
-                        section=sec.kind,
+                        gap_id=f"{gap_id_prefix}-{slot}",
+                        section=sec.role,
+                        section_id=sec.section_id,
                         slot_index=slot,
                         requirement=requirement,
                         status="warn",
@@ -147,8 +177,9 @@ def detect_gaps(manifest: SampleManifest, materials: list[Material]) -> list[Gap
                     ))
                 else:
                     gaps.append(Gap(
-                        gap_id=f"gap-{sec.kind}-{slot}",
-                        section=sec.kind,
+                        gap_id=f"{gap_id_prefix}-{slot}",
+                        section=sec.role,
+                        section_id=sec.section_id,
                         slot_index=slot,
                         requirement=requirement,
                         status="miss",
@@ -159,36 +190,33 @@ def detect_gaps(manifest: SampleManifest, materials: list[Material]) -> list[Gap
     return gaps
 
 
-# 段落 kind → 槽位的语义模板。统一兜底到「主体中景」让未列出的 kind 也能给出合理描述。
-_SECTION_REQUIREMENT_HINTS: dict[str, str] = {
-    # marketing
-    "hook": "开场 3 秒 · 痛点提问近景",
-    "body": "主体演示 · 产品/对比中景",
-    "cta": "收尾 · 大字幕行动引导",
-    # editing
-    "opening": "环境/氛围铺垫 · 空镜或慢推",
-    "climax": "情绪/动作高潮 · 强构图特写",
-    "closing": "余韵收尾 · 慢镜或长镜",
-    # motion_graph
-    "intro": "标题/Logo 入场 · 干净底",
-    "build": "信息铺陈 · 图表/字段动画",
-    "drop": "视觉爆点 · 快剪/形变",
-    "outro": "落版收尾 · 品牌定格",
-}
+def _slot_requirement(
+    role: SectionRole,
+    theme: str,
+    content_description: str,
+    slot: int,
+    slot_count: int,
+    manifest: SampleManifest,
+) -> str:
+    """槽位语义描述——把 content_description 前 40 字接到 role/theme 基线之前。
 
-
-def _slot_requirement(section: SectionKind, slot: int, slot_count: int, manifest: SampleManifest) -> str:
-    """根据 PackagingProfile + section + slot 给出该槽的语义描述。
-
-    所有 section 都显示 `N/total` 编号（让前端清单不会出现"3 行长得一模一样"的视觉重复）；
-    body/climax/build 这类多段主体多加一个 #N 强调段内顺序。
+    示例输出：『紧扣用户主题给一句口播 · 开场钩子 · 开场 · 钩子/氛围铺垫 · 1/2（大字加描边）』
     """
     style = manifest.packaging.subtitle_style
-    base = _SECTION_REQUIREMENT_HINTS.get(section, f"主体 · 演示/对比中景")
-    pos = f"{slot + 1}/{slot_count}"  # 1/3、2/3、3/3，比 0-index 直觉
-    if section in ("body", "climax", "build") and slot > 0:
-        return f"{base} #{slot + 1} · {pos}（{style}）"
-    return f"{base} · {pos}（{style}）"
+    base = _ROLE_REQUIREMENT_HINTS.get(role, "主体 · 演示/对比中景")
+    theme_clean = (theme or "").strip()
+    content_clean = (content_description or "").strip().replace("\n", " ")
+    content_short = content_clean[:40]
+    parts: list[str] = []
+    if content_short:
+        parts.append(content_short)
+    if theme_clean:
+        parts.append(theme_clean)
+    parts.append(base)
+    pos = f"{slot + 1}/{slot_count}"
+    if role in ("development", "climax") and slot > 0:
+        return f"{' · '.join(parts)} #{slot + 1} · {pos}（{style}）"
+    return f"{' · '.join(parts)} · {pos}（{style}）"
 
 
 async def fill_gap(gap: Gap, action: FillAction, params: dict[str, Any]) -> FillResult:
@@ -206,7 +234,7 @@ async def fill_gap(gap: Gap, action: FillAction, params: dict[str, Any]) -> Fill
         llm = get_llm_client()
         user = (
             f"槽位需求：{gap.requirement}\n"
-            f"section：{gap.section}\n"
+            f"section role：{gap.section}\n"
             f"可参考素材标签：{params.get('tag_hint', '无')}\n"
             f"创作者补充：{params.get('prompt_hint', '')}"
         )
@@ -238,7 +266,7 @@ async def _fill_with_seedance(gap: Gap, params: dict[str, Any]) -> FillResult:
     """调 Seedance T2V 生成 5-8s 短片填补槽位。
 
     流程：submit → 轮询 query → 返回 task_id 作为 new_material_id。
-    轮询超时（默认 90s）后返回 warn + task_id，前端可基于 task_id 继续刷新或重试。
+    轮询超时（默认 180s）后返回 warn + task_id，前端可基于 task_id 继续刷新或重试。
     """
     t2v = get_t2v_client()
     prompt = params.get("prompt") or f"短视频画面：{gap.requirement}"
@@ -248,15 +276,12 @@ async def _fill_with_seedance(gap: Gap, params: dict[str, Any]) -> FillResult:
     reference_images = params.get("reference_images") or None
     reference_video = params.get("reference_video_url")
     reference_audio = params.get("reference_audio_url")
-    ratio = params.get("ratio") or params.get("size")  # 兼容旧 size 参数（仅 mock 忽略）
+    ratio = params.get("ratio") or params.get("size")
     if ratio and "x" in str(ratio):
-        # 旧 size="1280x720" 显式忽略，让 client 走默认 ratio
         ratio = None
     generate_audio = params.get("generate_audio")
     watermark = params.get("watermark")
     poll_interval = float(params.get("poll_interval_seconds") or 4.0)
-    # 默认 180s——Seedance 排队 + 渲染中位数约 60-120s，宽到 180s 减少超时返回 warn 的概率。
-    # 仍超时时返回 task_id，前端 /api/gap/aigc-refresh 可再次轮询。
     max_wait = float(params.get("max_wait_seconds") or 180.0)
 
     try:
@@ -307,7 +332,6 @@ async def _fill_with_seedance(gap: Gap, params: dict[str, Any]) -> FillResult:
                 note=f"Seedance 生成失败：{q.fail_reason or 'unknown'}",
             )
         if time.time() - started > max_wait:
-            # 还在排队/渲染——返回 task_id 让前端继续轮询
             return FillResult(
                 gap_id=gap.gap_id, action="aigc",
                 new_material_id=task_id, status="warn",

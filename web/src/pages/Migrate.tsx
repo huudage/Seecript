@@ -16,7 +16,7 @@ import { Link } from 'react-router-dom'
 import { PageShell } from '@/components/layout/PageShell'
 import { usePlanStore } from '@/stores/plan'
 import { useSessionStore } from '@/stores/session'
-import type { Gap, GapStatus, Scene, SectionKind } from '@/types/schemas'
+import type { Gap, GapStatus, Scene, SectionRole } from '@/types/schemas'
 import { SECTION_HEX, SECTION_SHORT } from '@/lib/sections'
 import { cn } from '@/lib/utils'
 
@@ -28,7 +28,8 @@ const STATUS_STROKE: Record<GapStatus, string> = {
 
 interface SectionNodeData {
   label: string
-  section: SectionKind
+  section: SectionRole
+  theme: string
   summary: string
   slotCount: number
   [key: string]: unknown
@@ -36,7 +37,7 @@ interface SectionNodeData {
 
 interface SceneNodeData {
   label: string
-  section: SectionKind
+  section: SectionRole
   source: Scene['source']
   source_ref: string
   duration: number
@@ -57,8 +58,9 @@ function SectionNode({ data }: NodeProps<Node<SectionNodeData>>) {
       <div className="text-xs font-bold uppercase" style={{ color: SECTION_HEX[data.section] }}>
         样例 · {SECTION_SHORT[data.section]}
       </div>
-      <div className="mt-1 text-sm font-medium text-slate-800">{data.label}</div>
-      <div className="text-xs text-slate-500">{data.slotCount} 槽位 · {data.summary}</div>
+      <div className="mt-1 text-sm font-semibold text-slate-800">{data.theme}</div>
+      <div className="text-[11px] text-slate-500">{data.label} · {data.slotCount} 槽位</div>
+      <div className="line-clamp-2 text-[11px] text-slate-500">{data.summary}</div>
       <Handle type="source" position={Position.Right} style={{ background: SECTION_HEX[data.section] }} />
     </div>
   )
@@ -99,17 +101,24 @@ function buildGraph(manifest: ReturnType<typeof useSessionStore.getState>['manif
 
   manifest.sections.forEach((sec, i) => {
     nodes.push({
-      id: `sec-${sec.kind}`,
+      id: `sec-${i}`,
       type: 'sectionNode',
       position: { x: LEFT_X, y: i * Y_STEP },
       data: {
         label: `${sec.start.toFixed(1)}–${sec.end.toFixed(1)}s`,
-        section: sec.kind,
+        section: sec.role,
+        theme: sec.theme,
         summary: sec.summary,
         slotCount: sec.shot_indices.length,
       } satisfies SectionNodeData,
       draggable: true,
     })
+  })
+
+  // 同 role 可能出现多段（多个 development）。scene 连线到该 role 的第一个 section node。
+  const firstNodeIdByRole = new Map<SectionRole, string>()
+  manifest.sections.forEach((sec, i) => {
+    if (!firstNodeIdByRole.has(sec.role)) firstNodeIdByRole.set(sec.role, `sec-${i}`)
   })
 
   plan.main_track.forEach((scene, i) => {
@@ -147,9 +156,11 @@ function buildGraph(manifest: ReturnType<typeof useSessionStore.getState>['manif
       }
       if (g.status === 'warn') status = 'warn'
     }
+    const sourceId = firstNodeIdByRole.get(scene.section)
+    if (!sourceId) return
     edges.push({
       id: `e-${scene.scene_id}`,
-      source: `sec-${scene.section}`,
+      source: sourceId,
       target: `scene-${scene.scene_id}`,
       style: {
         stroke: STATUS_STROKE[status],

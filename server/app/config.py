@@ -58,16 +58,30 @@ class Settings(BaseSettings):
     llm_timeout_seconds: int = Field(default=60, ge=5, le=300)
     llm_max_tokens: int = Field(default=2048, ge=128, le=8192)
 
-    # === ASR (Doubao 极速版 / turbo / flash) ===
-    # 极速版 = 一次请求拿结果 + 支持 base64 inline 上传 → 不再需要公网 URL（PUBLIC_BASE_URL 已废弃）。
+    # === ASR (Doubao 大模型录音文件识别 2.0 / seedasr · 异步 submit+query) ===
+    # 2.0 资源 ID 是 volc.bigasr.auc（注：1.0 旧版是 volc.bigasr.auc，2.0 文档示例同名；
+    # seedasr.auc 是 2.0 别名，按 .env 配置走）。1.0 极速版 (volc.bigasr.auc_turbo) 已弃用。
+    # 2.0 强制 audio.url —— 不再支持 base64 inline，必须配 PUBLIC_AUDIO_BASE_URL 拼公网地址。
+    # 鉴权两种模式（asr_client.py 自动识别）：
+    #   - 新控制台：只设 DOUBAO_API_KEY（长串/UUID），发 X-Api-Key
+    #   - 旧控制台：DOUBAO_API_KEY=AppID（数字）+ DOUBAO_ACCESS_KEY=AccessToken（长串），
+    #              发 X-Api-App-Key + X-Api-Access-Key
     asr_provider: Literal["mock", "doubao"] = Field(default="mock")
     doubao_api_key: str = Field(default="")
-    doubao_resource_id: str = Field(default="volc.bigasr.auc_turbo")
-    doubao_recognize_url: str = Field(
-        default="https://openspeech.bytedance.com/api/v3/auc/bigmodel/recognize/flash"
+    doubao_access_key: str = Field(default="")
+    doubao_resource_id: str = Field(default="volc.bigasr.auc")
+    doubao_submit_url: str = Field(
+        default="https://openspeech.bytedance.com/api/v3/auc/bigmodel/submit"
     )
-    # 极速版上限 100MB / 2h，但我们再按出口带宽做收敛（推荐 ≤ 20MB），timeout 60s 给足余量。
-    asr_timeout_seconds: int = Field(default=60, ge=10, le=300)
+    doubao_query_url: str = Field(
+        default="https://openspeech.bytedance.com/api/v3/auc/bigmodel/query"
+    )
+    # 提供给火山服务端拉音频用。建议 cloudflared tunnel / ngrok / 对象存储任一。
+    # 例：https://abcd-1234.trycloudflare.com（自动指向本地 8090，路径 /samples/<id>/video.mp4 直接可访问）
+    public_audio_base_url: str = Field(default="")
+    asr_timeout_seconds: int = Field(default=120, ge=10, le=600)
+    asr_poll_interval_seconds: float = Field(default=2.0, ge=0.5, le=30.0)
+    asr_poll_max_seconds: float = Field(default=180.0, ge=10.0, le=600.0)
 
     # === T2V（视频生成，doubao-seedance-2.0 多模态参考帧/参考视频/参考音频）===
     # 默认 mock：开箱即用；切到 doubao_ark 需在 .env 设 ARK_API_KEY 或独立 ARK_T2V_API_KEY。

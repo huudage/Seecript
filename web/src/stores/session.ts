@@ -13,6 +13,7 @@ import type {
  * - selectedSampleId / videoType / manifest：素材库 → 拆解 的产物
  * - sessionId / materials：上传素材后由后端分配；plan 构建时透传
  * - brief：Compose 页用户输入的主题/卖点；plan/build 时透传给后端
+ * - videoGoal：Compose 页用户输入的视频要求与目的；plan/build 时透传给后端驱动结构改编
  */
 interface SessionState {
   selectedSampleId: SampleId | null
@@ -23,6 +24,7 @@ interface SessionState {
   sessionId: SessionId | null
   materials: Material[]
   brief: string
+  videoGoal: string
 
   selectSample: (id: SampleId | null, videoType?: VideoType, source?: 'system' | 'user') => void
   setVideoType: (videoType: VideoType) => void
@@ -33,6 +35,7 @@ interface SessionState {
   /** 拖拽完成后传新的 material_id 顺序，store 内更新每条的 sort_order。 */
   reorderMaterials: (orderedIds: string[]) => void
   setBrief: (brief: string) => void
+  setVideoGoal: (videoGoal: string) => void
   reset: () => void
 }
 
@@ -44,6 +47,7 @@ export const useSessionStore = create<SessionState>((set) => ({
   sessionId: null,
   materials: [],
   brief: '',
+  videoGoal: '',
 
   selectSample: (id, videoType, source) =>
     set((state) => ({
@@ -81,6 +85,7 @@ export const useSessionStore = create<SessionState>((set) => ({
       return { materials: next }
     }),
   setBrief: (brief) => set({ brief }),
+  setVideoGoal: (videoGoal) => set({ videoGoal }),
   reset: () =>
     set({
       selectedSampleId: null,
@@ -90,5 +95,6 @@ export const useSessionStore = create<SessionState>((set) => ({
       sessionId: null,
       materials: [],
       brief: '',
+      videoGoal: '',
     }),
 }))

@@ -41,14 +41,43 @@ class TestMockLLMClient:
     """Mock 通过 system prompt 中的 schema 关键字路由到不同的 fixture（见 MockLLMClient 文档）。"""
 
     @pytest.mark.asyncio
-    async def test_decompose_sections_fixture(self):
+    async def test_decompose_shot_roles_fixture(self):
         c = MockLLMClient()
+        # mock 解析 user 文本里的 "<idx>: <start>-<end>s" 行数 → 动态生成 shot_roles。
+        user_payload = (
+            "镜头列表：\n"
+            "0: 0.0-3.0s | (无口播)\n"
+            "1: 3.0-7.5s | (无口播)\n"
+            "2: 7.5-12.0s | (无口播)\n"
+            "3: 12.0-18.0s | (无口播)\n"
+        )
         text = await c.complete(
-            'output JSON with "sections" array, each item has "kind" (hook|body|cta)', "u"
+            'output JSON with "shot_roles" array, each item has shot_index + role + theme '
+            '(opening/development/climax/closing)', user_payload
         )
         data = json.loads(text)
-        assert "sections" in data and len(data["sections"]) == 3
-        assert {s["kind"] for s in data["sections"]} == {"hook", "body", "cta"}
+        assert "shot_roles" in data
+        assert len(data["shot_roles"]) == 4
+        roles = [s["role"] for s in data["shot_roles"]]
+        # 第一镜头必须 opening、最后必须 closing
+        assert roles[0] == "opening"
+        assert roles[-1] == "closing"
+        # 中间镜头不允许 opening/closing
+        for r in roles[1:-1]:
+            assert r in ("development", "climax")
+        # 至多 1 个 climax
+        assert roles.count("climax") <= 1
+
+    @pytest.mark.asyncio
+    async def test_understanding_fixture(self):
+        c = MockLLMClient()
+        text = await c.complete(
+            'output JSON with "archetype" and "narrative_summary" describing the video', "u"
+        )
+        data = json.loads(text)
+        assert "archetype" in data
+        assert "narrative_summary" in data
+        assert "suggested_segments" in data
 
     @pytest.mark.asyncio
     async def test_gap_fill_fixture(self):
@@ -70,7 +99,10 @@ class TestMockLLMClient:
     @pytest.mark.asyncio
     async def test_complete_json_parses(self):
         c = MockLLMClient()
-        data = await c.complete_json('output JSON with "sections" hook body cta', "u")
+        data = await c.complete_json(
+            'output JSON with "shot_roles" array using role + theme schema',
+            "0: 0.0-2.0s | x\n1: 2.0-4.0s | y",
+        )
         assert isinstance(data, dict)
 
     @pytest.mark.asyncio
@@ -104,40 +136,34 @@ class TestMockLLMClient:
         assert "frame_tags" in data
 
     @pytest.mark.asyncio
-    async def test_multimodal_sections_marketing(self):
-        """system 含 'sections' 默认走 marketing fixture（hook/body/cta）。"""
+    async def test_multimodal_understanding_routes_to_fixture(self):
+        """system 含 archetype + narrative_summary 时多模态返回视频画像 fixture。"""
         c = MockLLMClient()
         text = await c.complete_multimodal(
-            "你是营销结构分析师，请输出 sections JSON",
-            "镜头列表 …",
+            "你是视频内容分析师，请输出 JSON 含 archetype 和 narrative_summary",
+            "关键帧列表",
             [""],
         )
         data = json.loads(text)
-        assert {s["kind"] for s in data["sections"]} == {"hook", "body", "cta"}
+        assert "archetype" in data and "narrative_summary" in data
 
     @pytest.mark.asyncio
-    async def test_multimodal_sections_editing(self):
-        """system 含 'editing' / 'Vlog' 走剪辑 fixture（opening/climax/closing）。"""
+    async def test_multimodal_shot_roles_returns_role_fixture(self):
+        """system 含 'shot_roles' + 'role' 时多模态返回 per-shot 角色 fixture。"""
         c = MockLLMClient()
         text = await c.complete_multimodal(
-            "你是剪辑/Vlog 视频结构分析师，请输出 sections JSON · editing",
-            "镜头列表 …",
-            [""],
+            "你是短视频结构分析师，请为每个镜头输出 shot_roles JSON，含 role + theme",
+            "0: 0.0-2.0s | (无口播)\n1: 2.0-5.0s | (无口播)\n2: 5.0-8.0s | (无口播)",
+            ["", "", ""],
         )
         data = json.loads(text)
-        assert {s["kind"] for s in data["sections"]} == {"opening", "climax", "closing"}
-
-    @pytest.mark.asyncio
-    async def test_multimodal_sections_motion_graph(self):
-        """system 含 'motion_graph' 走 MG fixture（intro/build/drop/outro）。"""
-        c = MockLLMClient()
-        text = await c.complete_multimodal(
-            "你是 Motion Graph 视频结构分析师，请输出 sections JSON · motion_graph",
-            "镜头列表 …",
-            [""],
-        )
-        data = json.loads(text)
-        assert {s["kind"] for s in data["sections"]} == {"intro", "build", "drop", "outro"}
+        assert "shot_roles" in data
+        assert len(data["shot_roles"]) == 3
+        roles = [s["role"] for s in data["shot_roles"]]
+        assert roles[0] == "opening"
+        assert roles[-1] == "closing"
+        for s in data["shot_roles"]:
+            assert s["role"] in {"opening", "development", "climax", "closing"}
 
 
 class TestFactory:

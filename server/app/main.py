@@ -24,7 +24,7 @@ from fastapi.staticfiles import StaticFiles
 
 from . import __version__
 from .config import get_settings
-from .routers import asr, decompose, edit, gap, library, material, plan, render
+from .routers import asr, decompose, edit, gap, library, material, packaging, plan, render
 from .schemas import ErrorResponse, HealthResponse
 
 
@@ -139,6 +139,7 @@ def create_app() -> FastAPI:
     app.include_router(material.router, prefix="/api", tags=["material"])
     app.include_router(gap.router, prefix="/api", tags=["gap"])
     app.include_router(plan.router, prefix="/api", tags=["plan"])
+    app.include_router(packaging.router, prefix="/api", tags=["packaging"])
     app.include_router(render.router, prefix="/api", tags=["render"])
     app.include_router(edit.router, prefix="/api", tags=["edit"])
 

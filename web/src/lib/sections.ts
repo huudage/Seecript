@@ -1,14 +1,14 @@
 /**
- * 段落/视频类型显示信息——跟 schemas.SectionKind / VideoType 三选一对齐。
+ * 段落角色/视频类型显示信息——跟 schemas.SectionRole / VideoType 对齐。
  *
- * 9 个 kind 分三组：
- * - marketing      hook / body / cta            粉 → 蓝 → 黄
- * - editing        opening / climax / closing   青 → 紫 → 靛
- * - motion_graph   intro / build / drop / outro 绿 → 橙 → 红 → 灰
- *
- * 同组的开/收尾用同冷暖系，主体段用对比色。颜色不要交叉，否则迁移图连线难看。
+ * v2：从 9 元 SectionKind（按 video_type 三选一）改为 4 元 SectionRole（任意视频通用）。
+ * 颜色按情绪温度排：
+ *   opening      蓝   冷启动、注意力锚
+ *   development  灰   中性铺陈、信息密度
+ *   climax       红   情绪峰、爆点
+ *   closing      绿   收束、行动引导
  */
-import type { SectionKind, VideoType } from '@/types/schemas'
+import type { SectionRole, VideoType } from '@/types/schemas'
 
 export const VIDEO_TYPE_LABEL: Record<VideoType, string> = {
   marketing: '营销 / 带货',
@@ -16,62 +16,42 @@ export const VIDEO_TYPE_LABEL: Record<VideoType, string> = {
   motion_graph: 'Motion Graph',
 }
 
+/**
+ * video_type 现在仅作风格提示（驱动 BGM/字幕/转场/封面），不再决定段落结构。
+ * Hint 文字反映典型成片观感，结构骨架统一走 opening → development → climax → closing。
+ */
 export const VIDEO_TYPE_HINT: Record<VideoType, string> = {
-  marketing: 'hook → body → cta · 痛点钩子 / 产品演示 / 行动引导',
-  editing: 'opening → climax → closing · 氛围铺垫 / 情绪高潮 / 余韵收尾',
-  motion_graph: 'intro → build → drop → outro · 标题 / 铺陈 / 爆点 / 落版',
+  marketing: '风格提示：硬切 + 字幕条，痛点钩子 / 卖点演示 / 行动引导',
+  editing: '风格提示：长镜叠化 + 氛围 BGM，铺垫 / 情绪高潮 / 余韵收尾',
+  motion_graph: '风格提示：动画转场 + 信息可视化，标题 / 铺陈 / 爆点 / 落版',
 }
 
-export const SECTION_LABEL: Record<SectionKind, string> = {
-  hook: 'Hook 开场',
-  body: 'Body 主体',
-  cta: 'CTA 收尾',
-  opening: 'Opening 铺垫',
-  climax: 'Climax 高潮',
-  closing: 'Closing 收尾',
-  intro: 'Intro 入场',
-  build: 'Build 铺陈',
-  drop: 'Drop 爆点',
-  outro: 'Outro 落版',
+export const SECTION_LABEL: Record<SectionRole, string> = {
+  opening: '开场',
+  development: '发展',
+  climax: '高潮',
+  closing: '收尾',
 }
 
-export const SECTION_SHORT: Record<SectionKind, string> = {
-  hook: 'Hook',
-  body: 'Body',
-  cta: 'CTA',
+export const SECTION_SHORT: Record<SectionRole, string> = {
   opening: 'Open',
+  development: 'Dev',
   climax: 'Climax',
   closing: 'Close',
-  intro: 'Intro',
-  build: 'Build',
-  drop: 'Drop',
-  outro: 'Outro',
 }
 
 // Tailwind 背景类——用于 SectionsBar 横向色块
-export const SECTION_BG: Record<SectionKind, string> = {
-  hook: 'bg-pink-500/80',
-  body: 'bg-sky-500/80',
-  cta: 'bg-amber-500/80',
-  opening: 'bg-cyan-500/80',
-  climax: 'bg-violet-500/80',
-  closing: 'bg-indigo-500/80',
-  intro: 'bg-emerald-500/80',
-  build: 'bg-orange-500/80',
-  drop: 'bg-rose-500/80',
-  outro: 'bg-slate-500/80',
+export const SECTION_BG: Record<SectionRole, string> = {
+  opening: 'bg-blue-500/80',
+  development: 'bg-slate-500/80',
+  climax: 'bg-rose-500/80',
+  closing: 'bg-emerald-500/80',
 }
 
 // CSS 十六进制色——给 ReactFlow / 行内 style 用
-export const SECTION_HEX: Record<SectionKind, string> = {
-  hook: '#ec4899',
-  body: '#0ea5e9',
-  cta: '#f59e0b',
-  opening: '#06b6d4',
-  climax: '#8b5cf6',
-  closing: '#6366f1',
-  intro: '#10b981',
-  build: '#f97316',
-  drop: '#f43f5e',
-  outro: '#64748b',
+export const SECTION_HEX: Record<SectionRole, string> = {
+  opening: '#3B82F6',
+  development: '#64748B',
+  climax: '#EF4444',
+  closing: '#10B981',
 }

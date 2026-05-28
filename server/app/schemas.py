@@ -1,7 +1,7 @@
 """Pydantic v2 schemas — 爆款结构迁移引擎.
 
 模块映射（与 docs/ARCHITECTURE.md §5.3 一致）：
-- Library      : LibraryItem, SampleManifest, Shot, RhythmCurve, Section, PackagingProfile
+- Library      : LibraryItem, SampleManifest, Shot, RhythmCurve, Section, PackagingProfile, VideoUnderstanding
 - Material     : Material, MaterialUploadResponse
 - Gap          : Gap, GapDetectRequest, GapFillRequest, FillResult
 - Plan         : Plan, Scene, PackagingItem, BGMConfig, PlanBuildRequest
@@ -12,12 +12,23 @@
 - Health / Err : HealthResponse, ErrorResponse, ASRResponse
 
 字段保留 snake_case；前端 TS 镜像参见 web/src/types/schemas.ts。
+
+# 段落结构：角色 + 主题双层（v2）
+旧版按 video_type 三选一写死 9 个 SectionKind（hook/body/cta/opening/climax/closing/...）
+对真实样例僵硬——比如艺术展宣传视频没有 hook/body/cta 这种带货语义。
+
+新版改用 `SectionRole` 四元枚举 + 自由文本 `theme`：
+- role 是抽象骨架：opening / development / climax / closing （任何视频都适用）
+- theme 是 LLM 看完视频后给的中文小标签（"展品揭幕"、"艺术家自述"、"行动呼吁"等）
+
+video_type 仍保留，但降级为**风格提示**（驱动 BGM / 字幕 / 转场 / 封面），
+不再决定段落结构本身。
 """
 from __future__ import annotations
 
 from typing import Any, Literal, Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 # =========================================================================
 # Common
@@ -36,37 +47,41 @@ JobStatus = Literal["pending", "running", "succeeded", "failed", "cancelled"]
 
 
 VideoType = Literal["marketing", "editing", "motion_graph"]
-"""视频类型——上传/选样例时用户必选；驱动 LLM 段落 prompt 三选一。
+"""视频类型——风格提示。决定 BGM / 字幕 / 转场 / 封面，不再决定段落结构。
 
-- marketing      营销/带货：hook → body → cta（痛点钩子→产品演示→行动引导）
-- editing        剪辑/Vlog：opening → climax → closing（氛围铺垫→情绪高潮→余韵收尾）
-- motion_graph   Motion Graph：intro → build → drop → outro（标题→铺陈→爆点→落版）
+- marketing      营销/带货/动态海报：节奏紧凑、强字幕、大色块、行动引导
+- editing        剪辑/Vlog/纪录：情绪曲线、空镜与高潮、长镜与余韵
+- motion_graph   合成动画/信息可视化：标题入场、爆点切换、落版收尾
 """
 
 
-SectionKind = Literal[
-    # marketing
-    "hook", "body", "cta",
-    # editing
-    "opening", "climax", "closing",
-    # motion_graph
-    "intro", "build", "drop", "outro",
-]
-"""段落 kind 9 元枚举——按 video_type 在三组里取一组。"""
+SectionRole = Literal["opening", "development", "climax", "closing"]
+"""段落角色——任何视频都适用的抽象骨架。
+
+- opening      开场段：吸引注意、奠定基调（hook / 标题 / 氛围铺垫 都映射到这里）
+- development  发展段：内容铺陈、信息展开（可以多段；body / build / 中段都映射到这里）
+- climax       高潮段：情绪/视觉/冲突顶点（climax / drop / 卖点对比都映射到这里）
+- closing      收尾段：余韵 / 行动引导 / 落版（cta / outro / closing 都映射到这里）
+
+约束：一个 manifest 必须恰好 1 个 opening + 1 个 closing，最多 1 个 climax，其余皆 development。
+"""
 
 
-_MARKETING_KINDS: tuple[str, ...] = ("hook", "body", "cta")
-_EDITING_KINDS: tuple[str, ...] = ("opening", "climax", "closing")
-_MOTION_GRAPH_KINDS: tuple[str, ...] = ("intro", "build", "drop", "outro")
-
-
-def kinds_for_video_type(video_type: VideoType) -> tuple[str, ...]:
-    """给定视频类型，返回该类型对应的段落 kind 序列。"""
-    if video_type == "editing":
-        return _EDITING_KINDS
-    if video_type == "motion_graph":
-        return _MOTION_GRAPH_KINDS
-    return _MARKETING_KINDS  # marketing 兜底
+# ---- 旧 SectionKind → 新 SectionRole 的迁移映射 -------------------------------
+# 历史 manifest.json (server/samples/<id>/manifest.json) 仍含 "kind": "hook"。
+# Pydantic before-validator 用这张表把 kind 转成 role + 默认 theme。
+_LEGACY_KIND_TO_ROLE: dict[str, tuple[str, str]] = {
+    "hook":    ("opening",     "钩子开场"),
+    "opening": ("opening",     "氛围铺垫"),
+    "intro":   ("opening",     "标题入场"),
+    "body":    ("development", "主体铺陈"),
+    "build":   ("development", "信息铺陈"),
+    "cta":     ("closing",     "行动引导"),
+    "closing": ("closing",     "余韵收尾"),
+    "outro":   ("closing",     "落版收尾"),
+    "climax":  ("climax",      "情绪高潮"),
+    "drop":    ("climax",      "视觉爆点"),
+}
 
 
 class HealthResponse(BaseModel):
@@ -99,7 +114,7 @@ class LibraryItem(BaseModel):
 
     id: str
     title: str
-    video_type: VideoType = Field(..., description="样例视频类型，决定段落 schema")
+    video_type: VideoType = Field(..., description="样例视频类型（风格提示，决定 BGM/字幕/转场/封面）")
     scene: str = Field(..., description="样例所属类型的中文标签，如『营销/剪辑/Motion Graph』")
     duration_seconds: float
     shot_count: int
@@ -122,6 +137,18 @@ class Shot(BaseModel):
     tags: list[str] = Field(default_factory=list, description="VLM 帧打标（封面风格/转场/字幕样式等）")
 
 
+class Utterance(BaseModel):
+    """ASR 逐句时间戳。时间单位均为秒（asr_client 已从毫秒换算）。
+
+    模块 5 字幕烧录直接读这个列表；模块 2 decompose 用它做"按 shot 时间窗映射 transcript"，
+    替代旧版按字符比例切分（会把英文单词从中间截断）。
+    """
+
+    text: str
+    start: float
+    end: float
+
+
 class RhythmCurve(BaseModel):
     """节奏曲线 = 镜头切换频次 + BGM 能量。前端拿来画双线图。"""
 
@@ -132,13 +159,51 @@ class RhythmCurve(BaseModel):
 
 
 class Section(BaseModel):
-    """LLM 段落结构。具体 kind 序列按 video_type 三选一（见 kinds_for_video_type）。"""
+    """LLM 段落结构。
 
-    kind: SectionKind
+    `role` 是抽象骨架（任何视频都有 opening/development/climax/closing 这 4 种角色），
+    `theme` 是 LLM 看完视频后给的中文小标签——反映**这一段真实在讲什么**，比 role 信息量大。
+    比如艺术展样例的 opening 段 theme 可能是『展品揭幕』，营销样例可能是『痛点钩子』。
+    """
+
+    role: SectionRole = Field(..., description="段落角色（4 元枚举，全视频类型通用）")
+    theme: str = Field(default="", max_length=20, description="LLM 给出的本段中文主题标签（≤10 字）")
     start: float
     end: float
     summary: str
     shot_indices: list[int] = Field(default_factory=list, description="本段覆盖的镜头 index")
+
+    @model_validator(mode="before")
+    @classmethod
+    def _migrate_legacy_kind(cls, data: Any) -> Any:
+        """旧 manifest.json 用 `kind` 字段——映射成 role + 默认 theme。
+
+        新写的数据应直接用 `role`/`theme`；这里只是兜底，防止预拆解缓存挂掉。
+        """
+        if not isinstance(data, dict):
+            return data
+        if "role" not in data and "kind" in data:
+            legacy = data.pop("kind")
+            role, default_theme = _LEGACY_KIND_TO_ROLE.get(
+                legacy, ("development", legacy or "主体")
+            )
+            data["role"] = role
+            data.setdefault("theme", default_theme)
+        return data
+
+
+class VideoUnderstanding(BaseModel):
+    """多模态 LLM 对整支视频的语义画像。先理解再切段。
+
+    decompose pipeline 的关键转折：以前直接按 video_type 三选一塞 prompt 给 LLM 让它切段，
+    现在多走一步——先让 LLM 看完整片说"这是个什么样的视频"，再用这份画像驱动切段。
+    这样艺术展宣传片不会被强切成 hook/body/cta，而是按它自己的叙事弧线切。
+    """
+
+    archetype: str = Field(..., max_length=40, description="视频原型，如『艺术展宣传』『带货种草』『城市 Vlog』")
+    narrative_summary: str = Field(..., max_length=200, description="一段话讲清整支视频在说什么、怎么说")
+    suggested_segments: int = Field(..., ge=3, le=6, description="LLM 建议切几段（3-6）")
+    tone: str = Field(default="", max_length=30, description="基调描述：『冷静克制』『高燃热血』『诙谐自嘲』等")
 
 
 class PackagingProfile(BaseModel):
@@ -156,7 +221,7 @@ class SampleManifest(BaseModel):
 
     sample_id: str
     title: str
-    video_type: VideoType = Field(default="marketing", description="样例视频类型，决定段落 schema")
+    video_type: VideoType = Field(default="marketing", description="视频风格类型（决定包装样式，不决定段落结构）")
     duration_seconds: float
     video_url: str
     has_voice: bool = Field(default=True, description="VAD 探测：是否有口播；纯 BGM 视频跳过 ASR/逐句字幕")
@@ -164,6 +229,18 @@ class SampleManifest(BaseModel):
     rhythm: RhythmCurve
     sections: list[Section]
     packaging: PackagingProfile
+    understanding: Optional[VideoUnderstanding] = Field(
+        default=None,
+        description="LLM 视频画像（archetype / narrative_summary / tone）。旧缓存无此字段为 None。",
+    )
+    utterances: list[Utterance] = Field(
+        default_factory=list,
+        description="ASR 逐句时间戳；纯 BGM 视频为空列表。供模块 5 字幕烧录与编辑器精对齐使用。",
+    )
+    climax_position: Optional[float] = Field(
+        default=None,
+        description="高潮时间点（秒）。优先取 role=climax 段中点；无 climax 时回落 BGM 能量峰值。前端节奏图叠 ReferenceLine。",
+    )
 
 
 # =========================================================================
@@ -172,7 +249,7 @@ class SampleManifest(BaseModel):
 
 class DecomposeRequest(BaseModel):
     sample_id: str = Field(..., description="样例 ID；命中内置样例则走缓存，新视频走完整链路")
-    video_type: VideoType = Field(default="marketing", description="视频类型，驱动段落 prompt")
+    video_type: VideoType = Field(default="marketing", description="视频类型（风格提示，影响包装；不影响段落结构）")
 
 
 class DecomposeSubmitResponse(BaseModel):
@@ -184,7 +261,7 @@ class DecomposeSubmitResponse(BaseModel):
 # =========================================================================
 
 class Material(BaseModel):
-    """用户上传的素材分析结果（含 多模态 LLM 标签 + 段落推荐）。"""
+    """用户上传的素材分析结果（含 多模态 LLM 标签 + 段落推荐 + 高光评分）。"""
 
     material_id: str
     filename: str
@@ -192,13 +269,34 @@ class Material(BaseModel):
     duration_seconds: Optional[float] = None
     thumbnail_url: Optional[str] = None
     tags: list[str] = Field(default_factory=list, description="多模态 LLM 打标：物体/场景/风格")
-    recommended_section: Optional[SectionKind] = Field(
-        default=None, description="LLM 推荐它适合放在样例哪一段（按 video_type 解读 kind）"
+    recommended_section: Optional[SectionRole] = Field(
+        default=None, description="LLM 推荐它适合放在样例的哪种 role 段（opening/development/climax/closing）"
+    )
+    highlight_score: float = Field(
+        default=0.0,
+        ge=0.0,
+        le=1.0,
+        description="高光评分 0-1：0.7+ 适合做开头/高潮，0.4-0.7 适合中段铺陈，<0.4 仅作 B-roll。",
+    )
+    highlight_reason: Optional[str] = Field(
+        default=None,
+        description="LLM 给出高光评分的一句话理由（构图/动作/情绪等），前端 hover 卡片展示。",
     )
     sort_order: int = Field(
         default=0,
         description="前端拖拽排序产物，plan/build 时按它排 selected_materials；越小越靠前。",
     )
+
+    @model_validator(mode="before")
+    @classmethod
+    def _migrate_legacy_recommended_section(cls, data: Any) -> Any:
+        """旧素材 store 里的 recommended_section 可能还是 hook/body/cta 这套——映射到 role。"""
+        if not isinstance(data, dict):
+            return data
+        rec = data.get("recommended_section")
+        if isinstance(rec, str) and rec in _LEGACY_KIND_TO_ROLE:
+            data["recommended_section"] = _LEGACY_KIND_TO_ROLE[rec][0]
+        return data
 
 
 class MaterialUploadResponse(BaseModel):
@@ -214,7 +312,11 @@ class Gap(BaseModel):
     """槽位匹配产物。一个 Section 对应若干 Gap，每个 Gap 反映「样例需要 vs 用户素材」的差距。"""
 
     gap_id: str
-    section: SectionKind
+    section: SectionRole = Field(..., description="该 gap 所在段落的角色")
+    section_id: Optional[str] = Field(
+        default=None,
+        description="所属 AdaptedSection.section_id，前端按段分组用；老 plan 为 None。",
+    )
     slot_index: int = Field(..., description="该 section 下的第几个分镜槽位")
     requirement: str = Field(..., description="样例对该槽位的描述（如『3 秒痛点提问近景』）")
     status: GapStatus
@@ -225,6 +327,16 @@ class Gap(BaseModel):
         default=None,
         description="样例中该槽对应镜头的缩略图——前端点槽位时弹出『样例长这样』。",
     )
+
+    @model_validator(mode="before")
+    @classmethod
+    def _migrate_legacy_section(cls, data: Any) -> Any:
+        if not isinstance(data, dict):
+            return data
+        sec = data.get("section")
+        if isinstance(sec, str) and sec in _LEGACY_KIND_TO_ROLE:
+            data["section"] = _LEGACY_KIND_TO_ROLE[sec][0]
+        return data
 
 
 class GapDetectRequest(BaseModel):
@@ -266,11 +378,39 @@ class FillResult(BaseModel):
 # Module 5 — 方案 Plan
 # =========================================================================
 
+class AdaptedSection(BaseModel):
+    """LLM 改编后的段落结构。Plan 的"叙事单位"层，位于 Scene"剪辑单位"层之上。
+
+    流程：样例 manifest.sections（真模型拆出的样例骨架）+ 用户 brief + video_goal
+    → LLM 改编 → AdaptedSection[]（含每段 content_description 内容说明）。
+
+    Scene 负责"用哪个素材切片、时长多少"；AdaptedSection 负责"这一段叙事上要讲什么"。
+    """
+
+    section_id: str = Field(..., description="本 plan 内稳定 id，如 'sec-0'；Gap.section_id 反查")
+    role: SectionRole = Field(..., description="段落角色（4 元枚举，全视频类型通用）")
+    theme: str = Field(default="", max_length=20, description="紧贴用户主题的中文短标签（≤8 字）")
+    content_description: str = Field(
+        ...,
+        max_length=300,
+        description="内容说明：本段画面/口播应呈现什么；由 LLM 紧贴 brief+video_goal 生成",
+    )
+    source_section_indices: list[int] = Field(
+        default_factory=list,
+        description="改编自原 manifest.sections 的下标；纯新增段为空",
+    )
+    source_shot_indices: list[int] = Field(
+        default_factory=list,
+        description="改编自原样例哪些 shot index（用于 gap 缩略图反查）",
+    )
+    order: int = Field(..., description="段落顺序（从 0 开始）")
+
+
 class Scene(BaseModel):
     """主轨分镜：素材切片 + 字幕。FFmpeg concat 的最小单位。"""
 
     scene_id: str
-    section: SectionKind
+    section: SectionRole = Field(..., description="本场所属段落角色（opening/development/climax/closing）")
     source: Literal["sample", "user_material", "aigc_t2v"]
     source_ref: str = Field(..., description="样例镜头 id / material_id / Seedance 任务返回的 media_id")
     start: float = Field(..., description="时间线上的起点（秒）")
@@ -278,6 +418,16 @@ class Scene(BaseModel):
     in_point: float = Field(default=0.0, description="源素材内的入点（秒）")
     out_point: Optional[float] = Field(default=None, description="源素材内的出点；None 表示用到结尾")
     narration: Optional[str] = Field(default=None, description="本场口播文字（drawtext 基础字幕）")
+
+    @model_validator(mode="before")
+    @classmethod
+    def _migrate_legacy_section(cls, data: Any) -> Any:
+        if not isinstance(data, dict):
+            return data
+        sec = data.get("section")
+        if isinstance(sec, str) and sec in _LEGACY_KIND_TO_ROLE:
+            data["section"] = _LEGACY_KIND_TO_ROLE[sec][0]
+        return data
 
 
 class PackagingItem(BaseModel):
@@ -311,6 +461,14 @@ class Plan(BaseModel):
         default=None,
         description="构建 Plan 时用户给的主题/卖点；供 /api/edit 阶段二次理解上下文。",
     )
+    video_goal: Optional[str] = Field(
+        default=None,
+        description="用户对新视频的要求与目的（受众、时长目标、调性等），驱动结构改编。",
+    )
+    adapted_sections: list[AdaptedSection] = Field(
+        default_factory=list,
+        description="LLM 基于样例骨架 + brief + video_goal 改编出的段落结构；空列表表示老 plan（兼容）。",
+    )
     variant: Variant = "A"
     duration_seconds: float
     main_track: list[Scene]
@@ -326,9 +484,76 @@ class PlanBuildRequest(BaseModel):
         max_length=500,
         description="用户输入的主题/卖点文本，驱动 LLM 段落 prompt + 缺口需求生成。",
     )
+    video_goal: Optional[str] = Field(
+        default=None,
+        max_length=500,
+        description="视频要求与目的（受众/时长/调性等），与 brief 共同驱动结构改编。",
+    )
     selected_materials: list[str] = Field(default_factory=list, description="用户挑中的 material_id 列表")
     fills: list[FillResult] = Field(default_factory=list, description="已确认的缺口补全结果")
     variant: Variant = "A"
+
+
+# =========================================================================
+# Module 5b — 包装推荐 (Packaging Agent)
+# =========================================================================
+
+TransitionStyle = Literal["hard_cut", "dissolve", "slide", "zoom", "whip", "wipe"]
+"""转场风格 6 元枚举——和 Remotion 里的 transition primitives 对齐。"""
+
+
+class TransitionSuggestion(BaseModel):
+    """段落切换处的转场推荐。一对相邻 Scene 给一条建议。"""
+
+    item_id: str = Field(..., description="对应 packaging_track 里 kind=transition 的 item_id")
+    at_seconds: float = Field(..., description="转场触发时间点（前一 scene 结束 = 后一 scene 起始）")
+    from_section: SectionRole
+    to_section: SectionRole
+    style: TransitionStyle
+    duration: float = Field(default=0.4, ge=0.1, le=1.5, description="转场持续秒数")
+    reason: str = Field(..., description="LLM 给出此选择的一句话依据")
+
+    @model_validator(mode="before")
+    @classmethod
+    def _migrate_legacy_sections(cls, data: Any) -> Any:
+        if not isinstance(data, dict):
+            return data
+        for fld in ("from_section", "to_section"):
+            sec = data.get(fld)
+            if isinstance(sec, str) and sec in _LEGACY_KIND_TO_ROLE:
+                data[fld] = _LEGACY_KIND_TO_ROLE[sec][0]
+        return data
+
+
+class CoverDesign(BaseModel):
+    """封面方案。Remotion 渲一帧透明 PNG，pipeline overlay 叠在第 0 秒。"""
+
+    item_id: str = Field(default="pkg-cover", description="包装轨 item_id（kind=cover）")
+    title: str = Field(..., description="主标题（≤ 12 字，强冲击）")
+    subtitle: Optional[str] = Field(default=None, description="副标题/卖点提示（≤ 18 字）")
+    palette: list[str] = Field(
+        default_factory=list,
+        description="主色 + 强调色 hex（2-3 个），如 ['#FFE600', '#1F2937']",
+    )
+    layout: Literal["center", "left", "split", "stacked"] = "center"
+    style_note: str = Field(..., description="LLM 给出的一句话风格说明，比如『大字号 + 黑底白字 + 黄色高亮』")
+
+
+class PackagingRecommendation(BaseModel):
+    """`POST /api/packaging/recommend` 产物，回写到 PlanStore 的 packaging_track。"""
+
+    plan_id: str
+    transitions: list[TransitionSuggestion] = Field(default_factory=list)
+    cover: Optional[CoverDesign] = None
+    notes: list[str] = Field(default_factory=list, description="agent 调试日志（mock/失败原因等）")
+
+
+class PackagingRecommendRequest(BaseModel):
+    plan_id: str
+    apply: bool = Field(
+        default=True,
+        description="True：落地为 PackagingItem 写回 plan.packaging_track；False：只返回建议不改 plan。",
+    )
 
 
 # =========================================================================

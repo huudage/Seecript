@@ -5,14 +5,19 @@
 `GET  /api/library?source=user`      只返回用户上传到样例库的样例（MVP 占位空数组）
 `GET  /api/sample/{id}/manifest`     返回单个样例的完整预解析 manifest
 
-阶段 1：纯静态 mock，3 个写死的样例（marketing / editing / motion_graph 各一）。
-阶段 4 接到 server/samples/ 实际预解析 JSON。
+样例 manifest 优先从 `server/samples/<id>/manifest.json` 读取（由 scripts/precompute_samples.py
+离线跑 decompose_agent 真模型拆解后写入）；命中盘上预算结果即返回，没有再回落到等分 stub。
+LibraryItem.shot_count/duration_seconds 也会从真 manifest 修正。
 """
 from __future__ import annotations
 
+import json
+import logging
+from pathlib import Path
 from typing import Optional
 
 from fastapi import APIRouter, HTTPException, Query
+from pydantic import ValidationError
 
 from ..schemas import (
     LibraryItem,
@@ -21,12 +26,31 @@ from ..schemas import (
     RhythmCurve,
     SampleManifest,
     Section,
+    SectionRole,
     Shot,
     VideoType,
-    kinds_for_video_type,
 )
 
+log = logging.getLogger("seecript.library")
 router = APIRouter()
+
+
+# server/samples 目录——precompute_samples 把 manifest.json 写在这里
+_SAMPLES_ROOT = Path(__file__).resolve().parents[2] / "samples"
+
+
+def _load_real_manifest(sample_id: str) -> Optional[SampleManifest]:
+    """尝试加载预计算好的真 manifest.json。失败/不存在返回 None。"""
+    p = _SAMPLES_ROOT / sample_id / "manifest.json"
+    if not p.is_file():
+        return None
+    try:
+        data = json.loads(p.read_text(encoding="utf-8"))
+        return SampleManifest.model_validate(data)
+    except (json.JSONDecodeError, ValidationError, OSError) as exc:
+        log.warning("[library] %s manifest.json 解析失败，回落 stub：%s", sample_id, exc)
+        return None
+
 
 
 # 三个内置系统样例：营销 / 剪辑 / Motion Graph。
@@ -73,39 +97,61 @@ _USER_LIBRARY: list[LibraryItem] = []
 _LIBRARY = _SYSTEM_LIBRARY + _USER_LIBRARY
 
 
-# 3-段 / 4-段视频的占位 summary——按 video_type 写一组。
-_STUB_SECTION_SUMMARIES: dict[VideoType, list[str]] = {
-    "marketing": ["痛点提问 + 大字幕", "产品演示 + 对比", "点赞收藏"],
-    "editing": ["环境/氛围铺垫", "情绪/动作高潮", "余韵收尾"],
-    "motion_graph": ["标题/Logo 入场", "信息铺陈动画", "视觉爆点", "落版收尾"],
+# 内置样例的 stub manifest 默认 4 段：opening / development / climax / closing
+# 每个 video_type 给一组 (role, theme, summary) 三元组——summary 用于占位 UI。
+# 真 manifest（precompute_samples 跑出来的）会覆盖这套 stub。
+_STUB_STRUCTURE: dict[VideoType, list[tuple[SectionRole, str, str]]] = {
+    "marketing": [
+        ("opening", "钩子开场", "痛点提问 + 大字幕"),
+        ("development", "产品演示", "卖点展开 + 对比"),
+        ("climax", "卖点高潮", "强构图特写"),
+        ("closing", "行动引导", "点赞收藏"),
+    ],
+    "editing": [
+        ("opening", "氛围铺垫", "环境/氛围铺垫"),
+        ("development", "节奏铺陈", "情绪/动作展开"),
+        ("climax", "情绪高潮", "情绪/动作顶点"),
+        ("closing", "余韵收尾", "慢镜或长镜"),
+    ],
+    "motion_graph": [
+        ("opening", "标题入场", "标题/Logo 入场"),
+        ("development", "信息铺陈", "图表/字段动画"),
+        ("climax", "视觉爆点", "快剪/形变"),
+        ("closing", "落版收尾", "品牌定格"),
+    ],
 }
 
 
 def _stub_sections(item: LibraryItem) -> list[Section]:
-    """按 video_type 切段——3 类型用 15/70/15，motion_graph 4 段等分。"""
-    kinds = kinds_for_video_type(item.video_type)
-    summaries = _STUB_SECTION_SUMMARIES[item.video_type]
-    n_seg = len(kinds)
+    """4 段 opening/development/climax/closing 等比例切，时间占比 15/50/20/15。"""
+    structure = _STUB_STRUCTURE.get(item.video_type, _STUB_STRUCTURE["marketing"])
+    n_seg = len(structure)
     total = item.duration_seconds
-    if n_seg == 3:
-        boundaries = [0.0, total * 0.15, total * 0.85, total]
-    else:
-        step = total / n_seg
-        boundaries = [step * i for i in range(n_seg)] + [total]
+    # 时间占比：开场 15% · 主体 50% · 高潮 20% · 收尾 15%
+    ratios = [0.15, 0.50, 0.20, 0.15]
+    if n_seg != 4 or len(ratios) != n_seg:
+        # 退化到等分
+        ratios = [1.0 / n_seg] * n_seg
+    boundaries = [0.0]
+    for r in ratios:
+        boundaries.append(boundaries[-1] + total * r)
+    boundaries[-1] = total
 
     sections: list[Section] = []
-    for i, kind in enumerate(kinds):
+    for i, (role, theme, summary) in enumerate(structure):
         start = boundaries[i]
         end = boundaries[i + 1]
-        # 把 shot_indices 按 start <= shot_start < end 的比例分摊
         first = int(item.shot_count * (start / total))
         last = int(item.shot_count * (end / total))
         if i == n_seg - 1:
-            last = item.shot_count  # 最后一段兜底到所有镜头
+            last = item.shot_count
         shot_idx = list(range(first, max(first + 1, last)))
         sections.append(Section(
-            kind=kind, start=start, end=end,
-            summary=summaries[i] if i < len(summaries) else f"{kind} 段",
+            role=role,
+            theme=theme,
+            start=start,
+            end=end,
+            summary=summary,
             shot_indices=shot_idx,
         ))
     return sections
@@ -162,16 +208,36 @@ async def list_library(
         description="可选过滤：system=只返回内置样例；user=只返回用户上传到样例库的样例；不传=合并返回。",
     ),
 ) -> list[LibraryItem]:
+    """列出样例卡片。system 样例若有预拆解 manifest.json，shot_count/duration 用真数据修正。"""
+
+    def _augment(items: list[LibraryItem]) -> list[LibraryItem]:
+        out: list[LibraryItem] = []
+        for it in items:
+            mf = _load_real_manifest(it.id)
+            if mf is None:
+                out.append(it)
+            else:
+                out.append(it.model_copy(update={
+                    "shot_count": len(mf.shots),
+                    "duration_seconds": mf.duration_seconds,
+                }))
+        return out
+
     if source == "system":
-        return _SYSTEM_LIBRARY
+        return _augment(_SYSTEM_LIBRARY)
     if source == "user":
         return _USER_LIBRARY
-    return _SYSTEM_LIBRARY + _USER_LIBRARY
+    return _augment(_SYSTEM_LIBRARY) + _USER_LIBRARY
 
 
 @router.get("/sample/{sample_id}/manifest", response_model=SampleManifest)
 async def get_sample_manifest(sample_id: str) -> SampleManifest:
     for item in _SYSTEM_LIBRARY + _USER_LIBRARY:
         if item.id == sample_id:
+            real = _load_real_manifest(sample_id)
+            if real is not None:
+                log.info("[library] %s 使用预拆解 manifest（%d shots）", sample_id, len(real.shots))
+                return real
+            log.warning("[library] %s 无预拆解 manifest.json，回落等分 stub", sample_id)
             return _stub_manifest(sample_id, item)
     raise HTTPException(status_code=404, detail=f"sample not found: {sample_id}")

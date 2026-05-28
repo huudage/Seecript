@@ -12,5 +12,13 @@ python-multipart>=0.0.9,<1.0  # required for FastAPI UploadFile
 # HTTP client (用于调 DeepSeek + 阿里 DashScope)
 httpx>=0.27,<0.30
 
+# 视频处理（PySceneDetect 切镜头 + librosa BGM/VAD + opencv 抽帧）
+# 系统侧另需 ffmpeg 二进制（Windows: winget install Gyan.FFmpeg；macOS: brew install ffmpeg）
+scenedetect>=0.6,<0.8
+opencv-python>=4.10,<5.0
+librosa>=0.10,<0.12
+soundfile>=0.12,<0.14
+numpy>=1.26,<3.0
+
 # 生产 WSGI/ASGI 进程管理（systemd 内）
 gunicorn>=22.0,<25.0

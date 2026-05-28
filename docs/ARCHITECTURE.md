@@ -12,8 +12,8 @@
 | 2 | 样例拆解（BGM/整体结构） | PySceneDetect 镜头切分 + librosa BGM 能量曲线 + librosa VAD 门控 ASR（无口播跳过）+ 多模态 LLM 帧打标 + 多模态 LLM 段落结构（按 video_type 三选一：marketing=hook/body/cta · editing=opening/climax/closing · motion_graph=intro/build/drop/outro） |
 | 3 | 新内容输入 + 缺口识别 + 补全 | 多模态 LLM 素材打标 + 槽位匹配算法 + 三种补全（结构重排 / 文案补全 / Seedance T2V 短片生成） |
 | 4 | 迁移过程可视化 | React Flow 流程图（样例槽位 → 新方案分镜的连线，缺口红虚线 / 补全绿标）+ 三栏可调宽度布局 |
-| 5 | 视频生成 | FFmpeg 主轨拼接 + doubao-seedance-1.0-pro 首尾帧扩展长视频 + SSE 推进度 + AB 双版本 |
-| 6 | 画面包装生成 | Remotion 包装轨道（字幕/标题条/转场/封面）独立子进程渲染 → ffmpeg overlay 叠加 |
+| 5 | 视频生成 | FFmpeg 主轨拼接 + doubao-seedance-2-0-fast-260128 首尾帧扩展长视频 + SSE 推进度 + AB 双版本 |
+| 6 | 画面包装生成 | Remotion 包装轨道（字幕/标题条/转场/封面）独立子进程渲染 → ffmpeg overlay 叠加；packaging_agent LLM 一次性给出 6 种转场风格 + 封面方案，回写 `plan.packaging_track` |
 | 7 | 自然语言编辑 | LLM tool calling 改 Plan JSON + 增量重渲染 + 撤销栈 + 双轨标注式编辑 |
 
 ## 2. 技术栈选型
@@ -52,7 +52,7 @@
 |---|---|---|
 | 段落结构 / 帧打标 / 缺口文案 / NL 编辑 tool call | Doubao-Seed-2.0-lite（多模态）| 同一模型四个调用点：①按 video_type 三选一 prompt 给段落结构；②关键帧缩略图批量打标；③缺口文案补全；④NL 编辑 tool call。OpenAI 兼容，赛题给的 EP |
 | ASR 口播转写（VAD 门控） | 豆包 bigasr_auc_turbo | librosa 人声 VAD（300-3400Hz 频带能量阈值 0.35）先判定是否有口播；纯 BGM 视频跳过 ASR 直接走"靠画面+节奏"段落分析 |
-| 视频生成（aigc 缺口 + 长视频首尾帧） | doubao-seedance-1.0-pro | submit + 轮询 query 两段式；gap_agent aigc 分支生成 5-8s 短片填补槽位；长视频用首尾帧模式串接 30-60s |
+| 视频生成（aigc 缺口 + 长视频首尾帧） | doubao-seedance-2-0-fast-260128 | submit + 轮询 query 两段式；gap_agent aigc 分支生成 5-8s 短片填补槽位；长视频用首尾帧模式串接 30-60s。Fast 版相比 1.0 pro 平均渲染时间从 90s 降到 30-60s，成本同时降低，比赛 demo 单镜头 5s 输出即可 |
 
 ### 2.4 视频合成（混合方案）
 
@@ -91,10 +91,14 @@
 6. 方案生成 ──────────────────────────►  POST /api/plan/build
                                           组装分镜时间线 (Pydantic)
 
+6b. 包装推荐 ─────────────────────────►  POST /api/packaging/recommend
+                                          packaging_agent LLM ──► 转场风格 6 选 1 + 封面（标题/副标题/调色板/布局）
+                                          落地：写入 plan.packaging_track 的 kind=transition / kind=cover items
+
 7. 视频生成 ──────────────────────────►  POST /api/render/submit  (SSE 推进度)
                                           FFmpeg concat ──► 主轨 MP4
                                           Seedance 首尾帧 ──► 长视频段
-                                          Remotion ──► 包装轨道透明 WebM
+                                          Remotion ──► 包装轨道透明 WebM（含 transition/cover 渲染）
                                           FFmpeg overlay ──► 最终 MP4 (AB 双版本)
 
 8. 自然语言编辑 ──────────────────────►  POST /api/edit/apply
@@ -133,7 +137,7 @@ seecript/
 │   │   ├── services/
 │   │   │   ├── llm_client.py           # LLMClient 抽象 + Doubao Seed-2.0-lite（多模态）
 │   │   │   ├── asr_client.py           # 保留 + VAD gate（纯 BGM 跳过）
-│   │   │   ├── t2v_client.py           # doubao-seedance-1.0-pro 首尾帧 submit+poll
+│   │   │   ├── t2v_client.py           # doubao-seedance-2-0-fast-260128 首尾帧 submit+poll
 │   │   │   ├── video/                  # scene_detect / audio_analysis / voice_detect / ocr / ffmpeg / remotion
 │   │   │   ├── agent/                  # decompose_agent / gap_agent
 │   │   │   └── jobs/                   # 内存 JobStore + SSE 通道
@@ -163,6 +167,8 @@ seecript/
 | `POST /api/gap/detect` | 槽位匹配 | `{ plan_id }` → `Gap[]`（含 ✅⚠️❌ 状态 + 影响等级） |
 | `POST /api/gap/fill` | 补全单个缺口 | `{ gap_id, action: rerank \| copy \| aigc, params }` → `FillResult` |
 | `POST /api/plan/build` | 组装最终 Plan | `Plan`（含 TimelineTrack 主轨 + 包装轨） |
+| `GET /api/plan/{plan_id}` | 拉最新 Plan（包装推荐回写后前端用） | `Plan` |
+| `POST /api/packaging/recommend` | LLM 给转场 + 封面，apply=true 写回 packaging_track | `{ plan_id, apply }` → `PackagingRecommendation` |
 | `POST /api/render/submit` | 提交渲染任务 | `{ plan_id, variant: A \| B }` → `{ job_id }` |
 | `GET /api/render/stream?job_id=...` | SSE 推渲染进度 | `event: progress` / `event: done` |
 | `POST /api/edit/apply` | 自然语言改片 | `{ plan_id, instruction, marks[] }` → 新 `Plan` |
@@ -193,22 +199,58 @@ class Plan(BaseModel):
     plan_id: str
     sample_id: str
     main_track: list[Scene]                # 主轨分镜（素材切片 + 时长 + 字幕），source ∈ {sample, user_material, aigc_t2v}
-    packaging_track: list[PackagingItem]   # 包装轨（字幕/标题条/贴纸/转场）
+    packaging_track: list[PackagingItem]   # 包装轨：subtitle / title_bar / sticker / transition / cover
     bgm: BGMConfig
     variant: Literal["A", "B"]
 ```
+
+### 5.4 Tool Calling Schema（自然语言编辑）
+
+`POST /api/edit/apply` 走 `LLMClient.complete_with_tools()`，OpenAI 兼容的 `tools` 数组定义如下原子动作：
+
+| tool name | 参数 | 语义 |
+|---|---|---|
+| `edit_scene_duration` | `{scene_id: str, duration_seconds: number}` | 改某 Scene 时长 |
+| `edit_scene_narration` | `{scene_id: str, narration: str}` | 改某 Scene 口播 |
+| `replace_scene_material` | `{scene_id: str, source_ref: str, source?: "user_material"\|"aigc_t2v"\|"sample"}` | 把某 Scene 的素材替换为另一条 |
+| `edit_packaging_item_text` | `{item_id: str, text: str}` | 改包装轨某字幕/标题文字 |
+| `set_bgm_volume` | `{volume: number}` | 改 BGM 音量（0-1） |
+
+LLM 返回 `tool_calls[]` 后，后端按顺序原子地改 Plan JSON，再覆盖 `plan_store`，最终响应**新的完整 Plan**（不是 patch）——前端 diff 渲染。Mock provider 通过 user 文本关键字（"时长" / "字幕" / "替换"）猜 tool，保证 mock 模式跑通。
+
+### 5.5 SSE 协议（拆解 / 渲染）
+
+两条 SSE 端点（`/api/decompose/stream`、`/api/render/stream`）共用同一种事件协议：
+
+```
+event: progress
+data: {"step": "scene_detect", "percent": 10, "payload": {"note": "PySceneDetect 切镜头"}}
+
+event: done
+data: {"job_id": "...", "payload": {...终态结果...}}
+
+event: error
+data: {"detail": "..."}
+```
+
+- `step` 列表（decompose）：`scene_detect → audio_analysis → voice_detect → asr_transcribe → vlm_tag → llm_section → done`
+- `step` 列表（render）：`concat → seedance → remotion → overlay → cover → done`
+- 客户端用 `EventSource`（前端 `@/api/sse` 薄封装）订阅，断线由浏览器自动重连
+- `payload` 是 free-form dict，前端按 step 查需要的字段（如 voice_detect 的 `has_voice` / render 的 `timings_ms`）
 
 ## 6. 安全边界
 
 | 维度 | 措施 |
 |---|---|
-| API Key 管理 | 所有 Key 走 `server/.env`，`chmod 600`；前端永不持有 Key；mock 模式不依赖任何 Key |
-| 用户上传素材 | 仅落地到 `server/var/uploads/<session_id>/`；session 隔离；MIME / 大小校验；不入库 |
-| Prompt 注入 | LLM 输入侧对用户文本做长度上限 + 结构化 brief；输出侧强制 JSON schema 校验 + 单次重试 |
-| 视频/图像生成内容审核 | 调智谱/豆包侧自带审核；额外把 `user_id` 透传给厂商做风控关联 |
-| 跨域隔离 | 已有 COOP/COEP 中间件；ffmpeg.wasm 浏览器抽帧仍需 `crossOriginIsolated` |
-| 任务隔离 | 每个 job 独立目录 + trace_id；失败回收临时文件；JobStore 进程内不跨用户 |
-| 模型降级 | 任何 provider 失败自动回落 mock 并 toast 提示，绝不静默失败 |
+| API Key 管理 | 所有 Key 走 `server/.env`，`chmod 600`；前端永不持有 Key；mock 模式不依赖任何 Key。`.env` 已加入 `.gitignore`；每次 commit 前 `git diff` 自查 `ark-[a-f0-9]` 等指纹，确认无泄漏 |
+| 用户上传素材 | 仅落地到 `server/var/uploads/<session_id>/`；session 隔离；MIME 白名单（mp4/mov/webm/jpg/png/webp/mp3/wav）+ 单文件 50MB 上限；不入库；用户主动删除时同步清盘 |
+| Prompt 注入 | LLM 输入侧对用户文本做长度上限（brief ≤ 500 字、edit instruction ≤ 1000 字）+ 结构化打包；输出侧强制 JSON schema 校验 + 单次重试；多模态 `complete_multimodal` 对图像路径做存在性检查，不存在时回落 1×1 占位 PNG |
+| 视频/图像生成内容审核 | 调用豆包/Seedance 时透传 `trace_id`，厂商侧做内容审核；服务侧拒绝包含明显违规关键词的 brief |
+| 跨域隔离 | 已有 COOP/COEP 中间件；`/api/*` 路径豁免（不影响 CORS）；ffmpeg.wasm 浏览器抽帧仍需 `crossOriginIsolated` |
+| 任务隔离 | 每个 job 独立 `var/outputs/<job_id>/` 目录 + `trace_id`；失败回收临时文件；JobStore 进程内不跨用户；SSE 订阅鉴别 job_id 不存在则 404 |
+| 模型降级 | 任何 provider 失败自动回落 mock 并通过 SSE `payload.note` 提示，绝不静默失败：scene_detect → 等分镜头；audio_analysis → 假节奏曲线；ASR → 占位 transcript；VLM → 空标签；LLM sections/packaging → 规则兜底 |
+| Tool calling 安全 | edit 路径的 5 个原子 tool 走显式参数校验（Pydantic），LLM 返回未知 tool name 直接拒绝；改 Plan 走 `plan_store.replace()` 而非原地变更，便于撤销栈回滚 |
+| 端到端可观测 | 每条请求带 `X-Trace-Id`；日志格式 `[trace_id] METHOD PATH -> STATUS (Nms)`；agent 内部按 `step` 推 SSE 进度，方便复盘哪一步降级 |
 
 ## 7. 任务路线图
 

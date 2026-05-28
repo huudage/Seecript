@@ -2,7 +2,7 @@
 
 > 视频拆解与重组的助手（爆款结构迁移引擎）：从样例视频拆解 → 结构抽取 → 素材缺口补全 → 视频重组的 AI 创作平台。默认 mock 模式不依赖任何外部 API Key 即可端到端跑通。
 
-> **当前状态（2026-05-26）**：阶段 0–5 全部落地，7 模块 mock 模式端到端跑通。技术架构以 [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) 为准；演示剧本见 [`docs/DEMO.md`](docs/DEMO.md)。
+> **当前状态（2026-05-27）**：阶段 0–5 全部落地 + 高光评分驱动槽位排序 + 高潮时间点可视化 + 转场&封面 LLM 推荐回写 `packaging_track`，7 模块 mock 模式端到端跑通。技术架构以 [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) 为准；演示剧本见 [`docs/DEMO.md`](docs/DEMO.md)；交付物清单见 [`docs/DELIVERY.md`](docs/DELIVERY.md)。
 
 ---
 
@@ -11,14 +11,15 @@
 | # | 模块 | 路由 / 路径 | 关键技术 |
 |---|---|---|---|
 | 1 | 素材库 | `/library` · `GET /api/library` | 3 个内置样例（marketing/editing/motion_graph）+ 预解析 manifest |
-| 2 | 样例拆解 | `/decompose` · `POST /api/decompose` SSE | PySceneDetect + librosa BGM + librosa VAD 门控 ASR + 多模态 LLM 帧打标 + 多模态 LLM 段落（按 video_type 三选一） |
-| 3 | 新内容 + 缺口补全 | `/compose` · `POST /api/material/upload` `gap/detect` `gap/fill` | 多模态 LLM 标签 + 槽位匹配（9 个 SectionKind）+ 三种补全（rerank / copy / Seedance T2V） |
+| 2 | 样例拆解 | `/decompose` · `POST /api/decompose` SSE | PySceneDetect + librosa BGM + librosa VAD 门控 ASR + 多模态 LLM 帧打标 + 多模态 LLM 段落（按 video_type 三选一）；输出 `climax_position` 给节奏图叠 ReferenceLine |
+| 3 | 新内容 + 缺口补全 | `/compose` · `POST /api/material/upload` `gap/detect` `gap/fill` | 多模态 LLM 标签（含 `highlight_score` 0-1）+ 槽位匹配（9 个 SectionKind，高 impact 段优先吃高光素材）+ 三种补全（rerank / copy / Seedance T2V） |
 | 4 | 迁移可视化 | `/migrate` | React Flow 双列 + 状态着色（绿命中 / 黄勉强 / 红虚线缺口） |
 | 5 | 视频生成 | `/render` · `POST /api/render/submit` SSE | FFmpeg 主轨 + Seedance 首尾帧扩展 + 6 步流水线 |
-| 6 | 画面包装 | 同上 | Remotion 透明 WebM + ffmpeg overlay |
+| 5b | 包装推荐 | `POST /api/packaging/recommend` | LLM 一次性给转场（6 风格）+ 封面（标题/副标题/调色板/布局），落回 `plan.packaging_track` |
+| 6 | 画面包装 | 同上 | Remotion 透明 WebM + ffmpeg overlay（含 transition / cover 渲染组件） |
 | 7 | 自然语言编辑 | 同上 · `POST /api/edit/apply` | LLM tool calling 5 原子 tool + 撤销栈 |
 
-> **AI 干预点 3 类**：① 多模态 LLM（doubao-seed-2.0-lite）—— 段落 / 帧打标 / 文案 / NL 编辑 tool call 四个调用点共用；② VAD-门控 ASR（豆包 bigasr_auc_turbo）—— 纯 BGM 视频自动跳过；③ Seedance T2V（doubao-seedance-1.0-pro）—— aigc 缺口短片 + 长视频首尾帧。原设独立 VLM / T2I client 已退役。
+> **AI 干预点 3 类**：① 多模态 LLM（doubao-seed-2.0-lite）—— 段落 / 帧打标 / 文案 / 包装推荐 / NL 编辑 tool call 五个调用点共用；② VAD-门控 ASR（豆包 bigasr_auc_turbo）—— 纯 BGM 视频自动跳过；③ Seedance T2V（doubao-seedance-2-0-fast-260128）—— aigc 缺口短片 + 长视频首尾帧（fast 版渲染中位数 30-60s，比 1.0-pro 快约一倍且更便宜）。原设独立 VLM / T2I client 已退役。
 
 ---
 
@@ -102,7 +103,7 @@ LLM_PROVIDER=doubao_ark
 ARK_API_KEY=ark-xxxxxxxx
 ARK_LLM_MODEL=ep-xxxxxxxx         # doubao-seed-2.0-lite endpoint_id（多模态：段落/打标/文案/编辑共用）
 
-T2V_PROVIDER=doubao_ark           # doubao-seedance-1.0-pro，aigc 缺口 + 长视频首尾帧
+T2V_PROVIDER=doubao_ark           # doubao-seedance-2-0-fast-260128，aigc 缺口 + 长视频首尾帧
 
 ASR_PROVIDER=doubao
 DOUBAO_API_KEY=<volc-uuid-key>

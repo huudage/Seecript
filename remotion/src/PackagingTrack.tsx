@@ -3,7 +3,8 @@ import { z } from 'zod'
 import { Subtitles } from './Subtitles'
 import { TitleBar } from './TitleBar'
 import { StickerOverlay } from './StickerOverlay'
-import { TransitionFlash } from './Transition'
+import { Transition, type TransitionStyle } from './Transition'
+import { Cover, type CoverStyle } from './Cover'
 
 // 与 server/app/schemas.py 的 PackagingItem 镜像。
 const packagingItemSchema = z.object({
@@ -59,12 +60,18 @@ export const PackagingTrack: React.FC<PackagingProps> = ({ packaging_track }) =>
       {packaging_track.map((item) => {
         const from = Math.round(item.start * fps)
         const duration = Math.max(1, Math.round((item.end - item.start) * fps))
+        const style = item.style ?? {}
         return (
           <Sequence key={item.item_id} from={from} durationInFrames={duration}>
-            {item.kind === 'subtitle' && <Subtitles text={item.text ?? ''} style={item.style ?? {}} />}
-            {item.kind === 'title_bar' && <TitleBar text={item.text ?? ''} style={item.style ?? {}} />}
-            {item.kind === 'sticker' && <StickerOverlay text={item.text ?? ''} style={item.style ?? {}} />}
-            {item.kind === 'transition' && <TransitionFlash />}
+            {item.kind === 'subtitle' && <Subtitles text={item.text ?? ''} style={style} />}
+            {item.kind === 'title_bar' && <TitleBar text={item.text ?? ''} style={style} />}
+            {item.kind === 'sticker' && <StickerOverlay text={item.text ?? ''} style={style} />}
+            {item.kind === 'transition' && (
+              <Transition style={(style.transition_style as TransitionStyle) ?? 'dissolve'} />
+            )}
+            {item.kind === 'cover' && (
+              <Cover title={item.text ?? ''} style={style as CoverStyle} />
+            )}
           </Sequence>
         )
       })}

@@ -2,37 +2,48 @@
 
 Concrete adapters:
 - `MockASRClient`         : returns a canned transcript so feature-1 works without a real key.
-- `DoubaoBigmodelASRClient`: Volcengine Doubao 大模型录音文件极速版 (turbo / flash) — synchronous,
-  one HTTP request → result. Reference PDF stored at
-  `c:\\Users\\1\\Desktop\\豆包语音_大模型录音文件极速版识别API_*.pdf` (2025/06).
+- `DoubaoBigmodelASRClient`: Volcengine 豆包大模型录音文件识别 2.0（seedasr / bigmodel auc）—
+  **异步双阶段**：POST /submit 拿任务 ID（其实 task_id 就是请求时传的 X-Api-Request-Id），
+  然后轮询 POST /query 直到 X-Api-Status-Code=20000000 拿到 result.text。
 
-Why极速版 (turbo) over the standard async version:
-- One round-trip vs submit/query polling → 10× lower P95 latency
-- Accepts base64 audio inline → **no need to expose a public URL** to Volcengine
-- Same authentication; only the resource ID and endpoint change
+Why 2.0 over 极速版 (1.0 turbo / flash)：
+- 2.0 准确率更高，支持上下文/多语言/视觉上下文等高阶能力
+- 但 2.0 强制 `audio.url`：不再接受 base64 inline，必须给火山服务器一个**公网可达**的 URL
+- 我们靠 `settings.public_audio_base_url` 把本地 /samples/<id>/video.mp4 拼成公网地址
+  （例：cloudflared tunnel / ngrok / 火山 TOS 桶）
 
-Why this design (Adapter + Factory):
-- Routers depend on the abstract `ASRClient`, not on concrete providers (DIP).
-- Adding a new provider = new subclass + register in `_PROVIDERS` (OCP).
-- Mock client lets the whole product run without any key (essential for offline dev / CI).
+鉴权两种模式（自动识别）：
+- 新控制台：只发 X-Api-Key（doubao_api_key 是 UUID 串）
+- 旧控制台：发 X-Api-App-Key (=AppID) + X-Api-Access-Key (=AccessToken)，
+  当 doubao_access_key 非空时启用
 
-Doubao 极速版 lifecycle (one request):
-  POST https://openspeech.bytedance.com/api/v3/auc/bigmodel/recognize/flash
-    headers: X-Api-Key, X-Api-Resource-Id=volc.bigasr.auc_turbo,
+豆包 2.0 lifecycle:
+  POST /api/v3/auc/bigmodel/submit
+    headers: X-Api-Key, X-Api-Resource-Id=volc.bigasr.auc,
              X-Api-Request-Id=<uuid>, X-Api-Sequence=-1
-    body:    {"user":{"uid":"<key>"}, "audio":{"data":"<base64>"}, "request":{"model_name":"bigmodel"}}
-  response: 200 OK + X-Api-Status-Code=20000000 + JSON { "result": { "text": "..." } }
+    body:    {"user":{"uid":"<key>"},"audio":{"format":"mp4","url":"https://.../video.mp4"},
+              "request":{"model_name":"bigmodel","enable_itn":true,"enable_punc":true}}
+  → 200 OK, X-Api-Status-Code=20000000  (Body 为空)
+
+  POST /api/v3/auc/bigmodel/query     # 同 X-Api-Request-Id
+    headers: 同上 (无 X-Api-Sequence)
+    body:    {}
+  → loop:
+      X-Api-Status-Code=20000001 → 处理中, 继续等
+      X-Api-Status-Code=20000002 → 队列中, 继续等
+      X-Api-Status-Code=20000000 → 完成, body 含 {"result":{"text":"..."}}
+      其他                          → 失败
 """
 from __future__ import annotations
 
 import asyncio
-import base64
 import json
 import logging
 import time
 import uuid
 from abc import ABC, abstractmethod
-from typing import Any, Dict, Optional
+from dataclasses import dataclass, field
+from typing import Any, Dict, List, Optional
 
 import httpx
 
@@ -42,19 +53,40 @@ from ..config import Settings, get_settings
 log = logging.getLogger("seecript.asr")
 
 
-# Volcengine status codes (from official 极速版 docs).
+# Volcengine status codes (统一覆盖 1.0 极速版 + 2.0 异步)。
 DOUBAO_STATUS_SUCCESS = 20000000
-DOUBAO_STATUS_PROCESSING = 20000001  # not used by flash, kept for forward compat
-DOUBAO_STATUS_QUEUED = 20000002      # not used by flash
+DOUBAO_STATUS_PROCESSING = 20000001
+DOUBAO_STATUS_QUEUED = 20000002
 DOUBAO_STATUS_SILENT_AUDIO = 20000003
 
+
+@dataclass
+class Utterance:
+    """逐句时间戳。start/end 单位是秒——内部统一从毫秒换算掉。"""
+    text: str
+    start: float
+    end: float
+
+
+@dataclass
+class ASRTranscript:
+    """transcribe_url 返回值：整段文本 + 逐句时间戳。
+
+    show_utterances=true 时豆包返回 result.utterances；旧调用方只关心 text 仍可直接读 .text。
+    decompose_agent 用 utterances 按 shot 时间窗映射，避免字符比例切分误把英文单词截断。
+    """
+    text: str
+    utterances: List[Utterance] = field(default_factory=list)
+
 # Map upstream codes to user-friendly Chinese messages.
-# Sourced verbatim from the 极速版 PDF "错误码" table.
 _DOUBAO_ERROR_HINTS = {
     20000003: "音频静音或无人声，无法识别。",
-    45000001: "请求参数无效（请检查音频内容是否为合法 mp3/m4a/wav；是否开通了 volc.bigasr.auc_turbo 资源）。",
+    45000001: "请求参数无效（请检查音频格式 / URL 是否公网可达 / 资源 ID 是否开通）。",
     45000002: "音频为空。",
-    45000151: "音频格式不正确（仅支持 mp3 / wav / ogg / opus）。",
+    45000010: "X-Api-Key 无效（鉴权失败）。",
+    45000131: "超过半小时提交音频长度上限（默认 500h），请降速。",
+    45000132: "上传音频超过大小限制（< 512MB）。",
+    45000151: "音频格式不正确（仅支持 mp3 / wav / ogg / opus / mp4）。",
     55000031: "火山引擎服务繁忙，请稍后重试。",
 }
 
@@ -72,27 +104,18 @@ class ASRError(RuntimeError):
 class ASRClient(ABC):
     """The abstract contract every ASR adapter implements.
 
-    极速版 directly accepts bytes — no need for a publicly-reachable URL — so the
-    primary entry point is `transcribe_bytes`. The legacy `transcribe_url` method
-    is kept (default-implemented) for backward compatibility with old callers.
+    豆包 2.0 强制 audio.url，所以**主入口是 transcribe_url**。bytes 入口仅 mock 保留 —
+    真服务下 transcribe_bytes 会要求调用方先把字节托管到一个公网可达的 URL。
     """
 
     name: str = "abstract"
 
-    @abstractmethod
+    async def transcribe_url(self, audio_url: str, *, audio_format: str = "mp4") -> ASRTranscript:
+        raise NotImplementedError
+
     async def transcribe_bytes(self, audio_bytes: bytes, *, audio_format: str = "mp3") -> str:
-        """Given raw audio bytes, return the transcript text."""
-
-    async def transcribe_url(self, audio_url: str, *, audio_format: str = "mp3") -> str:
-        """Default: fetch the URL ourselves then delegate to transcribe_bytes.
-
-        极速版 doesn't strictly need this path (we have the bytes already from the
-        upload), but it gives us forward-compat for callers that still pass URLs.
-        """
-        async with httpx.AsyncClient(timeout=30) as client:
-            r = await client.get(audio_url)
-            r.raise_for_status()
-            return await self.transcribe_bytes(r.content, audio_format=audio_format)
+        # 默认行为：mock 直接返回，doubao 子类必须自行处理或委托给 transcribe_url。
+        raise NotImplementedError
 
 
 # --------------------------------------------------------------------------
@@ -102,13 +125,25 @@ class MockASRClient(ASRClient):
     name = "mock"
 
     async def transcribe_bytes(self, audio_bytes: bytes, *, audio_format: str = "mp3") -> str:
-        # Simulate some processing latency (real Doubao 极速版 is typically 1-5s).
         await asyncio.sleep(0.5)
         return _MOCK_TRANSCRIPT
 
+    async def transcribe_url(self, audio_url: str, *, audio_format: str = "mp4") -> ASRTranscript:
+        await asyncio.sleep(0.5)
+        # 假装 8 句逐句时间戳，避免 decompose_agent 的字符切分降级路径
+        text = _MOCK_TRANSCRIPT
+        lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
+        utts: List[Utterance] = []
+        cursor = 0.0
+        per = 5.0  # 每句 5 秒
+        for ln in lines:
+            utts.append(Utterance(text=ln, start=cursor, end=cursor + per))
+            cursor += per
+        return ASRTranscript(text=text, utterances=utts)
+
 
 # --------------------------------------------------------------------------
-# Doubao 极速版 (Volcengine bigmodel turbo / flash)
+# Doubao 2.0 异步（seedasr / bigmodel auc）
 # --------------------------------------------------------------------------
 class DoubaoBigmodelASRClient(ASRClient):
     name = "doubao"
@@ -121,95 +156,166 @@ class DoubaoBigmodelASRClient(ASRClient):
                 code="ASR_NO_KEY",
             )
         self._api_key = settings.doubao_api_key
+        self._access_key = settings.doubao_access_key
         self._resource_id = settings.doubao_resource_id
-        self._recognize_url = settings.doubao_recognize_url
+        self._submit_url = settings.doubao_submit_url
+        self._query_url = settings.doubao_query_url
         self._timeout = settings.asr_timeout_seconds
+        self._poll_interval = settings.asr_poll_interval_seconds
+        self._poll_max = settings.asr_poll_max_seconds
+        # 双模式鉴权：access_key 非空 → 旧控制台双头；否则新控制台单 X-Api-Key
+        self._auth_mode = "legacy" if self._access_key else "new"
+        log.info(
+            "doubao asr client | auth=%s | resource=%s | submit=%s",
+            self._auth_mode, self._resource_id, self._submit_url,
+        )
 
-    async def transcribe_bytes(self, audio_bytes: bytes, *, audio_format: str = "mp3") -> str:
-        if not audio_bytes:
-            raise ASRError("音频字节为空", code="ASR_EMPTY", upstream_status=45000002)
+    # ------------------------------------------------------------------
+    # 主入口：URL 模式（2.0 真实路径）
+    # ------------------------------------------------------------------
+    async def transcribe_url(self, audio_url: str, *, audio_format: str = "mp4") -> ASRTranscript:
+        if not audio_url:
+            raise ASRError("audio_url 为空", code="ASR_NO_URL")
+        if not (audio_url.startswith("http://") or audio_url.startswith("https://")):
+            raise ASRError(
+                f"豆包 2.0 需要公网可达的 audio.url，收到非 http(s) URL: {audio_url}",
+                code="ASR_BAD_URL",
+            )
 
         request_id = str(uuid.uuid4())
-        # Per PDF, the new console only requires X-Api-Key. We do NOT send X-Api-App-Key /
-        # X-Api-Access-Key so we don't trigger the legacy auth path (which would require both).
-        headers = {
-            "X-Api-Key": self._api_key,
-            "X-Api-Resource-Id": self._resource_id,
-            "X-Api-Request-Id": request_id,
-            "X-Api-Sequence": "-1",
-            "Content-Type": "application/json",
-        }
-        # uid per PDF: "你的AppKey". The new-console key is the AppKey, so reuse it here.
         body = {
             "user": {"uid": self._api_key},
-            "audio": {"data": base64.b64encode(audio_bytes).decode("ascii")},
+            "audio": {
+                "format": audio_format,
+                "url": audio_url,
+            },
             "request": {
                 "model_name": "bigmodel",
-                # ITN (e.g. 一百二十 → 120) and punctuation hugely improve transcripts; turn on.
                 "enable_itn": True,
                 "enable_punc": True,
+                # 拿到逐句时间戳，让 decompose_agent 按 shot 时间窗映射 transcript，
+                # 不再用"按时长占比切字符"的退化算法（会把英文单词从中间截断）。
+                "show_utterances": True,
             },
         }
 
-        started = time.perf_counter()
-        log.info(
-            "doubao flash start | request_id=%s | bytes=%d | format=%s",
-            request_id,
-            len(audio_bytes),
-            audio_format,
+        await self._submit_task(request_id, body)
+        return await self._poll_query(request_id)
+
+    # ------------------------------------------------------------------
+    # bytes 入口：2.0 必须 URL，所以这里直接拒绝并提示
+    # ------------------------------------------------------------------
+    async def transcribe_bytes(self, audio_bytes: bytes, *, audio_format: str = "mp3") -> str:
+        raise ASRError(
+            "豆包 2.0 不支持 base64 inline 上传，请改调 transcribe_url(public_url)；"
+            "需要在 .env 配 PUBLIC_AUDIO_BASE_URL 把本地 /samples 暴露成公网。",
+            code="ASR_BYTES_UNSUPPORTED",
         )
 
+    # ------------------------------------------------------------------
+    # 内部：submit + poll
+    # ------------------------------------------------------------------
+    def _build_headers(self, request_id: str, *, with_sequence: bool) -> Dict[str, str]:
+        if self._auth_mode == "legacy":
+            h = {
+                "X-Api-App-Key": self._api_key,
+                "X-Api-Access-Key": self._access_key,
+                "X-Api-Resource-Id": self._resource_id,
+                "X-Api-Request-Id": request_id,
+                "Content-Type": "application/json",
+            }
+        else:
+            h = {
+                "X-Api-Key": self._api_key,
+                "X-Api-Resource-Id": self._resource_id,
+                "X-Api-Request-Id": request_id,
+                "Content-Type": "application/json",
+            }
+        if with_sequence:
+            h["X-Api-Sequence"] = "-1"
+        return h
+
+    async def _submit_task(self, request_id: str, body: Dict[str, Any]) -> None:
+        headers = self._build_headers(request_id, with_sequence=True)
+        log.info(
+            "doubao 2.0 submit | request_id=%s | url=%s",
+            request_id, body["audio"].get("url"),
+        )
         async with httpx.AsyncClient(timeout=self._timeout) as client:
             try:
-                resp = await client.post(self._recognize_url, headers=headers, json=body)
+                resp = await client.post(self._submit_url, headers=headers, json=body)
             except httpx.TimeoutException as e:
-                raise ASRError(f"豆包请求超时（{self._timeout}s）", code="ASR_TIMEOUT") from e
+                raise ASRError(f"豆包 submit 请求超时（{self._timeout}s）", code="ASR_TIMEOUT") from e
             except httpx.HTTPError as e:
-                raise ASRError(f"豆包网络错误：{e}", code="ASR_NETWORK") from e
+                raise ASRError(f"豆包 submit 网络错误：{e}", code="ASR_NETWORK") from e
 
         api_status = self._parse_status(resp)
         logid = resp.headers.get("X-Tt-Logid", "-")
-        elapsed_ms = int((time.perf_counter() - started) * 1000)
         log.info(
-            "doubao flash done | request_id=%s | http=%d | x-api-status=%s | logid=%s | %dms",
-            request_id,
-            resp.status_code,
-            api_status,
-            logid,
-            elapsed_ms,
+            "doubao 2.0 submit done | request_id=%s | http=%d | x-api-status=%s | logid=%s",
+            request_id, resp.status_code, api_status, logid,
         )
 
-        # HTTP-level error (rare; usually status_code=200 even on app errors)
-        if resp.status_code >= 500:
-            raise ASRError(
-                f"豆包 HTTP {resp.status_code}: {resp.text[:300]}",
-                code=f"ASR_HTTP_{resp.status_code}",
-                upstream_status=resp.status_code,
-            )
-        # 4xx (auth / quota / route) — surface logid to help debugging
         if resp.status_code >= 400:
             raise ASRError(
-                f"豆包 HTTP {resp.status_code} (logid={logid}): {resp.text[:300]}",
+                f"豆包 submit HTTP {resp.status_code} (logid={logid}): {resp.text[:300]}",
                 code=f"ASR_HTTP_{resp.status_code}",
                 upstream_status=resp.status_code,
             )
-
-        # API-level status (the real source of truth)
-        if api_status == DOUBAO_STATUS_SUCCESS:
-            return self._extract_text(resp)
-
-        if api_status is None:
+        if api_status != DOUBAO_STATUS_SUCCESS:
+            hint = _DOUBAO_ERROR_HINTS.get(api_status or -1, f"未知状态码 {api_status}")
             raise ASRError(
-                f"豆包响应缺少 X-Api-Status-Code 头 (logid={logid})",
-                code="ASR_NO_STATUS",
+                f"豆包 submit 失败：{hint} (logid={logid})",
+                code=f"ASR_API_{api_status}",
+                upstream_status=api_status,
             )
 
-        hint = _DOUBAO_ERROR_HINTS.get(api_status, f"未知状态码 {api_status}")
-        raise ASRError(
-            f"豆包识别失败：{hint} (logid={logid})",
-            code=f"ASR_API_{api_status}",
-            upstream_status=api_status,
-        )
+    async def _poll_query(self, request_id: str) -> ASRTranscript:
+        headers = self._build_headers(request_id, with_sequence=False)
+        deadline = time.monotonic() + self._poll_max
+        attempt = 0
+        async with httpx.AsyncClient(timeout=self._timeout) as client:
+            while True:
+                attempt += 1
+                try:
+                    resp = await client.post(self._query_url, headers=headers, json={})
+                except httpx.TimeoutException as e:
+                    raise ASRError(f"豆包 query 超时（{self._timeout}s）", code="ASR_TIMEOUT") from e
+                except httpx.HTTPError as e:
+                    raise ASRError(f"豆包 query 网络错误：{e}", code="ASR_NETWORK") from e
+
+                api_status = self._parse_status(resp)
+                logid = resp.headers.get("X-Tt-Logid", "-")
+                log.info(
+                    "doubao 2.0 query #%d | request_id=%s | http=%d | x-api-status=%s | logid=%s",
+                    attempt, request_id, resp.status_code, api_status, logid,
+                )
+
+                if resp.status_code >= 400:
+                    raise ASRError(
+                        f"豆包 query HTTP {resp.status_code} (logid={logid}): {resp.text[:300]}",
+                        code=f"ASR_HTTP_{resp.status_code}",
+                        upstream_status=resp.status_code,
+                    )
+
+                if api_status == DOUBAO_STATUS_SUCCESS:
+                    return self._extract_result(resp)
+                if api_status in (DOUBAO_STATUS_PROCESSING, DOUBAO_STATUS_QUEUED):
+                    if time.monotonic() >= deadline:
+                        raise ASRError(
+                            f"豆包 query 轮询超时（>{self._poll_max}s 仍 status={api_status}, logid={logid}）",
+                            code="ASR_POLL_TIMEOUT",
+                            upstream_status=api_status,
+                        )
+                    await asyncio.sleep(self._poll_interval)
+                    continue
+
+                hint = _DOUBAO_ERROR_HINTS.get(api_status or -1, f"未知状态码 {api_status}")
+                raise ASRError(
+                    f"豆包 query 失败：{hint} (logid={logid})",
+                    code=f"ASR_API_{api_status}",
+                    upstream_status=api_status,
+                )
 
     @staticmethod
     def _parse_status(resp: httpx.Response) -> Optional[int]:
@@ -222,12 +328,11 @@ class DoubaoBigmodelASRClient(ASRClient):
             return None
 
     @staticmethod
-    def _extract_text(resp: httpx.Response) -> str:
-        """Pull `result.text` out of the response body.
+    def _extract_result(resp: httpx.Response) -> ASRTranscript:
+        """解析豆包 2.0 query 返回，抽取 text + utterances。
 
-        Schema (per 极速版 PDF):
-            {"audio_info":{...},"result":{"text":"...","utterances":[...]}}
-        We are tolerant of a couple of legacy variants (data.result.text) just in case.
+        utterances 字段在 show_utterances=true 时返回；start_time/end_time 单位为毫秒，
+        本方法统一换算为秒，并兜底兼容字段名 (start/end / start_ms/end_ms)。
         """
         try:
             data: Dict[str, Any] = resp.json()
@@ -235,24 +340,51 @@ class DoubaoBigmodelASRClient(ASRClient):
             raise ASRError(f"豆包响应不是合法 JSON：{e}", code="ASR_BAD_JSON") from e
 
         result = data.get("result")
-        if isinstance(result, dict):
-            text = result.get("text")
-            if isinstance(text, str) and text.strip():
-                return text.strip()
+        if not isinstance(result, dict):
+            raise ASRError(
+                f"豆包响应缺少 result 字段：{json.dumps(data, ensure_ascii=False)[:300]}",
+                code="ASR_NO_TEXT",
+            )
 
-        # Legacy nested fallback (some standard-version responses).
-        nested = data.get("data") or {}
-        if isinstance(nested, dict):
-            r2 = nested.get("result") or {}
-            if isinstance(r2, dict):
-                text = r2.get("text")
-                if isinstance(text, str) and text.strip():
-                    return text.strip()
+        text = result.get("text") if isinstance(result.get("text"), str) else ""
 
-        raise ASRError(
-            f"豆包响应缺少 result.text 字段：{json.dumps(data, ensure_ascii=False)[:300]}",
-            code="ASR_NO_TEXT",
-        )
+        utts: List[Utterance] = []
+        raw_utts = result.get("utterances")
+        if isinstance(raw_utts, list):
+            for u in raw_utts:
+                if not isinstance(u, dict):
+                    continue
+                u_text = u.get("text") or ""
+                if not isinstance(u_text, str) or not u_text.strip():
+                    continue
+                start_raw = u.get("start_time", u.get("start", u.get("start_ms")))
+                end_raw = u.get("end_time", u.get("end", u.get("end_ms")))
+                try:
+                    start_ms = float(start_raw) if start_raw is not None else 0.0
+                    end_ms = float(end_raw) if end_raw is not None else start_ms
+                except (TypeError, ValueError):
+                    continue
+                # 豆包默认毫秒；如果数值小到像秒（end<60 且 text 长），按秒处理保险
+                divisor = 1000.0 if end_ms >= 60 else 1.0
+                utts.append(
+                    Utterance(
+                        text=u_text.strip(),
+                        start=start_ms / divisor,
+                        end=end_ms / divisor,
+                    )
+                )
+
+        # text 缺失但 utterances 有 → 拼起来；都没有就报错
+        if not text.strip() and utts:
+            text = "".join(u.text for u in utts)
+
+        if not text.strip():
+            raise ASRError(
+                f"豆包响应缺少 result.text 字段：{json.dumps(data, ensure_ascii=False)[:300]}",
+                code="ASR_NO_TEXT",
+            )
+
+        return ASRTranscript(text=text.strip(), utterances=utts)
 
 
 # --------------------------------------------------------------------------

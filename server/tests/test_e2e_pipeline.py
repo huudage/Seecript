@@ -33,6 +33,8 @@ def _build_plan(client) -> dict:
         json={
             "sample_id": "sample-marketing-01",
             "session_id": session_id,
+            "brief": "新品发布——突出差异化卖点",
+            "video_goal": "30 秒内说清产品差异化卖点，面向初次接触的用户，节奏紧凑",
             "selected_materials": material_ids,
             "fills": [],
             "variant": "A",
@@ -41,6 +43,13 @@ def _build_plan(client) -> dict:
     assert r.status_code == 200, r.text
     plan = r.json()
     assert plan["plan_id"].startswith("plan-")
+    # video_goal 必须回写到 plan；adapted_sections 必须非空且首末 role 合规
+    assert plan["video_goal"] and "差异化" in plan["video_goal"]
+    adapted = plan["adapted_sections"]
+    assert isinstance(adapted, list) and len(adapted) >= 3
+    assert adapted[0]["role"] == "opening" and adapted[-1]["role"] == "closing"
+    for sec in adapted:
+        assert sec["section_id"] and sec["content_description"], sec
     return plan
 
 
@@ -54,12 +63,8 @@ def test_library_and_manifest(client):
     seen_types = {it["video_type"] for it in items}
     assert seen_types == {"marketing", "editing", "motion_graph"}
 
-    # 每个样例的 manifest 段落 kind 必须落在该 video_type 允许的枚举里
-    expected_kinds: dict[str, set[str]] = {
-        "marketing": {"hook", "body", "cta"},
-        "editing": {"opening", "climax", "closing"},
-        "motion_graph": {"intro", "build", "drop", "outro"},
-    }
+    # 段落 role 必须落在 SectionRole 4 元枚举里，且首尾恰为 opening/closing
+    allowed_roles = {"opening", "development", "climax", "closing"}
     for item in items:
         r = client.get(f"/api/sample/{item['id']}/manifest")
         assert r.status_code == 200, f"manifest {item['id']}: {r.text}"
@@ -67,15 +72,20 @@ def test_library_and_manifest(client):
         assert manifest["sample_id"] == item["id"]
         assert manifest["video_type"] == item["video_type"]
         assert len(manifest["shots"]) > 0
-        kinds = {s["kind"] for s in manifest["sections"]}
-        assert kinds == expected_kinds[item["video_type"]], (
-            f"{item['id']} sections {kinds} != expected {expected_kinds[item['video_type']]}"
+        roles = [s["role"] for s in manifest["sections"]]
+        assert set(roles).issubset(allowed_roles), (
+            f"{item['id']} sections {roles} 含非法 role"
         )
-        # motion_graph 是纯 BGM（无口播）
+        assert roles, f"{item['id']} 段落为空"
+        assert roles[0] == "opening", f"{item['id']} 首段应为 opening，实际 {roles[0]}"
+        assert roles[-1] == "closing", f"{item['id']} 末段应为 closing，实际 {roles[-1]}"
+        # climax 最多 1 段
+        assert sum(1 for r_ in roles if r_ == "climax") <= 1
+        # motion_graph 是纯 BGM（无口播）；其它视频 has_voice 取决于真实音轨，不在此处强约束
         if item["video_type"] == "motion_graph":
             assert manifest["has_voice"] is False
         else:
-            assert manifest["has_voice"] is True
+            assert isinstance(manifest["has_voice"], bool)
 
 
 def test_material_upload_and_plan_build(client):
@@ -88,6 +98,13 @@ def test_material_upload_and_plan_build(client):
     assert r.status_code == 200
     gaps = r.json()
     assert isinstance(gaps, list)
+
+    # 每个 gap.section_id 都必须指回 plan.adapted_sections 里的某段
+    adapted_ids = {s["section_id"] for s in plan["adapted_sections"]}
+    for g in gaps:
+        assert g["section_id"] in adapted_ids, (
+            f"gap {g['gap_id']} section_id={g['section_id']} 不在 {adapted_ids}"
+        )
 
     target_gap = next((g for g in gaps if g["status"] != "ok"), gaps[0] if gaps else None)
     if target_gap is not None:

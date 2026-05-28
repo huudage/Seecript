@@ -31,9 +31,9 @@ def detect_shots(video_path: str | Path, threshold: float = 27.0) -> list[Detect
 
     Returns 镜头列表，按时间升序。Mock 模式按 3 秒一段平均切。
     """
-    path = Path(video_path)
-    if _BACKEND == "mock" or not path.exists():
-        log.warning("[scene_detect] backend=mock (path_exists=%s)", path.exists())
+    path = Path(video_path) if video_path else None
+    if _BACKEND == "mock" or path is None or not path.is_file():
+        log.warning("[scene_detect] backend=mock (path=%r)", str(path) if path else None)
         # 默认 30 秒视频切成 10 段
         return [
             DetectedShot(index=i, start=i * 3.0, end=(i + 1) * 3.0, duration=3.0)

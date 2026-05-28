@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
-import { LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid } from 'recharts'
+import { LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid, ReferenceLine } from 'recharts'
 
 import { api } from '@/api/client'
 import { createSSE, type SSEHandle } from '@/api/sse'
@@ -12,6 +12,7 @@ import type {
   ProgressEventPayload,
   SampleManifest,
   VideoType,
+  VideoUnderstanding,
 } from '@/types/schemas'
 import {
   SECTION_BG,
@@ -331,6 +332,27 @@ function ManifestView({ manifest }: { manifest: SampleManifest }) {
 
   return (
     <div className="space-y-6">
+      {manifest.video_url && (
+        <div className="rounded-lg border border-border bg-card p-4">
+          <div className="mb-3 flex items-center justify-between">
+            <h2 className="text-sm font-semibold">原始视频</h2>
+            <span className="text-xs text-muted-foreground">
+              {manifest.duration_seconds.toFixed(1)}s · {manifest.shots.length} 镜头
+            </span>
+          </div>
+          <video
+            src={manifest.video_url}
+            controls
+            preload="metadata"
+            className="aspect-video w-full max-h-[420px] rounded-md bg-black"
+          >
+            您的浏览器不支持视频播放。
+          </video>
+        </div>
+      )}
+
+      {manifest.understanding && <UnderstandingCard u={manifest.understanding} />}
+
       <div className="rounded-lg border border-border bg-card p-4">
         <div className="mb-3 flex items-center justify-between">
           <h2 className="text-sm font-semibold">段落结构 · {VIDEO_TYPE_LABEL[manifest.video_type]}</h2>
@@ -361,11 +383,24 @@ function ManifestView({ manifest }: { manifest: SampleManifest }) {
                 />
                 <Line type="monotone" dataKey="cut" name="切镜密度" stroke="hsl(262 83% 58%)" dot={false} strokeWidth={2} />
                 <Line type="monotone" dataKey="bgm" name="BGM 能量" stroke="hsl(38 92% 50%)" dot={false} strokeWidth={2} />
+                {manifest.climax_position != null && (
+                  <ReferenceLine
+                    x={manifest.climax_position}
+                    stroke="hsl(0 84% 60%)"
+                    strokeDasharray="4 2"
+                    label={{ value: `高潮 ${manifest.climax_position.toFixed(1)}s`, position: 'top', fill: 'hsl(0 84% 60%)', fontSize: 10 }}
+                  />
+                )}
               </LineChart>
             </ResponsiveContainer>
           </div>
           {manifest.rhythm.tempo_bpm != null && (
-            <p className="mt-2 text-xs text-muted-foreground">BPM ≈ {manifest.rhythm.tempo_bpm.toFixed(0)}</p>
+            <p className="mt-2 text-xs text-muted-foreground">
+              BPM ≈ {manifest.rhythm.tempo_bpm.toFixed(0)}
+              {manifest.climax_position != null && (
+                <span className="ml-3 text-destructive">· 高潮约在 {manifest.climax_position.toFixed(1)}s</span>
+              )}
+            </p>
           )}
         </div>
 
@@ -430,20 +465,21 @@ function SectionsBar({ manifest }: { manifest: SampleManifest }) {
   const total = manifest.duration_seconds || 1
   return (
     <div className="space-y-2">
-      <div className="relative flex h-10 w-full overflow-hidden rounded-md border border-border">
+      <div className="relative flex h-12 w-full overflow-hidden rounded-md border border-border">
         {manifest.sections.map((sec, idx) => {
           const widthPct = ((sec.end - sec.start) / total) * 100
           return (
             <div
               key={idx}
               className={cn(
-                'flex items-center justify-center text-xs font-medium text-white',
-                SECTION_BG[sec.kind],
+                'flex flex-col items-center justify-center px-1 text-[11px] font-medium leading-tight text-white',
+                SECTION_BG[sec.role],
               )}
               style={{ width: `${widthPct}%` }}
-              title={`${SECTION_LABEL[sec.kind]}: ${sec.summary}`}
+              title={`${SECTION_LABEL[sec.role]} · ${sec.theme}: ${sec.summary}`}
             >
-              {SECTION_LABEL[sec.kind]}
+              <span className="opacity-80">{SECTION_LABEL[sec.role]}</span>
+              <span className="truncate font-semibold">{sec.theme}</span>
             </div>
           )
         })}
@@ -452,11 +488,33 @@ function SectionsBar({ manifest }: { manifest: SampleManifest }) {
         {manifest.sections.map((sec, idx) => (
           <div key={idx} className="flex gap-2">
             <span className="font-mono">{sec.start.toFixed(1)}–{sec.end.toFixed(1)}s</span>
-            <span className="font-medium text-foreground">{SECTION_LABEL[sec.kind]}：</span>
+            <span className="font-medium text-foreground">
+              {SECTION_LABEL[sec.role]} · {sec.theme}：
+            </span>
             <span>{sec.summary}</span>
           </div>
         ))}
       </div>
+    </div>
+  )
+}
+
+function UnderstandingCard({ u }: { u: VideoUnderstanding }) {
+  return (
+    <div className="rounded-lg border border-border bg-card p-4">
+      <div className="mb-2 flex items-center justify-between">
+        <h2 className="text-sm font-semibold">LLM 视频画像</h2>
+        <span className="text-[11px] text-muted-foreground">建议切 {u.suggested_segments} 段</span>
+      </div>
+      <div className="flex flex-wrap gap-2 text-xs">
+        <span className="rounded-full bg-primary/10 px-2 py-0.5 font-medium text-primary">
+          {u.archetype}
+        </span>
+        <span className="rounded-full border border-border px-2 py-0.5 text-muted-foreground">
+          基调：{u.tone}
+        </span>
+      </div>
+      <p className="mt-3 text-sm leading-relaxed text-foreground">{u.narrative_summary}</p>
     </div>
   )
 }

@@ -146,19 +146,38 @@ def _extract_json(text: str) -> Any:
     return json.loads(s)
 
 
+_SERVER_ROOT = Path(__file__).resolve().parents[2]  # server/
+
+
+def _resolve_local_image(s: str) -> Optional[Path]:
+    """把后端虚拟 URL（/samples/xxx, /uploads/xxx）映射回 server/ 目录下的真实磁盘路径。
+
+    其它绝对/相对路径直接尝试；找不到则返回 None 让调用方走占位。
+    """
+    if s.startswith("/samples/"):
+        p = _SERVER_ROOT / "samples" / s[len("/samples/"):].lstrip("/")
+        return p if p.is_file() else None
+    if s.startswith("/uploads/"):
+        p = _SERVER_ROOT / "var" / "uploads" / s[len("/uploads/"):].lstrip("/")
+        return p if p.is_file() else None
+    p = Path(s)
+    return p if p.is_file() else None
+
+
 def _image_ref_to_url(ref: str | Path) -> str:
     """把图像引用归一化成可放进 OpenAI multimodal `image_url.url` 的字符串。
 
     规则：
     - http(s):// 或 data: 开头视为已经就绪，直接透传
-    - 其它视为本地路径，读字节 → data:image/<ext>;base64,<...>；不存在则降级成
-      占位文本 data URL（提示模型"该帧暂缺"，避免抛错打断流水线）。
+    - 后端虚拟 URL（/samples/xxx / /uploads/xxx）先映射回 server/ 下的物理路径
+    - 物理路径存在 → data:image/<ext>;base64,<...>
+    - 解析失败 → 16×16 占位 PNG，让模型仍能拿到结构合法的 user content
     """
     s = str(ref)
     if s.startswith(("http://", "https://", "data:")):
         return s
-    p = Path(s)
-    if not p.exists() or p.is_dir():
+    real = _resolve_local_image(s)
+    if real is None:
         # 占位：16×16 灰色 PNG 的 base64。Ark 等服务端要求最小 14×14，
         # 用更小的图（如 1×1）会被拒 InvalidParameter；这里给 16×16 保险。
         placeholder = (
@@ -166,10 +185,10 @@ def _image_ref_to_url(ref: str | Path) -> str:
             "eIEAymAiSTVDKMaiANMRKqDg1ENxACSQwkAXUkCeDMzQHkAAAAASUVORK5CYII="
         )
         return f"data:image/png;base64,{placeholder}"
-    ext = p.suffix.lower().lstrip(".") or "jpeg"
+    ext = real.suffix.lower().lstrip(".") or "jpeg"
     if ext == "jpg":
         ext = "jpeg"
-    b64 = base64.b64encode(p.read_bytes()).decode("ascii")
+    b64 = base64.b64encode(real.read_bytes()).decode("ascii")
     return f"data:image/{ext};base64,{b64}"
 
 
@@ -201,12 +220,20 @@ class MockLLMClient(LLMClient):
         await asyncio.sleep(0.3)
         if "edit_tool_calls" in system:
             return _MOCK_EDIT_TOOLS_JSON
-        if "sections" in system and "hook" in system and "cta" in system:
-            return _MOCK_DECOMPOSE_SECTIONS_JSON
+        # plan_agent 结构改编：指纹 adapted_sections + content_description（在 shot_roles 之前避免误匹配）
+        if "adapted_sections" in system and "content_description" in system:
+            return _build_mock_adapted_sections_json(user)
+        # 新 decompose 拆分两阶段：理解 → shot-first 切段。各自有独有指纹。
+        if "archetype" in system and "narrative_summary" in system:
+            return _MOCK_UNDERSTANDING_JSON
+        if "shot_roles" in system and "role" in system:
+            return _build_mock_shot_roles_json(user)
         if "gap_fill_narration" in system:
             return _MOCK_GAP_FILL_JSON
         if "frame_tags" in system:
             return _MOCK_FRAME_TAGS_JSON
+        if "transitions" in system and "palette" in system:
+            return _MOCK_PACKAGING_JSON
         return '{"detail": "mock fallback"}'
 
     async def complete_with_tools(
@@ -250,20 +277,20 @@ class MockLLMClient(LLMClient):
         """Mock 多模态：忽略实际图像内容，按 system 指纹路由到 fixture。
 
         - "frame_tags" 在 system → 返回 _MOCK_FRAME_TAGS_JSON
-        - "sections" 在 system → 返回 _MOCK_DECOMPOSE_SECTIONS_JSON（按段落 schema 走默认营销）
+        - "archetype" + "narrative_summary" → 返回 _MOCK_UNDERSTANDING_JSON（视频画像阶段）
+        - "shot_roles" + "role" → **动态**生成 shot-first roles（按 user 文本里的镜头条数）
         - 其它走父类 fallback（拼"看不到图"提示再 complete）
         """
         import asyncio
         await asyncio.sleep(0.4)
         if "frame_tags" in system:
             return _MOCK_FRAME_TAGS_JSON
-        if "sections" in system:
-            # 多模态走段落分析时，按 system 中暗示的视频类型选 fixture
-            if "motion_graph" in system or "motion graph" in system.lower():
-                return _MOCK_SECTIONS_MOTION_GRAPH_JSON
-            if "editing" in system or "vlog" in system.lower():
-                return _MOCK_SECTIONS_EDITING_JSON
-            return _MOCK_DECOMPOSE_SECTIONS_JSON
+        if "adapted_sections" in system and "content_description" in system:
+            return _build_mock_adapted_sections_json(user_text)
+        if "archetype" in system and "narrative_summary" in system:
+            return _MOCK_UNDERSTANDING_JSON
+        if "shot_roles" in system and "role" in system:
+            return _build_mock_shot_roles_json(user_text)
         return await super().complete_multimodal(
             system, user_text, images,
             temperature=temperature, max_tokens=max_tokens,
@@ -501,21 +528,90 @@ def get_llm_client(settings: Optional[Settings] = None) -> LLMClient:
 # --------------------------------------------------------------------------
 # Mock fixtures
 # --------------------------------------------------------------------------
-_MOCK_DECOMPOSE_SECTIONS_JSON = """
+_MOCK_UNDERSTANDING_JSON = """
 {
-  "sections": [
-    {"kind": "hook", "start": 0.0, "end": 4.5,
-     "summary": "痛点提问 + 大字幕开场——首镜对准产品配文『你是不是也踩过这个坑？』",
-     "shot_indices": [0, 1]},
-    {"kind": "body", "start": 4.5, "end": 25.5,
-     "summary": "三段对比：原方案问题 → 新方案演示 → 效果对比，节奏 BPM≈120 切镜",
-     "shot_indices": [2, 3, 4, 5, 6, 7, 8, 9]},
-    {"kind": "cta", "start": 25.5, "end": 30.5,
-     "summary": "大字幕收尾 + 评论引导『你试过哪种？』",
-     "shot_indices": [10, 11]}
-  ]
+  "archetype": "通用短视频原型",
+  "narrative_summary": "[mock] 视频以氛围镜头开场，中段铺陈主体内容并在中后段拉到情绪高潮，结尾给出引导或落版。",
+  "suggested_segments": 4,
+  "tone": "中性平稳"
 }
 """
+
+def _build_mock_shot_roles_json(user_text: str) -> str:
+    """动态生成 shot_roles mock：从 user payload 解析镜头数，按位置分配 role。
+
+    解析规则：user_text 中形如 "0: 0.0-3.0s" 的行代表一个镜头。
+    分配策略：第一个=opening，最后一个=closing，≥4 个时 60% 位置=climax，其余=development。
+    """
+    import re
+    import json
+    shot_lines = re.findall(r"^(\d+):\s*[\d.]+", user_text, re.MULTILINE)
+    n = len(shot_lines)
+    if n == 0:
+        n = max(1, len([img for img in [] if img]))
+        n = max(n, 2)
+
+    roles: list[dict] = []
+    climax_idx = int(n * 0.6) if n >= 4 else None
+    if climax_idx is not None and (climax_idx <= 0 or climax_idx >= n - 1):
+        climax_idx = None
+
+    for i in range(n):
+        if i == 0:
+            role, theme = "opening", "开场铺垫"
+        elif i == n - 1:
+            role, theme = "closing", "余韵收尾"
+        elif i == climax_idx:
+            role, theme = "climax", "情绪高潮"
+        else:
+            role, theme = "development", f"主体铺陈{i}"
+        roles.append({"shot_index": i, "role": role, "theme": theme})
+
+    return json.dumps({"shot_roles": roles}, ensure_ascii=False)
+
+
+def _build_mock_adapted_sections_json(user_text: str) -> str:
+    """动态生成 adapted_sections mock：从 user payload 解析 '原样例共 N 段' 拿到 N，
+    按位置分配 role，每段写一句占位 content_description。
+
+    分配策略：
+    - i=0       → opening
+    - i=n-1     → closing
+    - i=int(n*0.6) → climax（仅 n≥4 时；且不与首末重叠）
+    - 其余      → development
+    source_section_indices 落 [min(i, n-1)]，让 plan_agent 的 _materialize 能找到镜头。
+    """
+    import re
+    import json
+    m = re.search(r"原样例共\s*(\d+)\s*段", user_text)
+    n_src = int(m.group(1)) if m else 4
+    n = max(3, min(7, n_src))
+
+    climax_idx = int(n * 0.6) if n >= 4 else None
+    if climax_idx is not None and (climax_idx <= 0 or climax_idx >= n - 1):
+        climax_idx = None
+
+    secs: list[dict] = []
+    for i in range(n):
+        if i == 0:
+            role, theme = "opening", "开场钩子"
+        elif i == n - 1:
+            role, theme = "closing", "行动引导"
+        elif i == climax_idx:
+            role, theme = "climax", "卖点高潮"
+        else:
+            role, theme = "development", f"主体铺陈{i}"
+        secs.append({
+            "role": role,
+            "theme": theme,
+            "content_description": (
+                f"[mock] {theme}：紧扣用户主题给一句口播，搭配一组主体画面，"
+                f"承接上下段叙事节奏。"
+            ),
+            "source_section_indices": [min(i, max(0, n_src - 1))],
+        })
+    return json.dumps({"adapted_sections": secs}, ensure_ascii=False)
+
 
 _MOCK_GAP_FILL_JSON = """
 {
@@ -531,44 +627,12 @@ _MOCK_GAP_FILL_JSON = """
 _MOCK_FRAME_TAGS_JSON = """
 {
   "frame_tags": [
-    {"frame_id": "f-001", "tags": ["室内", "近景", "口播", "纯色背景"], "subtitle_style": "大字加描边"},
-    {"frame_id": "f-002", "tags": ["产品特写", "环形光", "白色桌面"], "subtitle_style": "大字加描边"},
-    {"frame_id": "f-003", "tags": ["对比镜头", "实拍", "户外"], "subtitle_style": "无字幕"}
-  ]
-}
-"""
-
-_MOCK_SECTIONS_EDITING_JSON = """
-{
-  "sections": [
-    {"kind": "opening", "start": 0.0, "end": 6.0,
-     "summary": "环境/氛围铺垫——晨光下的城市远景，慢推镜头铺底",
-     "shot_indices": [0, 1, 2]},
-    {"kind": "climax", "start": 6.0, "end": 24.0,
-     "summary": "情绪高潮：人物动作 + 卡点切镜，节奏 BPM≈128",
-     "shot_indices": [3, 4, 5, 6, 7, 8]},
-    {"kind": "closing", "start": 24.0, "end": 30.0,
-     "summary": "余韵收尾：慢摇 + 渐黑 + 落版字",
-     "shot_indices": [9, 10]}
-  ]
-}
-"""
-
-_MOCK_SECTIONS_MOTION_GRAPH_JSON = """
-{
-  "sections": [
-    {"kind": "intro", "start": 0.0, "end": 3.0,
-     "summary": "标题动画入场——logo 弹跳 + 副标题滑入",
-     "shot_indices": [0]},
-    {"kind": "build", "start": 3.0, "end": 14.0,
-     "summary": "信息铺陈：图标分层、数据条逐项弹出",
-     "shot_indices": [1, 2, 3, 4]},
-    {"kind": "drop", "start": 14.0, "end": 24.0,
-     "summary": "视觉爆点：粒子炸开 + 大字幕震屏",
-     "shot_indices": [5, 6, 7]},
-    {"kind": "outro", "start": 24.0, "end": 30.0,
-     "summary": "落版/Logo 收：浮层淡出 + 二维码露出",
-     "shot_indices": [8, 9]}
+    {"frame_id": "f-001", "tags": ["室内", "近景", "口播", "纯色背景"], "subtitle_style": "大字加描边",
+     "recommended_section": "opening", "highlight_score": 0.82, "highlight_reason": "正面近景情绪强"},
+    {"frame_id": "f-002", "tags": ["产品特写", "环形光", "白色桌面"], "subtitle_style": "大字加描边",
+     "recommended_section": "development", "highlight_score": 0.65, "highlight_reason": "产品特写清晰但缺动作"},
+    {"frame_id": "f-003", "tags": ["对比镜头", "实拍", "户外"], "subtitle_style": "无字幕",
+     "recommended_section": "closing", "highlight_score": 0.5, "highlight_reason": "户外光线中性"}
   ]
 }
 """
@@ -579,5 +643,28 @@ _MOCK_EDIT_TOOLS_JSON = """
     {"name": "edit_scene_narration",
      "arguments": {"scene_id": "sc-2", "narration": "[mock] 改写后的口语化口播"}}
   ]
+}
+"""
+
+
+# packaging_agent 走 complete_json 拿转场 + 封面。系统中独有的指纹是 "from_section" / "palette"。
+# 时间留 0 占位，server 端 _section_pairs 会按真实 plan 段落切换点对齐。
+_MOCK_PACKAGING_JSON = """
+{
+  "transitions": [
+    {"at_seconds": 0.0, "from_section": "opening", "to_section": "development",
+     "style": "whip", "duration": 0.4,
+     "reason": "[mock] opening→development 用甩切制造冲击"},
+    {"at_seconds": 0.0, "from_section": "development", "to_section": "closing",
+     "style": "zoom", "duration": 0.5,
+     "reason": "[mock] development→closing 用推拉收尾"}
+  ],
+  "cover": {
+    "title": "[mock] 这条视频凭什么爆",
+    "subtitle": "3 秒抓住你",
+    "palette": ["#FFE600", "#1F2937", "#FFFFFF"],
+    "layout": "center",
+    "style_note": "[mock] 黑底黄字大标题居中"
+  }
 }
 """

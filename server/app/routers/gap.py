@@ -16,8 +16,16 @@ import logging
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
-from ..routers.library import _LIBRARY, _stub_manifest
-from ..schemas import FillResult, Gap, GapDetectRequest, GapFillRequest, Material
+from ..routers.library import _LIBRARY, _load_real_manifest, _stub_manifest
+from ..schemas import (
+    AdaptedSection,
+    FillResult,
+    Gap,
+    GapDetectRequest,
+    GapFillRequest,
+    Material,
+    SampleManifest,
+)
 from ..services.agent.gap_agent import detect_gaps, fill_gap, refresh_aigc_task
 from ..services.materials import gap_store, material_store
 from ..services.plans import plan_store
@@ -29,26 +37,49 @@ router = APIRouter()
 def _mock_materials() -> list[Material]:
     """session 为空时的兜底素材——保留以便没上传也能跑通 UI demo。"""
     return [
-        Material(material_id="mat-mock-001", filename="hook-1.mp4", media_type="video",
-                 duration_seconds=3.2, tags=["[mock] 近景", "[mock] 口播"], recommended_section="hook"),
-        Material(material_id="mat-mock-002", filename="body-1.mp4", media_type="video",
-                 duration_seconds=6.0, tags=["[mock] 产品", "[mock] 特写"], recommended_section="body"),
-        Material(material_id="mat-mock-003", filename="body-2.mp4", media_type="video",
-                 duration_seconds=5.0, tags=["[mock] 对比", "[mock] 实拍"], recommended_section="body"),
-        Material(material_id="mat-mock-004", filename="cta-1.mp4", media_type="video",
-                 duration_seconds=4.0, tags=["[mock] 大字幕"], recommended_section="cta"),
+        Material(material_id="mat-mock-001", filename="opening-1.mp4", media_type="video",
+                 duration_seconds=3.2, tags=["[mock] 近景", "[mock] 口播"], recommended_section="opening"),
+        Material(material_id="mat-mock-002", filename="dev-1.mp4", media_type="video",
+                 duration_seconds=6.0, tags=["[mock] 产品", "[mock] 特写"], recommended_section="development"),
+        Material(material_id="mat-mock-003", filename="dev-2.mp4", media_type="video",
+                 duration_seconds=5.0, tags=["[mock] 对比", "[mock] 实拍"], recommended_section="development"),
+        Material(material_id="mat-mock-004", filename="closing-1.mp4", media_type="video",
+                 duration_seconds=4.0, tags=["[mock] 大字幕"], recommended_section="closing"),
     ]
 
 
-def _resolve_manifest(plan_id: str):
-    """plan_id → 真 sample_id → manifest；找不到回退 _LIBRARY[0] 并打 warning。"""
+def _resolve_manifest(plan_id: str) -> SampleManifest:
+    """plan_id → 真 sample_id → manifest；优先真预解析 manifest.json，None 时才回落 stub。
+
+    修复早期 bug：以前任何 sample 都直接走 _stub_manifest，导致 plan 阶段已经用真模型改编的
+    分镜结构在 gap 阶段被 stub 覆盖，前端缩略图全是 stub 占位。
+    """
     plan = plan_store.get(plan_id)
     if plan is None:
         log.warning("[gap] plan_id=%s 未找到，回退 _LIBRARY[0]", plan_id)
         sample = _LIBRARY[0]
-        return _stub_manifest(sample.id, sample)
+        return _load_real_manifest(sample.id) or _stub_manifest(sample.id, sample)
     sample = next((s for s in _LIBRARY if s.id == plan.sample_id), _LIBRARY[0])
-    return _stub_manifest(sample.id, sample)
+    return _load_real_manifest(sample.id) or _stub_manifest(sample.id, sample)
+
+
+def _legacy_wrap(manifest: SampleManifest) -> list[AdaptedSection]:
+    """老 plan 没有 adapted_sections——把 manifest.sections 1:1 包成 AdaptedSection 让 gap 流程能跑。
+
+    content_description 留 fallback 占位；section_id 按 manifest 顺序生成。
+    """
+    out: list[AdaptedSection] = []
+    for i, sec in enumerate(manifest.sections):
+        out.append(AdaptedSection(
+            section_id=f"sec-{i}",
+            role=sec.role,
+            theme=sec.theme or "段落",
+            content_description=f"[legacy] {sec.role} 段，由 manifest.sections 包装。",
+            source_section_indices=[i],
+            source_shot_indices=list(sec.shot_indices or []),
+            order=i,
+        ))
+    return out
 
 
 def _resolve_materials(session_id: str | None, allow_mock: bool) -> list[Material]:
@@ -66,7 +97,11 @@ def _resolve_materials(session_id: str | None, allow_mock: bool) -> list[Materia
 async def detect(req: GapDetectRequest) -> list[Gap]:
     manifest = _resolve_manifest(req.plan_id)
     materials = _resolve_materials(req.session_id, req.allow_mock)
-    gaps = detect_gaps(manifest, materials)
+    plan = plan_store.get(req.plan_id)
+    adapted = (
+        plan.adapted_sections if (plan and plan.adapted_sections) else _legacy_wrap(manifest)
+    )
+    gaps = detect_gaps(adapted, manifest, materials)
     gap_store.put(req.plan_id, gaps)
     return gaps
 

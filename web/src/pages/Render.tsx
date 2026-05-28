@@ -22,21 +22,15 @@ import { cn } from '@/lib/utils'
 /* 配色 / 常量                                                                 */
 /* -------------------------------------------------------------------------- */
 
-import type { SectionKind } from '@/types/schemas'
+import type { SectionRole } from '@/types/schemas'
 
-// 主轨 9 个 section kind → Tailwind 背景类。和 lib/sections.SECTION_BG 同色系，
+// 主轨 4 个 section role → Tailwind 背景类。和 lib/sections.SECTION_BG 同色系，
 // 但 Render 时间线使用更深的纯色（无透明）以保证文字对比度。
-const SECTION_COLOR: Record<SectionKind, string> = {
-  hook: 'bg-pink-500',
-  body: 'bg-sky-500',
-  cta: 'bg-amber-500',
-  opening: 'bg-cyan-500',
-  climax: 'bg-violet-500',
-  closing: 'bg-indigo-500',
-  intro: 'bg-emerald-500',
-  build: 'bg-orange-500',
-  drop: 'bg-rose-500',
-  outro: 'bg-slate-500',
+const SECTION_COLOR: Record<SectionRole, string> = {
+  opening: 'bg-blue-500',
+  development: 'bg-slate-500',
+  climax: 'bg-rose-500',
+  closing: 'bg-emerald-500',
 }
 const PKG_COLOR: Record<PackagingItem['kind'], string> = {
   subtitle: 'bg-emerald-500',
