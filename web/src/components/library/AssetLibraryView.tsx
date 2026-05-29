@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 
 import { api, ApiError } from '@/api/client'
 import { cn } from '@/lib/utils'
+import { useProjectsStore } from '@/stores/projects'
 import type {
   Asset,
   AssetKind,
@@ -61,14 +62,20 @@ export function AssetLibraryView() {
   const [editingId, setEditingId] = useState<string | null>(null)
   const fileInputRef = useRef<HTMLInputElement | null>(null)
   const [pollTick, setPollTick] = useState(0)
+  // 资产库按 project_id 隔离：每个项目有自己的 BGM/参考图/参考视频池
+  const currentProjectId = useProjectsStore((s) => s.currentProjectId)
 
   // 拉当前 kind 下的列表
   useEffect(() => {
+    if (!currentProjectId) {
+      setItems([])
+      return
+    }
     let cancelled = false
     setItems(null)
     setError(null)
     api
-      .get<AssetListResponse>(`/asset/library?kind=${kind}`)
+      .get<AssetListResponse>(`/asset/library?project_id=${encodeURIComponent(currentProjectId)}&kind=${kind}`)
       .then((data) => {
         if (!cancelled) setItems(data.items)
       })
@@ -78,7 +85,7 @@ export function AssetLibraryView() {
     return () => {
       cancelled = true
     }
-  }, [kind, pollTick])
+  }, [kind, pollTick, currentProjectId])
 
   // 有 processing 中的资产时轮询，等后台探测完成
   useEffect(() => {
@@ -94,6 +101,10 @@ export function AssetLibraryView() {
 
   const onFilesSelected = async (files: FileList | null) => {
     if (!files || files.length === 0) return
+    if (!currentProjectId) {
+      setError('请先在首页新建/选择一个项目，再上传资产')
+      return
+    }
     setBusy(true)
     setError(null)
     try {
@@ -101,6 +112,7 @@ export function AssetLibraryView() {
         const form = new FormData()
         form.append('file', file)
         form.append('kind', kind)
+        form.append('project_id', currentProjectId)
         await api.post<Asset>('/asset/upload', form)
       }
       setPollTick((t) => t + 1)

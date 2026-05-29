@@ -18,11 +18,16 @@ import pytest
 def _build_plan(client) -> dict:
     """共用 helper：上传 → 构建 → 检测 → 选择性 fill；返回最新 plan dict。"""
     fake_video = b"\x00\x00\x00\x18ftypisom" + b"\x00" * 2048
+    project_id = "proj-e2e-test"
     files = [
         ("files", ("clip-a.mp4", BytesIO(fake_video), "video/mp4")),
         ("files", ("clip-b.mp4", BytesIO(fake_video), "video/mp4")),
     ]
-    r = client.post("/api/material/upload", files=files)
+    r = client.post(
+        "/api/material/upload",
+        files=files,
+        data={"project_id": project_id},
+    )
     assert r.status_code == 200, r.text
     upload = r.json()
     session_id = upload["session_id"]
@@ -32,6 +37,7 @@ def _build_plan(client) -> dict:
         "/api/plan/build",
         json={
             "sample_id": "sample-marketing-01",
+            "project_id": project_id,
             "session_id": session_id,
             "brief": "新品发布——突出差异化卖点",
             "video_goal": "30 秒内说清产品差异化卖点，面向初次接触的用户，节奏紧凑",

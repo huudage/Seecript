@@ -107,13 +107,18 @@ class DecomposeUploadResponse(BaseModel):
 
 
 @router.post("/decompose/upload", response_model=DecomposeUploadResponse)
-async def upload_for_decompose(file: UploadFile = File(...)) -> DecomposeUploadResponse:
+async def upload_for_decompose(
+    file: UploadFile = File(...),
+    video_type: VideoType = Form(default="marketing"),
+    title: Optional[str] = Form(default=None),
+) -> DecomposeUploadResponse:
     """用户上传一段自己的视频，落到 var/uploads/decompose/<sample_id>/video.mp4，
     返回 sample_id 给前端再走 /api/decompose 流水线。
 
     - 仅接受 video/mp4 | video/quicktime | video/webm
     - 单文件硬上限 200MB
     - sample_id 形如 user-<hex>，决不会碰 server/samples 内置目录
+    - video_type / title 写入 meta.json，供 /library?source=user 列出
     """
     if file.content_type not in _USER_VIDEO_ALLOWED:
         raise HTTPException(
@@ -133,9 +138,24 @@ async def upload_for_decompose(file: UploadFile = File(...)) -> DecomposeUploadR
     target_dir.mkdir(parents=True, exist_ok=True)
     target_path = target_dir / "video.mp4"
     target_path.write_bytes(data)
+    # 元数据：让 /library?source=user 能列出来（title/video_type/size）
+    safe_title = (title or Path(file.filename or "video.mp4").stem)[:80]
+    import time
+    meta = {
+        "sample_id": sample_id,
+        "title": safe_title,
+        "video_type": video_type,
+        "filename": Path(file.filename or "video.mp4").name,
+        "size_bytes": len(data),
+        "uploaded_at": time.time(),
+    }
+    (target_dir / "meta.json").write_text(
+        json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8"
+    )
     log.info(
-        "[decompose.upload] sample=%s saved %s (%d bytes)",
+        "[decompose.upload] sample=%s type=%s saved %s (%d bytes)",
         sample_id,
+        video_type,
         target_path,
         len(data),
     )

@@ -16,6 +16,8 @@ from pydantic import BaseModel
 from ..routers.library import _LIBRARY, _load_real_manifest, _stub_manifest
 from ..schemas import (
     AdaptedSection,
+    AigcPromptRequest,
+    AigcPromptResponse,
     FillResult,
     Gap,
     GapDetectRequest,
@@ -25,6 +27,7 @@ from ..schemas import (
     Material,
     SampleManifest,
 )
+from ..services.agent.aigc_prompt_agent import generate_aigc_prompt
 from ..services.agent.gap_agent import detect_gaps, fill_gap, refresh_aigc_task
 from ..services.materials import gap_store, material_store
 from ..services.plans import plan_store
@@ -113,13 +116,28 @@ def _inject_section_duration(gap: Gap, params: dict) -> dict:
 
 @router.post("/gap/detect", response_model=list[Gap])
 async def detect(req: GapDetectRequest) -> list[Gap]:
+    # v2 起 session_id == project_id；老前端只传 session_id 时仍可工作
+    pid = (req.project_id or req.session_id or "").strip() or None
     manifest = _resolve_manifest(req.plan_id)
-    materials = _resolve_materials(req.session_id, req.allow_mock)
+    materials = _resolve_materials(pid, req.allow_mock)
     plan = plan_store.get(req.plan_id)
     adapted = (
         plan.adapted_sections if (plan and plan.adapted_sections) else _legacy_wrap(manifest)
     )
     gaps = detect_gaps(adapted, manifest, materials)
+    # 把项目隔离键回写到每条 gap，避免 fill 链路再绕一圈反查
+    project_id_for_gap = pid or (plan.project_id if plan else None)
+    # gap_id 必须 plan-scoped：detect_gaps 生成的 `gap-{role}-{seq}-{slot}` 仅按段落定，
+    # 跨 plan / project 会撞同名 ID。后缀 plan_id 的 hex 部分让 gap_store._by_gap_id 唯一。
+    plan_suffix = req.plan_id.split("-", 1)[-1] if "-" in req.plan_id else req.plan_id
+    updates: dict[str, str] = {}
+    rewritten: list[Gap] = []
+    for g in gaps:
+        patch: dict = {"gap_id": f"{g.gap_id}-{plan_suffix}"}
+        if project_id_for_gap:
+            patch["project_id"] = project_id_for_gap
+        rewritten.append(g.model_copy(update=patch))
+    gaps = rewritten
     gap_store.put(req.plan_id, gaps)
     return gaps
 
@@ -209,3 +227,35 @@ async def aigc_refresh(req: AigcRefreshRequest) -> FillResult:
             detail=f"gap not found: {req.gap_id}（请先调用 /gap/detect）",
         )
     return await refresh_aigc_task(gap, req.task_id)
+
+
+def _find_section_for_gap(gap: Gap):
+    """暴扫 plan_store 找到 gap.section_id 对应的 (plan, AdaptedSection)；找不到回 (None, None)。"""
+    if not gap.section_id:
+        return None, None
+    for plan_id in plan_store.all_ids():
+        plan = plan_store.get(plan_id)
+        if not plan:
+            continue
+        sec = next((s for s in plan.adapted_sections if s.section_id == gap.section_id), None)
+        if sec:
+            return plan, sec
+    return None, None
+
+
+@router.post("/gap/aigc-prompt", response_model=AigcPromptResponse)
+async def aigc_prompt(req: AigcPromptRequest) -> AigcPromptResponse:
+    """LLM 把段落上下文转写为一条完备的 Seedance T2V prompt 供前端预填。
+
+    失败时不抛 500：aigc_prompt_agent 内部已兜底拼出一条保底 prompt，
+    保证前端 textarea 始终有可编辑内容。
+    """
+    gap = gap_store.get(req.gap_id)
+    if gap is None:
+        raise HTTPException(
+            status_code=404,
+            detail=f"gap not found: {req.gap_id}（请先调用 /gap/detect）",
+        )
+    plan, section = _find_section_for_gap(gap)
+    prompt = await generate_aigc_prompt(gap, plan, section, user_hint=req.hint or "")
+    return AigcPromptResponse(gap_id=gap.gap_id, prompt=prompt)

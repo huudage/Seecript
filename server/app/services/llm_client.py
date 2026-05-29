@@ -223,6 +223,9 @@ class MockLLMClient(LLMClient):
         await asyncio.sleep(0.3)
         if "edit_tool_calls" in system:
             return _MOCK_EDIT_TOOLS_JSON
+        # aigc_prompt_agent 转写：指纹 t2v_prompt（在 adapted_sections 之前免冲突，因 system 都长）
+        if "t2v_prompt" in system:
+            return _build_mock_t2v_prompt_json(user)
         # plan_agent 结构改编：指纹 adapted_sections + content_description（在 shot_roles 之前避免误匹配）
         if "adapted_sections" in system and "content_description" in system:
             return _build_mock_adapted_sections_json(user)
@@ -288,6 +291,8 @@ class MockLLMClient(LLMClient):
         await asyncio.sleep(0.4)
         if "frame_tags" in system:
             return _MOCK_FRAME_TAGS_JSON
+        if "t2v_prompt" in system:
+            return _build_mock_t2v_prompt_json(user_text)
         if "adapted_sections" in system and "content_description" in system:
             return _build_mock_adapted_sections_json(user_text)
         if "archetype" in system and "narrative_summary" in system:
@@ -662,6 +667,30 @@ _MOCK_EDIT_TOOLS_JSON = """
   ]
 }
 """
+
+
+def _build_mock_t2v_prompt_json(user_text: str) -> str:
+    """aigc_prompt_agent 的 mock：从 user payload 抽『段落主题』『内容说明』『视频整体主题』
+    拼出一句要素齐备的 Seedance 中文 prompt。所有路径都加 [mock] 前缀，方便排查。
+    """
+    import json
+    import re
+
+    def _find(label: str) -> str:
+        m = re.search(rf"{label}[：:]\s*(.+)", user_text)
+        return m.group(1).strip() if m else ""
+
+    theme = _find("段落主题") or "段落主题"
+    content = _find("段落内容说明") or _find("原始槽位需求") or "本段画面"
+    brief = _find("视频整体主题") or ""
+    # 控制长度（system prompt 要求 60-120 字）
+    content_short = content[:50] + ("…" if len(content) > 50 else "")
+    brief_clip = (f"，整体方向围绕『{brief[:20]}』" if brief else "")
+    prompt = (
+        f"[mock] {theme}：{content_short}。中景跟随镜头，自然光与冷暖对比，"
+        f"电影感色调，节奏与情绪贴合主题{brief_clip}。"
+    )
+    return json.dumps({"prompt": prompt}, ensure_ascii=False)
 
 
 # packaging_agent 走 complete_json 拿转场 + 封面。系统中独有的指纹是 "from_section" / "palette"。

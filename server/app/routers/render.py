@@ -17,6 +17,7 @@ from ..schemas import RenderSubmitRequest, RenderSubmitResponse
 from ..services.jobs import job_store
 from ..services.materials import gap_store
 from ..services.plans import plan_store
+from ..services.projects import project_store
 from ..services.render import run_pipeline
 
 log = logging.getLogger("seecript.render")
@@ -67,6 +68,7 @@ async def _run_render(job_id: str, plan_id: str, variant: str) -> None:
             )
         job_store.complete(job_id, payload={
             "plan_id": result.plan_id,
+            "project_id": plan.project_id,
             "variant": result.variant,
             "video_url": result.video_url,
             "cover_url": result.cover_url,
@@ -74,6 +76,12 @@ async def _run_render(job_id: str, plan_id: str, variant: str) -> None:
             "timings_ms": result.timings_ms,
             "notes": result.notes,
         })
+        # 回写到 Project：首页/项目卡片能拿到 last_render_job_id
+        if plan.project_id:
+            try:
+                project_store.mark_rendered(plan.project_id, job_id)
+            except Exception as exc:  # noqa: BLE001
+                log.warning("[%s] mark_rendered(%s) 失败: %s", job_id, plan.project_id, exc)
     except Exception as exc:
         log.exception("[%s] render failed: %s", job_id, exc)
         job_store.fail(job_id, str(exc))

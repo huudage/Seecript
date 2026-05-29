@@ -40,16 +40,28 @@ _SAMPLES_ROOT = Path(__file__).resolve().parents[2] / "samples"
 
 
 def _load_real_manifest(sample_id: str) -> Optional[SampleManifest]:
-    """尝试加载预计算好的真 manifest.json。失败/不存在返回 None。"""
-    p = _SAMPLES_ROOT / sample_id / "manifest.json"
-    if not p.is_file():
-        return None
+    """尝试加载预计算好的真 manifest.json。失败/不存在返回 None。
+
+    查找顺序：
+    1. `server/samples/<sample_id>/manifest.json`（内置样例，precompute_samples.py 写）
+    2. `server/var/uploads/decompose/<sample_id>/manifest.json`（用户上传样例，decompose_agent 写）
+    """
+    candidates = [_SAMPLES_ROOT / sample_id / "manifest.json"]
     try:
-        data = json.loads(p.read_text(encoding="utf-8"))
-        return SampleManifest.model_validate(data)
-    except (json.JSONDecodeError, ValidationError, OSError) as exc:
-        log.warning("[library] %s manifest.json 解析失败，回落 stub：%s", sample_id, exc)
-        return None
+        from ..config import get_settings
+        user_root = get_settings().log_dir.parent / "var" / "uploads" / "decompose"
+        candidates.append(user_root / sample_id / "manifest.json")
+    except Exception:  # noqa: BLE001
+        pass
+    for p in candidates:
+        if not p.is_file():
+            continue
+        try:
+            data = json.loads(p.read_text(encoding="utf-8"))
+            return SampleManifest.model_validate(data)
+        except (json.JSONDecodeError, ValidationError, OSError) as exc:
+            log.warning("[library] %s 解析失败，跳过：%s", p, exc)
+    return None
 
 
 
@@ -91,6 +103,70 @@ _SYSTEM_LIBRARY: list[LibraryItem] = [
 
 # 用户样例库：当前 MVP 不持久化，留空。下一期可接入 user_library_store + 上传转录流程。
 _USER_LIBRARY: list[LibraryItem] = []
+
+
+def _scan_user_library() -> list[LibraryItem]:
+    """扫描 var/uploads/decompose/<sample_id>/ 下所有带 video.mp4 的目录，
+    读 meta.json 还原 LibraryItem。让 /library?source=user 能列出"我的上传样例"。
+
+    没 meta.json（旧上传）也兜住：title 用 sample_id，video_type 默认 marketing。
+    duration / shot_count 走预拆解 manifest（_load_real_manifest），没拆过就给 0。
+    """
+    from ..config import get_settings
+    root = get_settings().log_dir.parent / "var" / "uploads" / "decompose"
+    if not root.is_dir():
+        return []
+    items: list[LibraryItem] = []
+    for child in root.iterdir():
+        if not child.is_dir():
+            continue
+        if not (child / "video.mp4").is_file():
+            continue
+        sample_id = child.name
+        # 默认值（meta 缺失时兜底）
+        title = sample_id
+        video_type: VideoType = "marketing"
+        scene = "我的上传"
+        meta_path = child / "meta.json"
+        if meta_path.is_file():
+            try:
+                meta = json.loads(meta_path.read_text(encoding="utf-8"))
+                title = str(meta.get("title") or sample_id)[:80]
+                vt = meta.get("video_type")
+                if vt in ("marketing", "editing", "motion_graph"):
+                    video_type = vt  # type: ignore[assignment]
+            except (json.JSONDecodeError, OSError) as exc:
+                log.warning("[library] user meta %s parse failed: %s", meta_path, exc)
+        # 时长 / shot_count：拆过有 manifest 才填，否则 0
+        mf = _load_real_manifest(sample_id)
+        duration = mf.duration_seconds if mf else 0.0
+        shot_count = len(mf.shots) if mf else 0
+        # 封面：拆解时如果生成了 cover.jpg 走它，没有就用 video.mp4 第一帧（前端 <video poster>）
+        cover_url = f"/uploads/decompose/{sample_id}/cover.jpg"
+        if not (child / "cover.jpg").is_file():
+            cover_url = f"/uploads/decompose/{sample_id}/video.mp4"
+        items.append(LibraryItem(
+            id=sample_id,
+            title=title,
+            video_type=video_type,
+            scene=scene,
+            duration_seconds=duration,
+            shot_count=shot_count,
+            cover_url=cover_url,
+            source="user",
+        ))
+    # 按 sample_id 倒序（user-<hex> 是随机的，但近期上传的也凑合排前面没意义；
+    # meta.json 里有 uploaded_at 时按它倒序更友好）
+    def _uploaded_at(it: LibraryItem) -> float:
+        p = root / it.id / "meta.json"
+        if p.is_file():
+            try:
+                return float(json.loads(p.read_text(encoding="utf-8")).get("uploaded_at", 0.0))
+            except Exception:  # noqa: BLE001
+                return 0.0
+        return 0.0
+    items.sort(key=_uploaded_at, reverse=True)
+    return items
 
 
 # 旧代码（gap.py 等）仍引用 _LIBRARY，给个聚合别名保持兼容。
@@ -226,8 +302,8 @@ async def list_library(
     if source == "system":
         return _augment(_SYSTEM_LIBRARY)
     if source == "user":
-        return _USER_LIBRARY
-    return _augment(_SYSTEM_LIBRARY) + _USER_LIBRARY
+        return _scan_user_library()
+    return _augment(_SYSTEM_LIBRARY) + _scan_user_library()
 
 
 @router.get("/sample/{sample_id}/manifest", response_model=SampleManifest)
@@ -240,4 +316,15 @@ async def get_sample_manifest(sample_id: str) -> SampleManifest:
                 return real
             log.warning("[library] %s 无预拆解 manifest.json，回落等分 stub", sample_id)
             return _stub_manifest(sample_id, item)
+    # 用户上传样例：先扫盘确认 sample 真实存在，再取预拆解 manifest
+    user_items = _scan_user_library()
+    for item in user_items:
+        if item.id == sample_id:
+            real = _load_real_manifest(sample_id)
+            if real is not None:
+                return real
+            raise HTTPException(
+                status_code=409,
+                detail=f"sample {sample_id} 尚未拆解，请先在「样例拆解」页跑一次 decompose",
+            )
     raise HTTPException(status_code=404, detail=f"sample not found: {sample_id}")

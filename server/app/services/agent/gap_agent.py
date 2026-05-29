@@ -228,6 +228,7 @@ async def fill_gap(gap: Gap, action: FillAction, params: dict[str, Any]) -> Fill
             gap_id=gap.gap_id, action="rerank",
             new_material_id=target, status="ok",
             note="已重排到该槽位",
+            section_id=gap.section_id,
         )
 
     if action == "copy":
@@ -254,12 +255,16 @@ async def fill_gap(gap: Gap, action: FillAction, params: dict[str, Any]) -> Fill
             narration=narration or "[fallback] 这里加一句口播，把刚才的对比强调一下。",
             alternatives=alternatives,
             status="ok", note="LLM 文案补全完成",
+            section_id=gap.section_id,
         )
 
     if action == "aigc":
         return await _fill_with_seedance(gap, params)
 
-    return FillResult(gap_id=gap.gap_id, action=action, status="warn", note=f"未知动作：{action}")
+    return FillResult(
+        gap_id=gap.gap_id, action=action, status="warn",
+        note=f"未知动作：{action}", section_id=gap.section_id,
+    )
 
 
 async def _fill_with_seedance(gap: Gap, params: dict[str, Any]) -> FillResult:
@@ -447,6 +452,7 @@ def _build_fill_result(gap: Gap, chunks: list[dict[str, Any]], expected: int) ->
             status="warn",
             note="Seedance 未提交任何任务（参数错误？）",
             chunks_count=0,
+            section_id=gap.section_id,
         )
 
     last = chunks[-1]
@@ -464,6 +470,7 @@ def _build_fill_result(gap: Gap, chunks: list[dict[str, Any]], expected: int) ->
                 if expected > 1
                 else f"Seedance 生成完成（{total_elapsed}s）"
             ),
+            section_id=gap.section_id,
         )
     # 部分成功 / 全失败
     note = (
@@ -478,6 +485,7 @@ def _build_fill_result(gap: Gap, chunks: list[dict[str, Any]], expected: int) ->
         chunks_count=len(succeeded_urls),
         chunk_task_ids=chunk_task_ids,
         note=note,
+        section_id=gap.section_id,
     )
 
 
@@ -537,17 +545,30 @@ async def refresh_aigc_task(gap: Gap, task_id: str) -> FillResult:
             new_material_id=task_id, status="warn",
             chunks_count=0,
             note=f"Seedance 查询失败：{exc}（task={task_id}，请稍后再试）",
+            section_id=gap.section_id,
         )
 
     if q.status == "succeeded":
+        # Seedance 偶发：status=succeeded 但 video_url 还没落盘 / 鉴权窗口内空。
+        # 这种情况下不能回 ok（前端会停轮询），强转 warn 让 caller 再次 refresh。
+        if not q.video_url:
+            return FillResult(
+                gap_id=gap.gap_id, action="aigc",
+                new_material_id=task_id, status="warn",
+                chunks_count=0,
+                chunk_task_ids=[task_id],
+                note=f"Seedance 已完成但 URL 暂未回包，请稍后再点刷新（task={task_id}）",
+                section_id=gap.section_id,
+            )
         return FillResult(
             gap_id=gap.gap_id, action="aigc",
             new_material_id=task_id, status="ok",
-            video_urls=[q.video_url] if q.video_url else [],
+            video_urls=[q.video_url],
             cover_url=q.cover_url,
-            chunks_count=1 if q.video_url else 0,
+            chunks_count=1,
             chunk_task_ids=[task_id],
             note=f"Seedance 生成完成（{q.provider}）",
+            section_id=gap.section_id,
         )
     if q.status == "failed":
         return FillResult(
@@ -556,6 +577,7 @@ async def refresh_aigc_task(gap: Gap, task_id: str) -> FillResult:
             chunks_count=0,
             chunk_task_ids=[task_id],
             note=f"Seedance 生成失败：{q.fail_reason or 'unknown'}",
+            section_id=gap.section_id,
         )
     return FillResult(
         gap_id=gap.gap_id, action="aigc",
@@ -563,4 +585,5 @@ async def refresh_aigc_task(gap: Gap, task_id: str) -> FillResult:
         chunks_count=0,
         chunk_task_ids=[task_id],
         note=f"Seedance 仍在 {q.status}，请稍后再点刷新（task={task_id}）",
+        section_id=gap.section_id,
     )

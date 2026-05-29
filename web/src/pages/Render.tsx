@@ -50,7 +50,7 @@ const PKG_LABEL: Record<PackagingItem['kind'], string> = {
 const RENDER_STEP_LABELS: Record<string, string> = {
   prepare: '准备',
   ffmpeg_concat: 'FFmpeg 主轨拼接',
-  seedance_extend: 'Seedance 首尾帧扩展',
+  seedance_extend: '主轨直通',
   remotion_render: 'Remotion 包装渲染',
   ffmpeg_overlay: 'FFmpeg 叠加输出',
   finalize: '收尾',
@@ -75,7 +75,7 @@ export default function RenderPage() {
   const setVariant = usePlanStore((s) => s.setVariant)
 
   const currentProjectId = useProjectsStore((s) => s.currentProjectId)
-  const upsertProject = useProjectsStore((s) => s.upsertProject)
+  const refreshProjects = useProjectsStore((s) => s.refresh)
 
   const editHistory = useEditStore((s) => s.history)
   const editCursor = useEditStore((s) => s.cursor)
@@ -123,13 +123,10 @@ export default function RenderPage() {
           setDone(result)
           setStep('done')
           setPercent(100)
+          // 后端在 _do_render 完成时已自动 mark_rendered(project_id, job_id) 并落盘。
+          // 这里仅刷一次首页项目列表，让 status=rendered 的更新立刻可见。
           if (currentProjectId) {
-            upsertProject({
-              id: currentProjectId,
-              last_video_url: result.video_url,
-              last_cover_url: result.cover_url,
-              status: 'rendered',
-            })
+            void refreshProjects()
           }
         },
         onError: (e) => setError(e.detail),
@@ -138,7 +135,7 @@ export default function RenderPage() {
       setError(err instanceof Error ? err.message : '提交失败')
       setStep('idle')
     }
-  }, [plan, variant, currentProjectId, upsertProject])
+  }, [plan, variant, currentProjectId, refreshProjects])
 
   /* -- 自然语言编辑 -- */
   const [instruction, setInstruction] = useState('')

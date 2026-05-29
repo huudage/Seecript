@@ -11,19 +11,33 @@
 from __future__ import annotations
 
 import io
+import shutil
 
 import pytest
 
+from app.config import get_settings
 from app.services.assets import asset_store
+
+
+_TEST_PROJECT = "proj-asset-router-test"
 
 
 @pytest.fixture(autouse=True)
 def clean_assets_for_router():
-    asset_store._by_id.clear()
-    asset_store._by_hash.clear()
+    asset_store._states.pop(_TEST_PROJECT, None)
+    asset_store._owner_by_asset = {
+        aid: owner for aid, owner in asset_store._owner_by_asset.items() if owner != _TEST_PROJECT
+    }
+    test_dir = get_settings().log_dir.parent / "var" / "assets" / _TEST_PROJECT
+    if test_dir.exists():
+        shutil.rmtree(test_dir, ignore_errors=True)
     yield
-    asset_store._by_id.clear()
-    asset_store._by_hash.clear()
+    asset_store._states.pop(_TEST_PROJECT, None)
+    asset_store._owner_by_asset = {
+        aid: owner for aid, owner in asset_store._owner_by_asset.items() if owner != _TEST_PROJECT
+    }
+    if test_dir.exists():
+        shutil.rmtree(test_dir, ignore_errors=True)
 
 
 # 一段 1KB 的 fake mp3 字节（不需要真音频解码，BackgroundTask 探测失败也只会落 metadata 空）
@@ -35,7 +49,7 @@ def test_upload_bgm_returns_asset_in_processing_state(client):
     resp = client.post(
         "/api/asset/upload",
         files={"file": ("hook.mp3", io.BytesIO(_FAKE_MP3), "audio/mpeg")},
-        data={"kind": "bgm", "title": "Test Hook"},
+        data={"kind": "bgm", "title": "Test Hook", "project_id": _TEST_PROJECT},
     )
     assert resp.status_code == 200, resp.text
     data = resp.json()
@@ -43,7 +57,7 @@ def test_upload_bgm_returns_asset_in_processing_state(client):
     assert data["title"] == "Test Hook"
     assert data["file_name"] == "hook.mp3"
     assert data["asset_id"].startswith("ass-")
-    assert data["file_url"].startswith("/assets/local/bgm/")
+    assert data["file_url"].startswith(f"/assets/{_TEST_PROJECT}/bgm/")
     # status 可能在 BackgroundTask 完成后变 ready；上传响应返回时通常仍 processing
     assert data["status"] in ("processing", "ready", "failed")
 
@@ -53,7 +67,7 @@ def test_upload_rejects_wrong_mime(client):
     resp = client.post(
         "/api/asset/upload",
         files={"file": ("fake.jpg", io.BytesIO(b"not-real-jpg"), "image/jpeg")},
-        data={"kind": "bgm"},
+        data={"kind": "bgm", "project_id": _TEST_PROJECT},
     )
     assert resp.status_code == 415
 
@@ -63,7 +77,7 @@ def test_upload_rejects_empty_file(client):
     resp = client.post(
         "/api/asset/upload",
         files={"file": ("empty.mp3", io.BytesIO(b""), "audio/mpeg")},
-        data={"kind": "bgm"},
+        data={"kind": "bgm", "project_id": _TEST_PROJECT},
     )
     assert resp.status_code == 400
 
@@ -71,14 +85,14 @@ def test_upload_rejects_empty_file(client):
 def test_upload_dedup_returns_existing_asset(client):
     """同字节内容第二次上传应命中 sha256 dedup，返回老 asset_id。"""
     files = {"file": ("dup.mp3", io.BytesIO(_FAKE_MP3), "audio/mpeg")}
-    r1 = client.post("/api/asset/upload", files=files, data={"kind": "bgm"})
+    r1 = client.post("/api/asset/upload", files=files, data={"kind": "bgm", "project_id": _TEST_PROJECT})
     assert r1.status_code == 200
     aid1 = r1.json()["asset_id"]
 
     r2 = client.post(
         "/api/asset/upload",
         files={"file": ("dup-renamed.mp3", io.BytesIO(_FAKE_MP3), "audio/mpeg")},
-        data={"kind": "bgm"},
+        data={"kind": "bgm", "project_id": _TEST_PROJECT},
     )
     assert r2.status_code == 200
     aid2 = r2.json()["asset_id"]
@@ -90,9 +104,9 @@ def test_list_library_returns_uploaded_assets(client):
     client.post(
         "/api/asset/upload",
         files={"file": ("list.mp3", io.BytesIO(_FAKE_MP3), "audio/mpeg")},
-        data={"kind": "bgm"},
+        data={"kind": "bgm", "project_id": _TEST_PROJECT},
     )
-    resp = client.get("/api/asset/library")
+    resp = client.get(f"/api/asset/library?project_id={_TEST_PROJECT}")
     assert resp.status_code == 200
     body = resp.json()
     assert body["total"] >= 1
@@ -104,9 +118,9 @@ def test_list_library_filters_by_kind(client):
     client.post(
         "/api/asset/upload",
         files={"file": ("k.mp3", io.BytesIO(_FAKE_MP3), "audio/mpeg")},
-        data={"kind": "bgm"},
+        data={"kind": "bgm", "project_id": _TEST_PROJECT},
     )
-    resp = client.get("/api/asset/library?kind=reference_image")
+    resp = client.get(f"/api/asset/library?project_id={_TEST_PROJECT}&kind=reference_image")
     assert resp.status_code == 200
     assert resp.json()["total"] == 0
 
@@ -116,7 +130,7 @@ def test_patch_updates_title_and_tags(client):
     r1 = client.post(
         "/api/asset/upload",
         files={"file": ("patch.mp3", io.BytesIO(_FAKE_MP3), "audio/mpeg")},
-        data={"kind": "bgm", "title": "原名"},
+        data={"kind": "bgm", "title": "原名", "project_id": _TEST_PROJECT},
     )
     aid = r1.json()["asset_id"]
 
@@ -134,7 +148,7 @@ def test_touch_increments_use_count(client):
     r1 = client.post(
         "/api/asset/upload",
         files={"file": ("t.mp3", io.BytesIO(_FAKE_MP3), "audio/mpeg")},
-        data={"kind": "bgm"},
+        data={"kind": "bgm", "project_id": _TEST_PROJECT},
     )
     aid = r1.json()["asset_id"]
 
@@ -150,7 +164,7 @@ def test_delete_then_get_returns_404(client):
     r1 = client.post(
         "/api/asset/upload",
         files={"file": ("del.mp3", io.BytesIO(_FAKE_MP3), "audio/mpeg")},
-        data={"kind": "bgm"},
+        data={"kind": "bgm", "project_id": _TEST_PROJECT},
     )
     aid = r1.json()["asset_id"]
 

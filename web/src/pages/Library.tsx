@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 
 import { api, ApiError } from '@/api/client'
+import { NewProjectDialog } from '@/components/home/NewProjectDialog'
 import { PageShell } from '@/components/layout/PageShell'
 import { AssetLibraryView } from '@/components/library/AssetLibraryView'
 import { useProjectsStore } from '@/stores/projects'
@@ -19,9 +20,11 @@ export default function LibraryPage() {
   const [error, setError] = useState<string | null>(null)
   const [tab, setTab] = useState<Tab>('system')
   const [previewItem, setPreviewItem] = useState<LibraryItem | null>(null)
+  // 新建项目弹窗：从素材库挑样例时也支持直接新建项目
+  const [newProjectSampleId, setNewProjectSampleId] = useState<string | null>(null)
   const selectSample = useSessionStore((s) => s.selectSample)
   const selectedSampleId = useSessionStore((s) => s.selectedSampleId)
-  const createFromCurrent = useProjectsStore((s) => s.createFromCurrent)
+  const currentProjectId = useProjectsStore((s) => s.currentProjectId)
   const navigate = useNavigate()
 
   // 一次性拉合并列表（不带 ?source=）；前端按 source 字段切 tab，省一次请求。
@@ -51,14 +54,15 @@ export default function LibraryPage() {
     [items, tab],
   )
 
-  const handlePick = (item: LibraryItem) => {
+  const handlePick = async (item: LibraryItem) => {
     selectSample(item.id, item.video_type, item.source)
-    createFromCurrent({
-      sample_id: item.id,
-      sample_title: item.title,
-      video_type: item.video_type,
-    })
-    navigate('/decompose')
+    // 已有项目：让用户继续在该项目内（不换 sample）
+    if (currentProjectId) {
+      navigate('/decompose')
+      return
+    }
+    // 无项目：弹「新建项目」让用户起名
+    setNewProjectSampleId(item.id)
   }
 
   return (
@@ -206,6 +210,16 @@ export default function LibraryPage() {
         <PreviewModal item={previewItem} onClose={() => setPreviewItem(null)} />
       )}
         </>
+      )}
+
+      {newProjectSampleId && (
+        <NewProjectDialog
+          onClose={() => setNewProjectSampleId(null)}
+          onCreated={() => {
+            setNewProjectSampleId(null)
+            navigate('/decompose')
+          }}
+        />
       )}
     </PageShell>
   )

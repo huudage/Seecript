@@ -31,6 +31,7 @@ from ..services.agent.plan_agent import adapt_structure
 from ..services.assets import asset_store
 from ..services.materials import gap_store
 from ..services.plans import plan_store
+from ..services.projects import project_store
 
 log = logging.getLogger("seecript.plan")
 router = APIRouter()
@@ -39,14 +40,51 @@ router = APIRouter()
 _SAMPLE_SHOT_RE = re.compile(r"sample-shot-(\d+)")
 
 
-def _sample_shot_window(sample_id: str, shot_idx: int) -> tuple[float, float]:
-    """根据样例 LibraryItem.duration_seconds + shot_count 估算第 shot_idx 个镜头的 (in_point, duration)。"""
-    sample = next((s for s in _LIBRARY if s.id == sample_id), None)
-    if sample is None or sample.shot_count <= 0:
-        return (0.0, 3.0)
-    avg = sample.duration_seconds / sample.shot_count
-    idx = max(0, min(shot_idx, sample.shot_count - 1))
-    return (idx * avg, avg)
+def _allocate_sample_windows(
+    manifest: SampleManifest,
+    adapted: list["AdaptedSection"],
+) -> dict[str, tuple[float, float, int]]:
+    """为每个 AdaptedSection 在样例视频上分配不重叠的切片窗口。
+
+    返回 {section_id: (in_point, duration, shot_idx)}。
+
+    背景：同一 shot 被多个 AdaptedSection 共享时（如 marketing 样例只有 2 shots，
+    LLM 改编出 4 段都引用 shot 0），如果每段都用 _sample_shot_window 拿同一个
+    (in_point, duration) → ffmpeg concat 后就是"同一片段复读 N 遍"，结果看起来
+    就是样例本身。
+
+    解决方案：按 source_shot_indices[0] 分组，组内段在该 shot 真实时间窗内均分。
+    优先用 manifest.shots[i].start/duration（真分镜结果），manifest 不可用时
+    回退到按 shot_count 均分总时长。
+    """
+    shot_groups: dict[int, list["AdaptedSection"]] = {}
+    for sec in adapted:
+        shot_idx = sec.source_shot_indices[0] if sec.source_shot_indices else 0
+        shot_groups.setdefault(shot_idx, []).append(sec)
+
+    shot_window: dict[int, tuple[float, float]] = {}
+    for shot in manifest.shots:
+        shot_window[shot.index] = (float(shot.start), max(0.5, float(shot.duration)))
+
+    total = float(manifest.duration_seconds) or 30.0
+    n_shots = max(1, len(manifest.shots))
+    avg = total / n_shots
+
+    out: dict[str, tuple[float, float, int]] = {}
+    for shot_idx, secs in shot_groups.items():
+        if shot_idx in shot_window:
+            shot_start, shot_dur = shot_window[shot_idx]
+        else:
+            clamped = max(0, min(shot_idx, n_shots - 1))
+            shot_start, shot_dur = clamped * avg, avg
+        # 子窗口：shot 时长在该组段内均分，避免同一 shot 内重复切相同窗口
+        sub_window = shot_dur / len(secs)
+        for i, sec in enumerate(secs):
+            sub_in = shot_start + i * sub_window
+            target = float(sec.duration_seconds) if sec.duration_seconds > 0 else 4.0
+            actual = min(target, sub_window) if sub_window > 0 else target
+            out[sec.section_id] = (sub_in, actual, shot_idx)
+    return out
 
 
 def _resolve_manifest(sample_id: str) -> SampleManifest:
@@ -71,21 +109,33 @@ def _narration_from_content(content: str, *, limit: int = 60) -> str:
 
 
 def _fill_section_lookup(fills: list[FillResult]) -> dict[str, FillResult]:
-    """把 FillResult 按其 gap_id 对应的 section_id 索引——多段同 role 时不再被压扁。
+    """把 FillResult 按其所属 section_id 索引——多段同 role 时不再被压扁。
 
-    流程：fills 里的 gap_id 反查 gap_store 拿 Gap.section_id；
-    section_id → 该段第一个有效 fill 的 FillResult。
+    路由优先级：
+    1. `fill.section_id` 直接给的 —— v2 后 fill_gap 在所有路径都回填，最权威，不依赖进程内存
+    2. `gap_store.get(f.gap_id).section_id` —— 兼容老 fill（无 section_id 字段）+ gap 仍在内存
+    3. 都没有 → 丢弃 + warn 日志（提示后端可能重启 / fill 来自旧版本）
     """
     out: dict[str, FillResult] = {}
+    dropped: list[str] = []
     for f in fills:
         if not f.new_material_id and not f.video_urls and not f.narration:
             continue
-        gap = gap_store.get(f.gap_id)
-        sid = gap.section_id if (gap and gap.section_id) else None
+        sid = f.section_id
+        if not sid:
+            gap = gap_store.get(f.gap_id)
+            sid = gap.section_id if (gap and gap.section_id) else None
         if sid is None:
-            # 老 gap_id 走兜底：用 role + section_seq 反推 sec-N 不可靠，留给 plan 端忽略
+            dropped.append(f.gap_id)
             continue
         out.setdefault(sid, f)
+    if dropped:
+        log.warning(
+            "[plan] %d fill 因无法定位 section_id 被丢弃：%s（fill 来自旧版本或 gap_store 进程内存已失效）",
+            len(dropped), dropped,
+        )
+    log.info("[plan] fill_by_section 路由：%d fills → %d sections（%s）",
+             len(fills), len(out), list(out.keys()))
     return out
 
 
@@ -127,11 +177,14 @@ def _build_bgm_config(bgm_asset_id: Optional[str]) -> BGMConfig:
 async def build_plan(req: PlanBuildRequest) -> Plan:
     plan_id = f"plan-{uuid.uuid4().hex[:10]}"
     settings = req.settings or ComposeSettings()
+    # v2 起 session_id == project_id；老前端只传 session_id 时仍可工作
+    effective_project_id = (req.project_id or req.session_id or "").strip() or None
     log.info(
-        "[plan] build plan=%s sample=%s materials=%d fills=%d variant=%s session=%s "
+        "[plan] build plan=%s sample=%s project=%s materials=%d fills=%d variant=%s "
         "brief=%s goal=%s target_dur=%.0fs platform=%s tone=%s",
-        plan_id, req.sample_id, len(req.selected_materials), len(req.fills),
-        req.variant, req.session_id, (req.brief or "")[:30], (req.video_goal or "")[:30],
+        plan_id, req.sample_id, effective_project_id,
+        len(req.selected_materials), len(req.fills),
+        req.variant, (req.brief or "")[:30], (req.video_goal or "")[:30],
         settings.target_duration_seconds, settings.target_platform, settings.tone,
     )
 
@@ -164,6 +217,8 @@ async def build_plan(req: PlanBuildRequest) -> Plan:
 
     # 3. 把 fills 按 section_id 索引——这是修复『多段 development 全被路由到第一段』bug 的关键
     fill_by_section = _fill_section_lookup(req.fills)
+    # 预分配 sample 切片窗口：避免多段共享同 shot 时切出相同片段（→ 渲染像样例本身复读）
+    sample_window_map = _allocate_sample_windows(manifest, adapted)
     material_cursor = 0
 
     def _pick(sec: AdaptedSection, sample_shot_idx: int) -> tuple[str, str, list[str], str | None]:
@@ -204,13 +259,23 @@ async def build_plan(req: PlanBuildRequest) -> Plan:
         out_point: float | None = None
         actual_duration = target_duration
         if source == "sample":
-            m = _SAMPLE_SHOT_RE.search(source_ref)
-            if m:
-                shot_idx = int(m.group(1))
-                in_point, shot_duration = _sample_shot_window(req.sample_id, shot_idx)
-                # 样例镜头有多长就放多长（target 是目标，但不超过实际可用素材）
-                actual_duration = min(target_duration, shot_duration) if shot_duration > 0 else target_duration
+            # 用预分配表拿独立子窗口；窗口内 source_ref 仍写真实 shot_idx，
+            # gap_agent 的缩略图反查照常工作
+            win = sample_window_map.get(sec.section_id)
+            if win is not None:
+                in_point, actual_duration, real_shot_idx = win
+                source_ref = f"sample-shot-{real_shot_idx:02d}"
                 out_point = in_point + actual_duration
+            else:
+                # 极端兜底：用 target_duration 从头切，至少不会和别人完全一样
+                in_point = 0.0
+                actual_duration = min(target_duration, manifest.duration_seconds or target_duration)
+                out_point = in_point + actual_duration
+        elif source == "user_material":
+            # user_material 也要切片（不切 ffmpeg 会把整段长视频塞进 4s scene 槽）
+            in_point = 0.0
+            actual_duration = target_duration
+            out_point = actual_duration
 
         narration_text = narration_override or _narration_from_content(sec.content_description)
         scene = Scene(
@@ -268,7 +333,8 @@ async def build_plan(req: PlanBuildRequest) -> Plan:
     plan = Plan(
         plan_id=plan_id,
         sample_id=req.sample_id,
-        session_id=req.session_id,
+        project_id=effective_project_id,
+        session_id=effective_project_id,
         brief=req.brief,
         video_goal=req.video_goal,
         adapted_sections=adapted,
@@ -280,6 +346,23 @@ async def build_plan(req: PlanBuildRequest) -> Plan:
         settings=settings,
     )
     plan_store.put(plan)
+
+    # 回写到 Project，让首页/项目详情能拿到 last_plan_id
+    if effective_project_id:
+        try:
+            project_store.mark_planned(effective_project_id, plan_id)
+        except Exception as exc:  # noqa: BLE001
+            log.warning("[plan] mark_planned(%s, %s) 失败：%s", effective_project_id, plan_id, exc)
+
+    # 诊断日志：主轨各 source 占比——『渲染结果与样例无异』时第一眼就能看出是不是全 fallback 到 sample
+    source_counts: dict[str, int] = {}
+    for sc in main_track:
+        source_counts[sc.source] = source_counts.get(sc.source, 0) + 1
+    log.info(
+        "[plan] plan=%s 主轨 source 分布：%s（共 %d 段，总 %.1fs，fills 输入 %d/路由命中 %d）",
+        plan_id, source_counts, len(main_track), actual_total,
+        len(req.fills), len(fill_by_section),
+    )
     return plan
 
 

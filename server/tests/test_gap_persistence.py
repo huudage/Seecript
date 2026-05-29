@@ -18,11 +18,12 @@ import pytest
 def session_with_plan(client) -> tuple[str, str]:
     """上传两个素材 → 用真 sample_id 走 plan/build → 返回 (session_id, plan_id)。"""
     fake_video = b"\x00\x00\x00\x18ftypisom" + b"\x00" * 1024
+    project_id = "proj-gap-persistence"
     files = [
         ("files", ("a.mp4", BytesIO(fake_video), "video/mp4")),
         ("files", ("b.mp4", BytesIO(fake_video), "video/mp4")),
     ]
-    r = client.post("/api/material/upload", files=files)
+    r = client.post("/api/material/upload", files=files, data={"project_id": project_id})
     assert r.status_code == 200, r.text
     upload = r.json()
     sid = upload["session_id"]
@@ -31,6 +32,7 @@ def session_with_plan(client) -> tuple[str, str]:
         "/api/plan/build",
         json={
             "sample_id": "sample-vlog-01",  # 用 editing 类型校验 sample_id 真的被传递
+            "project_id": project_id,
             "session_id": sid,
             "brief": "测试咖啡店探店剪辑",
             "selected_materials": [m["material_id"] for m in upload["materials"]],
@@ -109,13 +111,15 @@ def test_session_empty_falls_back_to_mock(client):
     # 先建一个 plan（任何 plan 都行）
     r = client.post("/api/plan/build", json={
         "sample_id": "sample-marketing-01",
+        "project_id": "proj-session-fallback",
         "session_id": "no-session",
         "selected_materials": [],
         "fills": [],
         "variant": "A",
     })
     plan_id = r.json()["plan_id"]
-    r = client.post("/api/gap/detect", json={"plan_id": plan_id})  # 不传 session_id
+    # 不传 project_id 也不传 session_id → 应回落 mock 素材
+    r = client.post("/api/gap/detect", json={"plan_id": plan_id, "allow_mock": True})
     assert r.status_code == 200
     gaps = r.json()
     # mock 素材覆盖 opening/development/closing 三个 role，每段至少 1 gap
@@ -127,6 +131,7 @@ def test_plan_uses_aigc_t2v_not_t2i(client, session_with_plan):
     sid, _ = session_with_plan
     r = client.post("/api/plan/build", json={
         "sample_id": "sample-marketing-01",
+        "project_id": "proj-gap-persistence",
         "session_id": sid,
         "selected_materials": [],
         "fills": [

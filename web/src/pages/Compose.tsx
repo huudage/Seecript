@@ -59,9 +59,8 @@ export default function ComposePage() {
   const removeMaterial = useSessionStore((s) => s.removeMaterial)
   const reorderMaterials = useSessionStore((s) => s.reorderMaterials)
 
-  // projects store（自动存档到 localStorage，首页能看到历史项目）
+  // projects store（仅读 currentProjectId；后端 mark_planned/mark_rendered 已自动写回，前端无需 upsert）
   const currentProjectId = useProjectsStore((s) => s.currentProjectId)
-  const upsertProject = useProjectsStore((s) => s.upsertProject)
 
   // plan store
   const plan = usePlanStore((s) => s.plan)
@@ -115,12 +114,17 @@ export default function ComposePage() {
   const handlePickFiles = useCallback(
     async (files: FileList | null) => {
       if (!files || files.length === 0) return
+      if (!currentProjectId) {
+        setError('请先在首页新建/选择一个项目，再上传素材')
+        return
+      }
       setError(null)
       setUploading(true)
       try {
         const fd = new FormData()
         Array.from(files).forEach((f) => fd.append('files', f))
-        if (sessionId) fd.append('session_id', sessionId)
+        // project_id 是后端唯一隔离键；session_id 字段保留为别名（已等于 project_id）
+        fd.append('project_id', currentProjectId)
         fd.append('video_type', videoType)
         const resp = await api.post<MaterialUploadResponse>('/material/upload', fd)
         setSession(resp.session_id)
@@ -131,7 +135,7 @@ export default function ComposePage() {
         setUploading(false)
       }
     },
-    [appendMaterials, sessionId, setSession, videoType],
+    [appendMaterials, currentProjectId, setSession, videoType],
   )
 
   /* -------------------- 智能分析（plan/build + gap/detect） -------------------- */
@@ -140,6 +144,10 @@ export default function ComposePage() {
     async (extraFills?: FillResult[]) => {
       if (!selectedSampleId) {
         setError('请先在素材库挑一个样例')
+        return null
+      }
+      if (!currentProjectId) {
+        setError('请先在首页新建/选择一个项目')
         return null
       }
       if (brief.trim().length === 0) {
@@ -152,7 +160,8 @@ export default function ComposePage() {
       try {
         const planReq: PlanBuildRequest = {
           sample_id: selectedSampleId,
-          session_id: sessionId ?? 'no-session',
+          project_id: currentProjectId,
+          session_id: currentProjectId,
           brief: brief.trim() || null,
           video_goal: videoGoal.trim() || null,
           settings,
@@ -165,7 +174,8 @@ export default function ComposePage() {
 
         const detectReq: GapDetectRequest = {
           plan_id: builtPlan.plan_id,
-          session_id: sessionId ?? null,
+          project_id: currentProjectId,
+          session_id: currentProjectId,
           // 用户没传素材时关掉 mock 回退，让所有 gap 真实地显示 miss，引导走 copy/aigc。
           allow_mock: sortedMaterials.length > 0,
         }
@@ -188,20 +198,17 @@ export default function ComposePage() {
         })
         setGaps(merged)
 
-        // 自动存档到首页项目列表
-        if (currentProjectId) {
-          upsertProject({
-            id: currentProjectId,
-            session_id: sessionId ?? null,
-            brief,
-            materials: sortedMaterials,
-            plan: builtPlan,
-            plan_id: builtPlan.plan_id,
-            gaps: merged,
-            fills: useFills,
-            status: 'planned',
+        // brief/goal/settings 回写到后端 Project（首页卡片显示 + 重进项目恢复上下文）；
+        // plan 状态由后端 plan/build 内部 mark_planned 自动更新，前端不再手动 upsert。
+        void api
+          .patch('/project/' + currentProjectId, {
+            brief: brief.trim() || null,
+            video_goal: videoGoal.trim() || null,
+            settings,
           })
-        }
+          .catch(() => {
+            /* 回写失败不阻塞分析主流程 */
+          })
 
         return builtPlan
       } catch (err) {
@@ -211,7 +218,7 @@ export default function ComposePage() {
         setAnalyzing(false)
       }
     },
-    [brief, currentProjectId, fills, selectedSampleId, sessionId, setGaps, setPlan, settings, sortedMaterials, upsertProject, videoGoal],
+    [brief, currentProjectId, fills, selectedSampleId, setGaps, setPlan, settings, sortedMaterials, videoGoal],
   )
 
   const handleAnalyze = useCallback(() => void runAnalyze(), [runAnalyze])

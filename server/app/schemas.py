@@ -322,6 +322,10 @@ class Gap(BaseModel):
         default=None,
         description="所属 AdaptedSection.section_id，前端按段分组用；老 plan 为 None。",
     )
+    project_id: Optional[str] = Field(
+        default=None,
+        description="所属项目 ID；由 /gap/detect 时回填，fill_gap 反查 plan/project 用。老 gap 为 None（落 __legacy 项目）。",
+    )
     slot_index: int = Field(..., description="该 section 下的第几个分镜槽位")
     requirement: str = Field(..., description="样例对该槽位的描述（如『3 秒痛点提问近景』）")
     status: GapStatus
@@ -346,9 +350,13 @@ class Gap(BaseModel):
 
 class GapDetectRequest(BaseModel):
     plan_id: str
+    project_id: Optional[str] = Field(
+        default=None,
+        description="所属项目 ID（推荐显式传）；与 session_id 等价，二者都为空时回退 plan.project_id。",
+    )
     session_id: Optional[str] = Field(
         default=None,
-        description="上传素材的 session 隔离 ID；为空走 mock 素材（兼容旧调用）。",
+        description="兼容老前端：留作 project_id 的别名；为空走 mock 素材。",
     )
     allow_mock: bool = Field(
         default=True,
@@ -364,6 +372,26 @@ class GapFillRequest(BaseModel):
         default_factory=dict,
         description="动作参数：rerank={target_slot} / copy={prompt_hint} / aigc={prompt, first_frame_url?, duration_seconds?}",
     )
+
+
+class AigcPromptRequest(BaseModel):
+    """`POST /api/gap/aigc-prompt` —— 把段落上下文交给 LLM，转写出一条完备的 Seedance T2V prompt。
+
+    前端在用户打开 AIGC 面板（或切到不同 gap）时调一次，把返回的 prompt 填入 textarea
+    供创作者编辑后再提交生成；解决"直接拿 gap.requirement 当 prompt 缺要素"的问题。
+    """
+
+    gap_id: str
+    hint: Optional[str] = Field(
+        default=None,
+        max_length=200,
+        description="创作者额外提示（可选）：风格倾向、必须出现的元素等",
+    )
+
+
+class AigcPromptResponse(BaseModel):
+    gap_id: str
+    prompt: str = Field(..., description="LLM 转写出的完备 T2V prompt")
 
 
 class GapFillAllRequest(BaseModel):
@@ -408,6 +436,10 @@ class FillResult(BaseModel):
     )
     note: Optional[str] = None
     status: GapStatus = "ok"
+    section_id: Optional[str] = Field(
+        default=None,
+        description="所属 AdaptedSection.section_id，由后端在 fill_gap 时回填；plan 重建时直接用它路由，不再依赖 gap_store 进程内存。",
+    )
 
 
 # =========================================================================
@@ -571,9 +603,13 @@ class Plan(BaseModel):
 
     plan_id: str
     sample_id: str
+    project_id: Optional[str] = Field(
+        default=None,
+        description="所属项目 ID；新建 plan 时由 /plan/build 写入。老 plan 为 None（落 __legacy 项目，后续可手动归并）。",
+    )
     session_id: Optional[str] = Field(
         default=None,
-        description="生成本 Plan 时的素材 session 隔离 ID，渲染时用来反查上传文件。",
+        description="生成本 Plan 时的素材 session 隔离 ID；新模型下等价 project_id，渲染时用来反查上传文件。",
     )
     brief: Optional[str] = Field(
         default=None,
@@ -600,7 +636,11 @@ class Plan(BaseModel):
 
 class PlanBuildRequest(BaseModel):
     sample_id: str
-    session_id: str = Field(..., description="上传素材的 session 隔离 ID")
+    project_id: str = Field(..., description="所属项目 ID（前端 currentProjectId）；后端按它路由素材/资产/落盘")
+    session_id: Optional[str] = Field(
+        default=None,
+        description="兼容老前端：留作 project_id 的别名；为空时使用 project_id。",
+    )
     brief: Optional[str] = Field(
         default=None,
         max_length=500,
@@ -779,7 +819,10 @@ class Asset(BaseModel):
     """用户素材库中的一项资产。"""
 
     asset_id: str = Field(..., description="ass-xxxxxxxx 格式")
-    owner: str = Field(default="local", description="单机版固定 local；留多用户扩展位")
+    owner: str = Field(
+        default="__legacy",
+        description="资产所属项目 ID（v2 后含义改为 project_id）；老数据迁移期落 '__legacy'。",
+    )
     kind: AssetKind
 
     # 文件
@@ -818,3 +861,55 @@ class AssetUpdateRequest(BaseModel):
 class AssetListResponse(BaseModel):
     items: list[Asset]
     total: int
+
+
+# =========================================================================
+# Module · 项目 (Project) —— 用户工作流容器
+# =========================================================================
+# 一个 project 串起：选样例 → 上传素材 → 改编 plan → gap fill → render。
+# project_id 是后端唯一隔离键；用户素材 / 资产库 / plans / gaps 都按它分组。
+# 共享：server/samples/<sample_id>/manifest.json（VLM/ASR 预计算贵，不重跑）。
+
+ProjectStatus = Literal["draft", "planned", "rendered"]
+"""项目状态：
+- draft     刚建项目，还没生成 plan
+- planned   生成过 plan，可进 Compose / 缺口补全
+- rendered  渲染过至少一次，有可看的成片
+"""
+
+
+class Project(BaseModel):
+    """项目 = 一次完整的『样例 → 改编 → 补全 → 渲染』工作流容器。"""
+
+    project_id: str = Field(..., description="UUID hex[:12]")
+    name: str = Field(..., max_length=80, description="用户可见名称")
+    sample_id: str = Field(..., description="基于哪个样例（共享，跨项目复用）")
+    brief: Optional[str] = Field(default=None, description="主题/卖点回写（Compose 用户输入）")
+    video_goal: Optional[str] = Field(default=None, description="视频目的回写")
+    settings: ComposeSettings = Field(default_factory=ComposeSettings)
+    last_plan_id: Optional[str] = Field(default=None, description="最近一次 plan_id（前端 resume 用）")
+    last_render_job_id: Optional[str] = Field(default=None, description="最近一次 render job_id（成片预览）")
+    status: ProjectStatus = "draft"
+    created_at: float
+    updated_at: float
+
+
+class ProjectCreateRequest(BaseModel):
+    name: str = Field(..., max_length=80)
+    sample_id: str
+
+
+class ProjectUpdateRequest(BaseModel):
+    """PATCH /api/project/{id}：所有字段可选，None 表示不动。"""
+
+    name: Optional[str] = Field(default=None, max_length=80)
+    brief: Optional[str] = Field(default=None, max_length=500)
+    video_goal: Optional[str] = Field(default=None, max_length=500)
+    settings: Optional[ComposeSettings] = None
+    last_plan_id: Optional[str] = None
+    last_render_job_id: Optional[str] = None
+    status: Optional[ProjectStatus] = None
+
+
+class ProjectListResponse(BaseModel):
+    items: list[Project]

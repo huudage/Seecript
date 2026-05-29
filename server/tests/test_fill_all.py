@@ -25,13 +25,15 @@ from app.services.materials import gap_store
 @pytest.fixture
 def session_with_plan(client) -> tuple[str, str]:
     fake = b"\x00\x00\x00\x18ftypisom" + b"\x00" * 1024
+    project_id = "proj-fill-all-test"
     files = [("files", ("a.mp4", BytesIO(fake), "video/mp4"))]
-    r = client.post("/api/material/upload", files=files)
+    r = client.post("/api/material/upload", files=files, data={"project_id": project_id})
     sid = r.json()["session_id"]
     r = client.post(
         "/api/plan/build",
         json={
             "sample_id": "sample-marketing-01",
+            "project_id": project_id,
             "session_id": sid,
             "brief": "fill-all 测试",
             "video_goal": "30 秒说清差异化",

@@ -174,6 +174,8 @@ export interface Gap {
   section: SectionRole
   /** 所属 AdaptedSection.section_id；老 plan 为 null（前端按段分组时回落到 section role）。 */
   section_id?: string | null
+  /** 所属项目 ID；老 gap 为 null。 */
+  project_id?: string | null
   slot_index: number
   requirement: string
   status: GapStatus
@@ -199,12 +201,26 @@ export interface FillResult {
   chunk_task_ids: string[]
   note?: string | null
   status: GapStatus
+  /** 所属 AdaptedSection.section_id；由后端在 fill_gap 时回填，plan 重建时不再依赖 gap_store 内存。 */
+  section_id?: string | null
 }
 
 export interface GapFillRequest {
   gap_id: GapId
   action: FillAction
   params: Record<string, unknown>
+}
+
+export interface AigcPromptRequest {
+  gap_id: GapId
+  /** 创作者额外提示（可选）：风格倾向、必须出现的元素等 */
+  hint?: string | null
+}
+
+export interface AigcPromptResponse {
+  gap_id: GapId
+  /** LLM 转写出的完备 T2V prompt */
+  prompt: string
 }
 
 // =========================================================================
@@ -296,6 +312,8 @@ export const DEFAULT_COMPOSE_SETTINGS: ComposeSettings = {
 export interface Plan {
   plan_id: PlanId
   sample_id: SampleId
+  /** 所属项目 ID；老 plan 为 null。 */
+  project_id?: string | null
   session_id?: string | null
   brief?: string | null
   /** 视频要求与目的（受众/时长/调性等），驱动结构改编。 */
@@ -313,7 +331,10 @@ export interface Plan {
 
 export interface PlanBuildRequest {
   sample_id: SampleId
-  session_id: SessionId
+  /** 所属项目 ID（前端 currentProjectId）；后端按它路由素材/资产/落盘。 */
+  project_id: string
+  /** 兼容老前端：留作 project_id 别名；为空时回退到 project_id。 */
+  session_id?: SessionId | null
   brief?: string | null
   /** 视频要求与目的，与 brief 一起驱动结构改编。 */
   video_goal?: string | null
@@ -338,6 +359,9 @@ export interface GapFillAllResponse {
 
 export interface GapDetectRequest {
   plan_id: PlanId
+  /** 所属项目 ID（推荐显式传）；与 session_id 等价。 */
+  project_id?: string | null
+  /** 兼容老前端：留作 project_id 别名；为空走 mock 素材。 */
   session_id?: SessionId | null
   /** false 时缺素材不回退 mock，所有 gap 都标 miss，逼用户走 copy/aigc 补全。 */
   allow_mock?: boolean
@@ -478,4 +502,48 @@ export interface AssetUpdateRequest {
 export interface AssetListResponse {
   items: Asset[]
   total: number
+}
+
+// =========================================================================
+// Project（项目工作流容器）
+// =========================================================================
+
+/** 项目状态：草稿（刚选样例）/ 已规划（plan/build 跑过）/ 已渲染（拿到视频）。 */
+export type ProjectStatus = 'draft' | 'planned' | 'rendered'
+
+/**
+ * Project = 一次完整的「样例 → 改编 → 补全 → 渲染」流程容器。
+ * 后端用 project_id 作为唯一隔离键：素材 / 资产库 / plans / gaps 都按它分组。
+ */
+export interface Project {
+  project_id: string
+  name: string
+  sample_id: SampleId
+  brief?: string | null
+  video_goal?: string | null
+  settings: ComposeSettings
+  last_plan_id?: PlanId | null
+  last_render_job_id?: JobId | null
+  status: ProjectStatus
+  created_at: number
+  updated_at: number
+}
+
+export interface ProjectCreateRequest {
+  name: string
+  sample_id: SampleId
+}
+
+export interface ProjectUpdateRequest {
+  name?: string | null
+  brief?: string | null
+  video_goal?: string | null
+  settings?: ComposeSettings | null
+  last_plan_id?: PlanId | null
+  last_render_job_id?: JobId | null
+  status?: ProjectStatus | null
+}
+
+export interface ProjectListResponse {
+  items: Project[]
 }

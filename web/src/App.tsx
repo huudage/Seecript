@@ -1,4 +1,5 @@
-import { NavLink, Route, Routes } from 'react-router-dom'
+import { useEffect } from 'react'
+import { NavLink, Navigate, Route, Routes, useLocation } from 'react-router-dom'
 import { cn } from '@/lib/utils'
 
 import HomePage from '@/pages/Home'
@@ -7,6 +8,7 @@ import DecomposePage from '@/pages/Decompose'
 import ComposePage from '@/pages/Compose'
 import MigratePage from '@/pages/Migrate'
 import RenderPage from '@/pages/Render'
+import { useProjectsStore } from '@/stores/projects'
 
 const navItems = [
   { to: '/', label: '首页', end: true },
@@ -17,7 +19,26 @@ const navItems = [
   { to: '/render', label: '生成 / 编辑', end: false },
 ] as const
 
+// 需要 currentProjectId 才能访问的 path —— 没有项目时回首页。
+// 素材库不强制（用户可以浏览样例后再决定建项目）。
+const PROJECT_REQUIRED_PATHS = new Set<string>(['/decompose', '/compose', '/migrate', '/render'])
+
+function ProjectGuard({ children }: { children: React.ReactNode }) {
+  const location = useLocation()
+  const currentProjectId = useProjectsStore((s) => s.currentProjectId)
+  if (PROJECT_REQUIRED_PATHS.has(location.pathname) && !currentProjectId) {
+    return <Navigate to="/" replace />
+  }
+  return <>{children}</>
+}
+
 export default function App() {
+  const refreshProjects = useProjectsStore((s) => s.refresh)
+  // 应用启动时拉一次项目列表，让 nav 顶栏 + 首页都能直接拿到
+  useEffect(() => {
+    void refreshProjects()
+  }, [refreshProjects])
+
   return (
     <div className="flex min-h-screen flex-col bg-background text-foreground">
       <header className="border-b border-border bg-card">
@@ -44,6 +65,7 @@ export default function App() {
               </NavLink>
             ))}
           </nav>
+          <CurrentProjectBadge />
         </div>
       </header>
 
@@ -51,12 +73,55 @@ export default function App() {
         <Routes>
           <Route index element={<HomePage />} />
           <Route path="/library" element={<LibraryPage />} />
-          <Route path="/decompose" element={<DecomposePage />} />
-          <Route path="/compose" element={<ComposePage />} />
-          <Route path="/migrate" element={<MigratePage />} />
-          <Route path="/render" element={<RenderPage />} />
+          <Route
+            path="/decompose"
+            element={
+              <ProjectGuard>
+                <DecomposePage />
+              </ProjectGuard>
+            }
+          />
+          <Route
+            path="/compose"
+            element={
+              <ProjectGuard>
+                <ComposePage />
+              </ProjectGuard>
+            }
+          />
+          <Route
+            path="/migrate"
+            element={
+              <ProjectGuard>
+                <MigratePage />
+              </ProjectGuard>
+            }
+          />
+          <Route
+            path="/render"
+            element={
+              <ProjectGuard>
+                <RenderPage />
+              </ProjectGuard>
+            }
+          />
         </Routes>
       </main>
     </div>
+  )
+}
+
+function CurrentProjectBadge() {
+  const currentProjectId = useProjectsStore((s) => s.currentProjectId)
+  const projects = useProjectsStore((s) => s.projects)
+  const proj = currentProjectId ? projects.find((p) => p.project_id === currentProjectId) : null
+  if (!proj) return null
+  return (
+    <span
+      className="ml-auto truncate rounded-md border border-border bg-background px-2 py-1 text-xs text-muted-foreground"
+      title={`当前项目 · ${proj.name}（${proj.project_id}）`}
+    >
+      {proj.name}
+    </span>
   )
 }

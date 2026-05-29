@@ -215,12 +215,17 @@ async def _build_material(
 @router.post("/material/upload", response_model=MaterialUploadResponse)
 async def upload_material(
     files: list[UploadFile] = File(...),
-    session_id: str | None = Form(default=None),
+    project_id: str | None = Form(default=None),
+    session_id: str | None = Form(default=None),  # 兼容老前端：等价 project_id
     video_type: VideoType = Form(default="marketing"),
 ) -> MaterialUploadResponse:
     if not files:
         raise HTTPException(status_code=400, detail="no files")
-    sid = session_id or uuid.uuid4().hex[:12]
+    # v2 起 session_id == project_id；老前端只传 session_id 时仍可工作，
+    # 但不再 mint 随机 sid——必须有显式 project_id / session_id，避免跨项目串货。
+    sid = (project_id or session_id or "").strip()
+    if not sid:
+        raise HTTPException(status_code=400, detail="project_id 必填（session_id 作为兼容别名亦可）")
     target_dir = _uploads_root() / sid
     target_dir.mkdir(parents=True, exist_ok=True)
 

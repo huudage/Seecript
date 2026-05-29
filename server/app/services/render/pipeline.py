@@ -130,6 +130,39 @@ async def _resolve_aigc_scene(scene: Scene, segments_dir: Path, idx: int) -> Pat
         return locals_[0]
 
 
+def _aigc_fallback_to_sample(
+    plan: Plan, scene: Scene, idx: int, segments_dir: Path,
+) -> tuple[Path | None, str]:
+    """AIGC scene URL 缺失/下载失败时，回落到样例视频对应段落的切片。
+
+    返回 (path, note)。path=None 表示连兜底都没成（样例视频也找不到 / ffmpeg 不可用）。
+    """
+    sample_video = _samples_root() / plan.sample_id / "video.mp4"
+    if not sample_video.is_file():
+        sample_video = _uploads_root() / "decompose" / plan.sample_id / "video.mp4"
+    if not sample_video.is_file() or not ffmpeg_svc.ffmpeg_available():
+        return None, f"scene {idx} aigc 兜底失败：样例视频缺失或 ffmpeg 不可用"
+
+    # 直接用 scene 的 timeline 起点对样例时长取模，给一个稳定但不重复的入点；
+    # 比按 source_shot_indices[0] 反查更鲁棒——同 shot 多段不会撞同一窗口。
+    from ...routers.library import _LIBRARY
+    sample = next((s for s in _LIBRARY if s.id == plan.sample_id), None)
+    sample_total = float(sample.duration_seconds) if sample else 18.0
+    duration = max(1.0, float(scene.duration or 3.0))
+    in_point = float(scene.start or 0.0) % max(1.0, sample_total - duration + 0.1)
+    duration = min(duration, max(0.5, sample_total - in_point))
+
+    seg_dst = segments_dir / f"aigc-fallback-{idx:02d}.mp4"
+    try:
+        ffmpeg_svc.trim(sample_video, seg_dst, start=in_point, duration=duration, reencode=True)
+        return seg_dst, (
+            f"scene {idx} ({scene.section}/aigc_t2v) URL 缺失，回落样例切片 "
+            f"window=({in_point:.1f}s, {duration:.1f}s)"
+        )
+    except (AttributeError, ffmpeg_svc.FFmpegError) as exc:
+        return None, f"scene {idx} aigc 兜底 trim 失败：{exc}"
+
+
 def _resolve_scene_path(plan: Plan, scene: Scene) -> Path | None:
     """从 Scene 反查素材实际路径。
 
@@ -225,27 +258,31 @@ async def run_pipeline(job_id: str, plan: Plan) -> RenderResult:
             if aigc_path is not None:
                 inputs.append(aigc_path)
             else:
-                notes.append(f"scene {i} ({sc.section}/aigc_t2v) 下载/拼接失败，已跳过")
+                # AIGC 下载失败 → 不再 silent skip，回落样例切片，让段落不丢
+                fb_path, fb_note = await asyncio.to_thread(
+                    _aigc_fallback_to_sample, plan, sc, i, segments_dir,
+                )
+                notes.append(fb_note)
+                if fb_path is not None:
+                    inputs.append(fb_path)
+                else:
+                    log.warning("[%s] %s", job_id, fb_note)
             continue
 
         src = _resolve_scene_path(plan, sc)
         if src is None:
             notes.append(f"scene {i} ({sc.section}/{sc.source}/{sc.source_ref}) unresolved")
             continue
-        # source="sample" 是整段 video.mp4 → 必须按 in_point/out_point 切片再拼，
-        # 不然每个 scene 都会拼进整段长视频。
-        if sc.source == "sample":
-            seg_dst = segments_dir / f"scene-{i:02d}.mp4"
-            trimmed = _trim_segment(src, sc, seg_dst)
-            if trimmed is not None:
-                inputs.append(trimmed)
-            else:
-                # trim 失败：直接拿整段当 fallback，至少能拼起来
-                notes.append(f"scene {i} trim fallback to full sample video")
-                inputs.append(src)
+        # 所有非 AIGC 来源都按 in_point/out_point 切片：
+        # - sample：plan 已分配独立子窗口，避免多段共享相同片段
+        # - user_material：限制到 scene.duration，避免一条长视频霸占整段
+        # 注意：trim 失败时不再回落整段 src（会造成『同一片段复读 N 遍 ≈ 原视频』）
+        seg_dst = segments_dir / f"scene-{i:02d}.mp4"
+        trimmed = _trim_segment(src, sc, seg_dst)
+        if trimmed is not None:
+            inputs.append(trimmed)
         else:
-            # user_material：素材本身就是单段，直接拼
-            inputs.append(src)
+            notes.append(f"scene {i} ({sc.source}) trim 失败，跳过该段")
 
     if inputs and ffmpeg_svc.ffmpeg_available():
         try:

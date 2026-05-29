@@ -24,7 +24,7 @@ from fastapi.staticfiles import StaticFiles
 
 from . import __version__
 from .config import get_settings
-from .routers import asr, asset, decompose, edit, gap, library, material, packaging, plan, render
+from .routers import asr, asset, decompose, edit, gap, library, material, packaging, plan, project, render
 from .schemas import ErrorResponse, HealthResponse
 
 
@@ -134,6 +134,7 @@ def create_app() -> FastAPI:
 
     # 阶段 1：7 个业务路由 + asr。所有路由的 prefix 都是 /api/*。
     app.include_router(asr.router, prefix="/api/asr", tags=["asr"])
+    app.include_router(project.router, prefix="/api", tags=["project"])
     app.include_router(library.router, prefix="/api", tags=["library"])
     app.include_router(decompose.router, prefix="/api", tags=["decompose"])
     app.include_router(material.router, prefix="/api", tags=["material"])

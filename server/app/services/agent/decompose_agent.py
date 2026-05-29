@@ -256,6 +256,25 @@ async def decompose(
         climax_position=_compute_climax(sections, rhythm, total_duration),
     )
 
+    # 用户上传样例：video_url 改指 /uploads/decompose/<sample_id>/video.mp4，
+    # 并把 manifest 落到同目录，让 /api/sample/<id>/manifest 后续直接命中。
+    if video_path:
+        vp = Path(str(video_path)).resolve()
+        if "uploads" in vp.parts and "decompose" in vp.parts:
+            manifest = manifest.model_copy(update={
+                "video_url": f"/uploads/decompose/{sample_id}/video.mp4",
+            })
+            try:
+                import json as _json
+                manifest_dst = vp.parent / "manifest.json"
+                manifest_dst.write_text(
+                    _json.dumps(manifest.model_dump(), ensure_ascii=False, indent=2),
+                    encoding="utf-8",
+                )
+                log.info("[decompose] 用户样例 %s manifest 已落盘：%s", sample_id, manifest_dst)
+            except OSError as exc:
+                log.warning("[decompose] 写 manifest 失败 %s：%s", sample_id, exc)
+
     if job_id:
         job_store.complete(job_id, payload={"sample_id": sample_id, "manifest": manifest.model_dump()})
 
