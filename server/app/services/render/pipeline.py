@@ -16,17 +16,19 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import logging
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
+
+import httpx
 
 from ...config import get_settings
 from ...schemas import Plan, Scene
 from ..jobs import job_store
 from ..video import ffmpeg as ffmpeg_svc
 from ..video import remotion as remotion_svc
-from .seedance_chain import extend_with_seedance
 
 log = logging.getLogger("seecript.render.pipeline")
 
@@ -65,15 +67,78 @@ def _samples_root() -> Path:
     return settings.log_dir.parent / "samples"
 
 
+def _aigc_cache_root() -> Path:
+    """AIGC chunks 下载缓存：var/aigc_cache/<url-hash>.mp4。"""
+    settings = get_settings()
+    root = settings.log_dir.parent / "var" / "aigc_cache"
+    root.mkdir(parents=True, exist_ok=True)
+    return root
+
+
+def _aigc_chunk_local_path(url: str) -> Path:
+    """同一 URL 命中本地缓存，避免重复下载。"""
+    h = hashlib.sha1(url.encode("utf-8")).hexdigest()[:16]
+    return _aigc_cache_root() / f"chunk-{h}.mp4"
+
+
+async def _download_aigc_chunk(url: str, *, timeout: float = 120.0) -> Path | None:
+    """把 CDN URL 下到本地缓存。失败返回 None（caller 兜底处理）。"""
+    dst = _aigc_chunk_local_path(url)
+    if dst.exists() and dst.stat().st_size > 0:
+        return dst
+    try:
+        async with httpx.AsyncClient(timeout=timeout, follow_redirects=True) as client:
+            resp = await client.get(url)
+            resp.raise_for_status()
+            dst.write_bytes(resp.content)
+    except Exception as exc:  # noqa: BLE001
+        log.warning("[render] aigc chunk download failed url=%s err=%s", url, exc)
+        return None
+    return dst if dst.stat().st_size > 0 else None
+
+
+async def _resolve_aigc_scene(scene: Scene, segments_dir: Path, idx: int) -> Path | None:
+    """下载 scene.aigc_video_urls 中的所有 chunk，按时序 ffmpeg concat 成单个 scene-XX.mp4。
+
+    返回 None → 上层走兜底（_resolve_scene_path 会返回 None，scene 被跳过）。
+    """
+    urls = list(scene.aigc_video_urls or [])
+    if not urls:
+        return None
+    locals_: list[Path] = []
+    for url in urls:
+        p = await _download_aigc_chunk(url)
+        if p is None:
+            log.warning("[render] aigc scene %d 第 %d 段下载失败，跳过整段", idx, len(locals_) + 1)
+            return None
+        locals_.append(p)
+    if not locals_:
+        return None
+    if len(locals_) == 1:
+        return locals_[0]
+    # 多 chunk → concat
+    if not ffmpeg_svc.ffmpeg_available():
+        # 没 ffmpeg 时只用第一段，至少 demo 能播
+        log.warning("[render] ffmpeg 不可用，aigc scene %d 仅用第 1 段", idx)
+        return locals_[0]
+    dst = segments_dir / f"aigc-scene-{idx:02d}.mp4"
+    try:
+        await asyncio.to_thread(ffmpeg_svc.concat, locals_, dst, reencode=True)
+        return dst
+    except ffmpeg_svc.FFmpegError as exc:
+        log.warning("[render] aigc concat scene=%d failed: %s → 仅用第 1 段", idx, exc)
+        return locals_[0]
+
+
 def _resolve_scene_path(plan: Plan, scene: Scene) -> Path | None:
     """从 Scene 反查素材实际路径。
 
     - source="user_material": session_id 隔离的上传目录里按 material_id 子串匹配
     - source="sample"        : plan.sample_id 对应 server/samples/<id>/video.mp4
                                 （后续 _trim_segments 会按 in_point/out_point 切片）
-    - source="aigc_t2v"      : Seedance 把视频托管在 Volcengine CDN，pipeline
-                                里没法直接拼，目前回退到样例镜头（上层 plan/build
-                                里已经把 source 改回 sample 了；这里兜底再处理）
+    - source="aigc_t2v"      : 通过 _resolve_aigc_scene 异步下载 + concat，不在这里处理
+
+    本同步函数对 aigc_t2v 返回 None，让上层 pipeline 的异步分支自己跑。
     """
     source_ref = scene.source_ref
     if scene.source == "user_material" and plan.session_id:
@@ -85,18 +150,15 @@ def _resolve_scene_path(plan: Plan, scene: Scene) -> Path | None:
         return None
 
     if scene.source == "sample":
-        # 从内置样例库直接取整段 video.mp4；in_point / out_point 在 _trim_segments 里切。
         sample_id = plan.sample_id
         sample_video = _samples_root() / sample_id / "video.mp4"
         if sample_video.is_file():
             return sample_video
-        # 用户上传到 var/uploads/decompose/<sample_id>/ 的视频也走这条
         user_video = _uploads_root() / "decompose" / sample_id / "video.mp4"
         if user_video.is_file():
             return user_video
         return None
 
-    # aigc_t2v 远程托管，跳过；上层会让它走 sample 兜底
     return None
 
 
@@ -158,6 +220,14 @@ async def run_pipeline(job_id: str, plan: Plan) -> RenderResult:
 
     inputs: list[Path] = []
     for i, sc in enumerate(plan.main_track):
+        if sc.source == "aigc_t2v":
+            aigc_path = await _resolve_aigc_scene(sc, segments_dir, i)
+            if aigc_path is not None:
+                inputs.append(aigc_path)
+            else:
+                notes.append(f"scene {i} ({sc.section}/aigc_t2v) 下载/拼接失败，已跳过")
+            continue
+
         src = _resolve_scene_path(plan, sc)
         if src is None:
             notes.append(f"scene {i} ({sc.section}/{sc.source}/{sc.source_ref}) unresolved")
@@ -189,15 +259,16 @@ async def run_pipeline(job_id: str, plan: Plan) -> RenderResult:
         _touch_placeholder(main_path)
     timings["concat_ms"] = int((time.time() - t0) * 1000)
 
-    # ---- Step 3 · Seedance 长视频扩展 ----
+    # ---- Step 3 · 主轨直通 ----
+    # 渲染按 plan 主轨结构走，时长以 plan.duration_seconds 为准；
+    # 需要 AIGC 补齐请走「一键 AI 生成全部缺口」(/api/gap/fill-all)，
+    # 不再在渲染阶段隐式跑 Seedance 首尾帧扩展。
     t0 = time.time()
-    job_store.publish(job_id, "seedance_extend", 48.0, {"note": "Seedance 首尾帧扩展"})
-    try:
-        extended_path = await extend_with_seedance(main_path, plan.duration_seconds, job_id=job_id)
-    except Exception as exc:  # noqa: BLE001 — graceful
-        log.warning("[%s] seedance chain failed: %s", job_id, exc)
-        notes.append(f"seedance fallback: {exc}")
-        extended_path = main_path
+    job_store.publish(
+        job_id, "seedance_extend", 48.0,
+        {"note": "主轨直通（按 plan 主轨结构渲染，长度补齐请走缺口生成）"},
+    )
+    extended_path = main_path
     timings["seedance_ms"] = int((time.time() - t0) * 1000)
 
     # ---- Step 4 · Remotion 包装轨 ----
@@ -254,9 +325,13 @@ async def run_pipeline(job_id: str, plan: Plan) -> RenderResult:
     bgm_track = plan.bgm.track_url if plan.bgm else None
     bgm_local: Path | None = None
     if bgm_track and bgm_track.startswith("/"):
-        candidate = Path(_outputs_root().parent.parent) / bgm_track.lstrip("/")
+        # /assets/... 和 /uploads/... 都映射到 server/var/<assets|uploads>/...
+        # _outputs_root() == server/var/outputs，往上两层是 server/
+        candidate = _outputs_root().parent.parent / bgm_track.lstrip("/")
         if candidate.exists():
             bgm_local = candidate
+        else:
+            log.warning("[%s] bgm path %s 不存在，跳过混音", job_id, candidate)
 
     if (
         ffmpeg_svc.ffmpeg_available()
@@ -264,9 +339,20 @@ async def run_pipeline(job_id: str, plan: Plan) -> RenderResult:
         and overlaid_path.exists() and overlaid_path.stat().st_size > 0
     ):
         try:
+            bgm_cfg = plan.bgm
             await asyncio.to_thread(
                 ffmpeg_svc.mix_bgm, overlaid_path, bgm_local, final_path,
-                bgm_volume=plan.bgm.volume if plan.bgm else 0.6,
+                bgm_volume=bgm_cfg.volume if bgm_cfg else 0.35,
+                fade_in=bgm_cfg.fade_in if bgm_cfg else 1.5,
+                fade_out=bgm_cfg.fade_out if bgm_cfg else 2.0,
+                start_offset=bgm_cfg.start_offset if bgm_cfg else 0.0,
+                duck_with_voice=bgm_cfg.duck_with_voice if bgm_cfg else True,
+                duck_attenuation_db=bgm_cfg.duck_attenuation_db if bgm_cfg else -9.0,
+                video_has_voice=True,  # 暂保守假设主轨有口播；后续可由 ASR 结果回填
+            )
+            notes.append(
+                f"bgm mixed: vol={bgm_cfg.volume:.2f} duck={bgm_cfg.duck_with_voice} "
+                f"fade={bgm_cfg.fade_in}/{bgm_cfg.fade_out}"
             )
         except ffmpeg_svc.FFmpegError as exc:
             log.warning("[%s] mix_bgm failed: %s", job_id, exc)

@@ -142,7 +142,11 @@ async def test_gap_agent_aigc_calls_seedance_mock():
     assert result.action == "aigc"
     assert result.new_material_id and result.new_material_id.startswith("mock-t2v-")
     assert result.status == "warn"
-    assert "渲染" in (result.note or "") or "task=" in (result.note or "")
+    # chunk-aware note：要么提到 timeout，要么提到 Seedance 部分完成（0/1 段）
+    note = result.note or ""
+    assert "timeout" in note or "Seedance" in note, f"unexpected note: {note!r}"
+    # 单段失败时 chunk_task_ids 至少回写一个 task_id，前端 refresh 能复用
+    assert result.chunk_task_ids and result.chunk_task_ids[0].startswith("mock-t2v-")
 
 
 @pytest.mark.asyncio
@@ -164,6 +168,11 @@ async def test_gap_agent_aigc_succeeds_when_wait_long_enough(monkeypatch):
     assert result.action == "aigc"
     assert result.status == "ok"
     assert result.new_material_id and result.new_material_id.startswith("mock-t2v-")
+    # 5s 请求 ≤ SEEDANCE_MAX 12s → 单段；video_urls 应回写 mock CDN url
+    assert result.chunks_count == 1
+    assert len(result.video_urls) == 1
+    assert result.video_urls[0].startswith("/aigc/")
+    assert result.cover_url and result.cover_url.startswith("/aigc/")
 
 
 # ----------------------------- detect_gaps role 覆盖 ----------------------------

@@ -25,6 +25,7 @@ from typing import Optional
 from ..jobs import job_store
 from ..llm_client import get_llm_client, _extract_json
 from ..asr_client import get_asr_client, ASRError, ASRTranscript, Utterance as ASRUtterance
+from ..assets import resolve_reference_image_urls
 from ..video import scene_detect, audio_analysis, voice_detect
 from ...config import get_settings
 from ...schemas import (
@@ -116,10 +117,12 @@ async def decompose(
     video_path: Optional[str | Path] = None,
     title: str = "",
     video_type: VideoType = "marketing",
+    reference_asset_ids: Optional[list[str]] = None,
 ) -> SampleManifest:
     """完整拆解流水线。每一步失败都降级为 mock 数据但不中断。
 
     job_id 提供时通过 JobStore 推进度；不提供时纯函数式跑通。
+    reference_asset_ids 是用户素材库参考素材（图/视频抽帧），在视频理解阶段作为额外视觉上下文。
     """
 
     def push(step: str, percent: float, payload: dict | None = None) -> None:
@@ -207,7 +210,10 @@ async def decompose(
 
     # ---- 5. 视频理解（v2 新增）----
     push("video_understand", 80, {"note": "LLM 视频画像：archetype / narrative / segments / tone"})
-    understanding = await _video_understand(shots, video_type, has_voice, total_duration)
+    understanding = await _video_understand(
+        shots, video_type, has_voice, total_duration,
+        reference_asset_ids=reference_asset_ids,
+    )
     push("video_understand", 84, {
         "archetype": understanding.archetype,
         "tone": understanding.tone,
@@ -420,11 +426,15 @@ async def _video_understand(
     video_type: VideoType,
     has_voice: bool,
     total_duration: float,
+    *,
+    reference_asset_ids: Optional[list[str]] = None,
 ) -> VideoUnderstanding:
     """LLM 给整支视频的语义画像。失败时按 video_type 兜底。
 
     sample 一组（不超过 12 张）关键帧给 LLM——太多会撑爆 max_tokens；
     采样策略：均匀采样代表性帧，覆盖首中尾。
+    reference_asset_ids 给的参考图/参考视频抽帧会拼到 images 末尾，作为
+    『用户希望对齐的视觉气质』提示——但样例本身的镜头才是分析对象。
     """
     llm = get_llm_client()
 
@@ -457,6 +467,16 @@ async def _video_understand(
     )
 
     images = [sh.thumbnail_url or "" for sh in sampled]
+
+    # 拼参考素材到末尾（如果用户提供了）。参考帧不是样例本身的内容，
+    # 仅供 LLM 感知"用户期望的对齐气质"。控制单次 ≤6 张避免 token 爆。
+    ref_urls = resolve_reference_image_urls(reference_asset_ids or [], max_total=6)
+    if ref_urls:
+        images = images + ref_urls
+        user += (
+            f"\n\n附带 {len(ref_urls)} 张『用户参考画面』——来自用户素材库，"
+            f"不属于样例视频，仅作为用户希望对齐的视觉气质提示。请仍以样例镜头为主体做分析。"
+        )
     try:
         text = await llm.complete_multimodal(_UNDERSTAND_SYSTEM, user, images)
         data = _extract_json(text)

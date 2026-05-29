@@ -1,11 +1,13 @@
 import { create } from 'zustand'
 
-import type {
-  Material,
-  SampleId,
-  SampleManifest,
-  SessionId,
-  VideoType,
+import {
+  DEFAULT_COMPOSE_SETTINGS,
+  type ComposeSettings,
+  type Material,
+  type SampleId,
+  type SampleManifest,
+  type SessionId,
+  type VideoType,
 } from '@/types/schemas'
 
 /**
@@ -14,6 +16,7 @@ import type {
  * - sessionId / materials：上传素材后由后端分配；plan 构建时透传
  * - brief：Compose 页用户输入的主题/卖点；plan/build 时透传给后端
  * - videoGoal：Compose 页用户输入的视频要求与目的；plan/build 时透传给后端驱动结构改编
+ * - settings：Compose 页用户配置（目标总时长 / 平台 / 调性 / CTA / 关键词），全部带默认值
  */
 interface SessionState {
   selectedSampleId: SampleId | null
@@ -25,6 +28,7 @@ interface SessionState {
   materials: Material[]
   brief: string
   videoGoal: string
+  settings: ComposeSettings
 
   selectSample: (id: SampleId | null, videoType?: VideoType, source?: 'system' | 'user') => void
   setVideoType: (videoType: VideoType) => void
@@ -36,6 +40,7 @@ interface SessionState {
   reorderMaterials: (orderedIds: string[]) => void
   setBrief: (brief: string) => void
   setVideoGoal: (videoGoal: string) => void
+  setSettings: (patch: Partial<ComposeSettings>) => void
   reset: () => void
 }
 
@@ -48,13 +53,13 @@ export const useSessionStore = create<SessionState>((set) => ({
   materials: [],
   brief: '',
   videoGoal: '',
+  settings: { ...DEFAULT_COMPOSE_SETTINGS },
 
   selectSample: (id, videoType, source) =>
     set((state) => ({
       selectedSampleId: id,
       sampleSource: id ? (source ?? state.sampleSource ?? 'system') : null,
       videoType: videoType ?? state.videoType,
-      // 切到新样例时清空旧 manifest，避免拆解结果错位。
       manifest: id !== state.selectedSampleId ? null : state.manifest,
     })),
   setVideoType: (videoType) => set({ videoType }),
@@ -86,6 +91,8 @@ export const useSessionStore = create<SessionState>((set) => ({
     }),
   setBrief: (brief) => set({ brief }),
   setVideoGoal: (videoGoal) => set({ videoGoal }),
+  setSettings: (patch) =>
+    set((state) => ({ settings: { ...state.settings, ...patch } })),
   reset: () =>
     set({
       selectedSampleId: null,
@@ -96,5 +103,6 @@ export const useSessionStore = create<SessionState>((set) => ({
       materials: [],
       brief: '',
       videoGoal: '',
+      settings: { ...DEFAULT_COMPOSE_SETTINGS },
     }),
 }))

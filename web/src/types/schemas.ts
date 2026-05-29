@@ -189,6 +189,14 @@ export interface FillResult {
   new_material_id?: MaterialId | null
   narration?: string | null
   alternatives: string[]
+  /** aigc 链式生成的 N 段 CDN URL（按时序）；单段 = 1 元素，>12s 走链式。 */
+  video_urls: string[]
+  /** aigc 第一段封面 URL，前端预览缩略图。 */
+  cover_url?: string | null
+  /** aigc chunks 数量；0 表示非 aigc 或失败。 */
+  chunks_count: number
+  /** aigc 各 chunk 对应的 Seedance task_id；refresh 接口按此重试单段。 */
+  chunk_task_ids: string[]
   note?: string | null
   status: GapStatus
 }
@@ -220,6 +228,8 @@ export interface AdaptedSection {
   /** 该段对应的样例 shot index 列表（用于缩略图反查）；纯新增段借相邻段的 shot。 */
   source_shot_indices: number[]
   order: number
+  /** LLM 决定的本段目标时长（秒），驱动 Scene.duration 与 AIGC 链式分段。 */
+  duration_seconds: number
 }
 
 export interface Scene {
@@ -232,6 +242,8 @@ export interface Scene {
   in_point: number
   out_point?: number | null
   narration?: string | null
+  /** source=aigc_t2v 时 Seedance 返回的 N 段 CDN URL。 */
+  aigc_video_urls: string[]
 }
 
 export interface PackagingItem {
@@ -250,6 +262,37 @@ export interface BGMConfig {
   fade_out: number
 }
 
+/** 目标平台 —— 决定画幅 + 节奏 + 字幕风格。 */
+export type TargetPlatform = 'douyin' | 'wechat' | 'xiaohongshu' | 'bilibili'
+
+/** 整体调性 —— 影响 LLM 段落 prompt 倾向。 */
+export type ToneStyle = 'tight_hype' | 'calm_narrative' | 'casual_daily' | 'professional_cool'
+
+/**
+ * Compose 页用户配置 —— 与 brief/video_goal 一起驱动结构改编。
+ * 折叠"高级设置"暴露，全部带默认值。
+ */
+export interface ComposeSettings {
+  /** 目标总时长（秒），驱动每段 duration_seconds 分配。 */
+  target_duration_seconds: number
+  /** 目标平台。决定画幅 + 节奏 + 字幕风格。 */
+  target_platform: TargetPlatform
+  /** 整体调性。影响 LLM 段落结构与口播倾向。 */
+  tone: ToneStyle
+  /** 核心 CTA 文案（≤20 字）。closing 段自动套用。 */
+  cta: string
+  /** 必须出现的关键词（最多 5 个）。每段 narration 至少出现 1 个。 */
+  keywords: string[]
+}
+
+export const DEFAULT_COMPOSE_SETTINGS: ComposeSettings = {
+  target_duration_seconds: 30,
+  target_platform: 'douyin',
+  tone: 'tight_hype',
+  cta: '',
+  keywords: [],
+}
+
 export interface Plan {
   plan_id: PlanId
   sample_id: SampleId
@@ -264,6 +307,8 @@ export interface Plan {
   main_track: Scene[]
   packaging_track: PackagingItem[]
   bgm: BGMConfig
+  /** 创作设置回写。 */
+  settings: ComposeSettings
 }
 
 export interface PlanBuildRequest {
@@ -272,9 +317,23 @@ export interface PlanBuildRequest {
   brief?: string | null
   /** 视频要求与目的，与 brief 一起驱动结构改编。 */
   video_goal?: string | null
+  /** 创作设置。 */
+  settings?: ComposeSettings
   selected_materials: MaterialId[]
   fills: FillResult[]
   variant: Variant
+}
+
+export interface GapFillAllRequest {
+  plan_id: PlanId
+  prompt_template?: string | null
+}
+
+export interface GapFillAllResponse {
+  plan_id: PlanId
+  fills: FillResult[]
+  failed_gap_id?: GapId | null
+  stopped_reason?: string | null
 }
 
 export interface GapDetectRequest {
@@ -381,4 +440,42 @@ export interface HealthResponse {
   llm_provider: string
   t2v_provider: string
   asr_provider: string
+}
+
+// =========================================================================
+// Asset Library（素材库：BGM + 参考图 + 参考视频）
+// =========================================================================
+
+export type AssetKind = 'bgm' | 'reference_image' | 'reference_video'
+export type AssetStatus = 'processing' | 'ready' | 'failed'
+
+export interface Asset {
+  asset_id: string
+  owner: string
+  kind: AssetKind
+  file_name: string
+  file_url: string
+  file_size: number
+  content_hash: string
+  mime: string
+  title: string
+  description: string
+  tags: string[]
+  metadata: Record<string, unknown>
+  status: AssetStatus
+  error: string | null
+  created_at: number
+  last_used_at: number | null
+  use_count: number
+}
+
+export interface AssetUpdateRequest {
+  title?: string | null
+  description?: string | null
+  tags?: string[] | null
+}
+
+export interface AssetListResponse {
+  items: Asset[]
+  total: number
 }

@@ -35,6 +35,13 @@ def _build_plan(client) -> dict:
             "session_id": session_id,
             "brief": "新品发布——突出差异化卖点",
             "video_goal": "30 秒内说清产品差异化卖点，面向初次接触的用户，节奏紧凑",
+            "settings": {
+                "target_duration_seconds": 45,
+                "target_platform": "douyin",
+                "tone": "tight_hype",
+                "cta": "点击主页预约",
+                "keywords": ["差异化", "新品"],
+            },
             "selected_materials": material_ids,
             "fills": [],
             "variant": "A",
@@ -45,11 +52,20 @@ def _build_plan(client) -> dict:
     assert plan["plan_id"].startswith("plan-")
     # video_goal 必须回写到 plan；adapted_sections 必须非空且首末 role 合规
     assert plan["video_goal"] and "差异化" in plan["video_goal"]
+    # settings 必须原样回写（render/edit 阶段复用）
+    assert plan["settings"]["target_duration_seconds"] == 45
+    assert plan["settings"]["cta"] == "点击主页预约"
+    assert plan["settings"]["keywords"] == ["差异化", "新品"]
     adapted = plan["adapted_sections"]
     assert isinstance(adapted, list) and len(adapted) >= 3
     assert adapted[0]["role"] == "opening" and adapted[-1]["role"] == "closing"
     for sec in adapted:
         assert sec["section_id"] and sec["content_description"], sec
+        # 每段都要有 duration_seconds（驱动 Scene.duration + AIGC 链式分段）
+        assert 2.0 <= sec["duration_seconds"] <= 30.0, sec
+    # 各段时长之和应贴近目标总时长（45s，允许 ±25%）
+    total = sum(s["duration_seconds"] for s in adapted)
+    assert abs(total - 45) / 45 <= 0.25, f"adapted 总时长 {total} 偏离目标 45s 过大"
     return plan
 
 

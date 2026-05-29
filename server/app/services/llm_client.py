@@ -150,7 +150,7 @@ _SERVER_ROOT = Path(__file__).resolve().parents[2]  # server/
 
 
 def _resolve_local_image(s: str) -> Optional[Path]:
-    """把后端虚拟 URL（/samples/xxx, /uploads/xxx）映射回 server/ 目录下的真实磁盘路径。
+    """把后端虚拟 URL（/samples/xxx, /uploads/xxx, /assets/xxx）映射回 server/ 目录下的真实磁盘路径。
 
     其它绝对/相对路径直接尝试；找不到则返回 None 让调用方走占位。
     """
@@ -159,6 +159,9 @@ def _resolve_local_image(s: str) -> Optional[Path]:
         return p if p.is_file() else None
     if s.startswith("/uploads/"):
         p = _SERVER_ROOT / "var" / "uploads" / s[len("/uploads/"):].lstrip("/")
+        return p if p.is_file() else None
+    if s.startswith("/assets/"):
+        p = _SERVER_ROOT / "var" / "assets" / s[len("/assets/"):].lstrip("/")
         return p if p.is_file() else None
     p = Path(s)
     return p if p.is_file() else None
@@ -587,20 +590,33 @@ def _build_mock_adapted_sections_json(user_text: str) -> str:
     n_src = int(m.group(1)) if m else 4
     n = max(3, min(7, n_src))
 
+    # 解析目标总时长（plan_agent 用户 payload 含 '目标总时长：30s'）
+    m_dur = re.search(r"目标总时长[：:]\s*(\d+(?:\.\d+)?)\s*s", user_text)
+    target_total = float(m_dur.group(1)) if m_dur else 30.0
+
     climax_idx = int(n * 0.6) if n >= 4 else None
     if climax_idx is not None and (climax_idx <= 0 or climax_idx >= n - 1):
         climax_idx = None
 
-    secs: list[dict] = []
+    # role 默认权重，再按 target_total 缩放
+    role_weight = {"opening": 4.0, "development": 6.0, "climax": 7.0, "closing": 4.0}
+    roles_seq: list[tuple[str, str]] = []
     for i in range(n):
         if i == 0:
-            role, theme = "opening", "开场钩子"
+            roles_seq.append(("opening", "开场钩子"))
         elif i == n - 1:
-            role, theme = "closing", "行动引导"
+            roles_seq.append(("closing", "行动引导"))
         elif i == climax_idx:
-            role, theme = "climax", "卖点高潮"
+            roles_seq.append(("climax", "卖点高潮"))
         else:
-            role, theme = "development", f"主体铺陈{i}"
+            roles_seq.append(("development", f"主体铺陈{i}"))
+
+    weight_sum = sum(role_weight[r] for r, _ in roles_seq) or 1.0
+    scale = target_total / weight_sum
+
+    secs: list[dict] = []
+    for i, (role, theme) in enumerate(roles_seq):
+        dur = round(max(2.0, min(30.0, role_weight[role] * scale)), 1)
         secs.append({
             "role": role,
             "theme": theme,
@@ -609,6 +625,7 @@ def _build_mock_adapted_sections_json(user_text: str) -> str:
                 f"承接上下段叙事节奏。"
             ),
             "source_section_indices": [min(i, max(0, n_src - 1))],
+            "duration_seconds": dur,
         })
     return json.dumps({"adapted_sections": secs}, ensure_ascii=False)
 

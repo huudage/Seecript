@@ -140,3 +140,55 @@ async def test_adapt_structure_fallback_when_manifest_empty():
     manifest = manifest.model_copy(update={"sections": []})
     adapted = await adapt_structure(manifest, brief="b", video_goal="g")
     assert adapted == [], "空 sections 应走 fallback 返回空"
+
+
+# ---------------- 时长归一化 + ComposeSettings 注入 ----------------
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("target_total", [15.0, 30.0, 60.0, 90.0])
+async def test_adapt_structure_durations_track_target_total(target_total):
+    """每段 duration_seconds 必须落在 schema 允许的 [2, 30] 区间；
+    总和必须贴近 settings.target_duration_seconds（±25% 兜底，含 mock + clamp 噪声）。"""
+    from app.schemas import ComposeSettings
+    manifest = _mini_manifest(4)
+    adapted = await adapt_structure(
+        manifest,
+        brief="测试主题",
+        video_goal="测试目的",
+        settings=ComposeSettings(target_duration_seconds=target_total),
+    )
+    assert adapted, "adapt_structure 应该返回至少一段"
+    durations = [sec.duration_seconds for sec in adapted]
+    for d in durations:
+        assert 2.0 <= d <= 30.0, f"段时长越界：{d}"
+    total = sum(durations)
+    # 允许 25% 偏差：clamp + 残差均摊后仍可能有少量误差，但不应跑飞
+    assert abs(total - target_total) / target_total <= 0.25, (
+        f"总时长偏离过大：want≈{target_total} got={total:.1f}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_adapt_structure_respects_settings_defaults():
+    """不传 settings 时按 ComposeSettings 默认值（target_total=30s）跑通。"""
+    manifest = _mini_manifest(4)
+    adapted = await adapt_structure(manifest, brief="b", video_goal="g")
+    assert adapted, "默认 settings 也应该返回结构"
+    total = sum(s.duration_seconds for s in adapted)
+    # 默认 30s，允许 25% 偏差
+    assert 22.0 <= total <= 38.0, f"默认 30s 偏差过大：{total:.1f}"
+
+
+def test_fallback_adaptation_scales_to_target_total():
+    """LLM 失败兜底也要按 target_total 缩放每段时长，而不是死写 4/6/7/4。"""
+    from app.services.agent.plan_agent import _fallback_adaptation
+    manifest = _mini_manifest(4)
+    adapted = _fallback_adaptation(manifest.sections, target_total=60.0)
+    assert len(adapted) == 4
+    total = sum(s.duration_seconds for s in adapted)
+    # role 默认权重 4+6+7+4=21 → 缩放后接近 60；clamp 后允许 ±30%
+    assert 42.0 <= total <= 78.0, f"fallback 缩放后偏离过大：{total:.1f}"
+    for sec in adapted:
+        assert 2.0 <= sec.duration_seconds <= 30.0
+

@@ -250,6 +250,11 @@ class SampleManifest(BaseModel):
 class DecomposeRequest(BaseModel):
     sample_id: str = Field(..., description="样例 ID；命中内置样例则走缓存，新视频走完整链路")
     video_type: VideoType = Field(default="marketing", description="视频类型（风格提示，影响包装；不影响段落结构）")
+    reference_asset_ids: list[str] = Field(
+        default_factory=list,
+        max_length=6,
+        description="用户素材库中的参考素材 id 列表（图/视频抽帧），喂给多模态 LLM 做风格/调性参考",
+    )
 
 
 class DecomposeSubmitResponse(BaseModel):
@@ -361,14 +366,45 @@ class GapFillRequest(BaseModel):
     )
 
 
+class GapFillAllRequest(BaseModel):
+    """`POST /api/gap/fill-all` —— 对 plan_id 下所有非 ok 缺口顺序触发 aigc。"""
+
+    plan_id: str
+    prompt_template: Optional[str] = Field(
+        default=None,
+        max_length=200,
+        description="可选自定义 prompt 模板，{requirement} 占位会被替换为 gap.requirement。",
+    )
+
+
+class GapFillAllResponse(BaseModel):
+    plan_id: str
+    fills: list["FillResult"] = Field(default_factory=list, description="成功生成的 fills，顺序与 gap 一致")
+    failed_gap_id: Optional[str] = Field(
+        default=None,
+        description="部分失败时第一个失败的 gap_id；None 表示全部成功。",
+    )
+    stopped_reason: Optional[str] = None
+
+
 class FillResult(BaseModel):
     gap_id: str
     action: FillAction
-    new_material_id: Optional[str] = Field(default=None, description="aigc 生成产物或 rerank 选中的素材")
+    new_material_id: Optional[str] = Field(default=None, description="aigc 最后一段 task_id 或 rerank 选中的素材")
     narration: Optional[str] = Field(default=None, description="copy 动作的补全文案")
     alternatives: list[str] = Field(
         default_factory=list,
         description="copy 动作 LLM 返回的备选文案，给前端三选一（普通采纳 / 删改 / 换一个）。",
+    )
+    video_urls: list[str] = Field(
+        default_factory=list,
+        description="aigc 链式生成产出的 N 段 CDN URL（按时序）。单段为 1 元素，>12s 走链式 N 段。",
+    )
+    cover_url: Optional[str] = Field(default=None, description="aigc 第一段封面 URL（前端预览缩略图）")
+    chunks_count: int = Field(default=0, description="aigc chunks 数量；0 表示非 aigc 或失败")
+    chunk_task_ids: list[str] = Field(
+        default_factory=list,
+        description="aigc 各 chunk 对应的 Seedance task_id；refresh 接口按此重试单段。",
     )
     note: Optional[str] = None
     status: GapStatus = "ok"
@@ -404,6 +440,12 @@ class AdaptedSection(BaseModel):
         description="改编自原样例哪些 shot index（用于 gap 缩略图反查）",
     )
     order: int = Field(..., description="段落顺序（从 0 开始）")
+    duration_seconds: float = Field(
+        default=4.0,
+        ge=2.0,
+        le=30.0,
+        description="LLM 决定的本段目标时长（秒），驱动 Scene.duration 与 AIGC 链式分段。",
+    )
 
 
 class Scene(BaseModel):
@@ -418,6 +460,10 @@ class Scene(BaseModel):
     in_point: float = Field(default=0.0, description="源素材内的入点（秒）")
     out_point: Optional[float] = Field(default=None, description="源素材内的出点；None 表示用到结尾")
     narration: Optional[str] = Field(default=None, description="本场口播文字（drawtext 基础字幕）")
+    aigc_video_urls: list[str] = Field(
+        default_factory=list,
+        description="source=aigc_t2v 时 Seedance 返回的 N 段 CDN URL；render pipeline 下载后 ffmpeg concat。",
+    )
 
     @model_validator(mode="before")
     @classmethod
@@ -442,10 +488,82 @@ class PackagingItem(BaseModel):
 
 
 class BGMConfig(BaseModel):
-    track_url: Optional[str] = None
-    volume: float = Field(default=0.6, ge=0.0, le=1.0)
-    fade_in: float = 0.0
-    fade_out: float = 0.0
+    bgm_asset_id: Optional[str] = Field(
+        default=None,
+        description="素材库中用户选定的 BGM Asset id；None=本次无 BGM",
+    )
+    track_url: Optional[str] = Field(
+        default=None,
+        description="实际混音用的音频 URL（/assets/... 或 /uploads/...）；plan.py 由 asset 反填",
+    )
+    volume: float = Field(default=0.35, ge=0.0, le=1.0)
+    fade_in: float = Field(default=1.5, ge=0.0, le=10.0)
+    fade_out: float = Field(default=2.0, ge=0.0, le=10.0)
+    start_offset: float = Field(
+        default=0.0,
+        ge=0.0,
+        description="BGM 从第几秒开始裁，用于把曲子 hook 对齐视频 climax；0=从头",
+    )
+    duck_with_voice: bool = Field(
+        default=True,
+        description="有口播段时 BGM 自动闪避（sidechain compress）",
+    )
+    duck_attenuation_db: float = Field(default=-9.0, ge=-30.0, le=0.0)
+
+
+# ---- 创作设置 ----------------------------------------------------------------
+
+TargetPlatform = Literal["douyin", "wechat", "xiaohongshu", "bilibili"]
+"""目标平台 —— 决定画幅 + 节奏 + 字幕风格。
+
+- douyin       抖音：9:16，强字幕，节奏紧凑
+- wechat       视频号：9:16，温和节奏
+- xiaohongshu  小红书：3:4 或 9:16，文艺克制
+- bilibili     B 站：16:9，叙事感
+"""
+
+
+ToneStyle = Literal["tight_hype", "calm_narrative", "casual_daily", "professional_cool"]
+"""整体调性 —— 影响 LLM 段落 prompt 倾向。
+
+- tight_hype          紧凑高燃：快剪 + 强情绪 + 必有 climax
+- calm_narrative      沉稳叙事：长镜头 + 余韵 + climax 可选
+- casual_daily        轻松日常：口语化 + 节奏自然
+- professional_cool   专业冷静：信息密度高 + 弱情绪 + 重数据
+"""
+
+
+class ComposeSettings(BaseModel):
+    """Compose 页用户配置 —— 与 brief/video_goal 一起驱动结构改编。
+
+    全部可选；前端折叠面板"高级设置"暴露。后端 plan_agent 把这些注入 prompt，
+    驱动 LLM 决定段时长 / 调性 / CTA / 关键词命中。
+    """
+
+    target_duration_seconds: float = Field(
+        default=30.0,
+        ge=10.0,
+        le=120.0,
+        description="目标总时长（秒），驱动每段 duration_seconds 分配。",
+    )
+    target_platform: TargetPlatform = Field(
+        default="douyin",
+        description="目标平台。决定画幅 + 节奏 + 字幕风格。",
+    )
+    tone: ToneStyle = Field(
+        default="tight_hype",
+        description="整体调性。影响 LLM 段落结构与口播倾向。",
+    )
+    cta: str = Field(
+        default="",
+        max_length=20,
+        description="核心 CTA 文案（≤20 字）。closing 段自动套用。",
+    )
+    keywords: list[str] = Field(
+        default_factory=list,
+        max_length=5,
+        description="必须出现的关键词（最多 5 个）。每段 narration 至少出现 1 个。",
+    )
 
 
 class Plan(BaseModel):
@@ -474,6 +592,10 @@ class Plan(BaseModel):
     main_track: list[Scene]
     packaging_track: list[PackagingItem] = Field(default_factory=list)
     bgm: BGMConfig = Field(default_factory=BGMConfig)
+    settings: ComposeSettings = Field(
+        default_factory=ComposeSettings,
+        description="创作设置回写。供 render/edit/packaging 复用。",
+    )
 
 
 class PlanBuildRequest(BaseModel):
@@ -489,8 +611,21 @@ class PlanBuildRequest(BaseModel):
         max_length=500,
         description="视频要求与目的（受众/时长/调性等），与 brief 共同驱动结构改编。",
     )
+    settings: ComposeSettings = Field(
+        default_factory=ComposeSettings,
+        description="创作设置（目标时长/平台/调性/CTA/关键词），驱动 plan_agent。",
+    )
     selected_materials: list[str] = Field(default_factory=list, description="用户挑中的 material_id 列表")
     fills: list[FillResult] = Field(default_factory=list, description="已确认的缺口补全结果")
+    bgm_asset_id: Optional[str] = Field(
+        default=None,
+        description="用户素材库 BGM Asset id；None=本次无 BGM（渲染阶段跳过混音）",
+    )
+    reference_asset_ids: list[str] = Field(
+        default_factory=list,
+        max_length=6,
+        description="用户素材库中的参考素材 id 列表，喂给 plan_agent.adapt_structure 多模态 prompt",
+    )
     variant: Variant = "A"
 
 
@@ -620,3 +755,66 @@ class ASRResponse(BaseModel):
     duration_seconds: float
     provider: str
     elapsed_ms: int
+
+
+# =========================================================================
+# Asset Library — 用户长期素材库（BGM + 参考图 + 参考视频）
+# =========================================================================
+# 与 Material（一次 session 内的短期素材）严格分离：
+# - Material 的生命周期跟 session 走，被剪进 main_track；
+# - Asset 持久化在 var/assets/，承担 BGM 混音 / 多模态参考两类用途，**不一定进视频**。
+
+AssetKind = Literal["bgm", "reference_image", "reference_video"]
+"""资产类型：
+- bgm              MP3/WAV/M4A 等，渲染阶段供 ffmpeg mix_bgm 使用
+- reference_image  JPG/PNG/WEBP，作为多模态 LLM 的风格/调性/结构参考
+- reference_video  MP4/MOV/WEBM，上传后抽 8-12 关键帧作为 reference_image 列表用
+"""
+
+AssetStatus = Literal["processing", "ready", "failed"]
+"""上传后处理状态：processing → 后台抽元数据/缩略图；ready → 可用；failed → 看 error 字段。"""
+
+
+class Asset(BaseModel):
+    """用户素材库中的一项资产。"""
+
+    asset_id: str = Field(..., description="ass-xxxxxxxx 格式")
+    owner: str = Field(default="local", description="单机版固定 local；留多用户扩展位")
+    kind: AssetKind
+
+    # 文件
+    file_name: str = Field(..., description="上传时的原文件名（仅展示）")
+    file_url: str = Field(..., description="可访问 URL，例如 /assets/local/bgm/ass-xxx.mp3")
+    file_size: int = Field(..., ge=0)
+    content_hash: str = Field(..., description="sha256，上传去重")
+    mime: str
+
+    # 用户标注
+    title: str = Field(default="", description="展示标题；默认用 file_name 截断")
+    description: str = Field(default="", max_length=500)
+    tags: list[str] = Field(default_factory=list, max_length=12)
+
+    # 类型特定元数据（不强 schema 化，避免每加一个类型就动 Asset 主体）
+    # bgm:             {duration_seconds, tempo_bpm?, peak_at_seconds?, sample_rate, channels}
+    # reference_image: {width, height, thumbnail_url}
+    # reference_video: {duration_seconds, width, height, fps, thumbnail_url, frame_urls: [...]}
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+    status: AssetStatus = "processing"
+    error: Optional[str] = None
+    created_at: float
+    last_used_at: Optional[float] = None
+    use_count: int = Field(default=0, ge=0)
+
+
+class AssetUpdateRequest(BaseModel):
+    """PATCH /api/asset/{id}：用户只能改这三个用户态字段。"""
+
+    title: Optional[str] = Field(default=None, max_length=120)
+    description: Optional[str] = Field(default=None, max_length=500)
+    tags: Optional[list[str]] = Field(default=None, max_length=12)
+
+
+class AssetListResponse(BaseModel):
+    items: list[Asset]
+    total: int

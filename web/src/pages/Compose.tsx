@@ -3,7 +3,9 @@ import { Link, useNavigate } from 'react-router-dom'
 
 import { api } from '@/api/client'
 import { AdaptedSectionList } from '@/components/compose/AdaptedSectionList'
+import { BatchAigcButton } from '@/components/compose/BatchAigcButton'
 import { BriefInput } from '@/components/compose/BriefInput'
+import { ComposeSettingsPanel } from '@/components/compose/ComposeSettingsPanel'
 import { FillAigcPanel } from '@/components/compose/FillAigcPanel'
 import { FillCopyPanel } from '@/components/compose/FillCopyPanel'
 import { FillRerankPanel } from '@/components/compose/FillRerankPanel'
@@ -23,6 +25,7 @@ import type {
   FillResult,
   Gap,
   GapDetectRequest,
+  GapFillAllResponse,
   GapFillRequest,
   MaterialUploadResponse,
   Plan,
@@ -49,6 +52,8 @@ export default function ComposePage() {
   const setBrief = useSessionStore((s) => s.setBrief)
   const videoGoal = useSessionStore((s) => s.videoGoal)
   const setVideoGoal = useSessionStore((s) => s.setVideoGoal)
+  const settings = useSessionStore((s) => s.settings)
+  const setSettings = useSessionStore((s) => s.setSettings)
   const setSession = useSessionStore((s) => s.setSession)
   const appendMaterials = useSessionStore((s) => s.appendMaterials)
   const removeMaterial = useSessionStore((s) => s.removeMaterial)
@@ -150,6 +155,7 @@ export default function ComposePage() {
           session_id: sessionId ?? 'no-session',
           brief: brief.trim() || null,
           video_goal: videoGoal.trim() || null,
+          settings,
           selected_materials: sortedMaterials.map((m) => m.material_id),
           fills: extraFills ?? fills,
           variant: 'A',
@@ -205,7 +211,7 @@ export default function ComposePage() {
         setAnalyzing(false)
       }
     },
-    [brief, currentProjectId, fills, selectedSampleId, sessionId, setGaps, setPlan, sortedMaterials, upsertProject, videoGoal],
+    [brief, currentProjectId, fills, selectedSampleId, sessionId, setGaps, setPlan, settings, sortedMaterials, upsertProject, videoGoal],
   )
 
   const handleAnalyze = useCallback(() => void runAnalyze(), [runAnalyze])
@@ -267,6 +273,34 @@ export default function ComposePage() {
     await runFill(selectedGap, 'copy', { prompt_hint: selectedGap.requirement })
   }, [runFill, selectedGap])
 
+  const pendingGapsCount = useMemo(
+    () =>
+      gaps.filter(
+        (g) => g.status !== 'ok' && !fills.some((f) => f.gap_id === g.gap_id && f.status === 'ok'),
+      ).length,
+    [gaps, fills],
+  )
+
+  const handleBatchDone = useCallback(
+    async (resp: GapFillAllResponse) => {
+      if (!resp.fills.length) {
+        if (resp.stopped_reason) setError(resp.stopped_reason)
+        return
+      }
+      // 把所有批量 fills 合并进 store，然后重跑分析刷新一次
+      const merged = [
+        ...fills.filter((f) => !resp.fills.some((r) => r.gap_id === f.gap_id)),
+        ...resp.fills,
+      ]
+      resp.fills.forEach(upsertFill)
+      await runAnalyze(merged)
+      if (resp.failed_gap_id && resp.stopped_reason) {
+        setError(`批量生成在 ${resp.failed_gap_id} 停止：${resp.stopped_reason}`)
+      }
+    },
+    [fills, runAnalyze, upsertFill],
+  )
+
   /* ----------------------------- guard ----------------------------- */
 
   if (!selectedSampleId) {
@@ -309,6 +343,8 @@ export default function ComposePage() {
           />
 
           <VideoGoalInput value={videoGoal} onChange={setVideoGoal} />
+
+          <ComposeSettingsPanel value={settings} onChange={setSettings} />
 
           <div className="space-y-2">
             <div className="flex items-center justify-between">
@@ -376,13 +412,20 @@ export default function ComposePage() {
           </div>
 
           <div className="space-y-2">
-            <div className="flex items-center justify-between">
+            <div className="flex items-center justify-between gap-2">
               <h2 className="text-sm font-semibold">
                 适配结构（{plan?.adapted_sections?.length ?? 0} 段 / 缺口 {gaps.length}）
               </h2>
-              {fills.length > 0 && (
-                <span className="text-[10px] text-muted-foreground">已采纳 {fills.length}</span>
-              )}
+              <div className="flex items-center gap-2">
+                {fills.length > 0 && (
+                  <span className="text-[10px] text-muted-foreground">已采纳 {fills.length}</span>
+                )}
+                <BatchAigcButton
+                  planId={plan?.plan_id ?? null}
+                  pendingCount={pendingGapsCount}
+                  onDone={handleBatchDone}
+                />
+              </div>
             </div>
             <AdaptedSectionList
               adaptedSections={plan?.adapted_sections ?? []}

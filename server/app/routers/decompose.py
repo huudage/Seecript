@@ -57,6 +57,7 @@ async def _run_decompose(
     sample_id: str,
     video_type: VideoType,
     video_path: Optional[str] = None,
+    reference_asset_ids: Optional[list[str]] = None,
 ) -> None:
     try:
         await decompose(
@@ -64,6 +65,7 @@ async def _run_decompose(
             job_id=job_id,
             video_type=video_type,
             video_path=video_path,
+            reference_asset_ids=reference_asset_ids,
         )
     except Exception as exc:  # pragma: no cover
         log.exception("[%s] decompose failed: %s", job_id, exc)
@@ -81,6 +83,7 @@ async def submit_decompose(req: DecomposeRequest, bg: BackgroundTasks) -> Decomp
             "sample_id": req.sample_id,
             "video_type": req.video_type,
             "video_path": str(real_path) if real_path else None,
+            "reference_asset_ids": list(req.reference_asset_ids or []),
         },
     )
     bg.add_task(
@@ -89,6 +92,7 @@ async def submit_decompose(req: DecomposeRequest, bg: BackgroundTasks) -> Decomp
         req.sample_id,
         req.video_type,
         str(real_path) if real_path else None,
+        list(req.reference_asset_ids or []),
     )
     return DecomposeSubmitResponse(job_id=job_id)
 

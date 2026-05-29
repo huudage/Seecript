@@ -24,7 +24,7 @@ from fastapi.staticfiles import StaticFiles
 
 from . import __version__
 from .config import get_settings
-from .routers import asr, decompose, edit, gap, library, material, packaging, plan, render
+from .routers import asr, asset, decompose, edit, gap, library, material, packaging, plan, render
 from .schemas import ErrorResponse, HealthResponse
 
 
@@ -142,6 +142,7 @@ def create_app() -> FastAPI:
     app.include_router(packaging.router, prefix="/api", tags=["packaging"])
     app.include_router(render.router, prefix="/api", tags=["render"])
     app.include_router(edit.router, prefix="/api", tags=["edit"])
+    app.include_router(asset.router, prefix="/api", tags=["asset"])
 
     # ---- Static: 样例素材 ----
     # 把 server/samples/ 暴露成 /samples/...；前端 cover_url / shot 缩略图 / video.mp4
@@ -166,6 +167,12 @@ def create_app() -> FastAPI:
     outputs_dir = settings.log_dir.parent / "var" / "outputs"
     outputs_dir.mkdir(parents=True, exist_ok=True)
     app.mount("/outputs", StaticFiles(directory=str(outputs_dir)), name="outputs")
+
+    # /assets/{owner}/{kind}/...  → server/var/assets/...
+    # 用户长期素材库：BGM、参考图、参考视频抽帧。
+    assets_dir = settings.log_dir.parent / "var" / "assets"
+    assets_dir.mkdir(parents=True, exist_ok=True)
+    app.mount("/assets", StaticFiles(directory=str(assets_dir)), name="assets")
 
     return app
 

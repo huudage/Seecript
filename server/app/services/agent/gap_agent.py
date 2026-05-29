@@ -1,26 +1,27 @@
 """缺口识别与补全 Agent。
 
 两个核心函数：
-- detect_gaps(manifest, materials) → list[Gap]
-    简化版槽位匹配：按 section.role + slot 顺位枚举样例需求，挨个找匹配的 user material。
-    匹配规则（阶段 3 简化版）：
-      * 推荐 role 命中 → status=ok
-      * role 不一致但媒体类型可用 → status=warn
-      * 没有任何素材可用 → status=miss
-    现在以 SectionRole 为单位（opening/development/climax/closing），不再按 video_type 三选一。
+- detect_gaps(adapted_sections, manifest, materials) → list[Gap]
 - fill_gap(gap, action, params) → FillResult
     分发到 rerank（纯 Python） / copy（LLM 文案） / aigc（Seedance T2V 短片生成）。
-    aigc 路径走 doubao-seedance-2-0-fast-260128：submit → 轮询 → 返回 task_id 作为新素材引用。
+    aigc 路径会读 AdaptedSection.duration_seconds：>12s 走链式 N 段，用前一段尾帧驱动下一段
+    首帧，输出 N 个 video_urls。
 
 阶段 3 此版本足以驱动前端 UI；阶段 5 比赛前再做槽位匹配的真算法（cos-sim + role 推荐 + theme 语义匹配）。
 """
 from __future__ import annotations
 
 import asyncio
+import base64
 import logging
+import math
+import mimetypes
 import time
 import uuid
-from typing import Any
+from pathlib import Path
+from typing import Any, Optional
+
+import httpx
 
 from ..llm_client import get_llm_client
 from ..t2v_client import T2VError, get_t2v_client
@@ -37,6 +38,9 @@ from ...schemas import (
 log = logging.getLogger("seecript.agent.gap")
 
 
+SEEDANCE_MAX_SECONDS = 12
+
+
 _COPY_SYSTEM = (
     "你是短视频口播作者。根据『槽位需求』和『可参考素材标签』，"
     "生成一句口语化的中文口播主推文案（不超过 40 字），同时再写 2 句风格不同的备选。"
@@ -44,13 +48,9 @@ _COPY_SYSTEM = (
 )
 
 
-# 给定 section role 的「重要度」—— 影响 Gap.impact 字段。
-# 开场/收尾/高潮 这三类都算 high；development（铺陈/主体）算 medium。
 _HIGH_IMPACT_ROLES: set[SectionRole] = {"opening", "climax", "closing"}
 
 
-# 段落 role → 槽位语义模板。和旧 _SECTION_REQUIREMENT_HINTS 等价，但只剩 4 个 role；
-# theme 在 _slot_requirement 里以前缀方式叠加，反映本段真实在讲什么。
 _ROLE_REQUIREMENT_HINTS: dict[SectionRole, str] = {
     "opening": "开场 · 钩子/氛围铺垫（强构图近景或大字标题）",
     "development": "主体铺陈 · 演示/对比/信息展开（中景或叙事镜头）",
@@ -263,89 +263,269 @@ async def fill_gap(gap: Gap, action: FillAction, params: dict[str, Any]) -> Fill
 
 
 async def _fill_with_seedance(gap: Gap, params: dict[str, Any]) -> FillResult:
-    """调 Seedance T2V 生成 5-8s 短片填补槽位。
+    """调 Seedance T2V 生成填补槽位。
 
-    流程：submit → 轮询 query → 返回 task_id 作为 new_material_id。
-    轮询超时（默认 180s）后返回 warn + task_id，前端可基于 task_id 继续刷新或重试。
+    若 params['duration_seconds'] > SEEDANCE_MAX_SECONDS（12s），自动切 N 个等长 chunk，
+    顺序生成；每个 chunk 用上一段尾帧作首帧实现画面延续。
+
+    返回 FillResult：
+    - video_urls：N 段 CDN URL（按时序）
+    - cover_url：第一段封面（前端预览）
+    - chunks_count：N
+    - chunk_task_ids：每段对应的 Seedance task_id，refresh 接口按此重试单段
+    - new_material_id：首段 task_id，兼容旧前端
     """
-    t2v = get_t2v_client()
-    prompt = params.get("prompt") or f"短视频画面：{gap.requirement}"
-    duration_seconds = int(params.get("duration_seconds") or 5)
-    first_frame = params.get("first_frame_url")
-    last_frame = params.get("last_frame_url")
-    reference_images = params.get("reference_images") or None
-    reference_video = params.get("reference_video_url")
-    reference_audio = params.get("reference_audio_url")
-    ratio = params.get("ratio") or params.get("size")
-    if ratio and "x" in str(ratio):
-        ratio = None
-    generate_audio = params.get("generate_audio")
-    watermark = params.get("watermark")
+    prompt = (params.get("prompt") or "").strip() or f"短视频画面：{gap.requirement}"
+    requested = float(params.get("duration_seconds") or 5.0)
+    requested = max(2.0, min(60.0, requested))
+
+    # 分段策略：均分到每段 ≤12s
+    n_chunks = max(1, math.ceil(requested / SEEDANCE_MAX_SECONDS))
+    per_chunk = max(2.0, min(float(SEEDANCE_MAX_SECONDS), requested / n_chunks))
+
+    base_params: dict[str, Any] = {
+        "first_frame": params.get("first_frame_url"),
+        "last_frame": params.get("last_frame_url"),
+        "reference_images": params.get("reference_images") or None,
+        "reference_video": params.get("reference_video_url"),
+        "reference_audio": params.get("reference_audio_url"),
+        "ratio": _normalize_ratio(params.get("ratio") or params.get("size")),
+        "generate_audio": params.get("generate_audio"),
+        "watermark": params.get("watermark"),
+    }
     poll_interval = float(params.get("poll_interval_seconds") or 4.0)
     max_wait = float(params.get("max_wait_seconds") or 180.0)
 
-    try:
-        submit = await t2v.submit(
-            prompt=prompt,
-            first_frame=first_frame,
-            last_frame=last_frame,
-            reference_images=reference_images,
-            reference_video=reference_video,
-            reference_audio=reference_audio,
-            duration_seconds=duration_seconds,
-            ratio=ratio,
-            generate_audio=generate_audio,
-            watermark=watermark,
+    log.info(
+        "[gap-fill] %s seedance: requested=%.1fs → %d chunks × %.1fs",
+        gap.gap_id, requested, n_chunks, per_chunk,
+    )
+
+    chunk_results = await _generate_chunks(
+        prompt=prompt,
+        n_chunks=n_chunks,
+        per_chunk_seconds=int(round(per_chunk)),
+        base_params=base_params,
+        poll_interval=poll_interval,
+        max_wait=max_wait,
+    )
+
+    return _build_fill_result(gap, chunk_results, n_chunks)
+
+
+async def _generate_chunks(
+    *,
+    prompt: str,
+    n_chunks: int,
+    per_chunk_seconds: int,
+    base_params: dict[str, Any],
+    poll_interval: float,
+    max_wait: float,
+) -> list[dict[str, Any]]:
+    """顺序生成 N 个 chunk；前一段的尾帧（base64 data URL）作为后一段 first_frame。
+
+    每个元素：{status, task_id, video_url, cover_url, fail_reason, started, ended}
+    出错的 chunk 立刻终止后续生成，但已生成的 chunk 仍保留。
+    """
+    t2v = get_t2v_client()
+    results: list[dict[str, Any]] = []
+    prev_tail_data_url: Optional[str] = None
+
+    for i in range(n_chunks):
+        first_frame = prev_tail_data_url or base_params.get("first_frame")
+        # 链式生成时只有最后一段才允许带 last_frame
+        last_frame = base_params.get("last_frame") if i == n_chunks - 1 else None
+        chunk_prompt = (
+            prompt if i == 0
+            else f"{prompt}（第 {i + 1}/{n_chunks} 段，画面自然衔接前段尾帧，保持构图与色调一致）"
         )
-    except T2VError as exc:
-        log.warning("[gap-fill] t2v submit failed: %s", exc)
+        started = time.time()
+        try:
+            submit = await t2v.submit(
+                prompt=chunk_prompt,
+                first_frame=first_frame,
+                last_frame=last_frame,
+                reference_images=base_params.get("reference_images") if i == 0 else None,
+                reference_video=base_params.get("reference_video"),
+                reference_audio=base_params.get("reference_audio") if i == 0 else None,
+                duration_seconds=per_chunk_seconds,
+                ratio=base_params.get("ratio"),
+                generate_audio=base_params.get("generate_audio"),
+                watermark=base_params.get("watermark"),
+            )
+        except T2VError as exc:
+            log.warning("[gap-fill] chunk %d submit failed: %s", i + 1, exc)
+            results.append({
+                "status": "failed",
+                "task_id": None,
+                "video_url": None,
+                "cover_url": None,
+                "fail_reason": f"submit: {exc}",
+                "elapsed": int(time.time() - started),
+            })
+            break
+
+        task_id = submit.task_id
+        last_query: Optional[Any] = None
+        timed_out = False
+        while True:
+            try:
+                q = await t2v.query(task_id)
+            except T2VError as exc:
+                log.warning("[gap-fill] chunk %d query failed task=%s: %s", i + 1, task_id, exc)
+                results.append({
+                    "status": "warn",
+                    "task_id": task_id,
+                    "video_url": None,
+                    "cover_url": None,
+                    "fail_reason": f"query: {exc}",
+                    "elapsed": int(time.time() - started),
+                })
+                break
+            last_query = q
+            if q.status == "succeeded":
+                results.append({
+                    "status": "succeeded",
+                    "task_id": task_id,
+                    "video_url": q.video_url,
+                    "cover_url": q.cover_url,
+                    "fail_reason": None,
+                    "elapsed": int(time.time() - started),
+                })
+                # 抽尾帧给下一段
+                if i < n_chunks - 1 and q.video_url:
+                    try:
+                        prev_tail_data_url = await _extract_tail_frame_data_url(q.video_url)
+                    except Exception as exc:
+                        log.warning("[gap-fill] tail-frame extract failed: %s → 下段无首帧约束", exc)
+                        prev_tail_data_url = None
+                break
+            if q.status == "failed":
+                results.append({
+                    "status": "failed",
+                    "task_id": task_id,
+                    "video_url": None,
+                    "cover_url": None,
+                    "fail_reason": q.fail_reason or "unknown",
+                    "elapsed": int(time.time() - started),
+                })
+                break
+            if time.time() - started > max_wait:
+                timed_out = True
+                results.append({
+                    "status": "warn",
+                    "task_id": task_id,
+                    "video_url": None,
+                    "cover_url": None,
+                    "fail_reason": f"timeout after {int(max_wait)}s ({q.status})",
+                    "elapsed": int(time.time() - started),
+                })
+                break
+            await asyncio.sleep(poll_interval)
+
+        # 当前 chunk 没成功就停（无法抽尾帧给下一段；且失败应及时反馈用户）
+        if not results or results[-1]["status"] != "succeeded":
+            break
+        # 链式时如果没拿到尾帧 url 也无法继续
+        if i < n_chunks - 1 and not prev_tail_data_url:
+            log.warning("[gap-fill] 链式中断：第 %d 段无尾帧可用，停止生成", i + 1)
+            break
+
+    return results
+
+
+def _build_fill_result(gap: Gap, chunks: list[dict[str, Any]], expected: int) -> FillResult:
+    """把 chunks 折叠成 FillResult。"""
+    succeeded_urls = [c["video_url"] for c in chunks if c.get("status") == "succeeded" and c.get("video_url")]
+    chunk_task_ids = [c["task_id"] for c in chunks if c.get("task_id")]
+    cover_url = next((c.get("cover_url") for c in chunks if c.get("cover_url")), None)
+    total_elapsed = sum(int(c.get("elapsed") or 0) for c in chunks)
+
+    if not chunks:
         return FillResult(
             gap_id=gap.gap_id, action="aigc",
-            status="warn", note=f"Seedance 提交失败：{exc}",
+            status="warn",
+            note="Seedance 未提交任何任务（参数错误？）",
+            chunks_count=0,
         )
 
-    task_id = submit.task_id
-    started = time.time()
-    last_status = "pending"
-    while True:
-        try:
-            q = await t2v.query(task_id)
-        except T2VError as exc:
-            log.warning("[gap-fill] t2v query failed: %s", exc)
-            return FillResult(
-                gap_id=gap.gap_id, action="aigc",
-                new_material_id=task_id,
-                status="warn",
-                note=f"Seedance 查询失败：{exc}（task={task_id}）",
-            )
-        last_status = q.status
-        if q.status == "succeeded":
-            return FillResult(
-                gap_id=gap.gap_id, action="aigc",
-                new_material_id=task_id, status="ok",
-                note=f"Seedance 生成完成（{q.provider}，{int(time.time() - started)}s）",
-            )
-        if q.status == "failed":
-            return FillResult(
-                gap_id=gap.gap_id, action="aigc",
-                new_material_id=task_id, status="warn",
-                note=f"Seedance 生成失败：{q.fail_reason or 'unknown'}",
-            )
-        if time.time() - started > max_wait:
-            return FillResult(
-                gap_id=gap.gap_id, action="aigc",
-                new_material_id=task_id, status="warn",
-                note=f"Seedance 仍在渲染（{last_status}，已 {int(time.time() - started)}s），请稍后刷新（task={task_id}）",
-            )
-        await asyncio.sleep(poll_interval)
+    last = chunks[-1]
+    if len(succeeded_urls) == expected:
+        return FillResult(
+            gap_id=gap.gap_id, action="aigc",
+            new_material_id=chunk_task_ids[0] if chunk_task_ids else None,
+            status="ok",
+            video_urls=succeeded_urls,
+            cover_url=cover_url,
+            chunks_count=expected,
+            chunk_task_ids=chunk_task_ids,
+            note=(
+                f"Seedance 链式生成完成（{expected} 段，{total_elapsed}s）"
+                if expected > 1
+                else f"Seedance 生成完成（{total_elapsed}s）"
+            ),
+        )
+    # 部分成功 / 全失败
+    note = (
+        f"Seedance 仅完成 {len(succeeded_urls)}/{expected} 段，最后一段：{last.get('fail_reason') or last.get('status')}"
+    )
+    return FillResult(
+        gap_id=gap.gap_id, action="aigc",
+        new_material_id=chunk_task_ids[0] if chunk_task_ids else None,
+        status="warn",
+        video_urls=succeeded_urls,
+        cover_url=cover_url,
+        chunks_count=len(succeeded_urls),
+        chunk_task_ids=chunk_task_ids,
+        note=note,
+    )
+
+
+def _normalize_ratio(ratio: Optional[str]) -> Optional[str]:
+    if not ratio:
+        return None
+    if "x" in str(ratio).lower():
+        return None
+    return str(ratio)
+
+
+async def _extract_tail_frame_data_url(video_url: str, *, timeout: float = 60.0) -> str:
+    """下载 chunk 视频到临时目录，ffmpeg 抽倒数 0.5s 帧，转 base64 data URL。"""
+    from ..video import ffmpeg as ffmpeg_svc  # 延迟导入避免循环依赖
+
+    if not ffmpeg_svc.ffmpeg_available():
+        raise RuntimeError("ffmpeg unavailable")
+
+    tmp_root = Path("server/var/seedance_chain_tmp")
+    tmp_root.mkdir(parents=True, exist_ok=True)
+    base = tmp_root / f"chunk-{uuid.uuid4().hex[:8]}"
+    mp4_path = base.with_suffix(".mp4")
+    jpg_path = base.with_suffix(".jpg")
+
+    async with httpx.AsyncClient(timeout=timeout, follow_redirects=True) as client:
+        resp = await client.get(video_url)
+        resp.raise_for_status()
+        mp4_path.write_bytes(resp.content)
+
+    info = ffmpeg_svc.probe(mp4_path)
+    t = max(0.0, info.duration_seconds - 0.5)
+    await asyncio.to_thread(ffmpeg_svc.extract_frame, mp4_path, t, jpg_path)
+
+    mime, _ = mimetypes.guess_type(jpg_path.name)
+    mime = mime or "image/jpeg"
+    payload = base64.b64encode(jpg_path.read_bytes()).decode("ascii")
+    # 清理 mp4（保留 jpg 不重要——临时目录会随重启清空）
+    try:
+        mp4_path.unlink(missing_ok=True)
+    except Exception:
+        pass
+    return f"data:{mime};base64,{payload}"
 
 
 async def refresh_aigc_task(gap: Gap, task_id: str) -> FillResult:
     """前端轮询入口：根据已有 task_id 再去查 Seedance 一次状态。
 
-    - succeeded → 回写 FillResult(status=ok, new_material_id=task_id)
-    - failed    → status=warn + fail_reason
-    - pending/processing → 仍 warn，note 带最新状态，前端可再点一次刷新
+    单 chunk 接口；批量 refresh 应该走 /gap/fill 重新生成。
     """
     t2v = get_t2v_client()
     try:
@@ -355,6 +535,7 @@ async def refresh_aigc_task(gap: Gap, task_id: str) -> FillResult:
         return FillResult(
             gap_id=gap.gap_id, action="aigc",
             new_material_id=task_id, status="warn",
+            chunks_count=0,
             note=f"Seedance 查询失败：{exc}（task={task_id}，请稍后再试）",
         )
 
@@ -362,16 +543,24 @@ async def refresh_aigc_task(gap: Gap, task_id: str) -> FillResult:
         return FillResult(
             gap_id=gap.gap_id, action="aigc",
             new_material_id=task_id, status="ok",
+            video_urls=[q.video_url] if q.video_url else [],
+            cover_url=q.cover_url,
+            chunks_count=1 if q.video_url else 0,
+            chunk_task_ids=[task_id],
             note=f"Seedance 生成完成（{q.provider}）",
         )
     if q.status == "failed":
         return FillResult(
             gap_id=gap.gap_id, action="aigc",
             new_material_id=task_id, status="warn",
+            chunks_count=0,
+            chunk_task_ids=[task_id],
             note=f"Seedance 生成失败：{q.fail_reason or 'unknown'}",
         )
     return FillResult(
         gap_id=gap.gap_id, action="aigc",
         new_material_id=task_id, status="warn",
+        chunks_count=0,
+        chunk_task_ids=[task_id],
         note=f"Seedance 仍在 {q.status}，请稍后再点刷新（task={task_id}）",
     )

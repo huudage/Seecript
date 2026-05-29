@@ -3,15 +3,12 @@
 `POST /api/gap/detect`  根据 plan_id（反查 sample manifest）+ session_id（反查用户素材）
                         算槽位匹配，返回 Gap[]；结果存进 GapStore，让 fill 直接 lookup。
 `POST /api/gap/fill`    按 gap_id 从 GapStore 拿 Gap，分发到 rerank / copy / aigc。
-
-修复点（相对于阶段 3）：
-- plan_id 不再被忽略——通过 plan_store 反查真 sample_id；
-- session_id 反查 MaterialStore 拿真素材，空 session 才走 mock；
-- detect 结果持久化，fill 不再重跑 detect。
+`POST /api/gap/fill-all` 一键 AI 生成所有 status≠ok 的 gap（顺序执行，遇错即停）。
 """
 from __future__ import annotations
 
 import logging
+from typing import Optional
 
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
@@ -22,6 +19,8 @@ from ..schemas import (
     FillResult,
     Gap,
     GapDetectRequest,
+    GapFillAllRequest,
+    GapFillAllResponse,
     GapFillRequest,
     Material,
     SampleManifest,
@@ -49,11 +48,7 @@ def _mock_materials() -> list[Material]:
 
 
 def _resolve_manifest(plan_id: str) -> SampleManifest:
-    """plan_id → 真 sample_id → manifest；优先真预解析 manifest.json，None 时才回落 stub。
-
-    修复早期 bug：以前任何 sample 都直接走 _stub_manifest，导致 plan 阶段已经用真模型改编的
-    分镜结构在 gap 阶段被 stub 覆盖，前端缩略图全是 stub 占位。
-    """
+    """plan_id → 真 sample_id → manifest；优先真预解析 manifest.json，None 时才回落 stub。"""
     plan = plan_store.get(plan_id)
     if plan is None:
         log.warning("[gap] plan_id=%s 未找到，回退 _LIBRARY[0]", plan_id)
@@ -64,10 +59,7 @@ def _resolve_manifest(plan_id: str) -> SampleManifest:
 
 
 def _legacy_wrap(manifest: SampleManifest) -> list[AdaptedSection]:
-    """老 plan 没有 adapted_sections——把 manifest.sections 1:1 包成 AdaptedSection 让 gap 流程能跑。
-
-    content_description 留 fallback 占位；section_id 按 manifest 顺序生成。
-    """
+    """老 plan 没有 adapted_sections——把 manifest.sections 1:1 包成 AdaptedSection 让 gap 流程能跑。"""
     out: list[AdaptedSection] = []
     for i, sec in enumerate(manifest.sections):
         out.append(AdaptedSection(
@@ -78,6 +70,7 @@ def _legacy_wrap(manifest: SampleManifest) -> list[AdaptedSection]:
             source_section_indices=[i],
             source_shot_indices=list(sec.shot_indices or []),
             order=i,
+            duration_seconds=4.0,
         ))
     return out
 
@@ -91,6 +84,31 @@ def _resolve_materials(session_id: str | None, allow_mock: bool) -> list[Materia
     if allow_mock:
         return _mock_materials()
     return []
+
+
+def _section_duration_for_gap(gap: Gap) -> Optional[float]:
+    """根据 gap.section_id 反查所属 AdaptedSection.duration_seconds，找不到返回 None。"""
+    if not gap.section_id:
+        return None
+    # 暴力扫描 plan_store——gap_store 不存 plan_id，靠 gap_id 反查 plan 麻烦，干脆遍历
+    for plan_id in plan_store.all_ids():
+        plan = plan_store.get(plan_id)
+        if not plan:
+            continue
+        sec = next((s for s in plan.adapted_sections if s.section_id == gap.section_id), None)
+        if sec:
+            return float(sec.duration_seconds)
+    return None
+
+
+def _inject_section_duration(gap: Gap, params: dict) -> dict:
+    """若 caller 未指定 duration_seconds，从 gap.section_id 反查 AdaptedSection 的 duration_seconds。"""
+    out = dict(params or {})
+    if "duration_seconds" not in out:
+        dur = _section_duration_for_gap(gap)
+        if dur is not None and dur > 0:
+            out["duration_seconds"] = dur
+    return out
 
 
 @router.post("/gap/detect", response_model=list[Gap])
@@ -114,7 +132,61 @@ async def fill(req: GapFillRequest) -> FillResult:
             status_code=404,
             detail=f"gap not found: {req.gap_id}（请先调用 /gap/detect）",
         )
-    return await fill_gap(gap, req.action, req.params)
+    params = _inject_section_duration(gap, req.params) if req.action == "aigc" else req.params
+    return await fill_gap(gap, req.action, params)
+
+
+@router.post("/gap/fill-all", response_model=GapFillAllResponse)
+async def fill_all(req: GapFillAllRequest) -> GapFillAllResponse:
+    """一键 AI 生成：把 plan 下所有 status≠ok 的 gap 顺序走 Seedance aigc。
+
+    顺序执行（保证 prompt 链式生成时机正确），遇错即停（不浪费配额）。
+    """
+    plan = plan_store.get(req.plan_id)
+    if plan is None:
+        raise HTTPException(status_code=404, detail=f"plan not found: {req.plan_id}")
+    all_gaps = gap_store.list_by_plan(req.plan_id)
+    if not all_gaps:
+        return GapFillAllResponse(
+            plan_id=req.plan_id, fills=[],
+            stopped_reason="该 plan 没有缺口（请先 /gap/detect）",
+        )
+    pending = [g for g in all_gaps if g.status != "ok"]
+    if not pending:
+        return GapFillAllResponse(
+            plan_id=req.plan_id, fills=[],
+            stopped_reason="所有缺口已 ok，无需生成",
+        )
+
+    log.info("[gap-fill-all] plan=%s pending=%d", req.plan_id, len(pending))
+
+    fills: list[FillResult] = []
+    failed_gap_id: Optional[str] = None
+    stopped_reason: Optional[str] = None
+    template = (req.prompt_template or "").strip()
+
+    for gap in pending:
+        prompt = template or f"短视频画面：{gap.requirement}"
+        params = _inject_section_duration(gap, {"prompt": prompt})
+        try:
+            result = await fill_gap(gap, "aigc", params)
+        except Exception as exc:
+            log.exception("[gap-fill-all] gap=%s raised", gap.gap_id)
+            failed_gap_id = gap.gap_id
+            stopped_reason = f"生成异常：{exc}"
+            break
+        fills.append(result)
+        if result.status != "ok":
+            failed_gap_id = gap.gap_id
+            stopped_reason = f"{gap.gap_id} 失败：{result.note or result.status}"
+            break
+
+    return GapFillAllResponse(
+        plan_id=req.plan_id,
+        fills=fills,
+        failed_gap_id=failed_gap_id,
+        stopped_reason=stopped_reason,
+    )
 
 
 class AigcRefreshRequest(BaseModel):

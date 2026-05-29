@@ -55,3 +55,9 @@ mattpocock-skills-zh-CN/
 
 # Claude Code machine-local settings (shared settings.json IS tracked)
 .claude/settings.local.json
+
+# Local-only docs (not for github)
+LOCAL_DEPLOY.md
+
+# Transient tsc output dumps
+web/tsc_out.txt

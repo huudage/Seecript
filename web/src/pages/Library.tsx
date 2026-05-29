@@ -3,15 +3,18 @@ import { useNavigate } from 'react-router-dom'
 
 import { api, ApiError } from '@/api/client'
 import { PageShell } from '@/components/layout/PageShell'
+import { AssetLibraryView } from '@/components/library/AssetLibraryView'
 import { useProjectsStore } from '@/stores/projects'
 import { useSessionStore } from '@/stores/session'
 import type { LibraryItem } from '@/types/schemas'
 import { VIDEO_TYPE_LABEL } from '@/lib/sections'
 import { cn } from '@/lib/utils'
 
+type Section = 'samples' | 'assets'
 type Tab = 'system' | 'user'
 
 export default function LibraryPage() {
+  const [section, setSection] = useState<Section>('samples')
   const [items, setItems] = useState<LibraryItem[] | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [tab, setTab] = useState<Tab>('system')
@@ -61,33 +64,54 @@ export default function LibraryPage() {
   return (
     <PageShell
       title="素材库"
-      subtitle="挑一个样例，进入下一步『拆解』。系统样例库是内置爆款，用户样例库是你自己上传的（暂未开放）。"
+      subtitle="管理样例视频与你的常用素材：BGM、参考图、参考视频。"
     >
-      {error && (
-        <div className="mb-4 rounded-md border border-destructive/40 bg-destructive/5 px-4 py-3 text-sm text-destructive">
-          {error}
-        </div>
-      )}
-
-      <div className="mb-4 inline-flex items-center gap-1 rounded-lg border border-border bg-card p-1 text-sm">
-        {(['system', 'user'] as const).map((t) => (
+      <div className="mb-5 inline-flex items-center gap-1 rounded-lg border border-border bg-card p-1 text-sm">
+        {(['samples', 'assets'] as const).map((s) => (
           <button
-            key={t}
-            onClick={() => setTab(t)}
+            key={s}
+            onClick={() => setSection(s)}
             className={cn(
-              'rounded-md px-3 py-1.5 transition-colors',
-              tab === t
+              'rounded-md px-4 py-1.5 font-medium transition-colors',
+              section === s
                 ? 'bg-primary text-primary-foreground'
                 : 'text-muted-foreground hover:bg-secondary hover:text-foreground',
             )}
           >
-            {t === 'system' ? '系统样例库' : '我的样例库'}
-            <span className="ml-1 text-[10px] opacity-70">
-              {t === 'system' ? counts.system : counts.user}
-            </span>
+            {s === 'samples' ? '样例视频' : '我的素材'}
           </button>
         ))}
       </div>
+
+      {section === 'assets' && <AssetLibraryView />}
+
+      {section === 'samples' && (
+        <>
+          {error && (
+            <div className="mb-4 rounded-md border border-destructive/40 bg-destructive/5 px-4 py-3 text-sm text-destructive">
+              {error}
+            </div>
+          )}
+
+          <div className="mb-4 inline-flex items-center gap-1 rounded-lg border border-border bg-card p-1 text-sm">
+            {(['system', 'user'] as const).map((t) => (
+              <button
+                key={t}
+                onClick={() => setTab(t)}
+                className={cn(
+                  'rounded-md px-3 py-1.5 transition-colors',
+                  tab === t
+                    ? 'bg-primary text-primary-foreground'
+                    : 'text-muted-foreground hover:bg-secondary hover:text-foreground',
+                )}
+              >
+                {t === 'system' ? '系统样例库' : '我的样例库'}
+                <span className="ml-1 text-[10px] opacity-70">
+                  {t === 'system' ? counts.system : counts.user}
+                </span>
+              </button>
+            ))}
+          </div>
 
       {items === null && !error && (
         <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
@@ -180,6 +204,8 @@ export default function LibraryPage() {
 
       {previewItem && (
         <PreviewModal item={previewItem} onClose={() => setPreviewItem(null)} />
+      )}
+        </>
       )}
     </PageShell>
   )

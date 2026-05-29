@@ -24,6 +24,10 @@ class PlanStore:
     def get(self, plan_id: str) -> Optional[Plan]:
         return self._plans.get(plan_id)
 
+    def all_ids(self) -> list[str]:
+        """返回当前所有 plan_id（用于 gap_agent 反查 section_id 所属 plan）。"""
+        return list(self._plans.keys())
+
     def replace(self, plan: Plan) -> None:
         """编辑场景：以同 plan_id 覆盖。"""
         self._plans[plan.plan_id] = plan
