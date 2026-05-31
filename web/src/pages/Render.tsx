@@ -1,19 +1,26 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Link } from 'react-router-dom'
 
 import { api } from '@/api/client'
+import { deletePlanBgm, patchPlanBgm } from '@/api/bgm'
+import { patchPlanSettings } from '@/api/plan'
+import { commitStep } from '@/api/steps'
 import { createSSE } from '@/api/sse'
+import { deleteVoice, synthesizeAll, synthesizeOne } from '@/api/voice'
+import { BgmPickerDialog } from '@/components/compose/BgmPickerDialog'
+import { FourTrackBoard } from '@/components/compose/FourTrackBoard'
 import { PageShell } from '@/components/layout/PageShell'
-import { TimelineTrack } from '@/components/timeline/TimelineTrack'
 import { useEditStore } from '@/stores/edit'
 import { usePlanStore } from '@/stores/plan'
 import { useProjectsStore } from '@/stores/projects'
+import { useSessionStore } from '@/stores/session'
 import type {
   EditApplyRequest,
-  PackagingItem,
+  PackagingRecommendRequest,
   Plan,
   RenderDonePayload,
   RenderSubmitResponse,
+  Scene,
   Variant,
 } from '@/types/schemas'
 import { cn } from '@/lib/utils'
@@ -31,20 +38,6 @@ const SECTION_COLOR: Record<SectionRole, string> = {
   development: 'bg-slate-500',
   climax: 'bg-rose-500',
   closing: 'bg-emerald-500',
-}
-const PKG_COLOR: Record<PackagingItem['kind'], string> = {
-  subtitle: 'bg-emerald-500',
-  title_bar: 'bg-indigo-500',
-  sticker: 'bg-fuchsia-500',
-  transition: 'bg-zinc-400',
-  cover: 'bg-rose-500',
-}
-const PKG_LABEL: Record<PackagingItem['kind'], string> = {
-  subtitle: '字幕',
-  title_bar: '标题条',
-  sticker: '贴纸',
-  transition: '转场',
-  cover: '封面',
 }
 
 const RENDER_STEP_LABELS: Record<string, string> = {
@@ -71,11 +64,15 @@ const RENDER_STEP_ORDER = [
 export default function RenderPage() {
   const plan = usePlanStore((s) => s.plan)
   const setPlan = usePlanStore((s) => s.setPlan)
+  const gaps = usePlanStore((s) => s.gaps)
+  const fills = usePlanStore((s) => s.fills)
   const variant = usePlanStore((s) => s.variant)
   const setVariant = usePlanStore((s) => s.setVariant)
 
   const currentProjectId = useProjectsStore((s) => s.currentProjectId)
   const refreshProjects = useProjectsStore((s) => s.refresh)
+
+  const setSettings = useSessionStore((s) => s.setSettings)
 
   const editHistory = useEditStore((s) => s.history)
   const editCursor = useEditStore((s) => s.cursor)
@@ -83,10 +80,15 @@ export default function RenderPage() {
   const undoEdit = useEditStore((s) => s.undo)
   const redoEdit = useEditStore((s) => s.redo)
 
-  // 初次进入：将当前 plan 推入 undo 栈作为起点
+  // 初次进入或切到新 plan：把当前 plan 作为 undo 栈起点（避免跨 plan 串台）
+  const lastPushedPlanIdRef = useRef<string | null>(null)
   useEffect(() => {
-    if (plan && editHistory.length === 0) pushEdit(plan)
-  }, [plan, editHistory.length, pushEdit])
+    if (!plan) return
+    if (plan.plan_id === lastPushedPlanIdRef.current) return
+    useEditStore.getState().reset()
+    pushEdit(plan)
+    lastPushedPlanIdRef.current = plan.plan_id
+  }, [plan, pushEdit])
 
   const [jobId, setJobId] = useState<string | null>(null)
   const [step, setStep] = useState<string>('idle')
@@ -94,6 +96,11 @@ export default function RenderPage() {
   const [done, setDone] = useState<RenderDonePayload | null>(null)
   const [error, setError] = useState<string | null>(null)
   const sseRef = useRef<ReturnType<typeof createSSE> | null>(null)
+  // 四轨板动作 busy 锁；与 isRendering 区分开。
+  const [trackBusy, setTrackBusy] = useState(false)
+  const [bgmPickerOpen, setBgmPickerOpen] = useState(false)
+
+  const filledGapIds = useMemo(() => new Set(fills.map((f) => f.gap_id)), [fills])
 
   useEffect(() => () => sseRef.current?.close(), [])
 
@@ -127,6 +134,10 @@ export default function RenderPage() {
           // 这里仅刷一次首页项目列表，让 status=rendered 的更新立刻可见。
           if (currentProjectId) {
             void refreshProjects()
+            // 同步把 render 步骤 commit 到 step_states——保证顶部 nav 显示 render=saved
+            void commitStep(currentProjectId, 'render', { job_id: resp.job_id }).catch(() => {
+              /* commit 失败不阻断结果展示 */
+            })
           }
         },
         onError: (e) => setError(e.detail),
@@ -144,6 +155,159 @@ export default function RenderPage() {
   const [markStart, setMarkStart] = useState('')
   const [markEnd, setMarkEnd] = useState('')
   const [markTrack, setMarkTrack] = useState<'main' | 'packaging'>('main')
+  const [selectedSceneId, setSelectedSceneId] = useState<string | null>(null)
+  const instructionRef = useRef<HTMLTextAreaElement | null>(null)
+  const editSectionRef = useRef<HTMLDivElement | null>(null)
+
+  /** 内容轨点击 → 区段预填 + 自然语言编辑器获取焦点 */
+  const handleSelectScene = useCallback((scene: Scene) => {
+    setSelectedSceneId(scene.scene_id)
+    setMarkStart(scene.start.toFixed(1))
+    setMarkEnd((scene.start + scene.duration).toFixed(1))
+    setMarkTrack('main')
+    // 平滑滚到编辑面板 + focus 输入框（编辑器在页面下方）
+    requestAnimationFrame(() => {
+      editSectionRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+      instructionRef.current?.focus()
+    })
+  }, [])
+
+  /* -- 轨道动作（与 Compose 同源；refetchPlan / synthesize / packaging / bgm） -- */
+
+  const refetchPlan = useCallback(
+    async (planId: string) => {
+      try {
+        const fresh = await api.get<Plan>(`/plan/${planId}`)
+        setPlan(fresh)
+        pushEdit(fresh)
+      } catch {
+        /* 拉新版失败由上层 error 兜底 */
+      }
+    },
+    [pushEdit, setPlan],
+  )
+
+  const handleSynthesizeScene = useCallback(
+    async (sceneId: string) => {
+      if (!plan) return
+      setTrackBusy(true)
+      setError(null)
+      try {
+        await synthesizeOne({ plan_id: plan.plan_id, scene_id: sceneId })
+        await refetchPlan(plan.plan_id)
+      } catch (err) {
+        setError(err instanceof Error ? err.message : `单段口播合成失败：${sceneId}`)
+      } finally {
+        setTrackBusy(false)
+      }
+    },
+    [plan, refetchPlan],
+  )
+
+  const handleSynthesizeAll = useCallback(async () => {
+    if (!plan) return
+    setTrackBusy(true)
+    setError(null)
+    try {
+      const resp = await synthesizeAll(plan.plan_id)
+      await refetchPlan(plan.plan_id)
+      if (resp.failures.length > 0) {
+        setError(
+          `${resp.synthesized.length} 段已合成；${resp.failures.length} 段失败：` +
+            resp.failures.map((f) => f.scene_id).join(', '),
+        )
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : '一键合成失败')
+    } finally {
+      setTrackBusy(false)
+    }
+  }, [plan, refetchPlan])
+
+  const handleClearVoice = useCallback(
+    async (sceneId: string) => {
+      if (!plan) return
+      setTrackBusy(true)
+      setError(null)
+      try {
+        const fresh = await deleteVoice(plan.plan_id, sceneId)
+        setPlan(fresh)
+        pushEdit(fresh)
+      } catch (err) {
+        setError(err instanceof Error ? err.message : `清除口播失败：${sceneId}`)
+      } finally {
+        setTrackBusy(false)
+      }
+    },
+    [plan, pushEdit, setPlan],
+  )
+
+  const handleRecommendPackaging = useCallback(async () => {
+    if (!plan) return
+    setTrackBusy(true)
+    setError(null)
+    try {
+      const body: PackagingRecommendRequest = { plan_id: plan.plan_id, apply: true }
+      await api.post('/packaging/recommend', body)
+      await refetchPlan(plan.plan_id)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : '包装推荐失败')
+    } finally {
+      setTrackBusy(false)
+    }
+  }, [plan, refetchPlan])
+
+  const handleBgmAnchorChange = useCallback(
+    async (newAnchor: number) => {
+      if (!plan) return
+      setTrackBusy(true)
+      setError(null)
+      try {
+        const fresh = await patchPlanBgm(plan.plan_id, { video_anchor_seconds: newAnchor })
+        setPlan(fresh)
+        pushEdit(fresh)
+      } catch (err) {
+        setError(err instanceof Error ? err.message : '更新 BGM 锚点失败')
+      } finally {
+        setTrackBusy(false)
+      }
+    },
+    [plan, pushEdit, setPlan],
+  )
+
+  const handleClearBgm = useCallback(async () => {
+    if (!plan) return
+    setTrackBusy(true)
+    setError(null)
+    try {
+      const fresh = await deletePlanBgm(plan.plan_id)
+      setPlan(fresh)
+      pushEdit(fresh)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : '清除 BGM 失败')
+    } finally {
+      setTrackBusy(false)
+    }
+  }, [plan, pushEdit, setPlan])
+
+  const handleToggleVoiceover = useCallback(
+    async (enabled: boolean) => {
+      setSettings({ voiceover_enabled: enabled })
+      if (!plan) return
+      setTrackBusy(true)
+      setError(null)
+      try {
+        const fresh = await patchPlanSettings(plan.plan_id, { voiceover_enabled: enabled })
+        setPlan(fresh)
+        pushEdit(fresh)
+      } catch (err) {
+        setError(err instanceof Error ? err.message : '切换口播开关失败')
+      } finally {
+        setTrackBusy(false)
+      }
+    },
+    [plan, pushEdit, setPlan, setSettings],
+  )
 
   const handleApplyEdit = useCallback(async () => {
     if (!plan || !instruction.trim()) return
@@ -198,7 +362,6 @@ export default function RenderPage() {
   const canUndo = editCursor > 0
   const canRedo = editCursor >= 0 && editCursor < editHistory.length - 1
   const isRendering = jobId !== null && !done && !error
-  const totalDuration = plan.duration_seconds || 1
 
   return (
     <PageShell
@@ -251,42 +414,44 @@ export default function RenderPage() {
           )}
         </section>
 
-        {/* ============ 右 · 包装轨可视化 + Plan 摘要 ============ */}
+        {/* ============ 右 · 四轨工作台 + Plan 摘要 ============ */}
         <section className="space-y-4">
           <div className="rounded-lg border border-border bg-card p-4">
-            <h2 className="mb-3 text-sm font-semibold">模块 6 · 主轨 + 包装轨</h2>
-            <TimelineTrack
-              label="主轨"
-              duration={totalDuration}
-              items={plan.main_track.map((sc) => ({
-                key: sc.scene_id,
-                start: sc.start,
-                end: sc.start + sc.duration,
-                color: SECTION_COLOR[sc.section],
-                text: `${sc.section} · ${sc.scene_id}`,
-              }))}
+            <h2 className="mb-3 text-sm font-semibold">
+              模块 6 · 主轨 / 口播 / 包装 / BGM
+              <span className="ml-2 text-[10px] font-normal text-muted-foreground">
+                点击内容轨的 scene 块 → 自动写入下方编辑区段
+              </span>
+            </h2>
+            <FourTrackBoard
+              plan={plan}
+              gaps={gaps}
+              filledGapIds={filledGapIds}
+              selectedGapId={null}
+              onSelectScene={(scene) => handleSelectScene(scene)}
+              onSynthesizeScene={handleSynthesizeScene}
+              onSynthesizeAll={handleSynthesizeAll}
+              onClearVoice={handleClearVoice}
+              onRecommendPackaging={handleRecommendPackaging}
+              onPickBgm={() => setBgmPickerOpen(true)}
+              onBgmAnchorChange={handleBgmAnchorChange}
+              onClearBgm={handleClearBgm}
+              onToggleVoiceover={handleToggleVoiceover}
+              busy={trackBusy || isRendering}
             />
-            <div className="my-2 h-px bg-border" />
-            <TimelineTrack
-              label="包装轨"
-              duration={totalDuration}
-              items={plan.packaging_track.map((it) => ({
-                key: it.item_id,
-                start: it.start,
-                end: it.end,
-                color: PKG_COLOR[it.kind],
-                text: `${PKG_LABEL[it.kind]}${it.text ? ` · ${it.text.slice(0, 12)}` : ''}`,
-              }))}
-              empty="尚无包装 item"
-            />
-            <PackagingLegend />
           </div>
 
           <div className="rounded-lg border border-border bg-card p-4">
             <h2 className="mb-2 text-sm font-semibold">Plan 摘要</h2>
             <ul className="space-y-1 text-xs">
               {plan.main_track.map((sc) => (
-                <li key={sc.scene_id} className="flex items-start gap-2">
+                <li
+                  key={sc.scene_id}
+                  className={cn(
+                    'flex items-start gap-2 rounded px-1 py-0.5',
+                    selectedSceneId === sc.scene_id && 'bg-primary/10',
+                  )}
+                >
                   <span
                     className={cn('mt-0.5 inline-block h-2 w-2 rounded-full', SECTION_COLOR[sc.section])}
                   />
@@ -307,7 +472,7 @@ export default function RenderPage() {
       </div>
 
       {/* ============ 底部 · 自然语言编辑 ============ */}
-      <section className="mt-4 rounded-lg border border-border bg-card p-4">
+      <section ref={editSectionRef} className="mt-4 rounded-lg border border-border bg-card p-4">
         <div className="mb-2 flex items-center justify-between">
           <h2 className="text-sm font-semibold">模块 7 · 自然语言编辑</h2>
           <div className="flex items-center gap-2">
@@ -340,6 +505,7 @@ export default function RenderPage() {
         <div className="grid grid-cols-1 gap-3 lg:grid-cols-[1fr_280px]">
           <div>
             <textarea
+              ref={instructionRef}
               value={instruction}
               onChange={(e) => setInstruction(e.target.value)}
               placeholder="例如：把 Hook 改得更口语化；缩短 cta-1 到 3 秒；BGM 调到 0.3；替换 body-2 的素材为 m-xxx"
@@ -347,7 +513,12 @@ export default function RenderPage() {
               className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-primary"
             />
             <div className="mt-2 flex items-center gap-2 text-xs text-muted-foreground">
-              <span>提示词会和当前 Plan + marks 一起发给 LLM；模型会调用最匹配的 1–3 个原子 tool。</span>
+              <span>
+                {selectedSceneId
+                  ? `已选中 ${selectedSceneId} → 区段已填入右侧 marks；`
+                  : ''}
+                提示词会和当前 Plan + marks 一起发给 LLM；模型会调用最匹配的 1–3 个原子 tool。
+              </span>
             </div>
           </div>
           <div className="space-y-2 text-xs">
@@ -401,6 +572,20 @@ export default function RenderPage() {
           <p className="mt-2 text-xs text-destructive">{editError}</p>
         )}
       </section>
+
+      {/* BGM 选择 / 上传弹窗 */}
+      {currentProjectId && (
+        <BgmPickerDialog
+          open={bgmPickerOpen}
+          onClose={() => setBgmPickerOpen(false)}
+          projectId={currentProjectId}
+          planId={plan.plan_id}
+          onPlanUpdated={(p) => {
+            setPlan(p)
+            pushEdit(p)
+          }}
+        />
+      )}
     </PageShell>
   )
 }
@@ -500,19 +685,6 @@ function Stat({ label, value, mono }: { label: string; value: string; mono?: boo
     <div className="rounded-md border border-border bg-background/40 px-2 py-1.5">
       <div className="text-[10px] uppercase tracking-wider text-muted-foreground">{label}</div>
       <div className={cn('truncate text-sm', mono && 'font-mono')}>{value}</div>
-    </div>
-  )
-}
-
-function PackagingLegend() {
-  return (
-    <div className="mt-2 flex flex-wrap gap-2 text-[11px] text-muted-foreground">
-      {(Object.keys(PKG_LABEL) as PackagingItem['kind'][]).map((k) => (
-        <span key={k} className="inline-flex items-center gap-1">
-          <i className={cn('inline-block h-2 w-2 rounded-sm', PKG_COLOR[k])} />
-          {PKG_LABEL[k]}
-        </span>
-      ))}
     </div>
   )
 }

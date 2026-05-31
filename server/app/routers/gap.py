@@ -31,6 +31,9 @@ from ..services.agent.aigc_prompt_agent import generate_aigc_prompt
 from ..services.agent.gap_agent import detect_gaps, fill_gap, refresh_aigc_task
 from ..services.materials import gap_store, material_store
 from ..services.plans import plan_store
+from ..services.tts import TTSError, backend_name as tts_backend_name, synthesize as tts_synthesize
+from ..services.tts import store as voice_store
+from ..services.video.aspect import aspect_for_platform
 
 log = logging.getLogger("seecript.gap")
 router = APIRouter()
@@ -89,29 +92,101 @@ def _resolve_materials(session_id: str | None, allow_mock: bool) -> list[Materia
     return []
 
 
-def _section_duration_for_gap(gap: Gap) -> Optional[float]:
-    """根据 gap.section_id 反查所属 AdaptedSection.duration_seconds，找不到返回 None。"""
+def _plan_for_gap(gap: Gap):
+    """反查 gap 所属 plan。优先用 section_id 精准匹配；老 gap 缺 section_id 时回退 None。"""
     if not gap.section_id:
         return None
-    # 暴力扫描 plan_store——gap_store 不存 plan_id，靠 gap_id 反查 plan 麻烦，干脆遍历
+    for plan_id in plan_store.all_ids():
+        plan = plan_store.get(plan_id)
+        if not plan:
+            continue
+        if any(s.section_id == gap.section_id for s in plan.adapted_sections):
+            return plan
+    return None
+
+
+def _inject_aigc_params(gap: Gap, params: dict) -> dict:
+    """Seedance fill 前补齐 plan 派生参数：duration_seconds + ratio（画幅）。
+
+    - duration_seconds：未传则取 AdaptedSection.duration_seconds
+    - ratio：未传则取 plan.settings.target_platform → "9:16" / "16:9"
+    """
+    out = dict(params or {})
+    plan = _plan_for_gap(gap)
+    if "duration_seconds" not in out and plan is not None:
+        sec = next((s for s in plan.adapted_sections if s.section_id == gap.section_id), None)
+        if sec and sec.duration_seconds > 0:
+            out["duration_seconds"] = float(sec.duration_seconds)
+    if "ratio" not in out and "size" not in out and plan is not None:
+        spec = aspect_for_platform(plan.settings.target_platform)
+        out["ratio"] = spec.ratio
+    return out
+
+
+def _resolve_plan_and_scene_for_gap(gap: Gap):
+    """gap.section_id → (plan, scene)；用 adapted_sections.order 对齐 main_track scene_id=`sc-{order}`。"""
+    if not gap.section_id:
+        return None, None
     for plan_id in plan_store.all_ids():
         plan = plan_store.get(plan_id)
         if not plan:
             continue
         sec = next((s for s in plan.adapted_sections if s.section_id == gap.section_id), None)
-        if sec:
-            return float(sec.duration_seconds)
-    return None
+        if not sec:
+            continue
+        target_scene_id = f"sc-{sec.order}"
+        scene = next((sc for sc in plan.main_track if sc.scene_id == target_scene_id), None)
+        return plan, scene
+    return None, None
 
 
-def _inject_section_duration(gap: Gap, params: dict) -> dict:
-    """若 caller 未指定 duration_seconds，从 gap.section_id 反查 AdaptedSection 的 duration_seconds。"""
-    out = dict(params or {})
-    if "duration_seconds" not in out:
-        dur = _section_duration_for_gap(gap)
-        if dur is not None and dur > 0:
-            out["duration_seconds"] = dur
-    return out
+def _maybe_auto_tts(result: FillResult) -> FillResult:
+    """copy 动作 + plan.settings.voiceover_enabled=True → 自动调 TTS 并把 voiceover_url
+    回填到 FillResult + scene.voiceover_url（让 rebuild plan 时也能用上）。
+
+    失败不抛——TTS 抖动不能阻断 copy fill 的成功语义；只在 note 里追加诊断。
+    """
+    if result.action != "copy" or not (result.narration or "").strip():
+        return result
+    if not result.section_id:
+        return result
+
+    plan = None
+    scene = None
+    for plan_id in plan_store.all_ids():
+        p = plan_store.get(plan_id)
+        if not p:
+            continue
+        sec = next((s for s in p.adapted_sections if s.section_id == result.section_id), None)
+        if not sec:
+            continue
+        plan = p
+        target_scene_id = f"sc-{sec.order}"
+        scene = next((sc for sc in p.main_track if sc.scene_id == target_scene_id), None)
+        break
+    if plan is None or not plan.settings.voiceover_enabled:
+        return result
+
+    voice = (plan.settings.tts_voice or "").strip() or "zh_female_qingxin"
+    try:
+        wav = tts_synthesize(result.narration.strip(), voice=voice, sample_rate=24000)
+    except TTSError as exc:
+        log.warning("[gap] auto-tts failed gap=%s plan=%s code=%s: %s",
+                    result.gap_id, plan.plan_id, exc.code, exc)
+        return result.model_copy(update={
+            "note": (result.note or "") + f" | TTS 失败：{exc}",
+        })
+
+    scene_id_for_save = scene.scene_id if scene else f"gap-{result.gap_id}"
+    url = voice_store.save_wav(plan.plan_id, scene_id_for_save, wav)
+    if scene is not None:
+        scene.voiceover_url = url
+        if not (scene.narration or "").strip():
+            scene.narration = result.narration.strip()
+        plan_store.put(plan)
+    log.info("[gap] auto-tts plan=%s scene=%s backend=%s chars=%d url=%s",
+             plan.plan_id, scene_id_for_save, tts_backend_name(), len(result.narration), url)
+    return result.model_copy(update={"voiceover_url": url})
 
 
 @router.post("/gap/detect", response_model=list[Gap])
@@ -142,6 +217,13 @@ async def detect(req: GapDetectRequest) -> list[Gap]:
     return gaps
 
 
+@router.get("/gap", response_model=list[Gap])
+async def list_gaps(plan_id: str) -> list[Gap]:
+    """按 plan_id 列出该 plan 的全部缺口。前端进 Compose 时若已有 step snapshot
+    携带的 plan_id，调本接口把 gaps 灌回 store。"""
+    return gap_store.list_by_plan(plan_id)
+
+
 @router.post("/gap/fill", response_model=FillResult)
 async def fill(req: GapFillRequest) -> FillResult:
     gap = gap_store.get(req.gap_id)
@@ -150,8 +232,9 @@ async def fill(req: GapFillRequest) -> FillResult:
             status_code=404,
             detail=f"gap not found: {req.gap_id}（请先调用 /gap/detect）",
         )
-    params = _inject_section_duration(gap, req.params) if req.action == "aigc" else req.params
-    return await fill_gap(gap, req.action, params)
+    params = _inject_aigc_params(gap, req.params) if req.action == "aigc" else req.params
+    result = await fill_gap(gap, req.action, params)
+    return _maybe_auto_tts(result)
 
 
 @router.post("/gap/fill-all", response_model=GapFillAllResponse)
@@ -185,7 +268,7 @@ async def fill_all(req: GapFillAllRequest) -> GapFillAllResponse:
 
     for gap in pending:
         prompt = template or f"短视频画面：{gap.requirement}"
-        params = _inject_section_duration(gap, {"prompt": prompt})
+        params = _inject_aigc_params(gap, {"prompt": prompt})
         try:
             result = await fill_gap(gap, "aigc", params)
         except Exception as exc:
@@ -193,6 +276,7 @@ async def fill_all(req: GapFillAllRequest) -> GapFillAllResponse:
             failed_gap_id = gap.gap_id
             stopped_reason = f"生成异常：{exc}"
             break
+        result = _maybe_auto_tts(result)
         fills.append(result)
         if result.status != "ok":
             failed_gap_id = gap.gap_id

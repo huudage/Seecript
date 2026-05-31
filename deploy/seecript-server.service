@@ -28,13 +28,18 @@ WorkingDirectory=__PROJECT_DIR__/server
 # Loaded *before* ExecStart; gives us PORT/LLM_PROVIDER/etc. without exposing them in cmdline.
 EnvironmentFile=__PROJECT_DIR__/server/.env
 
-# 2 workers is plenty for a single-user v0.1 box. Increase to (CPU*2+1) when traffic grows.
-# `--access-logfile -` and `--error-logfile -` route logs to journalctl; we also write app logs
-# to __PROJECT_DIR__/var/logs/ from inside the app for easier grepping.
-# --timeout 120: Doubao 极速版 typically returns in 1-5s; the slow path is the DeepSeek LLM
-#   call (30-60s). 120s gives us a 2x safety factor. nginx is set to 90s read_timeout.
+# --workers 1 是必须的：plan_store / project_store / gap_store / material_store / asset_store
+# 全是模块级内存单例（JSON 仅做落盘镜像），多 worker 之间内存互不可见——
+# 同一份 plan 写在 A 的内存，下个请求落到 B 就 404。
+# 真正要并发扩容前需要把 stores 改成集中存储（sqlite/redis），那是 v0.2 的事。
+# 1 worker + uvicorn async event loop 已足够 demo / 单用户压测。
+#
+# `--access-logfile -` / `--error-logfile -` 把日志路由到 journalctl；app 内 logger
+# 仍会写 __PROJECT_DIR__/server/logs/ 便于 grep。
+# --timeout 120: ASR 异步 query 30s+、Seedance T2V 单段 8-30s、ffmpeg 转码偶尔几十秒；
+#   120s 是 nginx 90s 之上的兜底，避免 worker 在长任务期间被 gunicorn 杀掉。
 ExecStart=__PROJECT_DIR__/server/venv/bin/gunicorn \
-    --workers 2 \
+    --workers 1 \
     --worker-class uvicorn.workers.UvicornWorker \
     --bind 127.0.0.1:5001 \
     --timeout 120 \
@@ -57,9 +62,16 @@ NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=full
 ProtectHome=read-only
-# Writable paths (极速版 ASR 不再需要 var/asr-tmp，已删；只保留日志目录即可):
-#   server/logs/     — uvicorn stdout/stderr (gunicorn pipes to journal anyway)
-ReadWritePaths=__PROJECT_DIR__/server/logs
+# Writable paths — 必须把 server/var 也加上，否则 ProtectSystem=full 会让 app 写入全数 EROFS：
+#   server/logs/     — uvicorn / gunicorn 自己的日志（gunicorn 同时 pipe 到 journal）
+#   server/var/      — 应用运行时写入：
+#                       uploads/    用户上传素材（按 session 隔离）
+#                       outputs/    渲染产物 final.mp4
+#                       assets/     用户素材库（BGM、参考图、参考视频）
+#                       voiceovers/ TTS 合成的口播 wav
+#                       projects/   project_store / step_store / plan_store JSON 落盘
+#                       aigc_cache/ Seedance T2V 中间分段
+ReadWritePaths=__PROJECT_DIR__/server/logs __PROJECT_DIR__/server/var
 
 # stdout/stderr -> journalctl -u seecript-server -f
 StandardOutput=journal

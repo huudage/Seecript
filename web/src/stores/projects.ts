@@ -5,13 +5,13 @@ import { api, ApiError } from '@/api/client'
 import type {
   Project,
   ProjectListResponse,
-  ProjectStatus,
   ProjectUpdateRequest,
   SampleId,
 } from '@/types/schemas'
 
 import { usePlanStore } from './plan'
 import { useSessionStore } from './session'
+import { useEditStore } from './edit'
 
 export type { Project, ProjectStatus } from '@/types/schemas'
 
@@ -53,6 +53,8 @@ function applyProjectToSession(proj: Project) {
   // 把项目内已保存的 brief / video_goal / settings 灌回 session store；
   // 不动 selectedSampleId / videoType（让用户进 Compose 时再选；samples 由 Library/Decompose 驱动）
   const session = useSessionStore.getState()
+  // 切项目时必须清掉上一个项目的 manifest / materials；否则 Compose 页会显示别人的素材
+  useSessionStore.setState({ manifest: null, materials: [] })
   session.setBrief(proj.brief ?? '')
   session.setVideoGoal(proj.video_goal ?? '')
   if (proj.settings) {
@@ -62,9 +64,9 @@ function applyProjectToSession(proj: Project) {
   session.setSession(proj.project_id)
   // 选中样例（视频类型在样例加载后补；这里仅记 sample_id）
   session.selectSample(proj.sample_id, undefined, 'system')
-  // 切项目时清空残留的 plan/gaps/fills，避免误以为是本项目的产物
-  const planStore = usePlanStore.getState()
-  planStore.reset()
+  // 切项目时清空残留的 plan/gaps/fills + 编辑历史，避免误以为是本项目的产物
+  usePlanStore.getState().reset()
+  useEditStore.getState().reset()
 }
 
 export const useProjectsStore = create<ProjectsState>()(

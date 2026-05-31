@@ -55,7 +55,7 @@ class Settings(BaseSettings):
     deepseek_model: str = Field(default="deepseek-chat")
     # --- 共享参数 ---
     llm_temperature: float = Field(default=0.7, ge=0.0, le=2.0)
-    llm_timeout_seconds: int = Field(default=60, ge=5, le=300)
+    llm_timeout_seconds: int = Field(default=120, ge=5, le=600)
     llm_max_tokens: int = Field(default=2048, ge=128, le=8192)
 
     # === ASR (Doubao 大模型录音文件识别 2.0 / seedasr · 异步 submit+query) ===
@@ -87,7 +87,10 @@ class Settings(BaseSettings):
     # 默认 mock：开箱即用；切到 doubao_ark 需在 .env 设 ARK_API_KEY 或独立 ARK_T2V_API_KEY。
     # Seedance 2.0 用 ratio 而不是 size；duration 受模型最低时长约束（5s 起，3s 会被拒）。
     t2v_provider: Literal["mock", "doubao_ark"] = Field(default="mock")
-    t2v_timeout_seconds: int = Field(default=30, ge=5, le=120)
+    # T2V HTTP 单次调用窗口：Seedance submit 通常 1-5s 返回 task_id，
+    # query 也是亚秒级；但偶尔会有 30s+ 的尖刺。给到 60s 是为这些尖刺兜底，
+    # 真正的"等任务跑完"由 _generate_chunks 内部 max_wait（默认 180s）管。
+    t2v_timeout_seconds: int = Field(default=60, ge=5, le=300)
     t2v_max_prompt_chars: int = Field(default=500, ge=20, le=512)
     # mock 模式下"假装生成时间"——让前端轮询 UI 真有进度感（默认 8s）。
     t2v_mock_duration_seconds: float = Field(default=8.0, ge=0.0, le=120.0)
@@ -95,6 +98,21 @@ class Settings(BaseSettings):
     t2v_default_ratio: str = Field(default="16:9")
     t2v_generate_audio: bool = Field(default=False)
     t2v_watermark: bool = Field(default=False)
+
+    # === TTS（口播合成，火山方舟 TTS HTTP）===
+    # 默认 mock：无 Key 时合成单调正弦波 wav（足够 demo 链路跑通，文案能写进音频流）；
+    # 切到 volc 需在 .env 设 VOLC_TTS_APP_ID + VOLC_TTS_ACCESS_TOKEN（独立鉴权，
+    # 不复用 ARK_API_KEY；如果未来切到方舟 OpenAI 兼容端点，再加 tts_api_key）。
+    tts_provider: Literal["mock", "volc"] = Field(default="mock")
+    volc_tts_app_id: str = Field(default="")
+    volc_tts_access_token: str = Field(default="")
+    volc_tts_endpoint: str = Field(
+        default="https://openspeech.bytedance.com/api/v1/tts"
+    )
+    volc_tts_cluster: str = Field(default="volcano_tts")
+    tts_default_voice: str = Field(default="zh_female_qingxin")
+    tts_sample_rate: int = Field(default=24000, ge=8000, le=48000)
+    tts_timeout_seconds: int = Field(default=30, ge=5, le=120)
 
     # === CORS ===
     cors_origins: str = Field(default="*")

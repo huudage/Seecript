@@ -14,23 +14,28 @@
 #
 # What this script does:
 #   1. Validates prerequisites
-#   2. Creates the seecript system user + /opt/seecript directory
-#   3. Clones (or pulls) the repo into /opt/seecript
-#   4. Bootstraps server/venv and installs Python deps
-#   5. Writes /opt/seecript/server/.env (interactive prompt for Keys)
-#   6. Installs systemd unit `seecript-server` and starts it
-#   7. Installs nginx site (HTTP only); reminds you to run certbot for HTTPS
-#   8. Smoke-tests /api/health
+#   2. Installs Node 20 (NodeSource) — Ubuntu 22.04 ships Node 12 which is too old for Vite 8
+#   3. Creates the seecript system user + /opt/seecript directory
+#   4. Clones (or pulls) the repo into /opt/seecript
+#   5. Bootstraps server/venv and installs Python deps
+#   6. Builds the React frontend (npm ci + npm run build → web/dist)
+#   7. Writes /opt/seecript/server/.env (interactive prompt for Keys)
+#   8. Installs systemd unit `seecript-server` and starts it
+#   9. Installs nginx site (HTTP only); reminds you to run certbot for HTTPS
+#  10. Smoke-tests /api/health
 #
 # What you MUST do AFTER this script (2 manual steps):
 #   a. Point DNS A record for $DOMAIN to this server's public IP (TTL 600s)
 #   b. Run:  sudo certbot --nginx -d $DOMAIN
-#   c. (Volcengine console) ensure the "录音文件识别 - 大模型极速版 (volc.bigasr.auc_turbo)"
-#      resource is activated for your account — NOT the standard auc resource!
-#      The Key in .env must be associated with the turbo resource.
 #
-# NOTE: PUBLIC_BASE_URL is **no longer required**. 极速版 accepts base64 inline so we
-#       don't need to expose temp audio files publicly.
+# 火山产品提醒：
+#   • LLM / T2V — ARK (https://console.volcengine.com/ark) 控制台一份 Key 走 doubao_ark provider；
+#     Seedance T2V 走独立计费可填 ARK_T2V_API_KEY，留空则复用 ARK_API_KEY。
+#   • ASR        — 录音文件识别 2.0（标准资源 ID = volc.bigasr.auc），异步 submit+query；
+#     必须配 PUBLIC_AUDIO_BASE_URL=https://${DOMAIN}，火山服务端会回拉 /uploads /samples 公网。
+#     旧的极速版 (volc.bigasr.auc_turbo) 已弃用，本脚本默认按 2.0 标准版配置。
+#   • TTS        — 火山语音合成（VOLC_TTS_APP_ID + VOLC_TTS_ACCESS_TOKEN）。
+#     首次部署留 mock，等 TTS 应用申请到再手动编辑 .env 切到 volc。
 # ---------------------------------------------------------------------------
 # ---- CRLF self-heal ----
 # Files uploaded from Windows often have CRLF line endings, which break bash with
@@ -93,11 +98,30 @@ fi
 log "Installing apt dependencies (idempotent)…"
 apt-get update -qq
 apt-get install -y -qq \
-  git curl ca-certificates ufw \
+  git curl ca-certificates ufw ffmpeg \
   python3 python3-venv python3-pip \
   nginx \
   certbot python3-certbot-nginx
 ok "apt deps installed"
+
+# ---------------------------------------------------------------------------
+# 2b. Node.js 20 (NodeSource) — Vite 8 / React 18 需要 Node >= 18
+# ---------------------------------------------------------------------------
+# Ubuntu 22.04 的 apt nodejs 是 12.x，连 Vite 7 都跑不起来。直接装 NodeSource setup_20.x。
+# 重复装是幂等的：脚本会检查现有 node 版本，> 18 跳过。
+if command -v node >/dev/null 2>&1; then
+  NODE_MAJOR=$(node -v | sed -E 's/^v([0-9]+).*/\1/')
+else
+  NODE_MAJOR=0
+fi
+if [[ "$NODE_MAJOR" -lt 18 ]]; then
+  log "Installing Node.js 20 from NodeSource (current: v${NODE_MAJOR})…"
+  curl -fsSL https://deb.nodesource.com/setup_20.x | bash - >/dev/null
+  apt-get install -y -qq nodejs
+  ok "Node.js $(node -v) installed"
+else
+  ok "Node.js $(node -v) already meets requirement"
+fi
 
 # ---------------------------------------------------------------------------
 # 3. User + directories
@@ -145,11 +169,31 @@ if [[ ! -x venv/bin/python ]]; then
 fi
 venv/bin/pip install --upgrade pip --quiet
 venv/bin/pip install -r requirements.txt --quiet
+# gunicorn 没在 requirements.txt 里（dev 用 uvicorn 单进程），生产 systemd unit 强依赖。
+venv/bin/pip install gunicorn --quiet
 EOF
 ok "venv ready, deps installed"
 
 # ---------------------------------------------------------------------------
-# 6. .env (interactive prompts for Keys; existing values kept)
+# 6. Frontend build (Vite → web/dist)
+# ---------------------------------------------------------------------------
+log "Building React frontend (npm ci + vite build)…"
+sudo -u "$RUN_USER" -H bash <<EOF
+set -e
+cd "$PROJECT_DIR/web"
+# npm ci 比 npm install 更确定性（严格按 lock 装），CI/部署首选。
+npm ci --silent
+npm run build
+EOF
+# nginx 以 www-data 运行，需要能读 web/dist。设为 seecript:www-data + 755 即可。
+if getent group www-data >/dev/null 2>&1; then
+  chown -R "$RUN_USER:www-data" "$PROJECT_DIR/web/dist"
+  chmod -R g+rX "$PROJECT_DIR/web/dist"
+fi
+ok "Frontend built at $PROJECT_DIR/web/dist"
+
+# ---------------------------------------------------------------------------
+# 7. .env (interactive prompts for Keys; existing values kept)
 # ---------------------------------------------------------------------------
 ENV_FILE="$PROJECT_DIR/server/.env"
 if [[ ! -f "$ENV_FILE" ]]; then
@@ -166,38 +210,67 @@ prompt_secret() {
   echo
   read -rp "${C_INFO}${prompt}（留空跳过 → 走 mock）：${C_RESET} " val || true
   if [[ -n "$val" ]]; then
-    sed -i -E "s|^${key}=.*$|${key}=${val}|" "$ENV_FILE"
+    # 用 `|` 当 sed 分隔避免 Key 里有 `/` 的歧义；同时 \\& 转义保留 & 字面量。
+    local esc
+    esc=$(printf '%s' "$val" | sed -e 's/[\\&|]/\\&/g')
+    sed -i -E "s|^${key}=.*$|${key}=${esc}|" "$ENV_FILE"
   fi
 }
 
-# Force production-friendly defaults.
+# ---- 强制生产侧默认值 ----
 sed -i -E "s|^HOST=.*$|HOST=127.0.0.1|" "$ENV_FILE"
 sed -i -E "s|^PORT=.*$|PORT=${BACKEND_PORT}|" "$ENV_FILE"
-sed -i -E "s|^LLM_PROVIDER=.*$|LLM_PROVIDER=deepseek|" "$ENV_FILE"
-sed -i -E "s|^ASR_PROVIDER=.*$|ASR_PROVIDER=doubao|" "$ENV_FILE"
 sed -i -E "s|^CORS_ORIGINS=.*$|CORS_ORIGINS=https://${DOMAIN}|" "$ENV_FILE"
-# Doubao 极速版资源 ID（必须，跟标准版不一样）
-if grep -q "^DOUBAO_RESOURCE_ID=" "$ENV_FILE"; then
-  sed -i -E "s|^DOUBAO_RESOURCE_ID=.*$|DOUBAO_RESOURCE_ID=volc.bigasr.auc_turbo|" "$ENV_FILE"
-fi
-# Drop legacy keys from older .env (PUBLIC_BASE_URL, ASR_POLL_*, DOUBAO_SUBMIT_URL, DOUBAO_QUERY_URL).
-# 极速版完全不需要这些；留着只会让人困惑。
-for legacy in PUBLIC_BASE_URL ASR_POLL_INTERVAL_SECONDS ASR_POLL_TIMEOUT_SECONDS DOUBAO_SUBMIT_URL DOUBAO_QUERY_URL; do
-  sed -i -E "/^${legacy}=/d" "$ENV_FILE"
-done
 
-prompt_secret "DEEPSEEK_API_KEY" "DeepSeek API Key（sk-... 形式）"
-prompt_secret "DOUBAO_API_KEY"   "火山豆包 API Key（控制台 → 语音技术 → 我的应用）"
+# Provider：LLM/T2V 都走 doubao_ark；ASR 走 doubao 2.0；TTS 暂留 mock（待 VOLC_TTS_* 申请后再切）。
+sed -i -E "s|^LLM_PROVIDER=.*$|LLM_PROVIDER=doubao_ark|" "$ENV_FILE"
+sed -i -E "s|^T2V_PROVIDER=.*$|T2V_PROVIDER=doubao_ark|" "$ENV_FILE"
+sed -i -E "s|^ASR_PROVIDER=.*$|ASR_PROVIDER=doubao|" "$ENV_FILE"
+
+# ASR 2.0 标准资源 ID（旧极速版 volc.bigasr.auc_turbo 已弃用，2.0 必须用 volc.bigasr.auc）。
+if grep -q "^DOUBAO_RESOURCE_ID=" "$ENV_FILE"; then
+  sed -i -E "s|^DOUBAO_RESOURCE_ID=.*$|DOUBAO_RESOURCE_ID=volc.bigasr.auc|" "$ENV_FILE"
+fi
+
+# ASR 2.0 必填：火山服务端回拉音频的公网 base URL（不带尾斜线）。
+# nginx 已经反代 /uploads + /samples 给 FastAPI，HTTPS 由 certbot 接管。
+if grep -q "^PUBLIC_AUDIO_BASE_URL=" "$ENV_FILE"; then
+  sed -i -E "s|^PUBLIC_AUDIO_BASE_URL=.*$|PUBLIC_AUDIO_BASE_URL=https://${DOMAIN}|" "$ENV_FILE"
+else
+  printf '\nPUBLIC_AUDIO_BASE_URL=https://%s\n' "${DOMAIN}" >> "$ENV_FILE"
+fi
+
+# 清掉真正废弃的字段：PUBLIC_BASE_URL（v0.1 命名）。
+# 保留 DOUBAO_SUBMIT_URL / DOUBAO_QUERY_URL / ASR_POLL_* —— 2.0 异步流程要用。
+sed -i -E '/^PUBLIC_BASE_URL=/d' "$ENV_FILE"
+
+# ---- 交互式收 Key ----
+# Volcengine 4 个产品 Key 互相独立，按需收：
+#   ARK_API_KEY      → LLM (doubao-seed-2-0-lite) + 缺省 T2V Key
+#   ARK_T2V_API_KEY  → 仅 Seedance 走独立计费时填；为空则 T2V client 回落 ARK_API_KEY
+#   DOUBAO_API_KEY   → 录音文件识别 2.0（与 ARK 是不同的应用）
+#   VOLC_TTS_*       → 语音合成（脚本不在这里收，留待用户申请后手动 vi .env 写入）
+prompt_secret "ARK_API_KEY"     "火山方舟 ARK API Key（LLM + T2V 默认共用，console.volcengine.com/ark）"
+prompt_secret "ARK_T2V_API_KEY" "Seedance T2V 独立计费 Key（无独立 Key 留空，自动复用上面那把）"
+prompt_secret "DOUBAO_API_KEY"  "豆包 ASR Key（控制台 → 语音技术 → 录音文件识别 2.0）"
 
 chown "$RUN_USER:$RUN_USER" "$ENV_FILE"
 chmod 600 "$ENV_FILE"
 ok ".env written and locked to mode 600"
 
-# Create writable dirs for systemd's ReadWritePaths.
-sudo -u "$RUN_USER" -H mkdir -p "$PROJECT_DIR/server/logs"
+# 创建 systemd ReadWritePaths 列出的所有写入目录（FastAPI 自己也会按需 mkdir，
+# 提前建好避免首次启动 race）。
+sudo -u "$RUN_USER" -H mkdir -p \
+  "$PROJECT_DIR/server/logs" \
+  "$PROJECT_DIR/server/var/uploads" \
+  "$PROJECT_DIR/server/var/outputs" \
+  "$PROJECT_DIR/server/var/assets" \
+  "$PROJECT_DIR/server/var/voiceovers" \
+  "$PROJECT_DIR/server/var/projects" \
+  "$PROJECT_DIR/server/var/aigc_cache"
 
 # ---------------------------------------------------------------------------
-# 7. systemd
+# 8. systemd
 # ---------------------------------------------------------------------------
 log "Installing systemd unit…"
 SERVICE_DST="/etc/systemd/system/${SERVICE_NAME}.service"
@@ -206,10 +279,6 @@ sed -i \
   -e "s|__PROJECT_DIR__|${PROJECT_DIR}|g" \
   -e "s|__RUN_USER__|${RUN_USER}|g" \
   "$SERVICE_DST"
-
-# We use uvicorn directly in the unit file (no gunicorn) for simplicity. Override:
-# -> But the default unit uses gunicorn; we keep that. Ensure gunicorn is installed.
-sudo -u "$RUN_USER" -H "$PROJECT_DIR/server/venv/bin/pip" install gunicorn --quiet || true
 
 systemctl daemon-reload
 systemctl enable "$SERVICE_NAME"
@@ -222,7 +291,7 @@ fi
 ok "$SERVICE_NAME is active"
 
 # ---------------------------------------------------------------------------
-# 7b. sudoers — allow $RUN_USER to restart its own service without a password
+# 8b. sudoers — allow $RUN_USER to restart its own service without a password
 # ---------------------------------------------------------------------------
 # Why: scripts/deploy.sh runs as $RUN_USER (seecript, NOT root) and ends with
 #   `sudo systemctl restart seecript-server`. Without this rule deploy.sh
@@ -255,7 +324,7 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# 8. nginx site (HTTP only; certbot will add 443 block)
+# 9. nginx site (HTTP only; certbot will add 443 block)
 # ---------------------------------------------------------------------------
 log "Installing nginx site…"
 NGINX_AVAIL="/etc/nginx/sites-available/seecript.conf"
@@ -280,7 +349,7 @@ systemctl reload nginx
 ok "nginx config installed"
 
 # ---------------------------------------------------------------------------
-# 9. Health check
+# 10. Health check
 # ---------------------------------------------------------------------------
 log "Smoke-testing the local backend…"
 sleep 1
@@ -292,7 +361,7 @@ echo "$HEALTH_BODY"
 ok "Backend healthy"
 
 # ---------------------------------------------------------------------------
-# 10. Final instructions
+# 11. Final instructions
 # ---------------------------------------------------------------------------
 cat <<EOF
 
@@ -302,6 +371,7 @@ ${C_OK}========================================================================$
 
 Status:
   • backend      : ${C_OK}running on 127.0.0.1:${BACKEND_PORT}${C_RESET}
+  • frontend     : ${C_OK}built at ${PROJECT_DIR}/web/dist${C_RESET}
   • nginx site   : ${C_OK}installed (HTTP)${C_RESET}
   • systemd unit : ${SERVICE_NAME}
   • config file  : ${ENV_FILE} (chmod 600, owner ${RUN_USER})
@@ -309,18 +379,30 @@ Status:
 ${C_WARN}2 manual steps remaining${C_RESET}:
 
   ${C_WARN}①${C_RESET} DNS — go to https://dns.console.aliyun.com  → 域名 zlhu.asia → 添加记录:
-        Type=A   Host=${DOMAIN%%.*}   Value=47.239.58.145   TTL=600
-       Verify:  dig +short ${DOMAIN}    (expected: 47.239.58.145)
+        Type=A   Host=${DOMAIN%%.*}   Value=<your server public IP>   TTL=600
+       Verify:  dig +short ${DOMAIN}
 
-  ${C_WARN}②${C_RESET} HTTPS — issue Let's Encrypt cert (browsers need it for ffmpeg.wasm SharedArrayBuffer):
+  ${C_WARN}②${C_RESET} HTTPS — issue Let's Encrypt cert (browsers need it for ffmpeg.wasm SharedArrayBuffer,
+       AND 火山 ASR 2.0 强制要求音频 URL 是 https://)：
        sudo certbot --nginx -d ${DOMAIN}
        (choose option 2 to redirect HTTP→HTTPS)
 
 ${C_INFO}Then verify everything end-to-end${C_RESET}:
        bash ${PROJECT_DIR}/scripts/health-check.sh https://${DOMAIN}
 
-Volcengine console reminder (CRITICAL!):
-  Make sure the resource ${C_INFO}录音文件识别 - 大模型极速版 (volc.bigasr.auc_turbo)${C_RESET}
-  is activated at ${C_INFO}https://console.volcengine.com/speech/app${C_RESET}.
-  极速版 ≠ 标准版！如果只开通了标准版，API 调用会返回 45000001 (参数无效).
+${C_INFO}TTS（暂走 mock）启用步骤${C_RESET}：
+  1. 控制台申请 https://console.volcengine.com/speech/service/8
+  2. 拿到 App ID 与 Access Token
+  3. sudo -u ${RUN_USER} vi ${ENV_FILE}：
+       TTS_PROVIDER=volc
+       VOLC_TTS_APP_ID=<app id>
+       VOLC_TTS_ACCESS_TOKEN=<access token>
+  4. sudo systemctl restart ${SERVICE_NAME}
+
+${C_INFO}火山方舟资源开通核对（部署前确认！）${C_RESET}：
+  • LLM           — ARK 控制台『模型推理 → 在线推理点』开通 doubao-seed-2-0-lite
+  • T2V           — ARK 控制台『视频生成 → Seedance 2.0』开通 doubao-seedance-2-0-fast-260128
+  • ASR           — 语音技术 → 录音文件识别 2.0（资源 ID = ${C_INFO}volc.bigasr.auc${C_RESET}，不是极速版！）
+  • Domain        — 给录音文件识别 2.0 应用的【域名白名单】里加 ${DOMAIN}
+                    （否则火山服务端拉 https://${DOMAIN}/uploads/... 会被拒）
 EOF

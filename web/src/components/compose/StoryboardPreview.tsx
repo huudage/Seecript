@@ -79,14 +79,23 @@ export function StoryboardPreview({
   )
 }
 
-function SourceBadge({ source }: { source: 'sample' | 'user_material' | 'aigc_t2v' }) {
+function SourceBadge({ source }: { source: 'sample' | 'user_material' | 'aigc_t2v' | 'text_card' }) {
   const cls =
     source === 'sample'
       ? 'bg-sky-500/15 text-sky-700 dark:text-sky-300'
       : source === 'user_material'
         ? 'bg-emerald-500/15 text-emerald-700 dark:text-emerald-300'
-        : 'bg-fuchsia-500/15 text-fuchsia-700 dark:text-fuchsia-300'
-  const label = source === 'sample' ? '样例' : source === 'user_material' ? '我的' : 'AIGC'
+        : source === 'aigc_t2v'
+          ? 'bg-fuchsia-500/15 text-fuchsia-700 dark:text-fuchsia-300'
+          : 'bg-amber-500/15 text-amber-700 dark:text-amber-300'
+  const label =
+    source === 'sample'
+      ? '样例'
+      : source === 'user_material'
+        ? '我的'
+        : source === 'aigc_t2v'
+          ? 'AIGC'
+          : '文字'
   return <span className={cn('mr-1 rounded px-1 py-px text-[9px] font-medium', cls)}>{label}</span>
 }
 

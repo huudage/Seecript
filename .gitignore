@@ -2,6 +2,7 @@
 .server.pid
 logs/
 server/var/
+server/server/
 server/.dev.log
 server/.dev.err
 .dev-server.log

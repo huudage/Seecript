@@ -16,6 +16,8 @@ interface PlanState {
 
   setPlan: (plan: Plan | null) => void
   setGaps: (gaps: Gap[]) => void
+  /** 整体替换 fills——「重新分析」时清空旧 plan 的 fills 用，避免跨 plan 串台。 */
+  setFills: (fills: FillResult[]) => void
   upsertFill: (fill: FillResult) => void
   removeFill: (gapId: string) => void
   setVariant: (variant: Variant) => void
@@ -32,6 +34,7 @@ export const usePlanStore = create<PlanState>((set) => ({
 
   setPlan: (plan) => set({ plan }),
   setGaps: (gaps) => set({ gaps }),
+  setFills: (fills) => set({ fills }),
   upsertFill: (fill) =>
     set((state) => {
       const idx = state.fills.findIndex((f) => f.gap_id === fill.gap_id)

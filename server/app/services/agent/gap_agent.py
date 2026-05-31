@@ -42,8 +42,23 @@ SEEDANCE_MAX_SECONDS = 12
 
 
 _COPY_SYSTEM = (
-    "你是短视频口播作者。根据『槽位需求』和『可参考素材标签』，"
-    "生成一句口语化的中文口播主推文案（不超过 40 字），同时再写 2 句风格不同的备选。"
+    "你是短视频口播 + 文案作者。你的输出会被前端用作两种用途：\n"
+    "  1) 段落口播旁白（≤40 字）\n"
+    "  2) 当该段没有合适视频素材时，作为『大字画面 text_card』兜底——把这句文案做成全屏字卡。\n"
+    "\n"
+    "因此文案必须『紧扣本段的内容要求』+『与整体视频背景一致』+『口播友好且适合做大字』。\n"
+    "\n"
+    "你会收到三类锚点信息（按优先级）：\n"
+    "  - 视频整体背景（brief）：决定语气和品类\n"
+    "  - 本段的内容要求（content_description）：决定本句到底要讲什么——最高优先\n"
+    "  - 创作者补充（prompt_hint）：用户在面板里手填的特殊要求，权重低于上面两条\n"
+    "\n"
+    "硬约束：\n"
+    "  - 主文案 ≤ 40 字中文，备选 2 句各 ≤ 40 字\n"
+    "  - 紧扣『内容要求』，不要泛化到整体背景层\n"
+    "  - 不出现段落角色名（opening/development/climax/closing）和『本段』『第 X 段』等元数据词\n"
+    "  - 不要 markdown / ASCII 引号\n"
+    "\n"
     "返回 JSON：{\"gap_fill_narration\": str, \"alternatives\": [str, str]}。"
 )
 
@@ -134,89 +149,100 @@ def detect_gaps(
         section_seq = role_section_counter.get(sec.role, 0)
         role_section_counter[sec.role] = section_seq + 1
 
-        slot_count = max(1, min(3, len(sec.source_shot_indices) or 1))
+        # 一个 AdaptedSection = 一个 Gap：LLM 已经把这一段的创作要求合成在 content_description 里，
+        # 历史版本按 source_shot_indices 长度切 1-3 个 slot 会让 UI 出现完全一样的 requirement 重复 N 次。
+        # 真正需要"段内分两个独立 ask"时，应在 compose_agent 拆出两个 AdaptedSection，而不是同段多 slot。
         section_impact = "high" if sec.role in _HIGH_IMPACT_ROLES else "medium"
         gap_id_prefix = f"gap-{sec.role}-{section_seq}" if section_seq > 0 else f"gap-{sec.role}"
 
-        for slot in range(slot_count):
-            requirement = _slot_requirement(
-                sec.role, sec.theme, sec.content_description,
-                slot, slot_count, manifest,
-            )
-            thumb = _section_thumb(sec.source_shot_indices, slot)
-            pool = by_role.get(sec.role, [])
+        requirement = _slot_requirement(
+            sec.role, sec.theme, sec.content_description, manifest,
+        )
+        thumb = _section_thumb(sec.source_shot_indices, 0)
+        pool = by_role.get(sec.role, [])
 
-            if slot < len(pool):
-                m = pool[slot]
+        if pool:
+            m = pool[0]
+            gaps.append(Gap(
+                gap_id=f"{gap_id_prefix}-0",
+                section=sec.role,
+                section_id=sec.section_id,
+                slot_index=0,
+                requirement=requirement,
+                status="ok",
+                impact=section_impact,
+                matched_material_id=m.material_id,
+                note=f"匹配素材 {m.filename}",
+                sample_thumbnail_url=thumb,
+            ))
+        else:
+            spillover = _take_spillover(sec.role)
+            if spillover:
                 gaps.append(Gap(
-                    gap_id=f"{gap_id_prefix}-{slot}",
+                    gap_id=f"{gap_id_prefix}-0",
                     section=sec.role,
                     section_id=sec.section_id,
-                    slot_index=slot,
+                    slot_index=0,
                     requirement=requirement,
-                    status="ok",
-                    impact=section_impact,
-                    matched_material_id=m.material_id,
-                    note=f"匹配素材 {m.filename}",
+                    status="warn",
+                    impact="medium",
+                    matched_material_id=spillover.material_id,
+                    note=f"跨段借用 {spillover.filename}，建议重排或 Seedance T2V 补全",
                     sample_thumbnail_url=thumb,
                 ))
             else:
-                spillover = _take_spillover(sec.role)
-                if spillover:
-                    gaps.append(Gap(
-                        gap_id=f"{gap_id_prefix}-{slot}",
-                        section=sec.role,
-                        section_id=sec.section_id,
-                        slot_index=slot,
-                        requirement=requirement,
-                        status="warn",
-                        impact="medium",
-                        matched_material_id=spillover.material_id,
-                        note=f"跨段借用 {spillover.filename}，建议重排或 Seedance T2V 补全",
-                        sample_thumbnail_url=thumb,
-                    ))
-                else:
-                    gaps.append(Gap(
-                        gap_id=f"{gap_id_prefix}-{slot}",
-                        section=sec.role,
-                        section_id=sec.section_id,
-                        slot_index=slot,
-                        requirement=requirement,
-                        status="miss",
-                        impact=section_impact,
-                        note="无可用素材，建议 Seedance T2V 生成",
-                        sample_thumbnail_url=thumb,
-                    ))
+                gaps.append(Gap(
+                    gap_id=f"{gap_id_prefix}-0",
+                    section=sec.role,
+                    section_id=sec.section_id,
+                    slot_index=0,
+                    requirement=requirement,
+                    status="miss",
+                    impact=section_impact,
+                    note="无可用素材，建议 Seedance T2V 生成",
+                    sample_thumbnail_url=thumb,
+                ))
     return gaps
+
+
+def _lookup_plan_section_for_gap(gap: Gap):
+    """gap.section_id → (Plan | None, AdaptedSection | None)；延迟导入 plan_store 避免循环依赖。"""
+    if not gap.section_id:
+        return None, None
+    from ..plans import plan_store  # 延迟导入：plans → agent 路径上无环
+
+    for plan_id in plan_store.all_ids():
+        plan = plan_store.get(plan_id)
+        if not plan:
+            continue
+        sec = next((s for s in plan.adapted_sections if s.section_id == gap.section_id), None)
+        if sec:
+            return plan, sec
+    return None, None
 
 
 def _slot_requirement(
     role: SectionRole,
     theme: str,
     content_description: str,
-    slot: int,
-    slot_count: int,
     manifest: SampleManifest,
 ) -> str:
-    """槽位语义描述——把 content_description 前 40 字接到 role/theme 基线之前。
+    """段落创作要求——把 content_description（前 60 字）+ theme + role 基线拼成一句话。
 
-    示例输出：『紧扣用户主题给一句口播 · 开场钩子 · 开场 · 钩子/氛围铺垫 · 1/2（大字加描边）』
+    示例输出：『竖屏展示模糊的废教学图…·痛点开场·开场·钩子/氛围铺垫（大字加描边）』
     """
     style = manifest.packaging.subtitle_style
     base = _ROLE_REQUIREMENT_HINTS.get(role, "主体 · 演示/对比中景")
     theme_clean = (theme or "").strip()
     content_clean = (content_description or "").strip().replace("\n", " ")
-    content_short = content_clean[:40]
+    content_short = content_clean[:60]
     parts: list[str] = []
     if content_short:
         parts.append(content_short)
     if theme_clean:
         parts.append(theme_clean)
     parts.append(base)
-    pos = f"{slot + 1}/{slot_count}"
-    if role in ("development", "climax") and slot > 0:
-        return f"{' · '.join(parts)} #{slot + 1} · {pos}（{style}）"
-    return f"{' · '.join(parts)} · {pos}（{style}）"
+    return f"{' · '.join(parts)}（{style}）"
 
 
 async def fill_gap(gap: Gap, action: FillAction, params: dict[str, Any]) -> FillResult:
@@ -233,12 +259,30 @@ async def fill_gap(gap: Gap, action: FillAction, params: dict[str, Any]) -> Fill
 
     if action == "copy":
         llm = get_llm_client()
-        user = (
-            f"槽位需求：{gap.requirement}\n"
-            f"section role：{gap.section}\n"
-            f"可参考素材标签：{params.get('tag_hint', '无')}\n"
-            f"创作者补充：{params.get('prompt_hint', '')}"
-        )
+        # 反查 plan / section 上下文以注入提示词锚点；找不到时降级到老格式。
+        plan, section = _lookup_plan_section_for_gap(gap)
+        brief = (plan.brief.strip() if plan and plan.brief else "")
+        goal = (plan.video_goal.strip() if plan and plan.video_goal else "")
+        content_desc = (section.content_description.strip() if section and section.content_description else "")
+        theme = (section.theme.strip() if section and section.theme else "")
+
+        user_lines: list[str] = []
+        if brief:
+            user_lines.append(f"视频整体背景：{brief}")
+        if goal:
+            user_lines.append(f"视频目的：{goal}")
+        if content_desc:
+            user_lines.append(f"本段内容要求：{content_desc}")
+        if theme:
+            user_lines.append(f"本段主题词：{theme}")
+        user_lines.append(f"原始槽位需求（兜底）：{gap.requirement}")
+        if params.get("tag_hint"):
+            user_lines.append(f"可参考素材标签：{params['tag_hint']}")
+        if params.get("prompt_hint"):
+            user_lines.append(f"创作者补充（低优）：{params['prompt_hint']}")
+        user_lines.append("请输出主文案 + 2 句备选，紧扣『本段内容要求』。")
+        user = "\n".join(user_lines)
+
         narration = ""
         alternatives: list[str] = []
         try:

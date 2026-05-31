@@ -3,8 +3,10 @@ import { Link, useNavigate } from 'react-router-dom'
 import { LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid, ReferenceLine } from 'recharts'
 
 import { api } from '@/api/client'
+import { commitStep, getStepSnapshot } from '@/api/steps'
 import { createSSE, type SSEHandle } from '@/api/sse'
 import { PageShell } from '@/components/layout/PageShell'
+import { useProjectsStore } from '@/stores/projects'
 import { useSessionStore } from '@/stores/session'
 import type {
   DecomposeRequest,
@@ -44,6 +46,7 @@ export default function DecomposePage() {
   const manifest = useSessionStore((s) => s.manifest)
   const setManifest = useSessionStore((s) => s.setManifest)
   const selectSample = useSessionStore((s) => s.selectSample)
+  const currentProjectId = useProjectsStore((s) => s.currentProjectId)
   const navigate = useNavigate()
 
   const [progress, setProgress] = useState<{ step: string; percent: number; note?: string }>({
@@ -125,6 +128,44 @@ export default function DecomposePage() {
       sseRef.current?.close()
     }
   }, [])
+
+  // mount：拉一次 decompose 步骤快照——若已 commit 过且当前没 manifest，把 sample_id 同步到 session
+  useEffect(() => {
+    if (!currentProjectId) return
+    let cancelled = false
+    void (async () => {
+      try {
+        const snap = await getStepSnapshot(currentProjectId, 'decompose')
+        if (cancelled || !snap) return
+        const savedSampleId = snap.payload?.sample_id as string | undefined
+        if (savedSampleId && savedSampleId !== selectedSampleId) {
+          // 后端已保存的 sample_id 与 session 不一致 → 以后端为准
+          selectSample(savedSampleId)
+        }
+      } catch {
+        /* 没快照或网络抖动不影响主流程 */
+      }
+    })()
+    return () => {
+      cancelled = true
+    }
+    // 只关心 projectId 变化时去拉一次；selectSample 是稳定引用，selectedSampleId 故意不依赖以免无限循环
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [currentProjectId])
+
+  const handleNext = useCallback(async () => {
+    if (!currentProjectId || !selectedSampleId) {
+      navigate('/compose')
+      return
+    }
+    try {
+      await commitStep(currentProjectId, 'decompose', { sample_id: selectedSampleId })
+    } catch (err) {
+      setError(err instanceof Error ? err.message : '保存步骤失败')
+      return
+    }
+    navigate('/compose')
+  }, [currentProjectId, navigate, selectedSampleId])
 
   return (
     <PageShell
@@ -238,7 +279,7 @@ export default function DecomposePage() {
         </button>
         {manifest && (
           <button
-            onClick={() => navigate('/compose')}
+            onClick={() => void handleNext()}
             className="rounded-md border border-border bg-card px-4 py-2 text-sm font-medium hover:bg-secondary"
           >
             下一步 · 上传素材 →

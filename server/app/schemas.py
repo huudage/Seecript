@@ -420,6 +420,11 @@ class FillResult(BaseModel):
     action: FillAction
     new_material_id: Optional[str] = Field(default=None, description="aigc 最后一段 task_id 或 rerank 选中的素材")
     narration: Optional[str] = Field(default=None, description="copy 动作的补全文案")
+    voiceover_url: Optional[str] = Field(
+        default=None,
+        description="copy 动作（且 voiceover_enabled=True）自动合成的 TTS 音频 URL；"
+                    "rebuild plan 时回填到对应 Scene.voiceover_url。",
+    )
     alternatives: list[str] = Field(
         default_factory=list,
         description="copy 动作 LLM 返回的备选文案，给前端三选一（普通采纳 / 删改 / 换一个）。",
@@ -485,13 +490,18 @@ class Scene(BaseModel):
 
     scene_id: str
     section: SectionRole = Field(..., description="本场所属段落角色（opening/development/climax/closing）")
-    source: Literal["sample", "user_material", "aigc_t2v"]
-    source_ref: str = Field(..., description="样例镜头 id / material_id / Seedance 任务返回的 media_id")
+    source: Literal["sample", "user_material", "aigc_t2v", "text_card"]
+    source_ref: str = Field(..., description="样例镜头 id / material_id / Seedance 任务返回的 media_id / text_card 的标识")
     start: float = Field(..., description="时间线上的起点（秒）")
     duration: float
     in_point: float = Field(default=0.0, description="源素材内的入点（秒）")
     out_point: Optional[float] = Field(default=None, description="源素材内的出点；None 表示用到结尾")
     narration: Optional[str] = Field(default=None, description="本场口播文字（drawtext 基础字幕）")
+    voiceover_url: Optional[str] = Field(
+        default=None,
+        description="本场口播 TTS 合成后的本地音频 URL（/voiceovers/<plan_id>/<scene_id>.wav）；"
+                    "render pipeline 用 ffmpeg 按 scene.start 时间偏移混到主轨。",
+    )
     aigc_video_urls: list[str] = Field(
         default_factory=list,
         description="source=aigc_t2v 时 Seedance 返回的 N 段 CDN URL；render pipeline 下载后 ffmpeg concat。",
@@ -528,19 +538,49 @@ class BGMConfig(BaseModel):
         default=None,
         description="实际混音用的音频 URL（/assets/... 或 /uploads/...）；plan.py 由 asset 反填",
     )
+    duration_seconds: Optional[float] = Field(
+        default=None,
+        ge=0.0,
+        description="BGM 总时长（秒），上传分析时回填；前端绘制 BGM bar 宽度用。",
+    )
+    peak_seconds: Optional[float] = Field(
+        default=None,
+        ge=0.0,
+        description="BGM 强音/能量峰值时间（秒），librosa onset+RMS 分析得到；前端在 BGM bar 上画一条参考线，"
+                    "辅助用户把峰值对齐视频高潮。仅用于展示，不影响渲染本身。",
+    )
+    video_anchor_seconds: float = Field(
+        default=0.0,
+        description="BGM t=0 对齐到视频的哪一秒。正值=BGM 入场延迟（前面静音），负值=跳过 BGM 开头那段。"
+                    "用户在 BGM 轨道上拖动 bar 即修改本字段。",
+    )
     volume: float = Field(default=0.35, ge=0.0, le=1.0)
     fade_in: float = Field(default=1.5, ge=0.0, le=10.0)
     fade_out: float = Field(default=2.0, ge=0.0, le=10.0)
-    start_offset: float = Field(
-        default=0.0,
-        ge=0.0,
-        description="BGM 从第几秒开始裁，用于把曲子 hook 对齐视频 climax；0=从头",
-    )
     duck_with_voice: bool = Field(
         default=True,
         description="有口播段时 BGM 自动闪避（sidechain compress）",
     )
     duck_attenuation_db: float = Field(default=-9.0, ge=-30.0, le=0.0)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _migrate_legacy_start_offset(cls, data: Any) -> Any:
+        """旧 BGMConfig 用 start_offset（≥0，跳过 BGM 开头 N 秒），
+        新模型用 video_anchor_seconds（BGM 0s 对齐到视频第几秒）。
+        等价关系：video_anchor_seconds = -start_offset。
+        """
+        if not isinstance(data, dict):
+            return data
+        if "video_anchor_seconds" not in data and "start_offset" in data:
+            try:
+                legacy = float(data.pop("start_offset") or 0.0)
+            except (TypeError, ValueError):
+                legacy = 0.0
+            data["video_anchor_seconds"] = -legacy
+        else:
+            data.pop("start_offset", None)
+        return data
 
 
 # ---- 创作设置 ----------------------------------------------------------------
@@ -562,6 +602,22 @@ ToneStyle = Literal["tight_hype", "calm_narrative", "casual_daily", "professiona
 - calm_narrative      沉稳叙事：长镜头 + 余韵 + climax 可选
 - casual_daily        轻松日常：口语化 + 节奏自然
 - professional_cool   专业冷静：信息密度高 + 弱情绪 + 重数据
+"""
+
+
+TTSVoice = Literal[
+    "zh_female_qingxin",
+    "zh_male_jieshuo",
+    "zh_female_meili",
+    "zh_male_qingshuang",
+    "zh_female_xinling",
+]
+"""ARK 火山方舟 TTS 音色（中文）。
+- zh_female_qingxin     清新女声（默认）
+- zh_male_jieshuo       磁性解说男声
+- zh_female_meili       甜美治愈女声
+- zh_male_qingshuang    清爽阳光男声
+- zh_female_xinling     心灵叙事女声
 """
 
 
@@ -595,6 +651,15 @@ class ComposeSettings(BaseModel):
         default_factory=list,
         max_length=5,
         description="必须出现的关键词（最多 5 个）。每段 narration 至少出现 1 个。",
+    )
+    voiceover_enabled: bool = Field(
+        default=True,
+        description="是否需要口播。True=plan/build 自动生成逐句字幕 + copy fill 自动合成 TTS；"
+                    "False=纯 BGM 视频，跳过字幕轨与 TTS（但保留 narration 文本作 LLM 上下文）。",
+    )
+    tts_voice: TTSVoice = Field(
+        default="zh_female_qingxin",
+        description="ARK TTS 音色。voiceover_enabled=False 时该字段无效。",
     )
 
 
@@ -877,6 +942,41 @@ ProjectStatus = Literal["draft", "planned", "rendered"]
 - rendered  渲染过至少一次，有可看的成片
 """
 
+StepName = Literal["library", "decompose", "compose", "render"]
+"""线性工作流的四个步骤。Migrate 是 view-only 的，不在 commit 序列里。"""
+
+StepStatus = Literal["pending", "in_progress", "saved", "dirty"]
+"""单步状态：
+- pending      尚未开始
+- in_progress  当前步（用户正在编辑，未点『下一步』）
+- saved        已提交快照
+- dirty        上游被改过 → 本步快照可能过期，建议刷新；产物仍在盘上可看
+"""
+
+
+class StepSnapshot(BaseModel):
+    """『下一步』提交时落盘的单步产物快照。
+
+    payload 内容随 step 而异：
+    - library:   {"sample_id": str}
+    - decompose: {"sample_id": str}（manifest 走样例共享区，不重存）
+    - compose:   {"plan_id": str, "fill_ids": list[str]}
+    - render:    {"job_id": str}
+    """
+
+    step: StepName
+    saved_at: float
+    payload: dict[str, Any] = Field(default_factory=dict)
+
+
+class ProjectStepState(BaseModel):
+    """Project.step_states 字段——顶部导航徽章数据源。"""
+
+    library: StepStatus = "pending"
+    decompose: StepStatus = "pending"
+    compose: StepStatus = "pending"
+    render: StepStatus = "pending"
+
 
 class Project(BaseModel):
     """项目 = 一次完整的『样例 → 改编 → 补全 → 渲染』工作流容器。"""
@@ -890,6 +990,8 @@ class Project(BaseModel):
     last_plan_id: Optional[str] = Field(default=None, description="最近一次 plan_id（前端 resume 用）")
     last_render_job_id: Optional[str] = Field(default=None, description="最近一次 render job_id（成片预览）")
     status: ProjectStatus = "draft"
+    step_states: ProjectStepState = Field(default_factory=ProjectStepState, description="四步状态机")
+    current_step: StepName = Field(default="library", description="用户最近停留的步骤")
     created_at: float
     updated_at: float
 
@@ -909,6 +1011,8 @@ class ProjectUpdateRequest(BaseModel):
     last_plan_id: Optional[str] = None
     last_render_job_id: Optional[str] = None
     status: Optional[ProjectStatus] = None
+    step_states: Optional[ProjectStepState] = None
+    current_step: Optional[StepName] = None
 
 
 class ProjectListResponse(BaseModel):

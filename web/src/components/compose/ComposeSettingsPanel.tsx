@@ -5,7 +5,9 @@ import type { ComposeSettings, TargetPlatform, ToneStyle } from '@/types/schemas
 
 /**
  * Compose 页"高级设置"折叠面板：目标时长 / 平台 / 调性 / CTA / 关键词。
- * 全部带默认值，未展开也不影响 /plan/build——可视化区域只是给用户精修的入口。
+ *
+ * 注：口播 TTS 与字幕相关设置已迁移到四轨板的"口播 / 字幕轨"——开篇不再让用户选音色，
+ * 而是在内容轨准备好之后，由字幕轨上的一键 TTS 操作驱动；这里只保留全局结构参数。
  */
 
 const PLATFORM_OPTIONS: { value: TargetPlatform; label: string; hint: string }[] = [
@@ -155,6 +157,8 @@ export function ComposeSettingsPanel({
               ))}
             </div>
           </div>
+
+          {/* 口播 TTS 已迁移到四轨板的口播 / 字幕轨——开篇不再选音色，由字幕轨一键 TTS 触发。 */}
 
           {/* CTA */}
           <div>

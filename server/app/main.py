@@ -24,7 +24,7 @@ from fastapi.staticfiles import StaticFiles
 
 from . import __version__
 from .config import get_settings
-from .routers import asr, asset, decompose, edit, gap, library, material, packaging, plan, project, render
+from .routers import asr, asset, decompose, edit, gap, library, material, packaging, plan, project, render, step, voice
 from .schemas import ErrorResponse, HealthResponse
 
 
@@ -135,6 +135,7 @@ def create_app() -> FastAPI:
     # 阶段 1：7 个业务路由 + asr。所有路由的 prefix 都是 /api/*。
     app.include_router(asr.router, prefix="/api/asr", tags=["asr"])
     app.include_router(project.router, prefix="/api", tags=["project"])
+    app.include_router(step.router, prefix="/api", tags=["step"])
     app.include_router(library.router, prefix="/api", tags=["library"])
     app.include_router(decompose.router, prefix="/api", tags=["decompose"])
     app.include_router(material.router, prefix="/api", tags=["material"])
@@ -144,6 +145,7 @@ def create_app() -> FastAPI:
     app.include_router(render.router, prefix="/api", tags=["render"])
     app.include_router(edit.router, prefix="/api", tags=["edit"])
     app.include_router(asset.router, prefix="/api", tags=["asset"])
+    app.include_router(voice.router, prefix="/api", tags=["voice"])
 
     # ---- Static: 样例素材 ----
     # 把 server/samples/ 暴露成 /samples/...；前端 cover_url / shot 缩略图 / video.mp4
@@ -174,6 +176,12 @@ def create_app() -> FastAPI:
     assets_dir = settings.log_dir.parent / "var" / "assets"
     assets_dir.mkdir(parents=True, exist_ok=True)
     app.mount("/assets", StaticFiles(directory=str(assets_dir)), name="assets")
+
+    # /voiceovers/{plan_id}/<scene_id>.wav → server/var/voiceovers/...
+    # Compose 页口播轨 TTS 合成产物落盘后通过这个前缀供前端 <audio> 试听 + 渲染 pipeline 拉取。
+    voiceovers_dir = settings.log_dir.parent / "var" / "voiceovers"
+    voiceovers_dir.mkdir(parents=True, exist_ok=True)
+    app.mount("/voiceovers", StaticFiles(directory=str(voiceovers_dir)), name="voiceovers")
 
     return app
 

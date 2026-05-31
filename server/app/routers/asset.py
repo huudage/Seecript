@@ -34,7 +34,8 @@ from ..schemas import (
 )
 from ..services.assets import asset_store
 from ..services.video import ffmpeg as ffmpeg_svc
-from ..services.video.audio_analysis import analyze_audio, backend_name as audio_backend
+from ..services.video.audio_analysis import backend_name as audio_backend
+from ..services.video.bgm_analysis import analyze_bgm
 
 log = logging.getLogger("seecript.asset")
 router = APIRouter()
@@ -47,7 +48,7 @@ _ALLOWED_BGM = {"audio/mpeg", "audio/mp3", "audio/wav", "audio/x-wav", "audio/aa
 _ALLOWED_IMAGE = {"image/jpeg", "image/png", "image/webp"}
 _ALLOWED_VIDEO = {"video/mp4", "video/quicktime", "video/webm"}
 
-_MAX_BYTES_BGM = 30 * 1024 * 1024       # 30MB BGM 上限
+_MAX_BYTES_BGM = 20 * 1024 * 1024       # 20MB BGM 上限（与前端 BGM 上传面板一致）
 _MAX_BYTES_IMAGE = 15 * 1024 * 1024     # 15MB 图
 _MAX_BYTES_VIDEO = 100 * 1024 * 1024    # 100MB 视频（比 material 大一点，参考素材常更长）
 
@@ -102,11 +103,10 @@ def _probe_bgm(asset: Asset, file_path: Path) -> None:
 
     try:
         if audio_backend() == "librosa":
-            profile = analyze_audio(file_path)
+            profile = analyze_bgm(file_path)
             metadata["tempo_bpm"] = round(profile.tempo_bpm, 1)
-            if profile.rms_energy and profile.times:
-                peak_idx = max(range(len(profile.rms_energy)), key=lambda i: profile.rms_energy[i])
-                metadata["peak_at_seconds"] = round(profile.times[peak_idx], 2)
+            if profile.peak_seconds is not None:
+                metadata["peak_at_seconds"] = round(profile.peak_seconds, 2)
             metadata.setdefault("duration_seconds", round(profile.duration_seconds, 3))
     except Exception as exc:  # noqa: BLE001
         log.warning("[asset.bgm] librosa analyze failed id=%s: %s", asset.asset_id, exc)

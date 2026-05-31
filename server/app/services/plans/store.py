@@ -95,6 +95,13 @@ class PlanStore:
         with self._lock:
             return list(self._plans.keys())
 
+    def list_by_project(self, project_id: str) -> list[Plan]:
+        """返回该 project 下所有 plans，按 plan_id 时间倒序（plan_id 含 uuid，没真时间戳，按字母倒序近似）。"""
+        with self._lock:
+            items = [p for p in self._plans.values() if p.project_id == project_id]
+        items.sort(key=lambda p: p.plan_id, reverse=True)
+        return items
+
     def replace(self, plan: Plan) -> None:
         """编辑场景：以同 plan_id 覆盖（含落盘）。"""
         self.put(plan)

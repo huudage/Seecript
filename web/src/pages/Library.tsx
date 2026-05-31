@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 
 import { api, ApiError } from '@/api/client'
+import { commitStep } from '@/api/steps'
 import { NewProjectDialog } from '@/components/home/NewProjectDialog'
 import { PageShell } from '@/components/layout/PageShell'
 import { AssetLibraryView } from '@/components/library/AssetLibraryView'
@@ -56,12 +57,18 @@ export default function LibraryPage() {
 
   const handlePick = async (item: LibraryItem) => {
     selectSample(item.id, item.video_type, item.source)
-    // 已有项目：让用户继续在该项目内（不换 sample）
+    // 已有项目：让用户继续在该项目内（不换 sample），并提交 library 步骤快照
     if (currentProjectId) {
+      try {
+        await commitStep(currentProjectId, 'library', { sample_id: item.id })
+      } catch (err) {
+        setError(err instanceof Error ? err.message : '保存步骤失败')
+        return
+      }
       navigate('/decompose')
       return
     }
-    // 无项目：弹「新建项目」让用户起名
+    // 无项目：弹「新建项目」让用户起名（创建后由 NewProjectDialog 内部 commit library）
     setNewProjectSampleId(item.id)
   }
 

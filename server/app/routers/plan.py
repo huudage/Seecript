@@ -9,11 +9,11 @@
 from __future__ import annotations
 
 import logging
-import re
 import uuid
 from typing import Optional
 
 from fastapi import APIRouter, HTTPException
+from pydantic import BaseModel, Field
 
 from ..routers.library import _LIBRARY, _load_real_manifest, _stub_manifest
 from ..schemas import (
@@ -26,6 +26,9 @@ from ..schemas import (
     PlanBuildRequest,
     SampleManifest,
     Scene,
+    TargetPlatform,
+    ToneStyle,
+    TTSVoice,
 )
 from ..services.agent.plan_agent import adapt_structure
 from ..services.assets import asset_store
@@ -35,56 +38,6 @@ from ..services.projects import project_store
 
 log = logging.getLogger("seecript.plan")
 router = APIRouter()
-
-
-_SAMPLE_SHOT_RE = re.compile(r"sample-shot-(\d+)")
-
-
-def _allocate_sample_windows(
-    manifest: SampleManifest,
-    adapted: list["AdaptedSection"],
-) -> dict[str, tuple[float, float, int]]:
-    """为每个 AdaptedSection 在样例视频上分配不重叠的切片窗口。
-
-    返回 {section_id: (in_point, duration, shot_idx)}。
-
-    背景：同一 shot 被多个 AdaptedSection 共享时（如 marketing 样例只有 2 shots，
-    LLM 改编出 4 段都引用 shot 0），如果每段都用 _sample_shot_window 拿同一个
-    (in_point, duration) → ffmpeg concat 后就是"同一片段复读 N 遍"，结果看起来
-    就是样例本身。
-
-    解决方案：按 source_shot_indices[0] 分组，组内段在该 shot 真实时间窗内均分。
-    优先用 manifest.shots[i].start/duration（真分镜结果），manifest 不可用时
-    回退到按 shot_count 均分总时长。
-    """
-    shot_groups: dict[int, list["AdaptedSection"]] = {}
-    for sec in adapted:
-        shot_idx = sec.source_shot_indices[0] if sec.source_shot_indices else 0
-        shot_groups.setdefault(shot_idx, []).append(sec)
-
-    shot_window: dict[int, tuple[float, float]] = {}
-    for shot in manifest.shots:
-        shot_window[shot.index] = (float(shot.start), max(0.5, float(shot.duration)))
-
-    total = float(manifest.duration_seconds) or 30.0
-    n_shots = max(1, len(manifest.shots))
-    avg = total / n_shots
-
-    out: dict[str, tuple[float, float, int]] = {}
-    for shot_idx, secs in shot_groups.items():
-        if shot_idx in shot_window:
-            shot_start, shot_dur = shot_window[shot_idx]
-        else:
-            clamped = max(0, min(shot_idx, n_shots - 1))
-            shot_start, shot_dur = clamped * avg, avg
-        # 子窗口：shot 时长在该组段内均分，避免同一 shot 内重复切相同窗口
-        sub_window = shot_dur / len(secs)
-        for i, sec in enumerate(secs):
-            sub_in = shot_start + i * sub_window
-            target = float(sec.duration_seconds) if sec.duration_seconds > 0 else 4.0
-            actual = min(target, sub_window) if sub_window > 0 else target
-            out[sec.section_id] = (sub_in, actual, shot_idx)
-    return out
 
 
 def _resolve_manifest(sample_id: str) -> SampleManifest:
@@ -165,10 +118,16 @@ def _build_bgm_config(bgm_asset_id: Optional[str]) -> BGMConfig:
     return BGMConfig(
         bgm_asset_id=bgm_asset_id,
         track_url=asset.file_url,
+        duration_seconds=float(asset.metadata.get("duration_seconds") or 0.0) or None,
+        peak_seconds=(
+            float(asset.metadata["peak_at_seconds"])
+            if isinstance(asset.metadata.get("peak_at_seconds"), (int, float))
+            else None
+        ),
+        video_anchor_seconds=0.0,
         volume=0.35,
         fade_in=1.5,
         fade_out=2.0,
-        start_offset=0.0,
         duck_with_voice=True,
     )
 
@@ -217,18 +176,17 @@ async def build_plan(req: PlanBuildRequest) -> Plan:
 
     # 3. 把 fills 按 section_id 索引——这是修复『多段 development 全被路由到第一段』bug 的关键
     fill_by_section = _fill_section_lookup(req.fills)
-    # 预分配 sample 切片窗口：避免多段共享同 shot 时切出相同片段（→ 渲染像样例本身复读）
-    sample_window_map = _allocate_sample_windows(manifest, adapted)
     material_cursor = 0
 
-    def _pick(sec: AdaptedSection, sample_shot_idx: int) -> tuple[str, str, list[str], str | None]:
-        """返回 (source, source_ref, aigc_video_urls, narration_override)。
+    def _pick(sec: AdaptedSection) -> tuple[str, str, list[str], str | None, str | None]:
+        """返回 (source, source_ref, aigc_video_urls, narration_override, voiceover_url)。
 
-        优先级：本段 fill（aigc / copy） > 用户素材 > 样例镜头。
+        优先级：本段 fill（aigc / copy） > 用户素材 > 文字卡兜底。
         - aigc fill：source=aigc_t2v，source_ref=task_id，aigc_video_urls=video_urls
-        - copy fill：source 仍走素材/样例兜底，narration 用 fill.narration 覆盖
+        - copy fill：source=text_card（无画面素材），narration 用 fill.narration；
+                     若 fill.voiceover_url 已存在（gap 路由自动 TTS 写入），直接透传到 Scene。
         - 用户素材：顺位消费 selected_materials
-        - 样例镜头：兜底引用 sample-shot-XX
+        - 兜底：source=text_card，文案取自 content_description 首句
         """
         nonlocal material_cursor
         fill = fill_by_section.get(sec.section_id)
@@ -238,44 +196,35 @@ async def build_plan(req: PlanBuildRequest) -> Plan:
                 fill.new_material_id or (fill.video_urls[0] if fill.video_urls else "aigc"),
                 list(fill.video_urls),
                 None,
+                None,
             )
         narration_override = None
+        voiceover_url = None
         if fill and fill.action == "copy" and fill.narration:
             narration_override = fill.narration
+            voiceover_url = (fill.voiceover_url or "").strip() or None
         if material_cursor < len(req.selected_materials):
             ref = req.selected_materials[material_cursor]
             material_cursor += 1
-            return ("user_material", ref, [], narration_override)
-        return ("sample", f"sample-shot-{sample_shot_idx:02d}", [], narration_override)
+            return ("user_material", ref, [], narration_override, voiceover_url)
+        # 无 AIGC、无 copy 文案、无用户素材 → 文字卡（packaging 字幕负责显示真实文案）
+        return ("text_card", f"text-card-{sec.section_id}", [], narration_override, voiceover_url)
 
     main_track: list[Scene] = []
     timeline_cursor = 0.0
     for sec in adapted:
-        sample_shot_idx = sec.source_shot_indices[0] if sec.source_shot_indices else 0
-        source, source_ref, aigc_urls, narration_override = _pick(sec, sample_shot_idx)
+        source, source_ref, aigc_urls, narration_override, voiceover_url = _pick(sec)
         target_duration = float(sec.duration_seconds) if sec.duration_seconds > 0 else 4.0
 
         in_point = 0.0
         out_point: float | None = None
         actual_duration = target_duration
-        if source == "sample":
-            # 用预分配表拿独立子窗口；窗口内 source_ref 仍写真实 shot_idx，
-            # gap_agent 的缩略图反查照常工作
-            win = sample_window_map.get(sec.section_id)
-            if win is not None:
-                in_point, actual_duration, real_shot_idx = win
-                source_ref = f"sample-shot-{real_shot_idx:02d}"
-                out_point = in_point + actual_duration
-            else:
-                # 极端兜底：用 target_duration 从头切，至少不会和别人完全一样
-                in_point = 0.0
-                actual_duration = min(target_duration, manifest.duration_seconds or target_duration)
-                out_point = in_point + actual_duration
-        elif source == "user_material":
+        if source == "user_material":
             # user_material 也要切片（不切 ffmpeg 会把整段长视频塞进 4s scene 槽）
             in_point = 0.0
             actual_duration = target_duration
             out_point = actual_duration
+        # text_card / aigc_t2v：无 in/out 概念，actual_duration = target_duration
 
         narration_text = narration_override or _narration_from_content(sec.content_description)
         scene = Scene(
@@ -288,6 +237,7 @@ async def build_plan(req: PlanBuildRequest) -> Plan:
             in_point=in_point,
             out_point=out_point,
             narration=narration_text,
+            voiceover_url=voiceover_url,
             aigc_video_urls=aigc_urls,
         )
         main_track.append(scene)
@@ -307,18 +257,21 @@ async def build_plan(req: PlanBuildRequest) -> Plan:
         ))
 
     # 每个 Scene 烧一条字幕（用 scene.narration 而不是单条 placeholder）
-    for idx, scene in enumerate(main_track):
-        sub_text = (scene.narration or "").strip()
-        if not sub_text:
-            continue
-        packaging_track.append(PackagingItem(
-            item_id=f"pkg-sub-{idx}",
-            kind="subtitle",
-            start=scene.start,
-            end=scene.start + scene.duration,
-            text=sub_text,
-            style={"size": 48, "stroke": "#000"},
-        ))
+    # voiceover_enabled=False 时跳过：纯 BGM 视频不该自动出字幕，
+    # 但仍保留 scene.narration 文本，供 LLM 改编上下文使用。
+    if settings.voiceover_enabled:
+        for idx, scene in enumerate(main_track):
+            sub_text = (scene.narration or "").strip()
+            if not sub_text:
+                continue
+            packaging_track.append(PackagingItem(
+                item_id=f"pkg-sub-{idx}",
+                kind="subtitle",
+                start=scene.start,
+                end=scene.start + scene.duration,
+                text=sub_text,
+                style={"size": 48, "stroke": "#000"},
+            ))
 
     if len(main_track) >= 2:
         closing = main_track[-1]
@@ -373,3 +326,182 @@ async def get_plan(plan_id: str) -> Plan:
     if plan is None:
         raise HTTPException(status_code=404, detail=f"plan_id 不存在：{plan_id}")
     return plan
+
+
+class PlanBgmPatch(BaseModel):
+    """PATCH /plan/{plan_id}/bgm：BGM 替换 / 锚点拖动 / 音量调节。
+
+    `bgm_asset_id` 给值则换 BGM（重新分析、重置 anchor=0）；
+    给值为空字符串等同 DELETE（清空 BGM 引用）；
+    不给值仅修改可选字段。
+    """
+    bgm_asset_id: Optional[str] = Field(default=None)
+    video_anchor_seconds: Optional[float] = None
+    volume: Optional[float] = Field(default=None, ge=0.0, le=1.0)
+    fade_in: Optional[float] = Field(default=None, ge=0.0, le=10.0)
+    fade_out: Optional[float] = Field(default=None, ge=0.0, le=10.0)
+    duck_with_voice: Optional[bool] = None
+
+
+@router.patch("/plan/{plan_id}/bgm", response_model=Plan)
+async def patch_plan_bgm(plan_id: str, body: PlanBgmPatch) -> Plan:
+    """更新 plan 的 BGM 配置——支持换曲 / 拖动锚点 / 调音量等。"""
+    plan = plan_store.get(plan_id)
+    if plan is None:
+        raise HTTPException(status_code=404, detail=f"plan_id 不存在：{plan_id}")
+
+    bgm = plan.bgm.model_copy(deep=True) if plan.bgm else BGMConfig()
+    patch = body.model_dump(exclude_unset=True)
+
+    if "bgm_asset_id" in patch:
+        new_id = (patch["bgm_asset_id"] or "").strip() or None
+        if new_id is None:
+            # 清空 BGM
+            bgm = BGMConfig()
+        else:
+            # 替换 BGM：重新从 asset 拉 duration/peak，并重置 anchor
+            bgm = _build_bgm_config(new_id)
+
+    for field in ("video_anchor_seconds", "volume", "fade_in", "fade_out", "duck_with_voice"):
+        if field in patch and patch[field] is not None:
+            setattr(bgm, field, patch[field])
+
+    plan.bgm = bgm
+    plan_store.put(plan)
+    log.info(
+        "[plan] bgm patched plan=%s asset=%s anchor=%.2fs vol=%.2f duck=%s",
+        plan_id, bgm.bgm_asset_id, bgm.video_anchor_seconds, bgm.volume, bgm.duck_with_voice,
+    )
+    return plan
+
+
+@router.delete("/plan/{plan_id}/bgm", response_model=Plan)
+async def delete_plan_bgm(plan_id: str) -> Plan:
+    """清空 plan 的 BGM 引用（保留资产库里的文件本身）。"""
+    plan = plan_store.get(plan_id)
+    if plan is None:
+        raise HTTPException(status_code=404, detail=f"plan_id 不存在：{plan_id}")
+    plan.bgm = BGMConfig()
+    plan_store.put(plan)
+    log.info("[plan] bgm cleared plan=%s", plan_id)
+    return plan
+
+
+class PlanSettingsPatch(BaseModel):
+    """PATCH /plan/{plan_id}/settings：在轨道板等位置直接翻转单个设置项。
+
+    所有字段可选；只更新前端实际传入的键（`exclude_unset`），未传字段保持现值。
+    主要用法：四轨板左侧开关翻转 voiceover_enabled、Compose 设置面板切换 tts_voice。
+    """
+    voiceover_enabled: Optional[bool] = None
+    tts_voice: Optional[TTSVoice] = None
+    target_platform: Optional[TargetPlatform] = None
+    tone: Optional[ToneStyle] = None
+    cta: Optional[str] = Field(default=None, max_length=20)
+    keywords: Optional[list[str]] = Field(default=None, max_length=5)
+    target_duration_seconds: Optional[float] = Field(default=None, ge=10.0, le=120.0)
+
+
+@router.patch("/plan/{plan_id}/settings", response_model=Plan)
+async def patch_plan_settings(plan_id: str, body: PlanSettingsPatch) -> Plan:
+    """部分更新 plan.settings；不重跑 LLM，仅落盘 + 返回最新 Plan。
+
+    不触发结构重排——voiceover_enabled 由 voice/render 阶段读取生效，
+    tts_voice 由 /voice/synthesize 阶段读取。前端切换后页面用返回的 Plan 同步 store。
+    """
+    plan = plan_store.get(plan_id)
+    if plan is None:
+        raise HTTPException(status_code=404, detail=f"plan_id 不存在：{plan_id}")
+    patch = body.model_dump(exclude_unset=True)
+    if not patch:
+        return plan
+    current = plan.settings.model_dump()
+    current.update(patch)
+    plan.settings = ComposeSettings(**current)
+    # 翻到 voiceover_enabled=False 时，把已经烧好的字幕 PackagingItem 清掉——
+    # 不然 render 还会把字幕画进画面，与"纯 BGM 视频"语义打架。
+    if patch.get("voiceover_enabled") is False:
+        before = len(plan.packaging_track)
+        plan.packaging_track = [it for it in plan.packaging_track if it.kind != "subtitle"]
+        if before != len(plan.packaging_track):
+            log.info("[plan] settings voiceover off → 移除字幕项 %d→%d",
+                     before, len(plan.packaging_track))
+    plan_store.put(plan)
+    log.info("[plan] settings patched plan=%s keys=%s", plan_id, list(patch.keys()))
+    return plan
+
+
+class SceneEditPatch(BaseModel):
+    """PATCH /plan/{plan_id}/scene/{scene_id}：用户在四轨板"内容轨"上直接编辑段落内容。
+
+    所有字段可选：
+    - narration：改 Scene.narration（口播文案；后续合成 TTS 走的就是这一行）
+    - theme / content_description：改对应 AdaptedSection（结构层），后续重排或 LLM 复用以此为锚定
+
+    注意：不重跑 plan/build——只是把用户的手改落盘。改完通常紧跟着 /gap/fill 让用户再补补缺。
+    """
+    narration: Optional[str] = Field(default=None, max_length=2000)
+    theme: Optional[str] = Field(default=None, max_length=80)
+    content_description: Optional[str] = Field(default=None, max_length=400)
+
+
+@router.patch("/plan/{plan_id}/scene/{scene_id}", response_model=Plan)
+async def patch_plan_scene(plan_id: str, scene_id: str, body: SceneEditPatch) -> Plan:
+    """更新 plan 中某 scene 的可编辑文本字段 + 同步对应 AdaptedSection 的 theme/content_description。
+
+    AdaptedSection ↔ Scene 的关联：scene_id 形如 `sc-<order>`，order 与 section.order 对齐。
+    用户在内容轨上看到的"段标题/段描述"就是 AdaptedSection 那两个字段，所以联动改。
+    narration 是 Scene 自己的字段，只在 Scene 上改。
+    """
+    plan = plan_store.get(plan_id)
+    if plan is None:
+        raise HTTPException(status_code=404, detail=f"plan_id 不存在：{plan_id}")
+
+    patch = body.model_dump(exclude_unset=True)
+    if not patch:
+        return plan
+
+    scene_idx = next((i for i, s in enumerate(plan.main_track) if s.scene_id == scene_id), None)
+    if scene_idx is None:
+        raise HTTPException(status_code=404, detail=f"scene_id 不存在：{scene_id}")
+    scene = plan.main_track[scene_idx]
+
+    if "narration" in patch:
+        plan.main_track[scene_idx] = scene.model_copy(update={"narration": patch["narration"]})
+
+    # 通过 scene_id 推断 section.order；老数据可能不是 sc-<order> 形式，回落到 scene_idx
+    section_order: Optional[int] = None
+    if scene_id.startswith("sc-"):
+        try:
+            section_order = int(scene_id.split("-", 1)[1])
+        except ValueError:
+            section_order = None
+    if section_order is None:
+        section_order = scene_idx
+
+    section_idx = next(
+        (i for i, sec in enumerate(plan.adapted_sections) if sec.order == section_order),
+        None,
+    )
+    if section_idx is not None and any(k in patch for k in ("theme", "content_description")):
+        sec = plan.adapted_sections[section_idx]
+        update: dict[str, str] = {}
+        if "theme" in patch:
+            update["theme"] = patch["theme"]
+        if "content_description" in patch:
+            update["content_description"] = patch["content_description"]
+        plan.adapted_sections[section_idx] = sec.model_copy(update=update)
+
+    plan_store.put(plan)
+    log.info(
+        "[plan] scene patched plan=%s scene=%s keys=%s",
+        plan_id, scene_id, list(patch.keys()),
+    )
+    return plan
+
+
+@router.get("/plan", response_model=list[Plan])
+async def list_plans(project_id: str) -> list[Plan]:
+    """按 project_id 列出该项目所有 plans。前端进 Compose 时根据 step snapshot
+    拿单个 plan_id；用本接口可在调试/历史回看时拉全量。"""
+    return plan_store.list_by_project(project_id)

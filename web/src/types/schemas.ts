@@ -190,6 +190,8 @@ export interface FillResult {
   action: FillAction
   new_material_id?: MaterialId | null
   narration?: string | null
+  /** copy 动作 + voiceover_enabled=True 时后端自动 TTS 后回写的 wav URL。 */
+  voiceover_url?: string | null
   alternatives: string[]
   /** aigc 链式生成的 N 段 CDN URL（按时序）；单段 = 1 元素，>12s 走链式。 */
   video_urls: string[]
@@ -251,13 +253,15 @@ export interface AdaptedSection {
 export interface Scene {
   scene_id: string
   section: SectionRole
-  source: 'sample' | 'user_material' | 'aigc_t2v'
+  source: 'sample' | 'user_material' | 'aigc_t2v' | 'text_card'
   source_ref: string
   start: number
   duration: number
   in_point: number
   out_point?: number | null
   narration?: string | null
+  /** 本场口播 TTS 合成后的本地音频 URL（/voiceovers/<plan>/<scene>.wav）。 */
+  voiceover_url?: string | null
   /** source=aigc_t2v 时 Seedance 返回的 N 段 CDN URL。 */
   aigc_video_urls: string[]
 }
@@ -272,11 +276,35 @@ export interface PackagingItem {
 }
 
 export interface BGMConfig {
+  /** BGM 资产 ID（asset library 中的 id）。 */
+  asset_id?: string | null
   track_url?: string | null
   volume: number
   fade_in: number
   fade_out: number
+  /** BGM 总时长（秒）；上传后 librosa 探测填入。 */
+  duration_seconds?: number | null
+  /** AI 识别的能量峰值时间点（秒）；前端拖动 anchor 时显示参考线。 */
+  peak_seconds?: number | null
+  /**
+   * BGM 起点在视频时间轴上的位置（秒）。
+   * 正值 = 视频先静音 N 秒再起 BGM；
+   * 负值 = 跳过 BGM 开头 -N 秒，立刻在 t=0 起。
+   */
+  video_anchor_seconds: number
+  /** 是否在口播时段降低 BGM 音量（sidechain ducking）。 */
+  duck_with_voice: boolean
+  /** ducking 衰减强度（dB），负值。 */
+  duck_attenuation_db: number
 }
+
+/** TTS voice 角色 —— 火山引擎可选音色（与后端 TTSVoice 镜像）。 */
+export type TTSVoice =
+  | 'zh_female_qingxin'
+  | 'zh_male_jieshuo'
+  | 'zh_female_wenrou'
+  | 'zh_male_xueyi'
+  | 'zh_female_xiaoyu'
 
 /** 目标平台 —— 决定画幅 + 节奏 + 字幕风格。 */
 export type TargetPlatform = 'douyin' | 'wechat' | 'xiaohongshu' | 'bilibili'
@@ -299,6 +327,13 @@ export interface ComposeSettings {
   cta: string
   /** 必须出现的关键词（最多 5 个）。每段 narration 至少出现 1 个。 */
   keywords: string[]
+  /**
+   * 是否需要口播 —— 关掉则跳过 TTS + 不烧字幕（纯 BGM 视频），
+   * 但仍保留每段 narration 文本供 LLM 改编上下文。
+   */
+  voiceover_enabled: boolean
+  /** TTS 音色。voiceover_enabled=False 时此字段忽略。 */
+  tts_voice: TTSVoice
 }
 
 export const DEFAULT_COMPOSE_SETTINGS: ComposeSettings = {
@@ -307,6 +342,8 @@ export const DEFAULT_COMPOSE_SETTINGS: ComposeSettings = {
   tone: 'tight_hype',
   cta: '',
   keywords: [],
+  voiceover_enabled: true,
+  tts_voice: 'zh_female_qingxin',
 }
 
 export interface Plan {
@@ -365,6 +402,78 @@ export interface GapDetectRequest {
   session_id?: SessionId | null
   /** false 时缺素材不回退 mock，所有 gap 都标 miss，逼用户走 copy/aigc 补全。 */
   allow_mock?: boolean
+}
+
+// =========================================================================
+// Module 5c — Voice (TTS)
+// =========================================================================
+
+export interface VoiceSynthesizeRequest {
+  plan_id: PlanId
+  scene_id: string
+  /** 覆盖 scene.narration 用的临时文案；不传则用 scene.narration。 */
+  text?: string | null
+  /** 覆盖 plan.settings.tts_voice。 */
+  voice?: TTSVoice | null
+}
+
+export interface VoiceSynthesizeResponse {
+  plan_id: PlanId
+  scene_id: string
+  voiceover_url: string
+  /** 实际使用的后端：mock = 单元测试/无 Key 兜底；volc = 火山引擎 TTS。 */
+  backend: 'mock' | 'volc'
+  chars: number
+}
+
+export interface VoiceSynthesizeAllResponse {
+  plan_id: PlanId
+  backend: 'mock' | 'volc'
+  synthesized: VoiceSynthesizeResponse[]
+  skipped_scene_ids: string[]
+  failures: Array<{ scene_id: string; code?: string | null; error: string }>
+}
+
+// =========================================================================
+// Module 5d — BGM patch
+// =========================================================================
+
+export interface PlanBgmPatch {
+  /** 替换 BGM 资产；不传则保留现有 asset_id。 */
+  bgm_asset_id?: string | null
+  /** 拖动到的视频时间轴位置（秒）。 */
+  video_anchor_seconds?: number | null
+  /** 0.0 ~ 1.0 之间。 */
+  volume?: number | null
+  fade_in?: number | null
+  fade_out?: number | null
+  duck_with_voice?: boolean | null
+}
+
+/**
+ * PATCH /plan/{plan_id}/settings —— 直接翻转单个 ComposeSettings 项；
+ * 所有字段可选，未传字段保持现值。
+ * 后端 router.plan.PlanSettingsPatch 的前端镜像。
+ */
+export interface PlanSettingsPatch {
+  voiceover_enabled?: boolean | null
+  tts_voice?: TTSVoice | null
+  target_platform?: TargetPlatform | null
+  tone?: ToneStyle | null
+  cta?: string | null
+  keywords?: string[] | null
+  target_duration_seconds?: number | null
+}
+
+/**
+ * PATCH /plan/{plan_id}/scene/{scene_id} —— 直接编辑一个 Scene 的可改文本字段，
+ * theme/content_description 联动到对应 AdaptedSection（按 sc-<order> 解析）。
+ * 后端 router.plan.SceneEditPatch 的前端镜像。
+ */
+export interface SceneEditPatch {
+  narration?: string | null
+  theme?: string | null
+  content_description?: string | null
 }
 
 // =========================================================================
@@ -511,6 +620,33 @@ export interface AssetListResponse {
 /** 项目状态：草稿（刚选样例）/ 已规划（plan/build 跑过）/ 已渲染（拿到视频）。 */
 export type ProjectStatus = 'draft' | 'planned' | 'rendered'
 
+/** 线性工作流的四个步骤；Migrate 是 view-only，不在 commit 序列里。 */
+export type StepName = 'library' | 'decompose' | 'compose' | 'render'
+
+/** 单步状态：未开始 / 进行中 / 已保存 / 上游变了快照过期但产物仍可看。 */
+export type StepStatus = 'pending' | 'in_progress' | 'saved' | 'dirty'
+
+/**
+ * 「下一步」点击时落盘的单步产物快照。payload 内容随 step 不同：
+ * - library:   { sample_id }
+ * - decompose: { sample_id }
+ * - compose:   { plan_id, fill_ids }
+ * - render:    { job_id }
+ */
+export interface StepSnapshot {
+  step: StepName
+  saved_at: number
+  payload: Record<string, unknown>
+}
+
+/** Project.step_states 字段——顶部导航徽章数据源。 */
+export interface ProjectStepState {
+  library: StepStatus
+  decompose: StepStatus
+  compose: StepStatus
+  render: StepStatus
+}
+
 /**
  * Project = 一次完整的「样例 → 改编 → 补全 → 渲染」流程容器。
  * 后端用 project_id 作为唯一隔离键：素材 / 资产库 / plans / gaps 都按它分组。
@@ -525,6 +661,8 @@ export interface Project {
   last_plan_id?: PlanId | null
   last_render_job_id?: JobId | null
   status: ProjectStatus
+  step_states: ProjectStepState
+  current_step: StepName
   created_at: number
   updated_at: number
 }
@@ -542,6 +680,8 @@ export interface ProjectUpdateRequest {
   last_plan_id?: PlanId | null
   last_render_job_id?: JobId | null
   status?: ProjectStatus | null
+  step_states?: ProjectStepState | null
+  current_step?: StepName | null
 }
 
 export interface ProjectListResponse {

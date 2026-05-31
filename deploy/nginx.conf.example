@@ -11,7 +11,7 @@
 #   sudo ln -sf /etc/nginx/sites-available/seecript.conf /etc/nginx/sites-enabled/
 #   sudo nginx -t && sudo systemctl reload nginx
 #
-# Then issue a Let's Encrypt cert (Volcengine ASR REQUIRES https for the audio URL):
+# Then issue a Let's Encrypt cert (Volcengine ASR 2.0 REQUIRES https for audio.url):
 #   sudo certbot --nginx -d __DOMAIN__
 # Certbot rewrites this file to add the 443 server block automatically.
 
@@ -20,30 +20,29 @@ server {
     listen [::]:80;
     server_name __DOMAIN__;
 
-    # Larger uploads for audio extracted by ffmpeg.wasm (cap at 30 MB to match backend 25 MB).
+    # 30m caps audio extracted by ffmpeg.wasm + raw user video upload chunks.
+    # 后端 settings.MAX_UPLOAD_SIZE_MB = 200，这里给 30m 是因为前端切片上传单次 payload 不会超。
+    # 若以后改成整段直传，需要同步抬高 + 后端 app.config 的限制。
     client_max_body_size 30m;
 
-    # Gzip the small text files we ship.
-    # NOTE: text/html is gzipped by default (the nginx core does it implicitly), do NOT list
-    # it again here or we get: `nginx: [warn] duplicate MIME type "text/html"`.
     gzip on;
+    # text/html 由 nginx 核心隐式开启，重复列会报 `duplicate MIME type "text/html"` warn。
     gzip_types text/css application/javascript application/json image/svg+xml;
     gzip_min_length 1024;
 
     access_log /var/log/nginx/seecript.access.log;
     error_log  /var/log/nginx/seecript.error.log;
 
-    # ---- Static frontend (no build step) ----
-    root __FRONTEND_DIR__;
+    # ---- Static frontend (Vite build output) ----
+    # `npm run build` 输出到 web/dist；__FRONTEND_DIR__ 默认 /opt/seecript（项目根）。
+    root __FRONTEND_DIR__/web/dist;
     index index.html;
 
-    # COOP/COEP for ffmpeg.wasm. The FastAPI middleware also adds these, but nginx may
-    # serve static HTML directly (via try_files) without proxying to FastAPI, so we set
-    # them here too.
+    # COOP/COEP for ffmpeg.wasm. FastAPI 也加了一份，但 nginx 直出静态 HTML 不会经过 FastAPI。
     #
     # CRITICAL nginx gotcha: `add_header` does NOT inherit from a parent block if the
     # child block has any `add_header` of its own. So we MUST repeat these inside every
-    # location that also calls `add_header` (Cache-Control, Cache-Control immutable, …),
+    # location that also calls `add_header` (Cache-Control, immutable, …),
     # otherwise the browser will see neither and ffmpeg.wasm refuses to load.
     # Reference: https://nginx.org/en/docs/http/ngx_http_headers_module.html#add_header
     add_header Cross-Origin-Opener-Policy "same-origin" always;
@@ -51,34 +50,32 @@ server {
 
     location / {
         try_files $uri $uri/ /index.html;
-        # Repeated COOP/COEP — see nginx gotcha note above. Without these two lines the
-        # browser strips them when serving HTML and ffmpeg.wasm fails with
-        # "cross-origin isolation is not enabled".
+        # 重复 COOP/COEP — 见上面 gotcha 说明。少这两行 ffmpeg.wasm 会以
+        # "cross-origin isolation is not enabled" 拒绝加载。
         add_header Cross-Origin-Opener-Policy "same-origin" always;
         add_header Cross-Origin-Embedder-Policy "credentialless" always;
         add_header Cache-Control "public, max-age=300";
     }
 
-    # Long-cache hashed assets if/when added (don't block on this for v0.2).
-    location /assets/ {
+    # Vite hashed bundle 长缓存。
+    # web/vite.config.ts 把 build.assetsDir 改成了 'static'（默认 'assets' 会和后端
+    # /assets/ 用户素材库挂载冲突）。改名后 /static/ 长缓存安全，下面 /assets/ 走代理。
+    location /static/ {
         expires 30d;
         access_log off;
-        # Repeated COOP/COEP — see note above.
+        # 重复 COOP/COEP — 见上面 gotcha 说明。
         add_header Cross-Origin-Opener-Policy "same-origin" always;
         add_header Cross-Origin-Embedder-Policy "credentialless" always;
         add_header Cache-Control "public, immutable";
     }
 
-    # NOTE: 极速版 ASR (volc.bigasr.auc_turbo) base64-uploads inline → no need for a
-    # public /asr-tmp/ location any more. Earlier versions of this template had one;
-    # if you migrated from v0.3, delete /opt/seecript/server/var/asr-tmp safely.
-
     # Block accidental exposure of sensitive paths via the static root.
+    # 部署时 root 已经收窄到 web/dist 子目录，但保守起见再拦一道。
     location ~ ^/(server|deploy|scripts|docs|tests|venv|\.env|\.git) {
         return 404;
     }
 
-    # Block dotfiles.
+    # Block dotfiles (除 ACME challenge).
     location ~ /\.(?!well-known) {
         deny all;
     }
@@ -92,15 +89,98 @@ server {
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
         proxy_set_header X-Forwarded-Proto $scheme;
 
-        # 极速版 ASR 通常 1-5s 返回；DeepSeek 慢路径偶尔 30s+。给 90s 余量。
+        # ASR 2.0 异步 query 最长 120s；Seedance T2V 单段 8-30s；fill_gap 链路化偶尔 60s+。
+        # 180s 与 systemd unit 的 --timeout 120 配合：nginx 兜底大于 gunicorn 杀点，
+        # 让长任务被 worker timeout 中止（502）而不是 nginx timeout 中止（504）。
+        # 注：systemd unit 当前 --timeout 120；若 fill_gap 多次报 504，
+        # 把 gunicorn --timeout + 这里 proxy_*_timeout 一起抬到 240s。
         proxy_connect_timeout 10s;
-        proxy_send_timeout 90s;
-        proxy_read_timeout 90s;
+        proxy_send_timeout 180s;
+        proxy_read_timeout 180s;
 
-        # Allow the frontend to upload up to 30 MB (matches client_max_body_size above).
+        # 上传 stream 直传给 FastAPI，避免 nginx 落盘暂存。
         proxy_request_buffering off;
 
-        # Future-proof for SSE.
+        # SSE (render progress / gap detect) 必须关 buffering，否则前端拿不到分段消息。
         proxy_buffering off;
+        proxy_cache off;
+    }
+
+    # ---- Backend static mounts (StaticFiles) ----
+    # server/app/main.py 上挂了 5 个 StaticFiles：/samples /uploads /outputs /assets /voiceovers
+    # 全部反代到后端。ARK ASR 2.0 通过 PUBLIC_AUDIO_BASE_URL/<uploads|samples>/... 公网拉音频，
+    # 所以这些路径必须经 nginx + https 暴露出去。
+    #
+    # 取舍：nginx 直接 `alias` 到磁盘理论上更快，但前端 chown + 权限链复杂（uvicorn 写、
+    # www-data 读 + setgid 目录），demo 阶段不值得。统一走代理；后续要优化再切 alias。
+    #
+    # 注意：/assets/ 在这里是后端「用户素材库」(BGM / 参考图)，
+    # 不是前端 bundle —— 前端 bundle 走上面的 /static/。
+
+    location /uploads/ {
+        proxy_pass http://127.0.0.1:__BACKEND_PORT__;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_buffering off;
+        # 用 UUID 命名内容不变 → 1h 公共缓存，浏览器和 ARK 拉取都能减少回源。
+        add_header Cross-Origin-Opener-Policy "same-origin" always;
+        add_header Cross-Origin-Embedder-Policy "credentialless" always;
+        add_header Cache-Control "public, max-age=3600";
+    }
+
+    location /outputs/ {
+        proxy_pass http://127.0.0.1:__BACKEND_PORT__;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_buffering off;
+        add_header Cross-Origin-Opener-Policy "same-origin" always;
+        add_header Cross-Origin-Embedder-Policy "credentialless" always;
+        add_header Cache-Control "public, max-age=3600";
+    }
+
+    location /samples/ {
+        proxy_pass http://127.0.0.1:__BACKEND_PORT__;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_buffering off;
+        # 样例视频几乎不变 → 1 天缓存。
+        add_header Cross-Origin-Opener-Policy "same-origin" always;
+        add_header Cross-Origin-Embedder-Policy "credentialless" always;
+        add_header Cache-Control "public, max-age=86400";
+    }
+
+    location /assets/ {
+        proxy_pass http://127.0.0.1:__BACKEND_PORT__;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_buffering off;
+        add_header Cross-Origin-Opener-Policy "same-origin" always;
+        add_header Cross-Origin-Embedder-Policy "credentialless" always;
+        add_header Cache-Control "public, max-age=3600";
+    }
+
+    location /voiceovers/ {
+        proxy_pass http://127.0.0.1:__BACKEND_PORT__;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_buffering off;
+        add_header Cross-Origin-Opener-Policy "same-origin" always;
+        add_header Cross-Origin-Embedder-Policy "credentialless" always;
+        add_header Cache-Control "public, max-age=3600";
     }
 }

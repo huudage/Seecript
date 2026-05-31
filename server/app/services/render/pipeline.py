@@ -29,6 +29,7 @@ from ...schemas import Plan, Scene
 from ..jobs import job_store
 from ..video import ffmpeg as ffmpeg_svc
 from ..video import remotion as remotion_svc
+from ..video.aspect import aspect_for_platform
 
 log = logging.getLogger("seecript.render.pipeline")
 
@@ -61,12 +62,6 @@ def _uploads_root() -> Path:
     return settings.log_dir.parent / "var" / "uploads"
 
 
-def _samples_root() -> Path:
-    """server/samples/<sample_id>/video.mp4 —— 系统内置样例视频根目录。"""
-    settings = get_settings()
-    return settings.log_dir.parent / "samples"
-
-
 def _aigc_cache_root() -> Path:
     """AIGC chunks 下载缓存：var/aigc_cache/<url-hash>.mp4。"""
     settings = get_settings()
@@ -79,6 +74,37 @@ def _aigc_chunk_local_path(url: str) -> Path:
     """同一 URL 命中本地缓存，避免重复下载。"""
     h = hashlib.sha1(url.encode("utf-8")).hexdigest()[:16]
     return _aigc_cache_root() / f"chunk-{h}.mp4"
+
+
+def _render_text_card(
+    scene: Scene,
+    segments_dir: Path,
+    idx: int,
+    *,
+    width: int = 1080,
+    height: int = 1920,
+    fps: int = 30,
+) -> Path | None:
+    """无画面素材的 scene 落「文字卡」：纯色背景持续 scene.duration，
+    真实文案由 packaging 字幕在上层叠加。
+
+    覆盖 4 类情形：
+    - source=="text_card"（plan 显式安排）
+    - source=="aigc_t2v" URL 下载失败
+    - source=="user_material" 找不到文件或 trim 失败
+    - source=="sample" 老 plan 残留（新 plan 已不再产生）
+
+    返回 None → 连 ffmpeg 都不可用，上层走 mock。
+    """
+    if not ffmpeg_svc.ffmpeg_available():
+        return None
+    dur = max(0.5, float(scene.duration or 1.0))
+    dst = segments_dir / f"text-card-{idx:02d}.mp4"
+    try:
+        return ffmpeg_svc.color_clip(dur, dst, width=width, height=height, fps=fps)
+    except ffmpeg_svc.FFmpegError as exc:
+        log.warning("[render] text_card scene=%d failed: %s", idx, exc)
+        return None
 
 
 async def _download_aigc_chunk(url: str, *, timeout: float = 120.0) -> Path | None:
@@ -130,48 +156,15 @@ async def _resolve_aigc_scene(scene: Scene, segments_dir: Path, idx: int) -> Pat
         return locals_[0]
 
 
-def _aigc_fallback_to_sample(
-    plan: Plan, scene: Scene, idx: int, segments_dir: Path,
-) -> tuple[Path | None, str]:
-    """AIGC scene URL 缺失/下载失败时，回落到样例视频对应段落的切片。
-
-    返回 (path, note)。path=None 表示连兜底都没成（样例视频也找不到 / ffmpeg 不可用）。
-    """
-    sample_video = _samples_root() / plan.sample_id / "video.mp4"
-    if not sample_video.is_file():
-        sample_video = _uploads_root() / "decompose" / plan.sample_id / "video.mp4"
-    if not sample_video.is_file() or not ffmpeg_svc.ffmpeg_available():
-        return None, f"scene {idx} aigc 兜底失败：样例视频缺失或 ffmpeg 不可用"
-
-    # 直接用 scene 的 timeline 起点对样例时长取模，给一个稳定但不重复的入点；
-    # 比按 source_shot_indices[0] 反查更鲁棒——同 shot 多段不会撞同一窗口。
-    from ...routers.library import _LIBRARY
-    sample = next((s for s in _LIBRARY if s.id == plan.sample_id), None)
-    sample_total = float(sample.duration_seconds) if sample else 18.0
-    duration = max(1.0, float(scene.duration or 3.0))
-    in_point = float(scene.start or 0.0) % max(1.0, sample_total - duration + 0.1)
-    duration = min(duration, max(0.5, sample_total - in_point))
-
-    seg_dst = segments_dir / f"aigc-fallback-{idx:02d}.mp4"
-    try:
-        ffmpeg_svc.trim(sample_video, seg_dst, start=in_point, duration=duration, reencode=True)
-        return seg_dst, (
-            f"scene {idx} ({scene.section}/aigc_t2v) URL 缺失，回落样例切片 "
-            f"window=({in_point:.1f}s, {duration:.1f}s)"
-        )
-    except (AttributeError, ffmpeg_svc.FFmpegError) as exc:
-        return None, f"scene {idx} aigc 兜底 trim 失败：{exc}"
-
-
 def _resolve_scene_path(plan: Plan, scene: Scene) -> Path | None:
     """从 Scene 反查素材实际路径。
 
     - source="user_material": session_id 隔离的上传目录里按 material_id 子串匹配
-    - source="sample"        : plan.sample_id 对应 server/samples/<id>/video.mp4
-                                （后续 _trim_segments 会按 in_point/out_point 切片）
+    - source="sample"        : 已弃用——老 plan 残留时直接返回 None，让上层走文字卡兜底
+                                （不再从 samples/<id>/video.mp4 取素材）
     - source="aigc_t2v"      : 通过 _resolve_aigc_scene 异步下载 + concat，不在这里处理
 
-    本同步函数对 aigc_t2v 返回 None，让上层 pipeline 的异步分支自己跑。
+    本同步函数对 aigc_t2v / sample 返回 None，让上层 pipeline 的异步分支或文字卡兜底处理。
     """
     source_ref = scene.source_ref
     if scene.source == "user_material" and plan.session_id:
@@ -182,24 +175,16 @@ def _resolve_scene_path(plan: Plan, scene: Scene) -> Path | None:
                     return f
         return None
 
-    if scene.source == "sample":
-        sample_id = plan.sample_id
-        sample_video = _samples_root() / sample_id / "video.mp4"
-        if sample_video.is_file():
-            return sample_video
-        user_video = _uploads_root() / "decompose" / sample_id / "video.mp4"
-        if user_video.is_file():
-            return user_video
-        return None
-
+    # source == "sample"（老 plan 残留）/ 其它未知 source：一律走文字卡
     return None
 
 
-def _trim_segment(src: Path, scene: Scene, dst: Path) -> Path | None:
+def _trim_segment(src: Path, scene: Scene, dst: Path, canvas_w: int, canvas_h: int) -> Path | None:
     """对 source="sample" 的整段视频按 in_point/out_point 切片，
     避免把整段样例 video.mp4 直接当成一个 scene 拼进主轨——那会导致每段都是相同长视频。
 
-    切片用 ffmpeg -ss/-t 复制流（reencode=False），失败则返回 None 让上层走 mock。
+    切片同时按 (canvas_w, canvas_h) 做 scale+pad+setsar——保证不同来源的素材
+    最终都对齐到同一画布尺寸（concat 才能 -c copy 不报错）。
     """
     if not ffmpeg_svc.ffmpeg_available():
         return None
@@ -212,11 +197,30 @@ def _trim_segment(src: Path, scene: Scene, dst: Path) -> Path | None:
         duration = float(scene.out_point) - in_point
 
     try:
-        ffmpeg_svc.trim(src, dst, start=in_point, duration=duration, reencode=True)  # type: ignore[attr-defined]
+        ffmpeg_svc.trim(
+            src, dst,
+            start=in_point, duration=duration, reencode=True,
+            canvas=(canvas_w, canvas_h),
+        )
         return dst
     except (AttributeError, ffmpeg_svc.FFmpegError) as exc:
         # ffmpeg.trim 不存在或调用失败：回落到整段 src（让 concat 至少能跑）
         log.warning("[trim] segment trim failed for %s: %s", src.name, exc)
+        return None
+
+
+def _normalize_to_canvas(src: Path, dst: Path, *, width: int, height: int) -> Path | None:
+    """把任意输入视频缩放并 letterbox 填充到 (width, height)。
+
+    用于 aigc 段：Seedance 返回的 ratio 与 plan 设定理论上一致，但实际偶发
+    略偏分辨率（如 1088×1920 而非 1080×1920），concat 会拒绝；统一过一遍画布。
+    """
+    if not ffmpeg_svc.ffmpeg_available():
+        return None
+    try:
+        return ffmpeg_svc.normalize_canvas(src, dst, width=width, height=height)
+    except ffmpeg_svc.FFmpegError as exc:
+        log.warning("[normalize] %s → %dx%d failed: %s", src.name, width, height, exc)
         return None
 
 
@@ -236,6 +240,11 @@ async def run_pipeline(job_id: str, plan: Plan) -> RenderResult:
     timings: dict[str, int] = {}
     notes: list[str] = []
 
+    # 从 plan.settings.target_platform 推导画幅
+    aspect = aspect_for_platform(plan.settings.target_platform)
+    canvas_w, canvas_h = aspect.width, aspect.height
+    notes.append(f"canvas={canvas_w}×{canvas_h} (platform={plan.settings.target_platform})")
+
     # ---- Step 1 · prepare ----
     t0 = time.time()
     job_store.publish(job_id, "prepare", 8.0, {"note": "校验 Plan + 准备工作目录"})
@@ -253,36 +262,52 @@ async def run_pipeline(job_id: str, plan: Plan) -> RenderResult:
 
     inputs: list[Path] = []
     for i, sc in enumerate(plan.main_track):
+        # source == "text_card"：无画面素材的段落，直接落纯色底片，
+        # 真实文案靠 packaging 字幕在上层叠加。
+        if sc.source == "text_card":
+            tc = _render_text_card(sc, segments_dir, i, width=canvas_w, height=canvas_h)
+            if tc is not None:
+                inputs.append(tc)
+            else:
+                notes.append(f"scene {i} text_card 渲染失败（ffmpeg 不可用）")
+            continue
+
         if sc.source == "aigc_t2v":
             aigc_path = await _resolve_aigc_scene(sc, segments_dir, i)
             if aigc_path is not None:
-                inputs.append(aigc_path)
+                # 把 aigc 段尺寸校正到画布——Seedance 偶发返回略偏分辨率，concat 会色彩错位
+                normed = _normalize_to_canvas(aigc_path, segments_dir / f"aigc-norm-{i:02d}.mp4",
+                                              width=canvas_w, height=canvas_h)
+                inputs.append(normed if normed is not None else aigc_path)
+                continue
+            # AIGC URL 下载/拼接失败 → 落文字卡（不再回落到样例切片）
+            tc = await asyncio.to_thread(_render_text_card, sc, segments_dir, i,
+                                         width=canvas_w, height=canvas_h)
+            if tc is not None:
+                inputs.append(tc)
+                notes.append(f"scene {i} ({sc.section}/aigc_t2v) URL 缺失，落文字卡")
             else:
-                # AIGC 下载失败 → 不再 silent skip，回落样例切片，让段落不丢
-                fb_path, fb_note = await asyncio.to_thread(
-                    _aigc_fallback_to_sample, plan, sc, i, segments_dir,
-                )
-                notes.append(fb_note)
-                if fb_path is not None:
-                    inputs.append(fb_path)
-                else:
-                    log.warning("[%s] %s", job_id, fb_note)
+                notes.append(f"scene {i} aigc 落文字卡失败（ffmpeg 不可用），跳过")
             continue
 
+        # source == "user_material" 或老 plan 残留的 "sample"：尝试解析+切片，
+        # 失败一律回落到文字卡（不再回落整段 src，避免『同一片段复读 N 遍 ≈ 原视频』）
         src = _resolve_scene_path(plan, sc)
-        if src is None:
-            notes.append(f"scene {i} ({sc.section}/{sc.source}/{sc.source_ref}) unresolved")
-            continue
-        # 所有非 AIGC 来源都按 in_point/out_point 切片：
-        # - sample：plan 已分配独立子窗口，避免多段共享相同片段
-        # - user_material：限制到 scene.duration，避免一条长视频霸占整段
-        # 注意：trim 失败时不再回落整段 src（会造成『同一片段复读 N 遍 ≈ 原视频』）
-        seg_dst = segments_dir / f"scene-{i:02d}.mp4"
-        trimmed = _trim_segment(src, sc, seg_dst)
+        trimmed: Path | None = None
+        if src is not None:
+            seg_dst = segments_dir / f"scene-{i:02d}.mp4"
+            trimmed = _trim_segment(src, sc, seg_dst, canvas_w, canvas_h)
         if trimmed is not None:
             inputs.append(trimmed)
+            continue
+        # 解析失败或切片失败：落文字卡
+        reason = "素材未解析" if src is None else "切片失败"
+        tc = _render_text_card(sc, segments_dir, i, width=canvas_w, height=canvas_h)
+        if tc is not None:
+            inputs.append(tc)
+            notes.append(f"scene {i} ({sc.section}/{sc.source}/{sc.source_ref}) {reason}，落文字卡")
         else:
-            notes.append(f"scene {i} ({sc.source}) trim 失败，跳过该段")
+            notes.append(f"scene {i} 文字卡渲染失败（ffmpeg 不可用），跳过该段")
 
     if inputs and ffmpeg_svc.ffmpeg_available():
         try:
@@ -308,52 +333,118 @@ async def run_pipeline(job_id: str, plan: Plan) -> RenderResult:
     extended_path = main_path
     timings["seedance_ms"] = int((time.time() - t0) * 1000)
 
-    # ---- Step 4 · Remotion 包装轨 ----
+    # ---- Step 4 · Remotion 包装轨（不可用时跳过，Step 5 走 drawtext fallback）----
     t0 = time.time()
     job_store.publish(job_id, "remotion_render", 70.0, {"note": "Remotion 渲染包装轨"})
     packaging_path = out_dir / "packaging.webm"
     pkg_props = {
-        "durationInSeconds": plan.duration_seconds,
-        "items": [item.model_dump() for item in plan.packaging_track],
+        "duration_seconds": plan.duration_seconds,
+        "packaging_track": [item.model_dump() for item in plan.packaging_track],
     }
+    remotion_ok = False
     if plan.packaging_track and remotion_svc.remotion_available():
         try:
             await asyncio.to_thread(remotion_svc.render_packaging_track, pkg_props, packaging_path)
+            remotion_ok = packaging_path.exists() and packaging_path.stat().st_size > 0
         except (remotion_svc.RemotionError, FileNotFoundError) as exc:
-            log.warning("[%s] remotion render failed, falling back: %s", job_id, exc)
+            log.warning("[%s] remotion render failed, falling back to drawtext: %s", job_id, exc)
             notes.append(f"remotion fallback: {exc}")
             _touch_placeholder(packaging_path)
     else:
-        notes.append(f"remotion unavailable or empty packaging (n={len(plan.packaging_track)}); mock packaging.webm")
+        if plan.packaging_track:
+            notes.append(
+                f"remotion unavailable (n={len(plan.packaging_track)} items); "
+                "走 ffmpeg drawtext fallback"
+            )
+        else:
+            notes.append("empty packaging_track; skip remotion")
         _touch_placeholder(packaging_path)
     timings["remotion_ms"] = int((time.time() - t0) * 1000)
 
-    # ---- Step 5 · ffmpeg overlay ----
+    # ---- Step 5 · 包装合成：remotion overlay 或 drawtext burn ----
     t0 = time.time()
-    job_store.publish(job_id, "ffmpeg_overlay", 88.0, {"note": "FFmpeg overlay 合成"})
+    job_store.publish(job_id, "ffmpeg_overlay", 88.0, {"note": "FFmpeg overlay / drawtext 合成"})
     overlaid_path = out_dir / "overlaid.mp4"
-    if (
-        ffmpeg_svc.ffmpeg_available()
-        and extended_path.exists() and extended_path.stat().st_size > 0
-        and packaging_path.exists() and packaging_path.stat().st_size > 0
-    ):
+    extended_ok = extended_path.exists() and extended_path.stat().st_size > 0
+
+    if remotion_ok and extended_ok and ffmpeg_svc.ffmpeg_available():
+        # 真链路：透明 webm overlay
         try:
             await asyncio.to_thread(
                 ffmpeg_svc.overlay, extended_path, packaging_path, overlaid_path, position="0:0"
             )
         except ffmpeg_svc.FFmpegError as exc:
-            log.warning("[%s] overlay failed: %s", job_id, exc)
+            log.warning("[%s] overlay failed, fallback to drawtext: %s", job_id, exc)
             notes.append(f"overlay fallback: {exc}")
-            _touch_placeholder(overlaid_path)
-    else:
-        notes.append("overlay skipped (missing inputs or ffmpeg); passthrough")
-        # 直接把 extended_path 复制成 overlaid_path（mock 时都是空文件，无所谓）
-        if extended_path.exists():
-            overlaid_path.write_bytes(extended_path.read_bytes())
+            remotion_ok = False  # 让后面 drawtext 接住
+
+    if not (overlaid_path.exists() and overlaid_path.stat().st_size > 0):
+        # 没走成 remotion overlay → 尝试 drawtext fallback 把包装项烧到主轨上
+        if (
+            ffmpeg_svc.ffmpeg_available()
+            and extended_ok
+            and plan.packaging_track
+        ):
+            items_dict = [item.model_dump() for item in plan.packaging_track]
+            try:
+                await asyncio.to_thread(
+                    ffmpeg_svc.burn_packaging_track,
+                    extended_path,
+                    items_dict,
+                    overlaid_path,
+                )
+                kinds_used = sorted({str(it.get("kind")) for it in items_dict})
+                notes.append(
+                    f"packaging burned via drawtext ({len(items_dict)} items, kinds={kinds_used})"
+                )
+            except ffmpeg_svc.FFmpegError as exc:
+                log.warning("[%s] drawtext burn failed: %s", job_id, exc)
+                notes.append(f"drawtext burn fallback: {exc}")
+                if extended_ok:
+                    overlaid_path.write_bytes(extended_path.read_bytes())
+                else:
+                    _touch_placeholder(overlaid_path)
         else:
-            _touch_placeholder(overlaid_path)
+            notes.append("overlay skipped (missing inputs or ffmpeg); passthrough")
+            if extended_ok:
+                overlaid_path.write_bytes(extended_path.read_bytes())
+            else:
+                _touch_placeholder(overlaid_path)
 
     timings["overlay_ms"] = int((time.time() - t0) * 1000)
+
+    # ---- Step 5b · voice mix：把各 scene 的 TTS 口播按 scene.start 偏移混入主轨 ----
+    # voiceover_enabled=False 时跳过（纯 BGM 视频）
+    voice_clips: list[tuple[Path, float]] = []
+    if plan.settings.voiceover_enabled:
+        for sc in plan.main_track:
+            url = (sc.voiceover_url or "").strip()
+            if not url:
+                continue
+            if url.startswith("/"):
+                candidate = _outputs_root().parent.parent / url.lstrip("/")
+            else:
+                candidate = Path(url)
+            if candidate.exists() and candidate.stat().st_size > 0:
+                voice_clips.append((candidate, float(sc.start)))
+            else:
+                log.warning("[%s] voiceover 文件不存在 url=%s", job_id, url)
+    voice_mixed_path = overlaid_path
+    if (
+        voice_clips
+        and ffmpeg_svc.ffmpeg_available()
+        and overlaid_path.exists() and overlaid_path.stat().st_size > 0
+    ):
+        voice_mixed_path = out_dir / "voiced.mp4"
+        try:
+            await asyncio.to_thread(
+                ffmpeg_svc.mix_voiceovers, overlaid_path, voice_clips, voice_mixed_path
+            )
+            notes.append(f"voiceover mixed: {len(voice_clips)} clips")
+        except ffmpeg_svc.FFmpegError as exc:
+            log.warning("[%s] mix_voiceovers failed: %s", job_id, exc)
+            notes.append(f"voiceover fallback: {exc}")
+            voice_mixed_path = overlaid_path
 
     # ---- Step 6 · finalize：BGM 混音 + 封面抽帧 ----
     t0 = time.time()
@@ -373,33 +464,42 @@ async def run_pipeline(job_id: str, plan: Plan) -> RenderResult:
     if (
         ffmpeg_svc.ffmpeg_available()
         and bgm_local is not None
-        and overlaid_path.exists() and overlaid_path.stat().st_size > 0
+        and voice_mixed_path.exists() and voice_mixed_path.stat().st_size > 0
     ):
         try:
             bgm_cfg = plan.bgm
+            anchor = float(bgm_cfg.video_anchor_seconds if bgm_cfg else 0.0)
+            bgm_skip = max(0.0, -anchor)
+            video_delay = max(0.0, anchor)
+            # 口播开关关掉时强制禁 duck，否则原视频里的环境声会触发不必要的衰减
+            voiceover_enabled = bool(plan.settings.voiceover_enabled)
             await asyncio.to_thread(
-                ffmpeg_svc.mix_bgm, overlaid_path, bgm_local, final_path,
+                ffmpeg_svc.mix_bgm, voice_mixed_path, bgm_local, final_path,
                 bgm_volume=bgm_cfg.volume if bgm_cfg else 0.35,
                 fade_in=bgm_cfg.fade_in if bgm_cfg else 1.5,
                 fade_out=bgm_cfg.fade_out if bgm_cfg else 2.0,
-                start_offset=bgm_cfg.start_offset if bgm_cfg else 0.0,
-                duck_with_voice=bgm_cfg.duck_with_voice if bgm_cfg else True,
+                bgm_skip_seconds=bgm_skip,
+                video_delay_seconds=video_delay,
+                duck_with_voice=(
+                    (bgm_cfg.duck_with_voice if bgm_cfg else True) and voiceover_enabled
+                ),
                 duck_attenuation_db=bgm_cfg.duck_attenuation_db if bgm_cfg else -9.0,
-                video_has_voice=True,  # 暂保守假设主轨有口播；后续可由 ASR 结果回填
+                video_has_voice=voiceover_enabled,
             )
             notes.append(
-                f"bgm mixed: vol={bgm_cfg.volume:.2f} duck={bgm_cfg.duck_with_voice} "
-                f"fade={bgm_cfg.fade_in}/{bgm_cfg.fade_out}"
+                f"bgm mixed: vol={bgm_cfg.volume:.2f} duck={bgm_cfg.duck_with_voice and voiceover_enabled} "
+                f"fade={bgm_cfg.fade_in}/{bgm_cfg.fade_out} anchor={anchor:.2f}s "
+                f"(skip={bgm_skip:.2f} delay={video_delay:.2f})"
             )
         except ffmpeg_svc.FFmpegError as exc:
             log.warning("[%s] mix_bgm failed: %s", job_id, exc)
             notes.append(f"mix_bgm fallback: {exc}")
-            final_path.write_bytes(overlaid_path.read_bytes() if overlaid_path.exists() else b"")
+            final_path.write_bytes(voice_mixed_path.read_bytes() if voice_mixed_path.exists() else b"")
     else:
         # 无 BGM 或缺 ffmpeg：直接 rename
         notes.append("bgm mix skipped; using overlaid output as final")
-        if overlaid_path.exists():
-            final_path.write_bytes(overlaid_path.read_bytes())
+        if voice_mixed_path.exists():
+            final_path.write_bytes(voice_mixed_path.read_bytes())
         else:
             _touch_placeholder(final_path)
 

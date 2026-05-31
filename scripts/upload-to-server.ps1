@@ -72,15 +72,11 @@ if ($LASTEXITCODE -ne 0) { throw "scp failed (exit $LASTEXITCODE)" }
 Write-Host "       scp ok" -ForegroundColor Green
 
 # Step 3: extract on the server. We use a single ssh invocation to keep auth count low.
+# CRITICAL: PowerShell here-strings use CRLF line endings on Windows; when piped into bash via ssh,
+# the trailing \r breaks every command (e.g. `set -e\r` -> "set: invalid option --"). Replace CRLF
+# with LF before sending. Also flatten into a single ; -separated string for extra safety.
 Write-Host "[3/4] extract on server -> $RemoteDir ..." -ForegroundColor Yellow
-$remoteScript = @"
-set -e
-mkdir -p $RemoteDir
-cd $RemoteDir
-tar -xzf /tmp/$tarballName
-chown -R root:root $RemoteDir
-ls -la $RemoteDir | head -25
-"@
+$remoteScript = "set -e; mkdir -p $RemoteDir; cd $RemoteDir; tar -xzf /tmp/$tarballName; chown -R root:root $RemoteDir; ls -la $RemoteDir | head -25"
 & ssh.exe $Server $remoteScript
 if ($LASTEXITCODE -ne 0) { throw "remote extract failed (exit $LASTEXITCODE)" }
 Write-Host "       extract ok" -ForegroundColor Green

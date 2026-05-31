@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 
 import { api, ApiError } from '@/api/client'
+import { commitStep } from '@/api/steps'
 import { VIDEO_TYPE_HINT, VIDEO_TYPE_LABEL } from '@/lib/sections'
 import { cn } from '@/lib/utils'
 import { useProjectsStore } from '@/stores/projects'
@@ -169,6 +170,15 @@ export function NewProjectDialog({
     setSubmitting(true)
     try {
       const created = await createProject(finalName, sampleId)
+      // 创建后立即把 library 步骤打 saved——用户已经做出了「选样例」的决定，
+      // 顶部导航 nav 才会显示 library=saved + current_step=decompose
+      try {
+        await commitStep(created.project_id, 'library', { sample_id: sampleId })
+      } catch (err) {
+        // commit 失败不阻断进入项目（项目已建好）；nav 顶栏会显示 library=pending，
+        // 用户回 library 再点一次样例可再触发 commit
+        console.warn('[NewProjectDialog] commit library step failed:', err)
+      }
       onCreated(created.project_id)
     } catch (err) {
       setSubmitError(err instanceof Error ? err.message : '创建失败')
