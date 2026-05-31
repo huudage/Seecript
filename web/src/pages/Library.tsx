@@ -23,8 +23,8 @@ export default function LibraryPage() {
   const [previewItem, setPreviewItem] = useState<LibraryItem | null>(null)
   // 新建项目弹窗：从素材库挑样例时也支持直接新建项目
   const [newProjectSampleId, setNewProjectSampleId] = useState<string | null>(null)
-  const selectSample = useSessionStore((s) => s.selectSample)
-  const selectedSampleId = useSessionStore((s) => s.selectedSampleId)
+  const selectSamples = useSessionStore((s) => s.selectSamples)
+  const selectedSampleIds = useSessionStore((s) => s.selectedSampleIds)
   const currentProjectId = useProjectsStore((s) => s.currentProjectId)
   const navigate = useNavigate()
 
@@ -56,11 +56,11 @@ export default function LibraryPage() {
   )
 
   const handlePick = async (item: LibraryItem) => {
-    selectSample(item.id, item.video_type, item.source)
+    selectSamples([item.id], [item.title], item.video_type, item.source)
     // 已有项目：让用户继续在该项目内（不换 sample），并提交 library 步骤快照
     if (currentProjectId) {
       try {
-        await commitStep(currentProjectId, 'library', { sample_id: item.id })
+        await commitStep(currentProjectId, 'library', { sample_ids: [item.id] })
       } catch (err) {
         setError(err instanceof Error ? err.message : '保存步骤失败')
         return
@@ -160,7 +160,7 @@ export default function LibraryPage() {
               className={cn(
                 'group flex cursor-pointer flex-col overflow-hidden rounded-lg border bg-card text-left transition-all',
                 'hover:shadow-lg hover:-translate-y-0.5 focus:outline-none focus:ring-2 focus:ring-primary/40',
-                selectedSampleId === item.id
+                selectedSampleIds.includes(item.id)
                   ? 'border-primary ring-2 ring-primary/40'
                   : 'border-border',
               )}

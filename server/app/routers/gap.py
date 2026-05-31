@@ -54,13 +54,18 @@ def _mock_materials() -> list[Material]:
 
 
 def _resolve_manifest(plan_id: str) -> SampleManifest:
-    """plan_id → 真 sample_id → manifest；优先真预解析 manifest.json，None 时才回落 stub。"""
+    """plan_id → 第一个 sample_id → manifest；优先真预解析 manifest.json，None 时才回落 stub。
+
+    多样例项目（plan.sample_ids 长度 > 1）gap 视图仍以第一份样例为参考缩略图基线，
+    因为跨样例 shot 编号会重号；plan_agent 已在跨样例段把 source_shot_indices 置空。
+    """
     plan = plan_store.get(plan_id)
     if plan is None:
         log.warning("[gap] plan_id=%s 未找到，回退 _LIBRARY[0]", plan_id)
         sample = _LIBRARY[0]
         return _load_real_manifest(sample.id) or _stub_manifest(sample.id, sample)
-    sample = next((s for s in _LIBRARY if s.id == plan.sample_id), _LIBRARY[0])
+    sample_id = plan.sample_ids[0] if plan.sample_ids else _LIBRARY[0].id
+    sample = next((s for s in _LIBRARY if s.id == sample_id), _LIBRARY[0])
     return _load_real_manifest(sample.id) or _stub_manifest(sample.id, sample)
 
 

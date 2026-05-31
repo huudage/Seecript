@@ -31,7 +31,7 @@ def _mini_section() -> AdaptedSection:
 def _mini_plan(section: AdaptedSection) -> Plan:
     return Plan(
         plan_id="plan-test-aigc-prompt",
-        sample_id="sample-marketing-01",
+        sample_ids=["sample-marketing-01"],
         session_id="sess-test",
         brief="埃及历史文物展览推广",
         video_goal="吸引用户来参观",

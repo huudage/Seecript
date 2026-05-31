@@ -790,7 +790,12 @@ class Plan(BaseModel):
     """`POST /api/plan/build` 产物 / 后续渲染与编辑的核心数据结构。"""
 
     plan_id: str
-    sample_id: str
+    sample_ids: list[str] = Field(
+        ...,
+        min_length=1,
+        max_length=2,
+        description="本 plan 改编自哪些参考样例（1-2 个）。多样例时 plan_agent 把段落结构合并为对等参考池。",
+    )
     project_id: Optional[str] = Field(
         default=None,
         description="所属项目 ID；新建 plan 时由 /plan/build 写入。老 plan 为 None（落 __legacy 项目，后续可手动归并）。",
@@ -823,7 +828,12 @@ class Plan(BaseModel):
 
 
 class PlanBuildRequest(BaseModel):
-    sample_id: str
+    sample_ids: list[str] = Field(
+        ...,
+        min_length=1,
+        max_length=2,
+        description="参考样例 id 列表（1-2 个）。多选时两份段落结构会被合并成对等参考池喂给 plan_agent。",
+    )
     project_id: str = Field(..., description="所属项目 ID（前端 currentProjectId）；后端按它路由素材/资产/落盘")
     session_id: Optional[str] = Field(
         default=None,
@@ -1090,8 +1100,8 @@ class StepSnapshot(BaseModel):
     """『下一步』提交时落盘的单步产物快照。
 
     payload 内容随 step 而异：
-    - library:   {"sample_id": str}
-    - decompose: {"sample_id": str}（manifest 走样例共享区，不重存）
+    - library:   {"sample_ids": list[str]}（1-2 个）
+    - decompose: {"sample_ids": list[str]}（manifest 走样例共享区，不重存）
     - compose:   {"plan_id": str, "fill_ids": list[str]}
     - render:    {"job_id": str}
     """
@@ -1115,7 +1125,12 @@ class Project(BaseModel):
 
     project_id: str = Field(..., description="UUID hex[:12]")
     name: str = Field(..., max_length=80, description="用户可见名称")
-    sample_id: str = Field(..., description="基于哪个样例（共享，跨项目复用）")
+    sample_ids: list[str] = Field(
+        ...,
+        min_length=1,
+        max_length=2,
+        description="基于哪些样例（1-2 个，共享、跨项目复用）。多样例时 plan_agent 会把段落结构合并参考。",
+    )
     brief: Optional[str] = Field(default=None, description="主题/卖点回写（Compose 用户输入）")
     video_goal: Optional[str] = Field(default=None, description="视频目的回写")
     settings: ComposeSettings = Field(default_factory=ComposeSettings)
@@ -1130,7 +1145,12 @@ class Project(BaseModel):
 
 class ProjectCreateRequest(BaseModel):
     name: str = Field(..., max_length=80)
-    sample_id: str
+    sample_ids: list[str] = Field(
+        ...,
+        min_length=1,
+        max_length=2,
+        description="新建项目锚定的参考样例 id 列表（1-2 个）。",
+    )
 
 
 class ProjectUpdateRequest(BaseModel):

@@ -36,7 +36,7 @@ def _build_plan(client) -> dict:
     r = client.post(
         "/api/plan/build",
         json={
-            "sample_id": "sample-marketing-01",
+            "sample_ids": ["sample-marketing-01"],
             "project_id": project_id,
             "session_id": session_id,
             "brief": "新品发布——突出差异化卖点",

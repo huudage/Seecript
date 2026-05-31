@@ -54,7 +54,7 @@ _FAKE_MP3_B = b"\xff\xfb\x90\x00" + b"B" * 1020
 
 
 def _create(client, name: str) -> str:
-    r = client.post("/api/project", json={"name": name, "sample_id": "sample-marketing-01"})
+    r = client.post("/api/project", json={"name": name, "sample_ids": ["sample-marketing-01"]})
     assert r.status_code == 200, r.text
     pid = r.json()["project_id"]
     _TEST_PROJECT_IDS.append(pid)
@@ -190,7 +190,7 @@ def test_plans_and_gaps_isolated(client):
     r = client.post(
         "/api/plan/build",
         json={
-            "sample_id": "sample-marketing-01",
+            "sample_ids": ["sample-marketing-01"],
             "project_id": pid_a,
             "session_id": pid_a,
             "selected_materials": a_mats,
@@ -206,7 +206,7 @@ def test_plans_and_gaps_isolated(client):
     r = client.post(
         "/api/plan/build",
         json={
-            "sample_id": "sample-marketing-01",
+            "sample_ids": ["sample-marketing-01"],
             "project_id": pid_b,
             "session_id": pid_b,
             "selected_materials": b_mats,

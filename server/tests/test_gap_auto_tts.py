@@ -33,7 +33,7 @@ _TEST_PLAN_IDS: list[str] = []
 def _make_plan(plan_id: str, *, voiceover_enabled: bool = True, section_id: str = "adp-dev-1") -> Plan:
     return Plan(
         plan_id=plan_id,
-        sample_id="sample-marketing-01",
+        sample_ids=["sample-marketing-01"],
         project_id=None,
         session_id=None,
         settings=ComposeSettings(voiceover_enabled=voiceover_enabled),

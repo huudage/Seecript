@@ -39,13 +39,14 @@ interface DecomposeUploadResponse {
 }
 
 export default function DecomposePage() {
-  const selectedSampleId = useSessionStore((s) => s.selectedSampleId)
+  const selectedSampleIds = useSessionStore((s) => s.selectedSampleIds)
+  const selectedSampleId = selectedSampleIds[0] ?? null
   const sampleSource = useSessionStore((s) => s.sampleSource)
   const videoType = useSessionStore((s) => s.videoType)
   const setVideoType = useSessionStore((s) => s.setVideoType)
   const manifest = useSessionStore((s) => s.manifest)
   const setManifest = useSessionStore((s) => s.setManifest)
-  const selectSample = useSessionStore((s) => s.selectSample)
+  const selectSamples = useSessionStore((s) => s.selectSamples)
   const currentProjectId = useProjectsStore((s) => s.currentProjectId)
   const navigate = useNavigate()
 
@@ -77,7 +78,7 @@ export default function DecomposePage() {
         fd.append('file', file)
         const resp = await api.post<DecomposeUploadResponse>('/decompose/upload', fd)
         // 切换到 user 来源；videoType 保持当前选择，让用户在 radios 里改。
-        selectSample(resp.sample_id, videoType, 'user')
+        selectSamples([resp.sample_id], [resp.filename], videoType, 'user')
         setUploadedFile({ filename: resp.filename, size_bytes: resp.size_bytes })
       } catch (err) {
         setError(err instanceof Error ? err.message : '上传失败')
@@ -85,7 +86,7 @@ export default function DecomposePage() {
         setUploading(false)
       }
     },
-    [selectSample, videoType],
+    [selectSamples, videoType],
   )
 
   const run = useCallback(async () => {
@@ -139,8 +140,8 @@ export default function DecomposePage() {
         if (cancelled || !snap) return
         const savedSampleId = snap.payload?.sample_id as string | undefined
         if (savedSampleId && savedSampleId !== selectedSampleId) {
-          // 后端已保存的 sample_id 与 session 不一致 → 以后端为准
-          selectSample(savedSampleId)
+          // 后端已保存的 sample_id 与 session 不一致 → 以后端为准（取首个，旧 step 兼容）
+          selectSamples([savedSampleId])
         }
       } catch {
         /* 没快照或网络抖动不影响主流程 */
@@ -149,7 +150,7 @@ export default function DecomposePage() {
     return () => {
       cancelled = true
     }
-    // 只关心 projectId 变化时去拉一次；selectSample 是稳定引用，selectedSampleId 故意不依赖以免无限循环
+    // 只关心 projectId 变化时去拉一次；selectSamples 是稳定引用，selectedSampleId 故意不依赖以免无限循环
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [currentProjectId])
 
@@ -198,7 +199,7 @@ export default function DecomposePage() {
               <span className="font-semibold text-foreground">来源 · 用户上传</span>
               <button
                 onClick={() => {
-                  selectSample(null)
+                  selectSamples([])
                   setUploadedFile(null)
                   setManifest(null)
                 }}

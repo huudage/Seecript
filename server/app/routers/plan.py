@@ -49,6 +49,13 @@ def _resolve_manifest(sample_id: str) -> SampleManifest:
     return _stub_manifest(sample.id, sample)
 
 
+def _resolve_manifests(sample_ids: list[str]) -> list[SampleManifest]:
+    """逐个解析 sample_ids → SampleManifest list。空列表抛 422（路由入口应已校验）。"""
+    if not sample_ids:
+        raise HTTPException(status_code=422, detail="sample_ids 不能为空")
+    return [_resolve_manifest(sid) for sid in sample_ids]
+
+
 def _narration_from_content(content: str, *, limit: int = 60) -> str:
     """从 content_description 取首句（中英标点）作为口播种子，截断到 limit 字符。"""
     if not content:
@@ -139,23 +146,25 @@ async def build_plan(req: PlanBuildRequest) -> Plan:
     # v2 起 session_id == project_id；老前端只传 session_id 时仍可工作
     effective_project_id = (req.project_id or req.session_id or "").strip() or None
     log.info(
-        "[plan] build plan=%s sample=%s project=%s materials=%d fills=%d variant=%s "
+        "[plan] build plan=%s samples=%s project=%s materials=%d fills=%d variant=%s "
         "brief=%s goal=%s target_dur=%.0fs platform=%s tone=%s",
-        plan_id, req.sample_id, effective_project_id,
+        plan_id, req.sample_ids, effective_project_id,
         len(req.selected_materials), len(req.fills),
         req.variant, (req.brief or "")[:30], (req.video_goal or "")[:30],
         settings.target_duration_seconds, settings.target_platform, settings.tone,
     )
 
-    # 1. 取样例 manifest
-    manifest = _resolve_manifest(req.sample_id)
+    # 1. 取样例 manifests（1-2 个）
+    manifests = _resolve_manifests(req.sample_ids)
 
-    # 2. LLM 改编段落结构（带 settings + 参考素材注入）
+    # 2. LLM 改编段落结构（带 settings + 参考素材注入；多样例时段落结构合并参考）
     adapted = await adapt_structure(
-        manifest, req.brief, req.video_goal, settings,
+        manifests, req.brief, req.video_goal, settings,
         reference_asset_ids=req.reference_asset_ids,
     )
     if not adapted:
+        # fallback：用第一份样例的 sections 1:1 兜底
+        primary_sections = list(manifests[0].sections)
         adapted = [
             AdaptedSection(
                 section_id=f"sec-{i}",
@@ -167,11 +176,11 @@ async def build_plan(req: PlanBuildRequest) -> Plan:
                 order=i,
                 duration_seconds=4.0,
             )
-            for i, sec in enumerate(manifest.sections)
+            for i, sec in enumerate(primary_sections)
         ]
 
-    log.info("[plan] adapted_sections=%d (sample_sections=%d) target_total=%.1fs",
-             len(adapted), len(manifest.sections),
+    log.info("[plan] adapted_sections=%d (sample_total_sections=%d) target_total=%.1fs",
+             len(adapted), sum(len(m.sections) for m in manifests),
              sum(s.duration_seconds for s in adapted))
 
     # 3. 把 fills 按 section_id 索引——这是修复『多段 development 全被路由到第一段』bug 的关键
@@ -296,7 +305,7 @@ async def build_plan(req: PlanBuildRequest) -> Plan:
 
     plan = Plan(
         plan_id=plan_id,
-        sample_id=req.sample_id,
+        sample_ids=req.sample_ids,
         project_id=effective_project_id,
         session_id=effective_project_id,
         brief=req.brief,

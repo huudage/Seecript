@@ -40,7 +40,7 @@ def _make_plan(plan_id: str, *, prefs: PackagingPreferences | None = None) -> Pl
         settings_kwargs["packaging_prefs"] = prefs
     return Plan(
         plan_id=plan_id,
-        sample_id="sample-marketing-01",
+        sample_ids=["sample-marketing-01"],
         project_id=None,
         session_id=None,
         video_goal="新品发布——突出差异化卖点",
@@ -284,7 +284,7 @@ def test_subtitle_items_seeded_with_prefs_on_plan_build(client):
 
     # build plan 时带 packaging_prefs（preset=dialogue → 大字号底部）
     body = {
-        "sample_id": "sample-marketing-01",
+        "sample_ids": ["sample-marketing-01"],
         "project_id": "proj-pp-seed",
         "session_id": upload["session_id"],
         "brief": "种子测试",

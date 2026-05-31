@@ -142,8 +142,8 @@ class PlanStore:
                 _atomic_write_json(path, plan.model_dump())
             except Exception as exc:  # noqa: BLE001
                 log.error("[plans] persist %s failed: %s", plan.plan_id, exc)
-        log.info("[plan] stored plan_id=%s sample=%s scenes=%d project=%s",
-                 plan.plan_id, plan.sample_id, len(plan.main_track), plan.project_id or _LEGACY_OWNER)
+        log.info("[plan] stored plan_id=%s samples=%s scenes=%d project=%s",
+                 plan.plan_id, plan.sample_ids, len(plan.main_track), plan.project_id or _LEGACY_OWNER)
 
     def get(self, plan_id: str) -> Optional[Plan]:
         with self._lock:

@@ -44,7 +44,7 @@ def cleanup():
 def _mk_plan(plan_id: str, project_id: str) -> Plan:
     return Plan(
         plan_id=plan_id,
-        sample_id="sample-marketing-01",
+        sample_ids=["sample-marketing-01"],
         project_id=project_id,
         session_id=project_id,
         variant="A",
@@ -56,8 +56,8 @@ def _mk_plan(plan_id: str, project_id: str) -> Plan:
 
 
 def test_list_by_project_returns_only_owned_plans():
-    a = project_store.create(name="单测·LIST-PLAN A", sample_id="sample-marketing-01")
-    b = project_store.create(name="单测·LIST-PLAN B", sample_id="sample-marketing-01")
+    a = project_store.create(name="单测·LIST-PLAN A", sample_ids=["sample-marketing-01"])
+    b = project_store.create(name="单测·LIST-PLAN B", sample_ids=["sample-marketing-01"])
     _TEST_PROJECT_IDS.extend([a.project_id, b.project_id])
 
     plan_a1 = _mk_plan("plan-aaa-001", a.project_id)
@@ -74,7 +74,7 @@ def test_list_by_project_returns_only_owned_plans():
 
 
 def test_get_plan_endpoint_filters_by_project(client):
-    a = project_store.create(name="单测·HTTP-PLAN", sample_id="sample-marketing-01")
+    a = project_store.create(name="单测·HTTP-PLAN", sample_ids=["sample-marketing-01"])
     _TEST_PROJECT_IDS.append(a.project_id)
     p = _mk_plan("plan-zzz-9", a.project_id)
     plan_store.put(p)
@@ -87,7 +87,7 @@ def test_get_plan_endpoint_filters_by_project(client):
 
 
 def test_get_gap_endpoint_returns_by_plan(client):
-    a = project_store.create(name="单测·HTTP-GAP", sample_id="sample-marketing-01")
+    a = project_store.create(name="单测·HTTP-GAP", sample_ids=["sample-marketing-01"])
     _TEST_PROJECT_IDS.append(a.project_id)
     plan_id = "plan-gap-test-1"
     _TEST_PLAN_IDS.append(plan_id)

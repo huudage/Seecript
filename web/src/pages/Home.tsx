@@ -154,7 +154,9 @@ export default function HomePage() {
                 )}
 
                 <div className="flex items-center justify-between text-[11px] text-muted-foreground">
-                  <span className="truncate">样例 {proj.sample_id}</span>
+                  <span className="truncate">
+                    样例 {proj.sample_ids.join(' + ')}
+                  </span>
                   <span className="font-mono">{formatTime(proj.updated_at)}</span>
                 </div>
 

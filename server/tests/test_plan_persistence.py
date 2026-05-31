@@ -68,7 +68,7 @@ def cleanup():
 def _make_plan(project_id: str | None, plan_id: str) -> Plan:
     return Plan(
         plan_id=plan_id,
-        sample_id="sample-marketing-01",
+        sample_ids=["sample-marketing-01"],
         project_id=project_id,
         session_id=project_id,
         adapted_sections=[
@@ -99,7 +99,7 @@ def _make_plan(project_id: str | None, plan_id: str) -> Plan:
 
 
 def test_plan_persisted_and_restored_from_disk():
-    proj = project_store.create(name="单测·PLANRESTORE", sample_id="sample-marketing-01")
+    proj = project_store.create(name="单测·PLANRESTORE", sample_ids=["sample-marketing-01"])
     _TEST_PROJECT_IDS.append(proj.project_id)
     plan = _make_plan(proj.project_id, f"plan-restore-{int(time.time() * 1000)}")
     _TEST_PLAN_IDS.append(plan.plan_id)
@@ -119,7 +119,7 @@ def test_plan_persisted_and_restored_from_disk():
     got = fresh.get(plan.plan_id)
     assert got is not None
     assert got.project_id == proj.project_id
-    assert got.sample_id == "sample-marketing-01"
+    assert got.sample_ids == ["sample-marketing-01"]
     assert len(got.main_track) == 1
 
 
@@ -139,7 +139,7 @@ def test_plan_without_project_id_falls_to_legacy_dir():
 
 
 def test_gap_store_restored_from_disk():
-    proj = project_store.create(name="单测·GAPRESTORE", sample_id="sample-marketing-01")
+    proj = project_store.create(name="单测·GAPRESTORE", sample_ids=["sample-marketing-01"])
     _TEST_PROJECT_IDS.append(proj.project_id)
     plan_id = f"plan-gaprestore-{int(time.time() * 1000)}"
     _TEST_PLAN_IDS.append(plan_id)
@@ -173,7 +173,7 @@ def test_gap_store_restored_from_disk():
 
 
 def test_material_store_restored_from_disk():
-    proj = project_store.create(name="单测·MATRESTORE", sample_id="sample-marketing-01")
+    proj = project_store.create(name="单测·MATRESTORE", sample_ids=["sample-marketing-01"])
     _TEST_PROJECT_IDS.append(proj.project_id)
 
     materials = [
@@ -215,14 +215,14 @@ def test_plan_get_404_then_restore_recovers(client):
     重启后端后，前端 localStorage 里的 plan_id 仍能命中。
     """
     # 创建 project
-    r = client.post("/api/project", json={"name": "持久化", "sample_id": "sample-marketing-01"})
+    r = client.post("/api/project", json={"name": "持久化", "sample_ids": ["sample-marketing-01"]})
     assert r.status_code == 200, r.text
     pid = r.json()["project_id"]
     _TEST_PROJECT_IDS.append(pid)
 
     # build plan
     r = client.post("/api/plan/build", json={
-        "sample_id": "sample-marketing-01",
+        "sample_ids": ["sample-marketing-01"],
         "project_id": pid,
         "session_id": pid,
         "selected_materials": [],

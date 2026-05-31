@@ -420,7 +420,8 @@ export const DEFAULT_COMPOSE_SETTINGS: ComposeSettings = {
 
 export interface Plan {
   plan_id: PlanId
-  sample_id: SampleId
+  /** 本 plan 改编自哪些参考样例（1-2 个）。多样例时段落结构是被合并喂给 LLM 的对等参考池。 */
+  sample_ids: SampleId[]
   /** 所属项目 ID；老 plan 为 null。 */
   project_id?: string | null
   session_id?: string | null
@@ -439,7 +440,8 @@ export interface Plan {
 }
 
 export interface PlanBuildRequest {
-  sample_id: SampleId
+  /** 参考样例 id 列表（1-2 个）。多选时两份段落结构会被合并成对等参考池喂给 plan_agent。 */
+  sample_ids: SampleId[]
   /** 所属项目 ID（前端 currentProjectId）；后端按它路由素材/资产/落盘。 */
   project_id: string
   /** 兼容老前端：留作 project_id 别名；为空时回退到 project_id。 */
@@ -709,8 +711,8 @@ export type StepStatus = 'pending' | 'in_progress' | 'saved' | 'dirty'
 
 /**
  * 「下一步」点击时落盘的单步产物快照。payload 内容随 step 不同：
- * - library:   { sample_id }
- * - decompose: { sample_id }
+ * - library:   { sample_ids: SampleId[] }（1-2 个）
+ * - decompose: { sample_ids: SampleId[] }
  * - compose:   { plan_id, fill_ids }
  * - render:    { job_id }
  */
@@ -735,7 +737,8 @@ export interface ProjectStepState {
 export interface Project {
   project_id: string
   name: string
-  sample_id: SampleId
+  /** 基于哪些样例（1-2 个，共享、跨项目复用）。多样例时 plan_agent 会把段落结构合并参考。 */
+  sample_ids: SampleId[]
   brief?: string | null
   video_goal?: string | null
   settings: ComposeSettings
@@ -750,7 +753,8 @@ export interface Project {
 
 export interface ProjectCreateRequest {
   name: string
-  sample_id: SampleId
+  /** 1-2 个参考样例 id。 */
+  sample_ids: SampleId[]
 }
 
 export interface ProjectUpdateRequest {

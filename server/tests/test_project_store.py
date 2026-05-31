@@ -48,18 +48,18 @@ def _track(pid: str) -> str:
 
 
 def test_create_then_get_roundtrip():
-    proj = project_store.create(name="单测·CRUD A", sample_id="sample-marketing-01")
+    proj = project_store.create(name="单测·CRUD A", sample_ids=["sample-marketing-01"])
     _track(proj.project_id)
     assert proj.project_id
     assert proj.status == "draft"
     fetched = project_store.get(proj.project_id)
     assert fetched is not None
     assert fetched.name == "单测·CRUD A"
-    assert fetched.sample_id == "sample-marketing-01"
+    assert fetched.sample_ids == ["sample-marketing-01"]
 
 
 def test_update_changes_updated_at():
-    proj = project_store.create(name="单测·UPD", sample_id="sample-marketing-01")
+    proj = project_store.create(name="单测·UPD", sample_ids=["sample-marketing-01"])
     _track(proj.project_id)
     t0 = proj.updated_at
     time.sleep(0.01)
@@ -73,17 +73,17 @@ def test_update_changes_updated_at():
 
 def test_update_unknown_field_raises():
     from app.services.projects.store import ProjectStoreError
-    proj = project_store.create(name="单测·BADFIELD", sample_id="sample-marketing-01")
+    proj = project_store.create(name="单测·BADFIELD", sample_ids=["sample-marketing-01"])
     _track(proj.project_id)
     with pytest.raises(ProjectStoreError):
         project_store.update(proj.project_id, weird_unknown_field="x")
 
 
 def test_list_returns_in_updated_at_desc():
-    a = project_store.create(name="单测·LIST a", sample_id="sample-marketing-01")
+    a = project_store.create(name="单测·LIST a", sample_ids=["sample-marketing-01"])
     _track(a.project_id)
     time.sleep(0.01)
-    b = project_store.create(name="单测·LIST b", sample_id="sample-marketing-01")
+    b = project_store.create(name="单测·LIST b", sample_ids=["sample-marketing-01"])
     _track(b.project_id)
     items = project_store.list()
     # b 比 a 晚建 → 应排在 a 之前
@@ -92,7 +92,7 @@ def test_list_returns_in_updated_at_desc():
 
 
 def test_delete_clears_disk_and_memory():
-    proj = project_store.create(name="单测·DEL", sample_id="sample-marketing-01")
+    proj = project_store.create(name="单测·DEL", sample_ids=["sample-marketing-01"])
     pid = proj.project_id
     var = get_settings().log_dir.parent / "var"
     assert (var / "projects" / pid / "project.json").exists()
@@ -105,7 +105,7 @@ def test_delete_clears_disk_and_memory():
 
 def test_restart_rebuilds_from_disk():
     """新建 ProjectStore 实例（模拟重启）应能从磁盘扫回内存。"""
-    proj = project_store.create(name="单测·RESTART", sample_id="sample-marketing-01")
+    proj = project_store.create(name="单测·RESTART", sample_ids=["sample-marketing-01"])
     _track(proj.project_id)
     # 直接 new 一个 store 实例 → 走 __init__._load() → 扫盘
     fresh = ProjectStore()
@@ -119,7 +119,7 @@ def test_restart_rebuilds_from_disk():
 def test_post_project_creates_and_get_returns_404_for_unknown(client):
     resp = client.post("/api/project", json={
         "name": "单测·HTTP",
-        "sample_id": "sample-marketing-01",
+        "sample_ids": ["sample-marketing-01"],
     })
     assert resp.status_code == 200, resp.text
     body = resp.json()
@@ -141,7 +141,7 @@ def test_post_project_creates_and_get_returns_404_for_unknown(client):
 def test_post_project_rejects_bad_sample(client):
     resp = client.post("/api/project", json={
         "name": "单测·BADSAMPLE",
-        "sample_id": "sample-nonexistent",
+        "sample_ids": ["sample-nonexistent"],
     })
     assert resp.status_code == 404
 
@@ -149,14 +149,14 @@ def test_post_project_rejects_bad_sample(client):
 def test_post_project_rejects_empty_name(client):
     resp = client.post("/api/project", json={
         "name": "   ",
-        "sample_id": "sample-marketing-01",
+        "sample_ids": ["sample-marketing-01"],
     })
     assert resp.status_code == 400
 
 
 def test_list_project_endpoint_returns_items(client):
     r1 = client.post("/api/project", json={
-        "name": "单测·LIST1", "sample_id": "sample-marketing-01",
+        "name": "单测·LIST1", "sample_ids": ["sample-marketing-01"],
     })
     _track(r1.json()["project_id"])
 
@@ -169,7 +169,7 @@ def test_list_project_endpoint_returns_items(client):
 
 def test_patch_project_updates_fields(client):
     r1 = client.post("/api/project", json={
-        "name": "单测·PATCH 原", "sample_id": "sample-marketing-01",
+        "name": "单测·PATCH 原", "sample_ids": ["sample-marketing-01"],
     })
     pid = r1.json()["project_id"]
     _track(pid)
@@ -194,7 +194,7 @@ def test_patch_project_updates_fields(client):
 
 def test_delete_project_endpoint_cascades(client):
     r1 = client.post("/api/project", json={
-        "name": "单测·DEL HTTP", "sample_id": "sample-marketing-01",
+        "name": "单测·DEL HTTP", "sample_ids": ["sample-marketing-01"],
     })
     pid = r1.json()["project_id"]
     # 不 _track —— 自己删

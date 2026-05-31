@@ -87,7 +87,7 @@ async def test_adapt_structure_satisfies_hard_constraints():
     """mock 路由命中 `adapted_sections` 指纹后，返回的结构必须满足全部硬约束。"""
     manifest = _mini_manifest(4)
     adapted = await adapt_structure(
-        manifest,
+        [manifest],
         brief="新视频要讲的是城市夜跑装备的轻量化升级",
         video_goal="30 秒内说清产品差异化卖点，面向初次接触的用户",
     )
@@ -110,7 +110,7 @@ async def test_adapt_structure_emits_content_description_and_stable_ids():
     """每段 content_description 非空；section_id 严格 sec-0..N；order 与下标对齐。"""
     manifest = _mini_manifest(4)
     adapted = await adapt_structure(
-        manifest, brief="主题测试", video_goal="目的测试",
+        [manifest], brief="主题测试", video_goal="目的测试",
     )
     for i, sec in enumerate(adapted):
         assert sec.section_id == f"sec-{i}", f"section_id 不稳定：{sec.section_id}"
@@ -124,7 +124,7 @@ async def test_adapt_structure_borrows_shots_for_pure_new_sections():
     """source_shot_indices 一定非空——纯新增段也会借上一段的 shot 当占位缩略图。"""
     manifest = _mini_manifest(4)
     adapted = await adapt_structure(
-        manifest, brief="b", video_goal="g",
+        [manifest], brief="b", video_goal="g",
     )
     for sec in adapted:
         assert sec.source_shot_indices, (
@@ -138,7 +138,8 @@ async def test_adapt_structure_fallback_when_manifest_empty():
     manifest = _mini_manifest(3)
     # 强行清空 sections 模拟极端场景
     manifest = manifest.model_copy(update={"sections": []})
-    adapted = await adapt_structure(manifest, brief="b", video_goal="g")
+    manifest_list = [manifest]
+    adapted = await adapt_structure(manifest_list, brief="b", video_goal="g")
     assert adapted == [], "空 sections 应走 fallback 返回空"
 
 
@@ -153,7 +154,7 @@ async def test_adapt_structure_durations_track_target_total(target_total):
     from app.schemas import ComposeSettings
     manifest = _mini_manifest(4)
     adapted = await adapt_structure(
-        manifest,
+        [manifest],
         brief="测试主题",
         video_goal="测试目的",
         settings=ComposeSettings(target_duration_seconds=target_total),
@@ -173,7 +174,7 @@ async def test_adapt_structure_durations_track_target_total(target_total):
 async def test_adapt_structure_respects_settings_defaults():
     """不传 settings 时按 ComposeSettings 默认值（target_total=30s）跑通。"""
     manifest = _mini_manifest(4)
-    adapted = await adapt_structure(manifest, brief="b", video_goal="g")
+    adapted = await adapt_structure([manifest], brief="b", video_goal="g")
     assert adapted, "默认 settings 也应该返回结构"
     total = sum(s.duration_seconds for s in adapted)
     # 默认 30s，允许 25% 偏差

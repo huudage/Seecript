@@ -24,6 +24,7 @@ from ...schemas import (
     AdaptedSection,
     ComposeSettings,
     SampleManifest,
+    Section,
     SectionRole,
 )
 
@@ -31,8 +32,10 @@ log = logging.getLogger("seecript.agent.plan")
 
 
 _ADAPT_SYSTEM = (
-    "你是短视频结构改编师。给定样例视频的真实段落结构、视频画像，以及创作者的"
-    "主题、视频目的与创作设置，请把样例的『骨架』改编为本次新视频的段落结构。\n\n"
+    "你是短视频结构改编师。给定 1-2 个参考样例视频的真实段落结构、视频画像，以及"
+    "创作者的主题、视频目的与创作设置，请把这些样例的『骨架』改编为本次新视频的段落结构。\n\n"
+    "若给了 2 个参考样例，请将它们作为对等的灵感来源，不必偏向某一份；可借用任一份的"
+    "节奏、卡点与段落创意，但不要把两份段落简单拼接（最终段数仍受 3-7 段硬约束）。\n\n"
     "允许：增加段落、删除冗余段落、合并相邻段落、调整顺序。\n\n"
     "硬约束：\n"
     "1. 第一段 role 必须是 opening\n"
@@ -49,7 +52,7 @@ _ADAPT_SYSTEM = (
     "尽量自然融入；若给了 CTA，closing 段口播须体现\n"
     "- duration_seconds: 本段时长（浮点秒）。opening/closing 各 3-5s，climax 5-10s，"
     "development 4-8s；所有段之和贴近目标总时长\n"
-    "- source_section_indices: 改编自原样例哪些段落下标；纯新增段为 []\n\n"
+    "- source_section_indices: 改编自原样例池哪些段落下标（合并后的 flat 下标）；纯新增段为 []\n\n"
     "返回 JSON：{\"adapted_sections\": [{\"role\": str, \"theme\": str, "
     "\"content_description\": str, \"duration_seconds\": number, "
     "\"source_section_indices\": [int]}]}"
@@ -86,50 +89,73 @@ _PLATFORM_LABEL: dict[str, str] = {
 
 
 async def adapt_structure(
-    manifest: SampleManifest,
+    manifests: list[SampleManifest],
     brief: Optional[str],
     video_goal: Optional[str],
     settings: Optional[ComposeSettings] = None,
     reference_asset_ids: Optional[list[str]] = None,
 ) -> list[AdaptedSection]:
-    """改编样例段落骨架成新结构。失败时回落 1:1 拷贝 manifest.sections。
+    """改编 1-2 个参考样例的段落骨架成新结构。失败时回落到第一份样例的 1:1 拷贝。
 
     settings 注入目标总时长 / 平台 / 调性 / CTA / 关键词，驱动 LLM 分配每段 duration_seconds。
     reference_asset_ids 是用户素材库参考图/参考视频，喂多模态 LLM 做风格/调性/结构对齐。
+    多样例时（len(manifests)==2）：两份 sections 被合并成一个 flat 参考池，行首加
+    (样例A)/(样例B) tag 告诉 LLM 来源，但 LLM 输出的 source_section_indices 仍是
+    合并后的 flat 下标，_materialize 直接 indexing 进 combined_sections。
     user payload 必须包含字面字符串 `原样例共 N 段`，让 mock 能 regex 解析段数。
     """
+    if not manifests:
+        log.warning("[plan-agent] manifests 为空，无法改编 → 空结构")
+        return []
+    if len(manifests) > 2:
+        raise ValueError(f"adapt_structure 最多接受 2 个样例，收到 {len(manifests)}")
+
     settings = settings or ComposeSettings()
     target_total = float(settings.target_duration_seconds)
-    sample_sections = list(manifest.sections)
-    n_src = len(sample_sections)
+
+    # combined_sections: list[(global_idx, Section, manifest_idx)]
+    combined_sections: list[tuple[int, Section, int]] = []
+    for mi, manifest in enumerate(manifests):
+        for sec in manifest.sections:
+            combined_sections.append((len(combined_sections), sec, mi))
+    n_src = len(combined_sections)
     if n_src == 0:
-        log.warning("[plan-agent] manifest.sections 为空，无法改编 → fallback")
-        return _fallback_adaptation(sample_sections, target_total)
+        log.warning("[plan-agent] 所有 manifests.sections 都为空 → fallback")
+        return _fallback_adaptation(list(manifests[0].sections), target_total)
 
     brief_text = (brief or "").strip() or "（未提供主题）"
     goal_text = (video_goal or "").strip() or "（未提供具体目的）"
     cta_text = (settings.cta or "").strip() or "（未指定，可自拟收尾引导）"
     kw_text = "、".join(settings.keywords) if settings.keywords else "（无）"
 
+    # 样例标签：单样例时不打 tag（行为与旧版一致）；多样例时打 (样例A)/(样例B)
+    multi = len(manifests) > 1
     sample_lines: list[str] = []
-    for i, sec in enumerate(sample_sections):
+    for global_idx, sec, mi in combined_sections:
         theme = sec.theme or "（无主题标签）"
         summary = (sec.summary or "").strip()[:60]
         shots = ",".join(str(idx) for idx in sec.shot_indices) or "-"
+        tag = f"(样例{chr(ord('A') + mi)}) " if multi else ""
         sample_lines.append(
-            f"[{i}] role={sec.role} | theme={theme} | shots={shots} | summary={summary}"
+            f"[{global_idx}] {tag}role={sec.role} | theme={theme} | shots={shots} | summary={summary}"
         )
 
-    understanding = manifest.understanding
-    arche = understanding.archetype if understanding else "通用短视频"
-    narrative = understanding.narrative_summary if understanding else "（无画像）"
-    tone = understanding.tone if understanding else "（无基调）"
+    # understanding：每份样例独立一段；缺失跳过
+    understanding_blocks: list[str] = []
+    for mi, manifest in enumerate(manifests):
+        u = manifest.understanding
+        if u is None:
+            continue
+        prefix = f"样例{chr(ord('A') + mi)} " if multi else ""
+        understanding_blocks.append(
+            f"{prefix}archetype：{u.archetype}\n"
+            f"{prefix}narrative：{u.narrative_summary}\n"
+            f"{prefix}tone：{u.tone}"
+        )
+    understanding_text = "\n\n".join(understanding_blocks) if understanding_blocks else "（无样例画像）"
 
     user = (
-        f"样例视频画像：\n"
-        f"- archetype：{arche}\n"
-        f"- narrative：{narrative}\n"
-        f"- tone：{tone}\n\n"
+        f"样例视频画像：\n{understanding_text}\n\n"
         f"创作者输入：\n"
         f"- 主题/卖点（brief）：{brief_text}\n"
         f"- 视频要求与目的（video_goal）：{goal_text}\n\n"
@@ -166,11 +192,11 @@ async def adapt_structure(
         if items:
             items = _enforce_hard_constraints(items, n_src)
             items = _normalize_durations(items, target_total)
-            return _materialize(items, sample_sections)
+            return _materialize(items, combined_sections)
     except Exception as exc:
         log.warning("[plan-agent] adapt_structure LLM failed: %s → fallback", exc)
 
-    return _fallback_adaptation(sample_sections, target_total)
+    return _fallback_adaptation(list(manifests[0].sections), target_total)
 
 
 def _parse_raw_items(raw: list) -> list[dict]:
@@ -305,33 +331,43 @@ def _enforce_hard_constraints(items: list[dict], n_src: int) -> list[dict]:
     return items
 
 
-def _materialize(items: list[dict], sample_sections) -> list[AdaptedSection]:
+def _materialize(
+    items: list[dict],
+    combined_sections: list[tuple[int, Section, int]],
+) -> list[AdaptedSection]:
     """把清洗后的 dict 列表落地为 AdaptedSection，计算 source_shot_indices + section_id。
 
+    combined_sections: list[(global_idx, Section, manifest_idx)] —— 多样例时合并后的参考池。
+    跨样例（同一段引用了不同 manifest 的 sections）时 source_shot_indices 置空，因为
+    shot 编号在不同 manifest 间会重号，无法稳定映射到 thumbnail。
     纯新增段（source_section_indices=[]）借用相邻段的 shots，让前端缩略图能展示。
     """
     if not items:
         return []
 
     out: list[AdaptedSection] = []
-    n_src = len(sample_sections)
+    n_src = len(combined_sections)
     last_shots: list[int] = []
 
     for order, it in enumerate(items):
         src_idx = [i for i in it.get("source_section_indices", []) if 0 <= i < n_src]
+        # 检查 source 是否跨样例
+        manifest_ids = {combined_sections[i][2] for i in src_idx}
+        cross_sample = len(manifest_ids) > 1
         shot_indices: list[int] = []
-        for i in src_idx:
-            shot_indices.extend(sample_sections[i].shot_indices or [])
-        # 去重保序
-        seen = set()
-        deduped: list[int] = []
-        for s in shot_indices:
-            if s not in seen:
-                seen.add(s)
-                deduped.append(s)
-        shot_indices = deduped
+        if not cross_sample:
+            for i in src_idx:
+                shot_indices.extend(combined_sections[i][1].shot_indices or [])
+            # 去重保序
+            seen = set()
+            deduped: list[int] = []
+            for s in shot_indices:
+                if s not in seen:
+                    seen.add(s)
+                    deduped.append(s)
+            shot_indices = deduped
 
-        if not shot_indices and last_shots:
+        if not shot_indices and last_shots and not cross_sample:
             # 纯新增段：借上一段最后 1 个 shot 当占位缩略图
             shot_indices = [last_shots[-1]]
 

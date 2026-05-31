@@ -116,19 +116,19 @@ class ProjectStore:
         log.info("[projects] loaded %d project(s) from %s", loaded, root)
 
     # ---------- CRUD ----------
-    def create(self, name: str, sample_id: str) -> Project:
+    def create(self, name: str, sample_ids: list[str]) -> Project:
         with self._lock:
             now = time.time()
             project = Project(
                 project_id=_new_project_id(),
                 name=name,
-                sample_id=sample_id,
+                sample_ids=list(sample_ids),
                 created_at=now,
                 updated_at=now,
             )
             self._by_id[project.project_id] = project
             self._persist(project)
-            log.info("[projects] created %s name=%r sample=%s", project.project_id, name, sample_id)
+            log.info("[projects] created %s name=%r samples=%s", project.project_id, name, sample_ids)
             return project
 
     def get(self, project_id: str) -> Optional[Project]:

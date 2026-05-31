@@ -35,9 +35,9 @@ def _apply_side_effects(project_id: str, snapshot: StepSnapshot) -> None:
     payload = snapshot.payload or {}
     try:
         if snapshot.step == "library":
-            sample_id = payload.get("sample_id")
-            if sample_id:
-                project_store.update(project_id, sample_id=sample_id)
+            sample_ids = payload.get("sample_ids")
+            if isinstance(sample_ids, list) and 1 <= len(sample_ids) <= 2 and all(isinstance(x, str) for x in sample_ids):
+                project_store.update(project_id, sample_ids=list(sample_ids))
         elif snapshot.step == "compose":
             plan_id = payload.get("plan_id")
             if plan_id:

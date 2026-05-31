@@ -51,7 +51,9 @@ export default function ComposePage() {
   const navigate = useNavigate()
 
   // session store
-  const selectedSampleId = useSessionStore((s) => s.selectedSampleId)
+  const selectedSampleIds = useSessionStore((s) => s.selectedSampleIds)
+  const selectedSampleTitles = useSessionStore((s) => s.selectedSampleTitles)
+  const selectedSampleId = selectedSampleIds[0] ?? null
   const videoType = useSessionStore((s) => s.videoType)
   const sessionId = useSessionStore((s) => s.sessionId)
   const manifest = useSessionStore((s) => s.manifest)
@@ -240,7 +242,7 @@ export default function ComposePage() {
           setFills([])
         }
         const planReq: PlanBuildRequest = {
-          sample_id: selectedSampleId,
+          sample_ids: selectedSampleIds,
           project_id: currentProjectId,
           session_id: currentProjectId,
           brief: brief.trim() || null,
@@ -327,7 +329,7 @@ export default function ComposePage() {
         setAnalyzing(false)
       }
     },
-    [brief, currentProjectId, selectedSampleId, setFills, setGaps, setPlan, settings, sortedMaterials, videoGoal],
+    [brief, currentProjectId, selectedSampleId, selectedSampleIds, setFills, setGaps, setPlan, settings, sortedMaterials, videoGoal],
   )
 
   const handleAnalyze = useCallback(() => void runAnalyze(), [runAnalyze])
@@ -685,6 +687,25 @@ export default function ComposePage() {
         </div>
       )}
 
+      {/* ====== 参考样例 chips（最多 2 个）====== */}
+      <div className="mb-3 flex flex-wrap items-center gap-2 text-xs">
+        <span className="text-muted-foreground">参考样例：</span>
+        {selectedSampleIds.map((sid, i) => (
+          <span
+            key={sid}
+            className="inline-flex items-center gap-1 rounded-full border border-primary/40 bg-primary/5 px-2 py-0.5 text-primary"
+          >
+            <span className="rounded-sm bg-primary px-1 text-[10px] font-bold text-primary-foreground">
+              {String.fromCharCode(65 + i)}
+            </span>
+            <span className="font-medium">{selectedSampleTitles[i] ?? sid}</span>
+          </span>
+        ))}
+        {selectedSampleIds.length === 2 && (
+          <span className="text-[10px] text-muted-foreground">· 两份结构会被合并喂给 LLM 改编</span>
+        )}
+      </div>
+
       {/* ============ Row 1：输入（左）+ 上传素材（右）—— 左右排开 ============ */}
       <div className="grid gap-4 xl:grid-cols-2">
         {/* ----- 左 · 主题 / 视频目标 / 设置 ----- */}
@@ -957,7 +978,7 @@ export default function ComposePage() {
         )}
       </section>
 
-      {/* ============ Row 5：自然语言编辑（三轨 tab） ============ */}
+      {/* ============ Row 5：自然语言编辑（仅内容轨——Compose 阶段改大思路） ============ */}
       {plan && (
         <section className="mt-4">
           <NLEditPanel
@@ -965,6 +986,8 @@ export default function ComposePage() {
             projectStep="compose"
             onApplied={setPlan}
             selectedSceneId={selectedSceneId}
+            lockedTracks={['packaging', 'voice']}
+            defaultTrack="main"
           />
         </section>
       )}

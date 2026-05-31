@@ -31,7 +31,7 @@ def session_with_plan(client) -> tuple[str, str]:
     r = client.post(
         "/api/plan/build",
         json={
-            "sample_id": "sample-vlog-01",  # 用 editing 类型校验 sample_id 真的被传递
+            "sample_ids": ["sample-vlog-01"],  # 用 editing 类型校验 sample_ids 真的被传递
             "project_id": project_id,
             "session_id": sid,
             "brief": "测试咖啡店探店剪辑",
@@ -42,7 +42,7 @@ def session_with_plan(client) -> tuple[str, str]:
     )
     assert r.status_code == 200, r.text
     plan = r.json()
-    assert plan["sample_id"] == "sample-vlog-01"
+    assert plan["sample_ids"] == ["sample-vlog-01"]
     assert plan["brief"] == "测试咖啡店探店剪辑"
     return sid, plan["plan_id"]
 
@@ -110,7 +110,7 @@ def test_session_empty_falls_back_to_mock(client):
     """没传 session_id 时回落 mock 素材，不应 500。"""
     # 先建一个 plan（任何 plan 都行）
     r = client.post("/api/plan/build", json={
-        "sample_id": "sample-marketing-01",
+        "sample_ids": ["sample-marketing-01"],
         "project_id": "proj-session-fallback",
         "session_id": "no-session",
         "selected_materials": [],
@@ -130,7 +130,7 @@ def test_plan_uses_aigc_t2v_not_t2i(client, session_with_plan):
     """fills 带 new_material_id 时 plan 的 Scene.source 必须是 aigc_t2v（不是死字面量 aigc_t2i）。"""
     sid, _ = session_with_plan
     r = client.post("/api/plan/build", json={
-        "sample_id": "sample-marketing-01",
+        "sample_ids": ["sample-marketing-01"],
         "project_id": "proj-gap-persistence",
         "session_id": sid,
         "selected_materials": [],

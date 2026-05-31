@@ -24,7 +24,7 @@ _TEST_PLAN_IDS: list[str] = []
 def _make_plan(plan_id: str) -> Plan:
     return Plan(
         plan_id=plan_id,
-        sample_id="sample-marketing-01",
+        sample_ids=["sample-marketing-01"],
         project_id=None,
         session_id=None,
         settings=ComposeSettings(voiceover_enabled=True, tts_voice="zh_female_qingxin"),

@@ -32,7 +32,7 @@ def session_with_plan(client) -> tuple[str, str]:
     r = client.post(
         "/api/plan/build",
         json={
-            "sample_id": "sample-marketing-01",
+            "sample_ids": ["sample-marketing-01"],
             "project_id": project_id,
             "session_id": sid,
             "brief": "fill-all 测试",

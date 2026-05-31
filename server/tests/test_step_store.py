@@ -50,12 +50,12 @@ def _snap(step: str, **payload) -> StepSnapshot:
 # -------- StepStore 单元 --------
 
 def test_commit_marks_step_saved_and_advances_current():
-    proj = project_store.create(name="单测·STEP A", sample_id="sample-marketing-01")
+    proj = project_store.create(name="单测·STEP A", sample_ids=["sample-marketing-01"])
     _track(proj.project_id)
     assert proj.step_states.library == "pending"
     assert proj.current_step == "library"
 
-    updated = step_store.save(proj.project_id, _snap("library", sample_id="sample-marketing-01"))
+    updated = step_store.save(proj.project_id, _snap("library", sample_ids=["sample-marketing-01"]))
     assert updated.step_states.library == "saved"
     # 下游保持 pending（之前没 saved 过）
     assert updated.step_states.decompose == "pending"
@@ -65,11 +65,14 @@ def test_commit_marks_step_saved_and_advances_current():
 
 
 def test_sequential_commit_progresses_to_render_and_stays():
-    proj = project_store.create(name="单测·STEP SEQ", sample_id="sample-marketing-01")
+    proj = project_store.create(name="单测·STEP SEQ", sample_ids=["sample-marketing-01"])
     _track(proj.project_id)
     for step in ("library", "decompose", "compose", "render"):
         payload = {"plan_id": "plan-x"} if step == "compose" else (
-            {"job_id": "job-x"} if step == "render" else {"sample_id": "sample-marketing-01"}
+            {"job_id": "job-x"} if step == "render" else (
+                {"sample_ids": ["sample-marketing-01"]} if step == "library"
+                else {"sample_id": "sample-marketing-01"}
+            )
         )
         updated = step_store.save(proj.project_id, _snap(step, **payload))
     # 全部 saved
@@ -81,10 +84,10 @@ def test_sequential_commit_progresses_to_render_and_stays():
 
 
 def test_recommit_upstream_marks_downstream_dirty_but_keeps_snapshot():
-    proj = project_store.create(name="单测·STEP DIRTY", sample_id="sample-marketing-01")
+    proj = project_store.create(name="单测·STEP DIRTY", sample_ids=["sample-marketing-01"])
     _track(proj.project_id)
     # 全流程跑一遍
-    step_store.save(proj.project_id, _snap("library", sample_id="sample-marketing-01"))
+    step_store.save(proj.project_id, _snap("library", sample_ids=["sample-marketing-01"]))
     step_store.save(proj.project_id, _snap("decompose", sample_id="sample-marketing-01"))
     step_store.save(proj.project_id, _snap("compose", plan_id="plan-1"))
     step_store.save(proj.project_id, _snap("render", job_id="job-1"))
@@ -103,7 +106,7 @@ def test_recommit_upstream_marks_downstream_dirty_but_keeps_snapshot():
 
 
 def test_get_returns_none_when_never_committed():
-    proj = project_store.create(name="单测·STEP NONE", sample_id="sample-marketing-01")
+    proj = project_store.create(name="单测·STEP NONE", sample_ids=["sample-marketing-01"])
     _track(proj.project_id)
     assert step_store.get(proj.project_id, "compose") is None
     assert step_store.list(proj.project_id) == []
@@ -112,13 +115,13 @@ def test_get_returns_none_when_never_committed():
 # -------- HTTP --------
 
 def test_http_commit_get_list(client):
-    r = client.post("/api/project", json={"name": "单测·STEP HTTP", "sample_id": "sample-marketing-01"})
+    r = client.post("/api/project", json={"name": "单测·STEP HTTP", "sample_ids": ["sample-marketing-01"]})
     pid = r.json()["project_id"]
     _track(pid)
 
     # commit library
     rc = client.post(f"/api/project/{pid}/step/library/commit", json={
-        "step": "library", "saved_at": 0.0, "payload": {"sample_id": "sample-marketing-01"},
+        "step": "library", "saved_at": 0.0, "payload": {"sample_ids": ["sample-marketing-01"]},
     })
     assert rc.status_code == 200, rc.text
     body = rc.json()
@@ -128,7 +131,7 @@ def test_http_commit_get_list(client):
     # get single
     rg = client.get(f"/api/project/{pid}/step/library")
     assert rg.status_code == 200
-    assert rg.json()["payload"]["sample_id"] == "sample-marketing-01"
+    assert rg.json()["payload"]["sample_ids"] == ["sample-marketing-01"]
 
     # get never-committed → null
     rnull = client.get(f"/api/project/{pid}/step/render")
@@ -142,7 +145,7 @@ def test_http_commit_get_list(client):
 
 
 def test_http_commit_step_mismatch_400(client):
-    r = client.post("/api/project", json={"name": "单测·STEP MM", "sample_id": "sample-marketing-01"})
+    r = client.post("/api/project", json={"name": "单测·STEP MM", "sample_ids": ["sample-marketing-01"]})
     pid = r.json()["project_id"]
     _track(pid)
     rc = client.post(f"/api/project/{pid}/step/library/commit", json={
@@ -159,7 +162,7 @@ def test_http_commit_unknown_project_404(client):
 
 
 def test_http_compose_commit_marks_planned(client):
-    r = client.post("/api/project", json={"name": "单测·STEP PLAN", "sample_id": "sample-marketing-01"})
+    r = client.post("/api/project", json={"name": "单测·STEP PLAN", "sample_ids": ["sample-marketing-01"]})
     pid = r.json()["project_id"]
     _track(pid)
     rc = client.post(f"/api/project/{pid}/step/compose/commit", json={

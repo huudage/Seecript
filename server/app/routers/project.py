@@ -4,7 +4,7 @@
 project_id 是后端唯一隔离键：素材 / 资产库 / plans / gaps 全部按它分组。
 
 Endpoints（全部 prefix=/api）：
-- POST   /project                 创建：name + sample_id → 新 Project
+- POST   /project                 创建：name + sample_ids（1-2 个）→ 新 Project
 - GET    /project                 列出全部项目（按 updated_at 倒序）
 - GET    /project/{project_id}    单条详情
 - PATCH  /project/{project_id}    部分字段更新（name/brief/video_goal/settings/...）
@@ -48,13 +48,14 @@ def _sample_exists(sample_id: str) -> bool:
 
 @router.post("/project", response_model=Project)
 async def create_project(body: ProjectCreateRequest) -> Project:
-    """新建项目。校验 sample_id 真实存在，避免后续 plan/build 才发现样例缺失。"""
+    """新建项目。校验每个 sample_id 真实存在（1-2 个），避免后续 plan/build 才发现样例缺失。"""
     name = body.name.strip()
     if not name:
         raise HTTPException(status_code=400, detail="name 不能为空")
-    if not _sample_exists(body.sample_id):
-        raise HTTPException(status_code=404, detail=f"sample not found: {body.sample_id}")
-    project = project_store.create(name=name, sample_id=body.sample_id)
+    for sid in body.sample_ids:
+        if not _sample_exists(sid):
+            raise HTTPException(status_code=404, detail=f"sample not found: {sid}")
+    project = project_store.create(name=name, sample_ids=list(body.sample_ids))
     return project
 
 
