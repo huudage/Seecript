@@ -640,6 +640,66 @@ def _fontfile_arg(font_path: str | None) -> str:
     return f":fontfile='{p}'"
 
 
+# 字幕样式映射：与 schemas.PackagingPreferences.subtitle_* 对齐。
+# burn_packaging_track 渲 kind="subtitle" 时按 item.style 中的对应字段查这两张表。
+_SUBTITLE_FONT_SIZE_PX = {"small": 36, "medium": 48, "large": 64}
+_SUBTITLE_POSITION_Y = {
+    # 表达式直接拼到 drawtext y= 字段；w/h 是画面宽高，text_w/text_h 是文字本身宽高。
+    "top": "h*0.10",
+    "middle": "(h-text_h)/2",
+    "bottom": "h-text_h-160",
+}
+
+
+def _subtitle_filters(
+    text: str,
+    esc: str,
+    start: float,
+    end: float,
+    style: dict,
+    fontfile_arg: str,
+) -> list[str]:
+    """构造 subtitle drawtext 滤镜（含字号/位置/底色/双语换行）。
+
+    style 字段：
+    - font_size: small/medium/large（默认 medium=48；老 item.style.size 数字也兼容）
+    - position : top/middle/bottom（默认 bottom）
+    - background: none/shadow/gradient（默认 shadow）
+    - bilingual: bool；True 时 text 里若含『\n』分两行渲染（drawtext 原生支持换行符）
+    """
+    size_key = str(style.get("font_size", "medium")).lower()
+    fontsize = _SUBTITLE_FONT_SIZE_PX.get(size_key)
+    if fontsize is None:
+        # 兼容老 item.style.size = 数字
+        try:
+            fontsize = int(style.get("size", 48))
+        except (TypeError, ValueError):
+            fontsize = 48
+
+    pos_key = str(style.get("position", "bottom")).lower()
+    y_expr = _SUBTITLE_POSITION_Y.get(pos_key, _SUBTITLE_POSITION_Y["bottom"])
+
+    bg_key = str(style.get("background", "shadow")).lower()
+    if bg_key == "none":
+        # 描边代替底色（borderw + bordercolor）
+        bg_arg = ":borderw=4:bordercolor=black@0.85"
+    elif bg_key == "gradient":
+        # 厚 box + 高不透明度近似渐变底；ffmpeg drawtext 没有真渐变，蹭加大 borderw 做层次
+        bg_arg = ":box=1:boxcolor=black@0.45:boxborderw=32:borderw=2:bordercolor=black@0.6"
+    else:  # shadow（默认）
+        bg_arg = ":box=1:boxcolor=black@0.55:boxborderw=18"
+
+    enable = f"between(t\\,{start:.3f}\\,{end:.3f})"
+    # bilingual 通过文本里的 \n 实现两行；drawtext 原生支持 line break
+    base = (
+        f"drawtext=text='{esc}':fontcolor=white:fontsize={fontsize}"
+        f"{bg_arg}:"
+        f"x=(w-text_w)/2:y={y_expr}:"
+        f"enable='{enable}'{fontfile_arg}"
+    )
+    return [base]
+
+
 def burn_packaging_track(
     base_path: str | Path,
     items: list[dict],
@@ -695,12 +755,12 @@ def burn_packaging_track(
         if not text:
             continue
         esc = _escape_drawtext_text(text)
+        style = it.get("style") or {}
+        if not isinstance(style, dict):
+            style = {}
         if kind == "subtitle":
-            filters.append(
-                f"drawtext=text='{esc}':fontcolor=white:fontsize=56:"
-                f"box=1:boxcolor=black@0.55:boxborderw=18:"
-                f"x=(w-text_w)/2:y=h-text_h-160:"
-                f"enable='{enable}'{fontfile_arg}"
+            filters.extend(
+                _subtitle_filters(text, esc, start, end, style, fontfile_arg)
             )
         elif kind == "title_bar":
             filters.append(
@@ -722,8 +782,7 @@ def burn_packaging_track(
                 f"x=(w-text_w)/2:y=(h-text_h)/2-60:"
                 f"enable='{enable}'{fontfile_arg}"
             )
-            style = it.get("style") or {}
-            sub = style.get("subtitle") if isinstance(style, dict) else None
+            sub = style.get("subtitle")
             if isinstance(sub, str) and sub.strip():
                 esc_sub = _escape_drawtext_text(sub.strip())
                 filters.append(

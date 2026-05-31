@@ -260,6 +260,11 @@ async def build_plan(req: PlanBuildRequest) -> Plan:
     # voiceover_enabled=False 时跳过：纯 BGM 视频不该自动出字幕，
     # 但仍保留 scene.narration 文本，供 LLM 改编上下文使用。
     if settings.voiceover_enabled:
+        prefs = settings.packaging_prefs
+        # custom 时直接用 prefs 字段；非 custom 走预设展开（确保 plan/build 落盘的 subtitle 样式
+        # 与 PackagingPanel 默认预设一致，不必等用户先点一次"一键包装"才生效）。
+        from ..services.agent.packaging_agent import expand_preset
+        effective = expand_preset(prefs)
         for idx, scene in enumerate(main_track):
             sub_text = (scene.narration or "").strip()
             if not sub_text:
@@ -270,7 +275,13 @@ async def build_plan(req: PlanBuildRequest) -> Plan:
                 start=scene.start,
                 end=scene.start + scene.duration,
                 text=sub_text,
-                style={"size": 48, "stroke": "#000"},
+                style={
+                    "font_size": effective.subtitle_font_size,
+                    "position": effective.subtitle_position,
+                    "background": effective.subtitle_background,
+                    "bilingual": effective.subtitle_bilingual,
+                    "stroke": "#000",
+                },
             ))
 
     if len(main_track) >= 2:

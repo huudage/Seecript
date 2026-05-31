@@ -342,6 +342,69 @@ export interface ComposeSettings {
   voiceover_enabled: boolean
   /** TTS 音色。voiceover_enabled=False 时此字段忽略。 */
   tts_voice: TTSVoice
+  /** 包装阶段用户配置（转场白名单/字幕样式/封面策略/LLM 温度）。 */
+  packaging_prefs: PackagingPreferences
+}
+
+/** 包装风格预设。custom 表示用户在 UI 上动了任何具体字段。 */
+export type PackagingPreset =
+  | 'minimalist'
+  | 'energetic'
+  | 'info_feed'
+  | 'dialogue'
+  | 'custom'
+
+/** 字幕字号 —— ffmpeg drawtext fontsize 对齐：small=36/medium=48/large=64。 */
+export type SubtitleFontSize = 'small' | 'medium' | 'large'
+
+/** 字幕画面位置 —— top=画面上 1/8 / middle=正中 / bottom=底部（默认）。 */
+export type SubtitlePosition = 'top' | 'middle' | 'bottom'
+
+/** 字幕底色 —— none=只描边 / shadow=黑底半透明 / gradient=厚底高斯模糊。 */
+export type SubtitleBackground = 'none' | 'shadow' | 'gradient'
+
+/** 封面主标题文字来源。 */
+export type CoverTextSource = 'auto' | 'video_goal' | 'custom'
+
+/**
+ * 包装阶段用户配置 —— 存在 plan.settings.packaging_prefs，
+ * PackagingPanel 调推荐时可经请求体覆盖并回写。
+ */
+export interface PackagingPreferences {
+  preset: PackagingPreset
+  /** 允许的转场风格白名单。LLM 输出不在此列表内的会被替换成首项。 */
+  allowed_transition_styles: TransitionStyle[]
+  /** 转场持续秒数上限。LLM 输出超过此值会被 clamp。 */
+  max_transition_duration: number
+  subtitle_font_size: SubtitleFontSize
+  subtitle_position: SubtitlePosition
+  subtitle_background: SubtitleBackground
+  /** 开启后 LLM 给每段 narration 翻译一句英文，drawtext 两行展示。 */
+  subtitle_bilingual: boolean
+  cover_text_source: CoverTextSource
+  /** cover_text_source=custom 时使用（≤20 字，渲染时截到 12 字）。 */
+  cover_custom_text?: string | null
+  /** 封面停留秒数（0.6 ~ 2.0）。 */
+  cover_duration: number
+  /** 封面副标题是否同时显示；false 时即使 LLM 给了 subtitle 也不渲染。 */
+  cover_with_subtitle: boolean
+  /** PackagingAgent 调 LLM 的温度（0.3 ~ 0.9）。 */
+  llm_temperature: number
+}
+
+export const DEFAULT_PACKAGING_PREFERENCES: PackagingPreferences = {
+  preset: 'custom',
+  allowed_transition_styles: ['hard_cut', 'dissolve', 'slide', 'zoom', 'whip', 'wipe'],
+  max_transition_duration: 0.8,
+  subtitle_font_size: 'medium',
+  subtitle_position: 'bottom',
+  subtitle_background: 'shadow',
+  subtitle_bilingual: false,
+  cover_text_source: 'auto',
+  cover_custom_text: null,
+  cover_duration: 1.2,
+  cover_with_subtitle: true,
+  llm_temperature: 0.7,
 }
 
 export const DEFAULT_COMPOSE_SETTINGS: ComposeSettings = {
@@ -352,6 +415,7 @@ export const DEFAULT_COMPOSE_SETTINGS: ComposeSettings = {
   keywords: [],
   voiceover_enabled: true,
   tts_voice: 'zh_female_qingxin',
+  packaging_prefs: DEFAULT_PACKAGING_PREFERENCES,
 }
 
 export interface Plan {
@@ -521,6 +585,11 @@ export interface PackagingRecommendation {
 export interface PackagingRecommendRequest {
   plan_id: PlanId
   apply?: boolean
+  /**
+   * 用户偏好。None 时直接用 plan.settings.packaging_prefs；
+   * 非空时与之合并（请求体优先），结果回写到 plan.settings.packaging_prefs。
+   */
+  preferences?: PackagingPreferences | null
 }
 
 // =========================================================================

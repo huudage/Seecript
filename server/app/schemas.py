@@ -650,6 +650,95 @@ TTSVoice = Literal[
 """
 
 
+PackagingPreset = Literal["minimalist", "energetic", "info_feed", "dialogue", "custom"]
+"""包装风格预设：
+- minimalist  极简：只用 hard_cut + dissolve，小字号底部字幕无底色，封面文字来自 video_goal
+- energetic   活力：全 6 种转场，大字号字幕带阴影，封面用 LLM 自动生成
+- info_feed   信息流：dissolve + slide + wipe，中字号顶部字幕带渐变底色，封面 1.5s 停留
+- dialogue    对话/口播：dissolve + hard_cut 为主，大字号底部字幕带阴影，双语字幕开启
+- custom      自定义：UI 直接暴露所有字段，preset 不参与展开
+"""
+
+
+SubtitleFontSize = Literal["small", "medium", "large"]
+"""字幕字号：small=36 / medium=48 / large=64（与 ffmpeg drawtext fontsize 对齐）。"""
+
+
+SubtitlePosition = Literal["top", "middle", "bottom"]
+"""字幕画面位置：top=画面上 1/8 / middle=正中 / bottom=底部上 8%（默认）。"""
+
+
+SubtitleBackground = Literal["none", "shadow", "gradient"]
+"""字幕底色：
+- none      只画字（粗描边由字体本身提供），最干净
+- shadow    黑底半透明 box（drawtext box=1，默认风格）
+- gradient  渐变底（更厚的 box + 高斯模糊），观感最重
+"""
+
+
+CoverTextSource = Literal["auto", "video_goal", "custom"]
+"""封面主标题文字来源：
+- auto        LLM 自动生成（默认）
+- video_goal  直接取 plan.video_goal 的前 12 字
+- custom      取 PackagingPreferences.cover_custom_text
+"""
+
+
+class PackagingPreferences(BaseModel):
+    """包装阶段用户配置 —— Compose/Render 都能改，驱动 PackagingAgent + 字幕烧录样式。
+
+    存在 plan.settings.packaging_prefs 上，POST /packaging/recommend 时可被请求体覆盖；
+    覆盖结果回写到 plan.settings.packaging_prefs，下次进入面板能反显上次配置。
+    """
+
+    preset: PackagingPreset = Field(
+        default="custom",
+        description="预设入口。非 custom 时 router 端会按预设展开覆盖具体字段；"
+                    "用户在 UI 上动了任何具体字段就会回到 custom。",
+    )
+    allowed_transition_styles: list[TransitionStyle] = Field(
+        default_factory=lambda: ["hard_cut", "dissolve", "slide", "zoom", "whip", "wipe"],
+        min_length=1,
+        max_length=6,
+        description="允许的转场风格白名单。LLM 输出不在此列表内的会被替换成首项。",
+    )
+    max_transition_duration: float = Field(
+        default=0.8,
+        ge=0.2,
+        le=1.5,
+        description="转场持续秒数上限。LLM 输出超过此值会被 clamp。",
+    )
+    subtitle_font_size: SubtitleFontSize = Field(default="medium")
+    subtitle_position: SubtitlePosition = Field(default="bottom")
+    subtitle_background: SubtitleBackground = Field(default="shadow")
+    subtitle_bilingual: bool = Field(
+        default=False,
+        description="开启后 LLM 给每段 narration 翻译一句英文，drawtext 两行展示。",
+    )
+    cover_text_source: CoverTextSource = Field(default="auto")
+    cover_custom_text: Optional[str] = Field(
+        default=None,
+        max_length=20,
+        description="cover_text_source=custom 时使用的主标题文字（≤20 字，渲染时截到 12 字）。",
+    )
+    cover_duration: float = Field(
+        default=1.2,
+        ge=0.6,
+        le=2.0,
+        description="封面停留秒数（叠在第 0 秒，结束后回到主轨第 1 段画面）。",
+    )
+    cover_with_subtitle: bool = Field(
+        default=True,
+        description="封面副标题是否同时显示；False 时即使 LLM 给了 subtitle 也不渲染。",
+    )
+    llm_temperature: float = Field(
+        default=0.7,
+        ge=0.3,
+        le=0.9,
+        description="PackagingAgent 调 LLM 时的温度。低=稳定，高=多样；默认 0.7 平衡。",
+    )
+
+
 class ComposeSettings(BaseModel):
     """Compose 页用户配置 —— 与 brief/video_goal 一起驱动结构改编。
 
@@ -684,11 +773,16 @@ class ComposeSettings(BaseModel):
     voiceover_enabled: bool = Field(
         default=True,
         description="是否需要口播。True=plan/build 自动生成逐句字幕 + copy fill 自动合成 TTS；"
-                    "False=纯 BGM 视频，跳过字幕轨与 TTS（但保留 narration 文本作 LLM 上下文）。",
+                    "False=纯 BGM 视频,跳过字幕轨与 TTS（但保留 narration 文本作 LLM 上下文）。",
     )
     tts_voice: TTSVoice = Field(
         default="zh_female_qingxin",
         description="ARK TTS 音色。voiceover_enabled=False 时该字段无效。",
+    )
+    packaging_prefs: PackagingPreferences = Field(
+        default_factory=PackagingPreferences,
+        description="包装阶段用户配置（转场白名单/字幕样式/封面策略/LLM 温度）。"
+                    "Compose 创建时落默认值，PackagingPanel 调推荐时可经请求体覆盖并回写。",
     )
 
 
@@ -820,6 +914,12 @@ class PackagingRecommendRequest(BaseModel):
     apply: bool = Field(
         default=True,
         description="True：落地为 PackagingItem 写回 plan.packaging_track；False：只返回建议不改 plan。",
+    )
+    preferences: Optional[PackagingPreferences] = Field(
+        default=None,
+        description="用户在 PackagingPanel 上配置的偏好（转场白名单/字幕样式/封面策略/温度）。"
+                    "None 时直接复用 plan.settings.packaging_prefs；非空时与之合并（请求体优先），"
+                    "结果回写到 plan.settings.packaging_prefs 持久化。",
     )
 
 
