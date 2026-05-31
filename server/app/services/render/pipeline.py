@@ -310,8 +310,30 @@ async def run_pipeline(job_id: str, plan: Plan) -> RenderResult:
             notes.append(f"scene {i} 文字卡渲染失败（ffmpeg 不可用），跳过该段")
 
     if inputs and ffmpeg_svc.ffmpeg_available():
+        # 收集每段的 transition_in（首段强制 None）。任何非 hard_cut → 走 xfade 滤镜分支。
+        transitions: list[dict | None] = []
+        for i, sc in enumerate(plan.main_track[: len(inputs)]):
+            if i == 0:
+                transitions.append(None)
+                continue
+            tr = sc.transition_in
+            if tr is None:
+                transitions.append(None)
+            else:
+                transitions.append({"style": tr.style, "duration": tr.duration})
+        has_real_transition = any(
+            t is not None and (t.get("style") or "hard_cut") != "hard_cut"
+            for t in transitions
+        )
         try:
-            await asyncio.to_thread(ffmpeg_svc.concat, inputs, main_path, reencode=True)
+            if has_real_transition:
+                await asyncio.to_thread(
+                    ffmpeg_svc.concat_with_transitions,
+                    inputs, transitions, main_path,
+                    canvas=(canvas_w, canvas_h),
+                )
+            else:
+                await asyncio.to_thread(ffmpeg_svc.concat, inputs, main_path, reencode=True)
         except ffmpeg_svc.FFmpegError as exc:
             log.warning("[%s] concat failed, falling back to mock: %s", job_id, exc)
             notes.append(f"concat fallback: {exc}")

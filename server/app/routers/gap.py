@@ -7,6 +7,7 @@
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 from typing import Optional
 
@@ -31,8 +32,7 @@ from ..services.agent.aigc_prompt_agent import generate_aigc_prompt
 from ..services.agent.gap_agent import detect_gaps, fill_gap, refresh_aigc_task
 from ..services.materials import gap_store, material_store
 from ..services.plans import plan_store
-from ..services.tts import TTSError, backend_name as tts_backend_name, synthesize as tts_synthesize
-from ..services.tts import store as voice_store
+from ..services.tts import TTSError, backend_name as tts_backend_name, synthesize_scene_voice
 from ..services.video.aspect import aspect_for_platform
 
 log = logging.getLogger("seecript.gap")
@@ -145,31 +145,24 @@ def _maybe_auto_tts(result: FillResult) -> FillResult:
     回填到 FillResult + scene.voiceover_url（让 rebuild plan 时也能用上）。
 
     失败不抛——TTS 抖动不能阻断 copy fill 的成功语义；只在 note 里追加诊断。
+    注意：synthesize_scene_voice 是同步阻塞调用，async 调用方必须用
+    `await asyncio.to_thread(_maybe_auto_tts, ...)` 包一层。
     """
     if result.action != "copy" or not (result.narration or "").strip():
         return result
     if not result.section_id:
         return result
 
-    plan = None
-    scene = None
-    for plan_id in plan_store.all_ids():
-        p = plan_store.get(plan_id)
-        if not p:
-            continue
-        sec = next((s for s in p.adapted_sections if s.section_id == result.section_id), None)
-        if not sec:
-            continue
-        plan = p
-        target_scene_id = f"sc-{sec.order}"
-        scene = next((sc for sc in p.main_track if sc.scene_id == target_scene_id), None)
-        break
+    plan, scene = _resolve_plan_and_scene_for_gap_by_section(result.section_id)
     if plan is None or not plan.settings.voiceover_enabled:
         return result
+    if scene is None:
+        return result
 
-    voice = (plan.settings.tts_voice or "").strip() or "zh_female_qingxin"
+    # 把 result.narration 同步到 scene.narration（让 synthesize_scene_voice 用到新文案）
+    scene.narration = result.narration.strip()
     try:
-        wav = tts_synthesize(result.narration.strip(), voice=voice, sample_rate=24000)
+        ret = synthesize_scene_voice(plan, scene.scene_id, text=None, voice=None)
     except TTSError as exc:
         log.warning("[gap] auto-tts failed gap=%s plan=%s code=%s: %s",
                     result.gap_id, plan.plan_id, exc.code, exc)
@@ -177,16 +170,28 @@ def _maybe_auto_tts(result: FillResult) -> FillResult:
             "note": (result.note or "") + f" | TTS 失败：{exc}",
         })
 
-    scene_id_for_save = scene.scene_id if scene else f"gap-{result.gap_id}"
-    url = voice_store.save_wav(plan.plan_id, scene_id_for_save, wav)
-    if scene is not None:
-        scene.voiceover_url = url
-        if not (scene.narration or "").strip():
-            scene.narration = result.narration.strip()
-        plan_store.put(plan)
+    if ret is None:
+        return result
+    url, _truncated, chars = ret
+    plan_store.put(plan)
     log.info("[gap] auto-tts plan=%s scene=%s backend=%s chars=%d url=%s",
-             plan.plan_id, scene_id_for_save, tts_backend_name(), len(result.narration), url)
+             plan.plan_id, scene.scene_id, tts_backend_name(), chars, url)
     return result.model_copy(update={"voiceover_url": url})
+
+
+def _resolve_plan_and_scene_for_gap_by_section(section_id: str):
+    """section_id → (plan, scene)；遍历 plan_store 找到第一条匹配。"""
+    for plan_id in plan_store.all_ids():
+        p = plan_store.get(plan_id)
+        if not p:
+            continue
+        sec = next((s for s in p.adapted_sections if s.section_id == section_id), None)
+        if not sec:
+            continue
+        target_scene_id = f"sc-{sec.order}"
+        scene = next((sc for sc in p.main_track if sc.scene_id == target_scene_id), None)
+        return p, scene
+    return None, None
 
 
 @router.post("/gap/detect", response_model=list[Gap])
@@ -234,14 +239,15 @@ async def fill(req: GapFillRequest) -> FillResult:
         )
     params = _inject_aigc_params(gap, req.params) if req.action == "aigc" else req.params
     result = await fill_gap(gap, req.action, params)
-    return _maybe_auto_tts(result)
+    return await asyncio.to_thread(_maybe_auto_tts, result)
 
 
 @router.post("/gap/fill-all", response_model=GapFillAllResponse)
 async def fill_all(req: GapFillAllRequest) -> GapFillAllResponse:
-    """一键 AI 生成：把 plan 下所有 status≠ok 的 gap 顺序走 Seedance aigc。
+    """一键补全：把 plan 下所有 status≠ok 的 gap 顺序走 action。
 
-    顺序执行（保证 prompt 链式生成时机正确），遇错即停（不浪费配额）。
+    顺序执行（aigc 链式生成依赖时序，copy 也走串行避免 LLM 配额抖动），遇错即停。
+    action="aigc" 默认；action="copy" 用 gap.requirement 当 prompt_hint。
     """
     plan = plan_store.get(req.plan_id)
     if plan is None:
@@ -259,7 +265,7 @@ async def fill_all(req: GapFillAllRequest) -> GapFillAllResponse:
             stopped_reason="所有缺口已 ok，无需生成",
         )
 
-    log.info("[gap-fill-all] plan=%s pending=%d", req.plan_id, len(pending))
+    log.info("[gap-fill-all] plan=%s action=%s pending=%d", req.plan_id, req.action, len(pending))
 
     fills: list[FillResult] = []
     failed_gap_id: Optional[str] = None
@@ -267,16 +273,20 @@ async def fill_all(req: GapFillAllRequest) -> GapFillAllResponse:
     template = (req.prompt_template or "").strip()
 
     for gap in pending:
-        prompt = template or f"短视频画面：{gap.requirement}"
-        params = _inject_aigc_params(gap, {"prompt": prompt})
+        if req.action == "aigc":
+            prompt = template or f"短视频画面：{gap.requirement}"
+            params = _inject_aigc_params(gap, {"prompt": prompt})
+        else:
+            # copy：复用 single-fill 的 prompt_hint 协议
+            params = {"prompt_hint": gap.requirement}
         try:
-            result = await fill_gap(gap, "aigc", params)
+            result = await fill_gap(gap, req.action, params)
         except Exception as exc:
-            log.exception("[gap-fill-all] gap=%s raised", gap.gap_id)
+            log.exception("[gap-fill-all] gap=%s action=%s raised", gap.gap_id, req.action)
             failed_gap_id = gap.gap_id
             stopped_reason = f"生成异常：{exc}"
             break
-        result = _maybe_auto_tts(result)
+        result = await asyncio.to_thread(_maybe_auto_tts, result)
         fills.append(result)
         if result.status != "ok":
             failed_gap_id = gap.gap_id

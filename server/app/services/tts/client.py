@@ -47,6 +47,22 @@ from ...config import get_settings
 log = logging.getLogger("seecript.tts")
 
 
+# 火山 v1 已统一走"大模型音色"（*_bigtts），小模型 voice_type 全部 resource_not_granted。
+# 前端 TTSVoice 枚举仍保留旧名（兼容已落盘 plan.settings），在最后一公里映射为实际付费音色。
+# 未命中的 voice 原样下发——允许调用方直接传 *_bigtts ID（未来扩枚举不必改这里）。
+_VOICE_ALIAS: dict[str, str] = {
+    "zh_female_qingxin": "zh_female_zhixingnvsheng_mars_bigtts",
+    "zh_female_wenrou": "zh_female_wenrouxiaoya_moon_bigtts",
+    "zh_male_jieshuo": "zh_male_jingqiangkanye_moon_bigtts",
+    "zh_male_xueyi": "zh_male_yangguangqingnian_moon_bigtts",
+    "zh_female_xiaoyu": "zh_female_meilinvyou_moon_bigtts",
+}
+
+
+def _resolve_voice(voice: str) -> str:
+    return _VOICE_ALIAS.get(voice, voice)
+
+
 class TTSError(RuntimeError):
     def __init__(self, message: str, code: Optional[str] = None) -> None:
         super().__init__(message)
@@ -84,6 +100,7 @@ def _mock_synthesize(text: str, sample_rate: int, speed_ratio: float = 1.0) -> b
 
 def _volc_synthesize(text: str, voice: str, sample_rate: int, speed_ratio: float = 1.0) -> bytes:
     settings = get_settings()
+    resolved_voice = _resolve_voice(voice)
     payload = {
         "app": {
             "appid": settings.volc_tts_app_id,
@@ -92,7 +109,7 @@ def _volc_synthesize(text: str, voice: str, sample_rate: int, speed_ratio: float
         },
         "user": {"uid": "seecript"},
         "audio": {
-            "voice_type": voice,
+            "voice_type": resolved_voice,
             "encoding": "wav",
             "rate": sample_rate,
             "speed_ratio": max(0.5, min(2.0, float(speed_ratio))),

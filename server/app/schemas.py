@@ -395,13 +395,22 @@ class AigcPromptResponse(BaseModel):
 
 
 class GapFillAllRequest(BaseModel):
-    """`POST /api/gap/fill-all` —— 对 plan_id 下所有非 ok 缺口顺序触发 aigc。"""
+    """`POST /api/gap/fill-all` —— 对 plan_id 下所有非 ok 缺口顺序触发补全。
+
+    action:
+      - "aigc"（默认，向后兼容）：每个缺口走 Seedance T2V 链式生成
+      - "copy"：每个缺口走 LLM 文案补全（用 gap.requirement 作为 prompt_hint）
+    """
 
     plan_id: str
+    action: Literal["copy", "aigc"] = Field(
+        default="aigc",
+        description="批量补全使用的动作；rerank 不支持批量（依赖人工挑选）",
+    )
     prompt_template: Optional[str] = Field(
         default=None,
         max_length=200,
-        description="可选自定义 prompt 模板，{requirement} 占位会被替换为 gap.requirement。",
+        description="可选自定义 prompt 模板（仅 aigc），{requirement} 占位会被替换为 gap.requirement。",
     )
 
 
@@ -485,6 +494,21 @@ class AdaptedSection(BaseModel):
     )
 
 
+TransitionStyle = Literal["hard_cut", "dissolve", "slide", "zoom", "whip", "wipe"]
+"""转场风格 6 元枚举——和 ffmpeg xfade primitives 对齐。"""
+
+
+class SceneTransition(BaseModel):
+    """主轨场景的入场转场——与上一段如何衔接。
+
+    渲染层 ffmpeg.concat_with_transitions 用 xfade 滤镜实装；
+    duration 占用前后两段相邻 N 秒（前段尾部 + 后段头部 overlap）。
+    """
+
+    style: TransitionStyle = Field(default="dissolve")
+    duration: float = Field(default=0.4, ge=0.1, le=1.5, description="转场持续秒数（与上一段 overlap 长度）")
+
+
 class Scene(BaseModel):
     """主轨分镜：素材切片 + 字幕。FFmpeg concat 的最小单位。"""
 
@@ -505,6 +529,11 @@ class Scene(BaseModel):
     aigc_video_urls: list[str] = Field(
         default_factory=list,
         description="source=aigc_t2v 时 Seedance 返回的 N 段 CDN URL；render pipeline 下载后 ffmpeg concat。",
+    )
+    transition_in: Optional[SceneTransition] = Field(
+        default=None,
+        description="与上一段衔接方式；sc-0 永远忽略此字段（无上一段）。"
+                    "None 或 style=hard_cut 时走 concat demuxer 直拼；其他 style 走 xfade 滤镜。",
     )
 
     @model_validator(mode="before")
@@ -737,9 +766,7 @@ class PlanBuildRequest(BaseModel):
 # =========================================================================
 # Module 5b — 包装推荐 (Packaging Agent)
 # =========================================================================
-
-TransitionStyle = Literal["hard_cut", "dissolve", "slide", "zoom", "whip", "wipe"]
-"""转场风格 6 元枚举——和 Remotion 里的 transition primitives 对齐。"""
+# TransitionStyle / SceneTransition 定义见 Scene 上方（被 Scene.transition_in 复用）。
 
 
 class TransitionSuggestion(BaseModel):
@@ -824,6 +851,11 @@ class EditMark(BaseModel):
 
 class EditApplyRequest(BaseModel):
     plan_id: str
+    track: Literal["main", "packaging", "voice"] = Field(
+        ...,
+        description="编辑意图轨道：main=内容轨（时长/素材/转场）/ packaging=包装轨（字幕/BGM）/ voice=口播轨（narration+TTS）。"
+                    "渲染态（project.current_step=='render'）下 main 被拒 409。",
+    )
     instruction: str = Field(..., min_length=1, max_length=1000, description="自然语言改片指令")
     marks: list[EditMark] = Field(default_factory=list, description="选中区间；空表示对整段生效")
 

@@ -9,5 +9,9 @@ provider 选择：
 - backend_name() -> "mock" | "volc"
 """
 from .client import TTSError, backend_name, synthesize
+from .scene_voice import synthesize_scene_voice, synthesize_with_alignment
 
-__all__ = ["TTSError", "backend_name", "synthesize"]
+__all__ = [
+    "TTSError", "backend_name", "synthesize",
+    "synthesize_scene_voice", "synthesize_with_alignment",
+]

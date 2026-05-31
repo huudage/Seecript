@@ -60,6 +60,21 @@ class JobStore:
         ch = self._channels.get(job_id)
         return ch.job if ch else None
 
+    def find_active(self, kind: str, plan_id: str) -> Optional[str]:
+        """找同 plan 仍在 pending/running 的同类 job；用于 submit 去重，避免并发重复渲染。
+
+        返回最近创建的活跃 job_id（payload.plan_id 匹配），无则 None。
+        """
+        candidates = [
+            ch.job for ch in self._channels.values()
+            if ch.job.kind == kind
+            and ch.job.status in ("pending", "running")
+            and ch.job.payload.get("plan_id") == plan_id
+        ]
+        if not candidates:
+            return None
+        return max(candidates, key=lambda j: j.created_at).job_id
+
     # ---- producer side ----
 
     def start(self, job_id: str) -> None:

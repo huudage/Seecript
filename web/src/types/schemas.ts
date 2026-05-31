@@ -264,6 +264,14 @@ export interface Scene {
   voiceover_url?: string | null
   /** source=aigc_t2v 时 Seedance 返回的 N 段 CDN URL。 */
   aigc_video_urls: string[]
+  /** 与上一段衔接方式；sc-0 永远忽略此字段。None / hard_cut 走 concat demuxer，其他走 xfade。 */
+  transition_in?: SceneTransition | null
+}
+
+export interface SceneTransition {
+  style: TransitionStyle
+  /** 转场持续秒数（0.1–1.5），与上一段尾部 overlap 长度。 */
+  duration: number
 }
 
 export interface PackagingItem {
@@ -384,6 +392,8 @@ export interface PlanBuildRequest {
 
 export interface GapFillAllRequest {
   plan_id: PlanId
+  /** 批量补全使用的动作；默认 aigc（向后兼容）。rerank 不支持批量。 */
+  action?: 'copy' | 'aigc'
   prompt_template?: string | null
 }
 
@@ -549,6 +559,8 @@ export interface EditMark {
 
 export interface EditApplyRequest {
   plan_id: PlanId
+  /** 轨道意图。main 在 project.current_step==='render' 时被后端 409 拒绝。 */
+  track: 'main' | 'packaging' | 'voice'
   instruction: string
   marks: EditMark[]
 }

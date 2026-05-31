@@ -18,9 +18,8 @@ Endpoints（prefix=/api）：
 """
 from __future__ import annotations
 
-import io
+import asyncio
 import logging
-import wave
 from typing import Optional
 
 from fastapi import APIRouter, HTTPException
@@ -28,56 +27,11 @@ from pydantic import BaseModel, Field
 
 from ..schemas import Plan
 from ..services.plans import plan_store
-from ..services.tts import TTSError, backend_name, synthesize
+from ..services.tts import TTSError, backend_name, synthesize_with_alignment
 from ..services.tts import store as voice_store
 
 log = logging.getLogger("seecript.voice")
 router = APIRouter()
-
-
-# 火山 TTS speed_ratio 安全上限——超过 1.15 音质明显劣化（卷舌、爆音）。
-# 由 demo 实测得来：1.2 已经能听出机械感，1.5 完全不可用。
-_SPEED_RATIO_CEILING = 1.15
-
-
-def _wav_duration_seconds(wav_bytes: bytes) -> float:
-    """读 wav 头算时长；解析失败返回 0（caller 跳过对齐）。"""
-    try:
-        with wave.open(io.BytesIO(wav_bytes), "rb") as wf:
-            frames = wf.getnframes()
-            rate = wf.getframerate()
-            if rate <= 0:
-                return 0.0
-            return frames / float(rate)
-    except Exception as exc:  # noqa: BLE001
-        log.warning("[voice] wav duration parse failed: %s", exc)
-        return 0.0
-
-
-def _synthesize_with_alignment(
-    text: str, voice: str, target_seconds: float, sample_rate: int = 24000,
-) -> tuple[bytes, bool]:
-    """合成并按 target_seconds 做 speed_ratio 对齐。返回 (wav_bytes, truncated_flag)。
-
-    truncated=True 表示即使加速到 _SPEED_RATIO_CEILING 仍然超长，渲染端需截尾。
-    """
-    wav = synthesize(text, voice=voice, sample_rate=sample_rate, speed_ratio=1.0)
-    if target_seconds <= 0:
-        return wav, False
-    actual = _wav_duration_seconds(wav)
-    if actual <= 0 or actual <= target_seconds:
-        return wav, False
-    desired_ratio = actual / target_seconds
-    if desired_ratio <= 1.0:
-        return wav, False
-    applied_ratio = min(_SPEED_RATIO_CEILING, desired_ratio)
-    log.info(
-        "[voice] align actual=%.2fs target=%.2fs ratio=%.2f applied=%.2f",
-        actual, target_seconds, desired_ratio, applied_ratio,
-    )
-    wav2 = synthesize(text, voice=voice, sample_rate=sample_rate, speed_ratio=applied_ratio)
-    truncated = desired_ratio > _SPEED_RATIO_CEILING
-    return wav2, truncated
 
 
 class VoiceSynthesizeRequest(BaseModel):
@@ -138,8 +92,9 @@ async def synthesize_one(req: VoiceSynthesizeRequest) -> VoiceSynthesizeResponse
 
     voice = (req.voice or plan.settings.tts_voice).strip()
     try:
-        wav_bytes, truncated = _synthesize_with_alignment(
-            text, voice=voice, target_seconds=float(scene.duration or 0.0),
+        wav_bytes, truncated = await asyncio.to_thread(
+            synthesize_with_alignment,
+            text, voice, float(scene.duration or 0.0),
         )
     except TTSError as exc:
         log.warning("[voice] synthesize failed plan=%s scene=%s code=%s err=%s",
@@ -186,8 +141,9 @@ async def synthesize_all(req: VoiceSynthesizeAllRequest) -> VoiceSynthesizeAllRe
             skipped.append(scene.scene_id)
             continue
         try:
-            wav_bytes, truncated = _synthesize_with_alignment(
-                text, voice=voice, target_seconds=float(scene.duration or 0.0),
+            wav_bytes, truncated = await asyncio.to_thread(
+                synthesize_with_alignment,
+                text, voice, float(scene.duration or 0.0),
             )
         except TTSError as exc:
             failures.append({"scene_id": scene.scene_id, "code": exc.code, "error": str(exc)})

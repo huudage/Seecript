@@ -1,7 +1,8 @@
-import { useCallback, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
 import { cn } from '@/lib/utils'
 import { SECTION_BG, SECTION_LABEL, SECTION_SHORT } from '@/lib/sections'
+import { TRANSITION_LABEL, TRANSITION_TONE } from '@/lib/transitions'
 import type {
   AdaptedSection,
   BGMConfig,
@@ -58,6 +59,8 @@ interface Props {
   onBgmAnchorChange?: (newAnchorSeconds: number) => void | Promise<void>
   /** 清除 BGM 绑定。 */
   onClearBgm?: () => void | Promise<void>
+  /** 调整 BGM 音量（0 ~ 1）。组件内部 debounce 300ms 后才会触发。 */
+  onBgmVolumeChange?: (volume: number) => void | Promise<void>
   /** 翻转 plan.settings.voiceover_enabled——口播轨左侧的开关。 */
   onToggleVoiceover?: (enabled: boolean) => void | Promise<void>
   /** 切换 plan.settings.tts_voice——口播轨上选音色后写回 plan. */
@@ -135,6 +138,7 @@ export function FourTrackBoard({
   onPickBgm,
   onBgmAnchorChange,
   onClearBgm,
+  onBgmVolumeChange,
   onToggleVoiceover,
   onChangeTtsVoice,
   busy = false,
@@ -172,7 +176,9 @@ export function FourTrackBoard({
     [packaging],
   )
   const nonSubtitleItems = useMemo(
-    () => packaging.filter((it) => it.kind !== 'subtitle'),
+    // transition 已经从 packaging 内化到 scene.transition_in（PlanStore 启动时迁移）；
+    // 这里仍兜底滤一遍，以免老 plan 残留的 kind='transition' 项闪到轨上。
+    () => packaging.filter((it) => it.kind !== 'subtitle' && it.kind !== 'transition'),
     [packaging],
   )
 
@@ -253,6 +259,36 @@ export function FourTrackBoard({
     [bgm?.track_url, busy, computeAnchorFromClientX, onBgmAnchorChange],
   )
 
+  /* ==================== BGM 音量本地态 + 300ms debounce ==================== */
+
+  // 本地输入态：拖滑块时立即更新视觉，debounce 300ms 才打 PATCH
+  const [volumeDraft, setVolumeDraft] = useState<number | null>(null)
+  const volumeDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+
+  // 外部 bgm.volume 变了（patch 回包）→ 清掉本地草稿
+  useEffect(() => {
+    setVolumeDraft(null)
+  }, [bgm?.volume])
+
+  useEffect(() => {
+    return () => {
+      if (volumeDebounceRef.current) clearTimeout(volumeDebounceRef.current)
+    }
+  }, [])
+
+  const handleVolumeChange = useCallback(
+    (next: number) => {
+      const clamped = Math.max(0, Math.min(1, next))
+      setVolumeDraft(clamped)
+      if (volumeDebounceRef.current) clearTimeout(volumeDebounceRef.current)
+      if (!onBgmVolumeChange) return
+      volumeDebounceRef.current = setTimeout(() => {
+        void onBgmVolumeChange(Math.round(clamped * 100) / 100)
+      }, 300)
+    },
+    [onBgmVolumeChange],
+  )
+
   /* ==================== 渲染 ==================== */
 
   if (total <= 0 || scenes.length === 0) {
@@ -298,6 +334,11 @@ export function FourTrackBoard({
           const filled = gap && filledGapIds.has(gap.gap_id)
           const effectiveStatus: GapStatus = filled ? 'ok' : (status ?? 'ok')
           const selected = gap?.gap_id === selectedGapId
+          // 转场标块：仅在「非首段 + transition_in 非 hard_cut」时绘制；点击 = 选中该 scene（让用户自然语言改）
+          const trans =
+            scene.start > 0 && scene.transition_in && scene.transition_in.style !== 'hard_cut'
+              ? scene.transition_in
+              : null
 
           return (
             <button
@@ -316,6 +357,17 @@ export function FourTrackBoard({
                   : `${SECTION_LABEL[scene.section]} · ${scene.duration.toFixed(1)}s`
               }
             >
+              {trans && (
+                <span
+                  className={cn(
+                    'pointer-events-none absolute -left-1 top-1/2 -translate-y-1/2 rounded px-1 py-px text-[8px] font-semibold shadow-sm',
+                    TRANSITION_TONE[trans.style],
+                  )}
+                  title={`转场：${TRANSITION_LABEL[trans.style]} · ${trans.duration.toFixed(1)}s（与上一段衔接）`}
+                >
+                  ◂{TRANSITION_LABEL[trans.style]}
+                </span>
+              )}
               <div className="flex h-full flex-col justify-between p-1">
                 <div className="flex items-center justify-between gap-1">
                   <span className="font-mono text-[9px] opacity-80">
@@ -559,24 +611,47 @@ export function FourTrackBoard({
         }
         actions={
           !readOnly ? (
-            <div className="flex items-center gap-1">
-              {onPickBgm && (
-                <button
-                  onClick={onPickBgm}
-                  disabled={busy}
-                  className="rounded border border-primary/40 bg-primary/10 px-2 py-0.5 text-[10px] text-primary hover:bg-primary/20 disabled:opacity-50"
+            <div className="flex flex-col items-stretch gap-1">
+              <div className="flex items-center gap-1">
+                {onPickBgm && (
+                  <button
+                    onClick={onPickBgm}
+                    disabled={busy}
+                    className="rounded border border-primary/40 bg-primary/10 px-2 py-0.5 text-[10px] text-primary hover:bg-primary/20 disabled:opacity-50"
+                  >
+                    {bgm?.track_url ? '换曲' : '上传 / 选择'}
+                  </button>
+                )}
+                {bgm?.track_url && onClearBgm && (
+                  <button
+                    onClick={() => void onClearBgm()}
+                    disabled={busy}
+                    className="rounded border border-border bg-background/60 px-2 py-0.5 text-[10px] text-muted-foreground hover:bg-background disabled:opacity-50"
+                  >
+                    清除
+                  </button>
+                )}
+              </div>
+              {bgm?.track_url && onBgmVolumeChange && (
+                <label
+                  className="flex items-center gap-1 text-[10px] text-muted-foreground"
+                  title="拖动 BGM 音量（0 ~ 1.0）；300ms debounce 后落到 plan.bgm.volume"
                 >
-                  {bgm?.track_url ? '换曲' : '上传 / 选择'}
-                </button>
-              )}
-              {bgm?.track_url && onClearBgm && (
-                <button
-                  onClick={() => void onClearBgm()}
-                  disabled={busy}
-                  className="rounded border border-border bg-background/60 px-2 py-0.5 text-[10px] text-muted-foreground hover:bg-background disabled:opacity-50"
-                >
-                  清除
-                </button>
+                  <span className="shrink-0">vol</span>
+                  <input
+                    type="range"
+                    min={0}
+                    max={1}
+                    step={0.05}
+                    value={volumeDraft ?? bgm.volume}
+                    onChange={(e) => handleVolumeChange(parseFloat(e.target.value))}
+                    disabled={busy}
+                    className="h-1 w-full cursor-pointer accent-primary disabled:cursor-not-allowed"
+                  />
+                  <span className="w-7 shrink-0 tabular-nums text-right">
+                    {(volumeDraft ?? bgm.volume).toFixed(2)}
+                  </span>
+                </label>
               )}
             </div>
           ) : null

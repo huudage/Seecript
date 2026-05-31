@@ -2,31 +2,13 @@ import { useState } from 'react'
 
 import { api } from '@/api/client'
 import { SECTION_BG, SECTION_SHORT } from '@/lib/sections'
+import { TRANSITION_LABEL, TRANSITION_TONE } from '@/lib/transitions'
 import { cn } from '@/lib/utils'
 import type {
   PackagingRecommendation,
   PackagingRecommendRequest,
   Plan,
-  TransitionStyle,
 } from '@/types/schemas'
-
-const TRANSITION_LABEL: Record<TransitionStyle, string> = {
-  hard_cut: '硬切',
-  dissolve: '溶解',
-  slide: '滑动',
-  zoom: '推拉',
-  whip: '甩切',
-  wipe: '扫切',
-}
-
-const TRANSITION_TONE: Record<TransitionStyle, string> = {
-  hard_cut: 'bg-slate-200 text-slate-700',
-  dissolve: 'bg-sky-200 text-sky-800',
-  slide: 'bg-amber-200 text-amber-800',
-  zoom: 'bg-rose-200 text-rose-800',
-  whip: 'bg-yellow-200 text-yellow-900',
-  wipe: 'bg-emerald-200 text-emerald-800',
-}
 
 /**
  * 包装推荐面板：调 POST /api/packaging/recommend，apply=true 把转场+封面写到 plan.packaging_track。

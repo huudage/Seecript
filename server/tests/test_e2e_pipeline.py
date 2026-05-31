@@ -198,6 +198,7 @@ def test_edit_apply_creates_new_plan(client):
         "/api/edit/apply",
         json={
             "plan_id": plan_id,
+            "track": "voice",
             "instruction": "把开场 narration 改得更口语化",
             "marks": [],
         },
@@ -216,7 +217,7 @@ def test_edit_apply_creates_new_plan(client):
 def test_edit_apply_rejects_unknown_plan(client):
     r = client.post(
         "/api/edit/apply",
-        json={"plan_id": "plan-nonexistent", "instruction": "x", "marks": []},
+        json={"plan_id": "plan-nonexistent", "track": "voice", "instruction": "x", "marks": []},
     )
     assert r.status_code == 404
 

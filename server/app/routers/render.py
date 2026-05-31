@@ -91,6 +91,12 @@ async def _run_render(job_id: str, plan_id: str, variant: str) -> None:
 async def submit_render(req: RenderSubmitRequest, bg: BackgroundTasks) -> RenderSubmitResponse:
     if plan_store.get(req.plan_id) is None:
         raise HTTPException(status_code=404, detail=f"plan not found: {req.plan_id}")
+    # 同 plan 已有 pending/running 渲染 → 复用其 job_id，避免重复触发
+    # （Compose→Render 跳转 + 用户手动重试 + EventSource 自动重连可能并发三次提交）。
+    existing = job_store.find_active("render", req.plan_id)
+    if existing is not None:
+        log.info("[render] dedup submit plan=%s reuse job=%s", req.plan_id, existing)
+        return RenderSubmitResponse(job_id=existing)
     job_id = job_store.create("render", payload={"plan_id": req.plan_id, "variant": req.variant})
     bg.add_task(_run_render, job_id, req.plan_id, req.variant)
     return RenderSubmitResponse(job_id=job_id)

@@ -9,13 +9,13 @@ import { createSSE } from '@/api/sse'
 import { deleteVoice, synthesizeAll, synthesizeOne } from '@/api/voice'
 import { BgmPickerDialog } from '@/components/compose/BgmPickerDialog'
 import { FourTrackBoard } from '@/components/compose/FourTrackBoard'
+import { NLEditPanel } from '@/components/edit/NLEditPanel'
 import { PageShell } from '@/components/layout/PageShell'
 import { useEditStore } from '@/stores/edit'
 import { usePlanStore } from '@/stores/plan'
 import { useProjectsStore } from '@/stores/projects'
 import { useSessionStore } from '@/stores/session'
 import type {
-  EditApplyRequest,
   PackagingRecommendRequest,
   Plan,
   RenderDonePayload,
@@ -149,26 +149,16 @@ export default function RenderPage() {
   }, [plan, variant, currentProjectId, refreshProjects])
 
   /* -- 自然语言编辑 -- */
-  const [instruction, setInstruction] = useState('')
-  const [applying, setApplying] = useState(false)
-  const [editError, setEditError] = useState<string | null>(null)
-  const [markStart, setMarkStart] = useState('')
-  const [markEnd, setMarkEnd] = useState('')
-  const [markTrack, setMarkTrack] = useState<'main' | 'packaging'>('main')
+  // 三轨 NLEditPanel 内置 instruction / marks / applying / editError；
+  // Render 页只维护"选中哪个 scene"用于 mark 预填，再把 setPlan/pushEdit 透传给 onApplied。
   const [selectedSceneId, setSelectedSceneId] = useState<string | null>(null)
-  const instructionRef = useRef<HTMLTextAreaElement | null>(null)
   const editSectionRef = useRef<HTMLDivElement | null>(null)
 
   /** 内容轨点击 → 区段预填 + 自然语言编辑器获取焦点 */
   const handleSelectScene = useCallback((scene: Scene) => {
     setSelectedSceneId(scene.scene_id)
-    setMarkStart(scene.start.toFixed(1))
-    setMarkEnd((scene.start + scene.duration).toFixed(1))
-    setMarkTrack('main')
-    // 平滑滚到编辑面板 + focus 输入框（编辑器在页面下方）
     requestAnimationFrame(() => {
       editSectionRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' })
-      instructionRef.current?.focus()
     })
   }, [])
 
@@ -290,6 +280,21 @@ export default function RenderPage() {
     }
   }, [plan, pushEdit, setPlan])
 
+  const handleBgmVolumeChange = useCallback(
+    async (volume: number) => {
+      if (!plan) return
+      setError(null)
+      try {
+        const fresh = await patchPlanBgm(plan.plan_id, { volume })
+        setPlan(fresh)
+        pushEdit(fresh)
+      } catch (err) {
+        setError(err instanceof Error ? err.message : '更新 BGM 音量失败')
+      }
+    },
+    [plan, pushEdit, setPlan],
+  )
+
   const handleToggleVoiceover = useCallback(
     async (enabled: boolean) => {
       setSettings({ voiceover_enabled: enabled })
@@ -309,31 +314,13 @@ export default function RenderPage() {
     [plan, pushEdit, setPlan, setSettings],
   )
 
-  const handleApplyEdit = useCallback(async () => {
-    if (!plan || !instruction.trim()) return
-    setApplying(true)
-    setEditError(null)
-    try {
-      const marks: EditApplyRequest['marks'] = []
-      const s = parseFloat(markStart)
-      const e = parseFloat(markEnd)
-      if (!Number.isNaN(s) && !Number.isNaN(e) && e > s) {
-        marks.push({ track: markTrack, start: s, end: e })
-      }
-      const newPlan = await api.post<Plan>('/edit/apply', {
-        plan_id: plan.plan_id,
-        instruction: instruction.trim(),
-        marks,
-      } satisfies EditApplyRequest)
+  const handleNLEditApplied = useCallback(
+    (newPlan: Plan) => {
       setPlan(newPlan)
       pushEdit(newPlan)
-      setInstruction('')
-    } catch (err) {
-      setEditError(err instanceof Error ? err.message : '编辑失败')
-    } finally {
-      setApplying(false)
-    }
-  }, [instruction, markEnd, markStart, markTrack, plan, pushEdit, setPlan])
+    },
+    [pushEdit, setPlan],
+  )
 
   const handleUndo = useCallback(() => {
     const p = undoEdit()
@@ -436,6 +423,7 @@ export default function RenderPage() {
               onPickBgm={() => setBgmPickerOpen(true)}
               onBgmAnchorChange={handleBgmAnchorChange}
               onClearBgm={handleClearBgm}
+              onBgmVolumeChange={handleBgmVolumeChange}
               onToggleVoiceover={handleToggleVoiceover}
               busy={trackBusy || isRendering}
             />
@@ -471,106 +459,40 @@ export default function RenderPage() {
         </section>
       </div>
 
-      {/* ============ 底部 · 自然语言编辑 ============ */}
-      <section ref={editSectionRef} className="mt-4 rounded-lg border border-border bg-card p-4">
-        <div className="mb-2 flex items-center justify-between">
-          <h2 className="text-sm font-semibold">模块 7 · 自然语言编辑</h2>
-          <div className="flex items-center gap-2">
-            <span className="text-xs text-muted-foreground">
-              历史 {Math.max(editCursor + 1, 0)}/{editHistory.length}
-            </span>
-            <button
-              onClick={handleUndo}
-              disabled={!canUndo}
-              className={cn(
-                'rounded-md border border-border bg-background px-3 py-1 text-xs hover:bg-secondary',
-                !canUndo && 'cursor-not-allowed opacity-40',
-              )}
-            >
-              ↶ 撤销
-            </button>
-            <button
-              onClick={handleRedo}
-              disabled={!canRedo}
-              className={cn(
-                'rounded-md border border-border bg-background px-3 py-1 text-xs hover:bg-secondary',
-                !canRedo && 'cursor-not-allowed opacity-40',
-              )}
-            >
-              重做 ↷
-            </button>
-          </div>
+      {/* ============ 底部 · 自然语言编辑（三轨 tab）============ */}
+      <section ref={editSectionRef} className="mt-4 space-y-2">
+        <div className="flex items-center justify-end gap-2">
+          <span className="text-xs text-muted-foreground">
+            历史 {Math.max(editCursor + 1, 0)}/{editHistory.length}
+          </span>
+          <button
+            onClick={handleUndo}
+            disabled={!canUndo}
+            className={cn(
+              'rounded-md border border-border bg-background px-3 py-1 text-xs hover:bg-secondary',
+              !canUndo && 'cursor-not-allowed opacity-40',
+            )}
+          >
+            ↶ 撤销
+          </button>
+          <button
+            onClick={handleRedo}
+            disabled={!canRedo}
+            className={cn(
+              'rounded-md border border-border bg-background px-3 py-1 text-xs hover:bg-secondary',
+              !canRedo && 'cursor-not-allowed opacity-40',
+            )}
+          >
+            重做 ↷
+          </button>
         </div>
-
-        <div className="grid grid-cols-1 gap-3 lg:grid-cols-[1fr_280px]">
-          <div>
-            <textarea
-              ref={instructionRef}
-              value={instruction}
-              onChange={(e) => setInstruction(e.target.value)}
-              placeholder="例如：把 Hook 改得更口语化；缩短 cta-1 到 3 秒；BGM 调到 0.3；替换 body-2 的素材为 m-xxx"
-              rows={3}
-              className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-primary"
-            />
-            <div className="mt-2 flex items-center gap-2 text-xs text-muted-foreground">
-              <span>
-                {selectedSceneId
-                  ? `已选中 ${selectedSceneId} → 区段已填入右侧 marks；`
-                  : ''}
-                提示词会和当前 Plan + marks 一起发给 LLM；模型会调用最匹配的 1–3 个原子 tool。
-              </span>
-            </div>
-          </div>
-          <div className="space-y-2 text-xs">
-            <div>
-              <label className="text-muted-foreground">marks（可选区段）</label>
-              <div className="mt-1 flex gap-2">
-                <input
-                  type="number"
-                  placeholder="start"
-                  value={markStart}
-                  onChange={(e) => setMarkStart(e.target.value)}
-                  className="w-20 rounded-md border border-border bg-background px-2 py-1"
-                />
-                <span className="self-center text-muted-foreground">–</span>
-                <input
-                  type="number"
-                  placeholder="end"
-                  value={markEnd}
-                  onChange={(e) => setMarkEnd(e.target.value)}
-                  className="w-20 rounded-md border border-border bg-background px-2 py-1"
-                />
-                <span className="self-center text-muted-foreground">秒</span>
-              </div>
-            </div>
-            <div className="flex items-center gap-3">
-              <label className="text-muted-foreground">轨道</label>
-              {(['main', 'packaging'] as const).map((t) => (
-                <label key={t} className="flex items-center gap-1">
-                  <input
-                    type="radio"
-                    checked={markTrack === t}
-                    onChange={() => setMarkTrack(t)}
-                  />
-                  {t === 'main' ? '主轨' : '包装'}
-                </label>
-              ))}
-            </div>
-            <button
-              onClick={handleApplyEdit}
-              disabled={applying || !instruction.trim()}
-              className={cn(
-                'mt-2 w-full rounded-md bg-primary px-3 py-2 text-sm font-medium text-primary-foreground',
-                (applying || !instruction.trim()) && 'cursor-not-allowed opacity-60',
-              )}
-            >
-              {applying ? '应用中…' : '应用编辑'}
-            </button>
-          </div>
-        </div>
-        {editError && (
-          <p className="mt-2 text-xs text-destructive">{editError}</p>
-        )}
+        <NLEditPanel
+          plan={plan}
+          projectStep="render"
+          lockedTracks={['main']}
+          onApplied={handleNLEditApplied}
+          selectedSceneId={selectedSceneId}
+        />
       </section>
 
       {/* BGM 选择 / 上传弹窗 */}

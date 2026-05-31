@@ -99,8 +99,10 @@ def test_burn_packaging_contains_text_and_window(fake_ffmpeg, tmp_path):
     assert "副标题文字" in vf  # cover 的 subtitle 也烧进去
     # 时间窗 between(t,start,end) 出现
     assert "between(t" in vf and "3.500" in vf and "13.000" in vf
-    # transition 用 drawbox 而不是 drawtext
-    assert "drawbox" in vf
+    # 注意：转场已迁移到 Scene.transition_in（xfade 滤镜），
+    # burn_packaging_track 收到 kind="transition" 时只 log warning + 跳过；
+    # 这里断言它没有偷偷生成 drawbox/drawtext，但仍要把其它 4 类正常烧进去。
+    assert "drawbox" not in vf
     # subtitle/title_bar/sticker/cover 都用 drawtext
     assert vf.count("drawtext") >= 5  # 4 类 text + 1 个 cover subtitle
 

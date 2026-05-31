@@ -275,6 +275,144 @@ def concat(inputs: list[str | Path], dst: str | Path, *, reencode: bool = False)
     return out
 
 
+# xfade 滤镜支持的样式 → 内部 TransitionStyle 的映射。
+# hard_cut 映射到极短 fade（0.01s）以保持 filter graph 一致；
+# whip 用 smoothleft 模拟（横向甩入），wipe 用 wipeleft，slide 用 slideleft，zoom 用 zoomin。
+_TRANSITION_STYLE_TO_FFMPEG: dict[str, str] = {
+    "hard_cut": "fade",
+    "dissolve": "fade",
+    "slide": "slideleft",
+    "zoom": "zoomin",
+    "whip": "smoothleft",
+    "wipe": "wipeleft",
+}
+
+
+def concat_with_transitions(
+    inputs: list[str | Path],
+    transitions: list[dict | None],
+    dst: str | Path,
+    *,
+    canvas: tuple[int, int] | None = None,
+    fps: int = 30,
+) -> Path:
+    """xfade 滤镜拼接：相邻两段按 transitions[i] 给的 style+duration overlap 衔接。
+
+    - `transitions` 长度必须等于 `inputs`；transitions[0] 必须为 None（首段没有入场转场）
+    - 每个 transition dict 形如 {"style": "dissolve", "duration": 0.4}
+    - hard_cut / None → 走极短 fade（0.01s），保持 filter graph 一致避免分支
+    - 全部为 hard_cut / None → 退化为既有 concat(reencode=True)，省一次 filter_complex 编译
+    - 所有 inputs **必须**已统一到相同的 canvas / fps / 像素格式；否则 xfade 会报错。
+      pipeline 的 _trim_segment / _normalize_to_canvas 已保证这一点，本函数只兜底
+      在 canvas 参数给出时再 scale+pad+fps 一次。
+
+    返回：dst 路径。
+    """
+    if not ffmpeg_available():
+        raise FFmpegError("ffmpeg not found in PATH")
+    if not inputs:
+        raise ValueError("concat_with_transitions: empty inputs")
+    if len(transitions) != len(inputs):
+        raise ValueError(
+            f"concat_with_transitions: transitions len {len(transitions)} != inputs len {len(inputs)}"
+        )
+    if transitions and transitions[0] is not None:
+        log.warning("[ffmpeg] concat_with_transitions: transitions[0] should be None; ignoring")
+        transitions = [None] + list(transitions[1:])
+
+    # 全 None / hard_cut → 退化到 concat
+    def _is_real(t: dict | None) -> bool:
+        if t is None:
+            return False
+        style = (t.get("style") or "hard_cut").strip()
+        return style != "hard_cut" and style in _TRANSITION_STYLE_TO_FFMPEG
+
+    if not any(_is_real(t) for t in transitions):
+        return concat(inputs, dst, reencode=True)
+
+    if len(inputs) == 1:
+        # 单段不需要转场；直接转 reencode 拷一份
+        return concat(inputs, dst, reencode=True)
+
+    out = Path(dst)
+    out.parent.mkdir(parents=True, exist_ok=True)
+
+    # 各段时长：用 probe 拿真实秒数（xfade offset 必须精确，否则视频末尾会黑场）
+    durations: list[float] = []
+    for p in inputs:
+        try:
+            d = probe(p).duration_seconds
+        except Exception as exc:  # noqa: BLE001
+            raise FFmpegError(f"concat_with_transitions probe {p} failed: {exc}")
+        if d <= 0:
+            raise FFmpegError(f"concat_with_transitions: input {p} has zero duration")
+        durations.append(float(d))
+
+    # 预处理 filter：每段先 scale+pad 到 canvas（若给定）+ fps + setpts/asetpts 重置时基
+    pre_video: list[str] = []
+    pre_audio: list[str] = []
+    canvas_w, canvas_h = canvas if canvas else (0, 0)
+    for i in range(len(inputs)):
+        v_chain = []
+        if canvas and canvas_w > 0 and canvas_h > 0:
+            v_chain.append(
+                f"scale={canvas_w}:{canvas_h}:force_original_aspect_ratio=decrease,"
+                f"pad={canvas_w}:{canvas_h}:(ow-iw)/2:(oh-ih)/2:black"
+            )
+        v_chain.append(f"fps={fps}")
+        v_chain.append("format=yuv420p")
+        v_chain.append("setpts=PTS-STARTPTS")
+        pre_video.append(f"[{i}:v]" + ",".join(v_chain) + f"[v{i}]")
+        pre_audio.append(f"[{i}:a]asetpts=PTS-STARTPTS,aresample=async=1[a{i}]")
+
+    # 链式 xfade / acrossfade：v0+v1→v01；v01+v2→v02；…
+    chain_video: list[str] = []
+    chain_audio: list[str] = []
+    prev_v = "v0"
+    prev_a = "a0"
+    cumulative_offset = durations[0]
+    for i in range(1, len(inputs)):
+        tr = transitions[i] or {}
+        style_raw = (tr.get("style") or "hard_cut").strip()
+        ff_style = _TRANSITION_STYLE_TO_FFMPEG.get(style_raw, "fade")
+        if style_raw == "hard_cut":
+            d = 0.01
+        else:
+            d = max(0.05, min(1.5, float(tr.get("duration") or 0.4)))
+        # offset：xfade 在 prev 链当前时长 - d 时开始与下一段 overlap
+        offset = max(0.0, cumulative_offset - d)
+        new_v = f"vx{i}"
+        new_a = f"ax{i}"
+        chain_video.append(
+            f"[{prev_v}][v{i}]xfade=transition={ff_style}:duration={d:.3f}:offset={offset:.3f}[{new_v}]"
+        )
+        chain_audio.append(
+            f"[{prev_a}][a{i}]acrossfade=d={d:.3f}:c1=tri:c2=tri[{new_a}]"
+        )
+        prev_v = new_v
+        prev_a = new_a
+        cumulative_offset = cumulative_offset + durations[i] - d
+
+    filter_complex = ";".join(pre_video + pre_audio + chain_video + chain_audio)
+    cmd: list[str] = ["ffmpeg", "-y", "-hide_banner", "-loglevel", "error"]
+    for p in inputs:
+        cmd += ["-i", str(p)]
+    cmd += [
+        "-filter_complex", filter_complex,
+        "-map", f"[{prev_v}]", "-map", f"[{prev_a}]",
+        "-c:v", "libx264", "-preset", "veryfast", "-crf", "22",
+        "-c:a", "aac", "-b:a", "128k",
+        "-movflags", "+faststart",
+        str(out),
+    ]
+    proc = subprocess.run(cmd, capture_output=True, text=True, check=False)
+    if proc.returncode != 0:
+        raise FFmpegError(
+            f"concat_with_transitions failed: {proc.stderr.strip()[:800]}"
+        )
+    return out
+
+
 def overlay(
     base_path: str | Path,
     overlay_path: str | Path,
@@ -511,7 +649,7 @@ def burn_packaging_track(
 ) -> Path:
     """把 packaging_track 用 drawtext / drawbox 烧到主轨视频上。
 
-    Remotion 不可用时的 fallback——避免文案/标题/贴纸/封面/转场只在前端时间线显示、
+    Remotion 不可用时的 fallback——避免文案/标题/贴纸/封面只在前端时间线显示、
     最终视频里看不到。
 
     支持的 kind:
@@ -519,7 +657,10 @@ def burn_packaging_track(
     - title_bar : 顶部标题条（深底白字）
     - sticker   : 中下方贴纸（黑底黄字 CTA）
     - cover     : 屏幕中央大字（仅在 start..end 显示，通常是开场 1-1.5s）
-    - transition: 全屏白色闪烁，模拟 dissolve
+
+    注意：老版本 kind='transition' 是包装层假转场（白闪 drawbox），已废弃；
+    真转场走 Scene.transition_in + concat_with_transitions（xfade 滤镜）。
+    本函数遇到 kind='transition' 仅 log skip，不再绘制白闪。
     """
     if not ffmpeg_available():
         raise FFmpegError("ffmpeg not found in PATH")
@@ -545,8 +686,10 @@ def burn_packaging_track(
         text = (it.get("text") or "").strip()
         enable = f"between(t\\,{start:.3f}\\,{end:.3f})"
         if kind == "transition":
-            filters.append(
-                f"drawbox=x=0:y=0:w=iw:h=ih:color=white@0.45:t=fill:enable='{enable}'"
+            log.warning(
+                "[ffmpeg] legacy transition packaging item skipped (id=%s); "
+                "use Scene.transition_in for real xfade",
+                it.get("item_id"),
             )
             continue
         if not text:

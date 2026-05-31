@@ -7,6 +7,7 @@ import { patchPlanSettings } from '@/api/plan'
 import { commitStep, getStepSnapshot } from '@/api/steps'
 import { deleteVoice, synthesizeAll, synthesizeOne } from '@/api/voice'
 import { BatchAigcButton } from '@/components/compose/BatchAigcButton'
+import { BatchCopyButton } from '@/components/compose/BatchCopyButton'
 import { BgmPickerDialog } from '@/components/compose/BgmPickerDialog'
 import { BriefInput } from '@/components/compose/BriefInput'
 import { ComposeSettingsPanel } from '@/components/compose/ComposeSettingsPanel'
@@ -19,6 +20,7 @@ import { MaterialGrid } from '@/components/compose/MaterialGrid'
 import { SceneEditPanel } from '@/components/compose/SceneEditPanel'
 import { StoryboardPreview } from '@/components/compose/StoryboardPreview'
 import { VideoGoalInput } from '@/components/compose/VideoGoalInput'
+import { NLEditPanel } from '@/components/edit/NLEditPanel'
 import { PageShell } from '@/components/layout/PageShell'
 import { SECTION_BG, SECTION_SHORT } from '@/lib/sections'
 import { cn } from '@/lib/utils'
@@ -84,7 +86,21 @@ export default function ComposePage() {
   const [uploading, setUploading] = useState(false)
   const [analyzing, setAnalyzing] = useState(false)
   const [activeAction, setActiveAction] = useState<FillAction>('rerank')
-  const [filling, setFilling] = useState(false)
+  // 每条 gap 独立的 busy 锁：切到别的 gap 不会还显示上一段的 loading 态。
+  // 选用 Set<gap_id> 而非全局 boolean——AIGC 链式生成可能 >3 分钟，用户在等待期间
+  // 完全有理由切到别的段先写文案、看分镜，不该被全局 spinner 锁死。
+  const [busyGapIds, setBusyGapIds] = useState<ReadonlySet<string>>(() => new Set())
+  const markBusy = useCallback((gapId: string, busy: boolean) => {
+    setBusyGapIds((prev) => {
+      const has = prev.has(gapId)
+      if (busy && has) return prev
+      if (!busy && !has) return prev
+      const next = new Set(prev)
+      if (busy) next.add(gapId)
+      else next.delete(gapId)
+      return next
+    })
+  }, [])
   const [error, setError] = useState<string | null>(null)
   const [previewGapId, setPreviewGapId] = useState<string | null>(null)
   const [briefTouched, setBriefTouched] = useState(false)
@@ -113,6 +129,10 @@ export default function ComposePage() {
     [fills, selectedGapId],
   )
   const filledGapIds = useMemo(() => new Set(fills.map((f) => f.gap_id)), [fills])
+  // 当前选中那条 gap 的 busy 状态——仅用于左侧补全面板的 disabled / loading 标记。
+  // 全局动作锁还是用 analyzing（plan/build 是单例不并发）。
+  const gapBusy = selectedGap ? busyGapIds.has(selectedGap.gap_id) : false
+  const anyGapBusy = busyGapIds.size > 0
 
   // gap 列表换了之后，自动选第一个 miss/warn
   useEffect(() => {
@@ -316,7 +336,7 @@ export default function ComposePage() {
 
   const runFill = useCallback(
     async (gap: Gap, action: FillAction, params: Record<string, unknown> = {}) => {
-      setFilling(true)
+      markBusy(gap.gap_id, true)
       setError(null)
       try {
         const body: GapFillRequest = { gap_id: gap.gap_id, action, params }
@@ -330,10 +350,10 @@ export default function ComposePage() {
         setError(err instanceof Error ? err.message : '补全失败')
         return null
       } finally {
-        setFilling(false)
+        markBusy(gap.gap_id, false)
       }
     },
-    [fills, runAnalyze, upsertFill],
+    [fills, markBusy, runAnalyze, upsertFill],
   )
 
   const handleRerankApply = useCallback(async () => {
@@ -513,6 +533,20 @@ export default function ComposePage() {
       setTrackBusy(false)
     }
   }, [plan, setPlan])
+
+  const handleBgmVolumeChange = useCallback(
+    async (volume: number) => {
+      if (!plan) return
+      setError(null)
+      try {
+        const fresh = await patchPlanBgm(plan.plan_id, { volume })
+        setPlan(fresh)
+      } catch (err) {
+        setError(err instanceof Error ? err.message : '更新 BGM 音量失败')
+      }
+    },
+    [plan, setPlan],
+  )
 
   // 口播开关：同时改 plan.settings + session.settings，让本次 plan 立刻生效，
   // 同时下次「重新分析」也保留用户偏好（plan/build 把 sessionStore.settings 当输入）。
@@ -751,6 +785,11 @@ export default function ComposePage() {
               {fills.length > 0 && (
                 <span className="text-[10px] text-muted-foreground">已采纳 {fills.length}</span>
               )}
+              <BatchCopyButton
+                planId={plan.plan_id}
+                pendingCount={pendingGapsCount}
+                onDone={handleBatchDone}
+              />
               <BatchAigcButton
                 planId={plan.plan_id}
                 pendingCount={pendingGapsCount}
@@ -788,13 +827,13 @@ export default function ComposePage() {
                       {!selectedFill && (
                         <button
                           onClick={() => void runFill(selectedGap, 'rerank')}
-                          disabled={filling}
+                          disabled={gapBusy}
                           className={cn(
                             'w-full rounded-md bg-primary px-3 py-1.5 text-xs font-medium text-primary-foreground',
-                            filling && 'cursor-not-allowed opacity-60',
+                            gapBusy && 'cursor-not-allowed opacity-60',
                           )}
                         >
-                          {filling ? '生成候选中…' : '让 LLM 挑一个素材填进来'}
+                          {gapBusy ? '生成候选中…' : '让 LLM 挑一个素材填进来'}
                         </button>
                       )}
                       {selectedFill && selectedFill.action === 'rerank' && (
@@ -803,7 +842,7 @@ export default function ComposePage() {
                           fill={selectedFill}
                           materials={sortedMaterials}
                           onApply={handleRerankApply}
-                          loading={filling}
+                          loading={gapBusy}
                         />
                       )}
                     </>
@@ -814,19 +853,19 @@ export default function ComposePage() {
                       {!selectedFill || selectedFill.action !== 'copy' ? (
                         <button
                           onClick={handleCopyTrigger}
-                          disabled={filling}
+                          disabled={gapBusy}
                           className={cn(
                             'w-full rounded-md bg-primary px-3 py-1.5 text-xs font-medium text-primary-foreground',
-                            filling && 'cursor-not-allowed opacity-60',
+                            gapBusy && 'cursor-not-allowed opacity-60',
                           )}
                         >
-                          {filling ? '生成文案中…' : '让 LLM 写一段口播'}
+                          {gapBusy ? '生成文案中…' : '让 LLM 写一段口播'}
                         </button>
                       ) : (
                         <FillCopyPanel
                           fill={selectedFill}
                           onAdopt={handleCopyAdopt}
-                          loading={filling}
+                          loading={gapBusy}
                         />
                       )}
                     </>
@@ -858,7 +897,7 @@ export default function ComposePage() {
               plan={plan}
               selectedSceneId={effectiveSelectedSceneId}
               onSaved={setPlan}
-              disabled={analyzing || filling || trackBusy}
+              disabled={analyzing || anyGapBusy || trackBusy}
             />
           </div>
         </section>
@@ -892,6 +931,7 @@ export default function ComposePage() {
               onPickBgm={() => setBgmPickerOpen(true)}
               onBgmAnchorChange={handleBgmAnchorChange}
               onClearBgm={handleClearBgm}
+              onBgmVolumeChange={handleBgmVolumeChange}
               onToggleVoiceover={handleToggleVoiceover}
               onChangeTtsVoice={handleChangeTtsVoice}
               busy={trackBusy}
@@ -917,6 +957,18 @@ export default function ComposePage() {
         )}
       </section>
 
+      {/* ============ Row 5：自然语言编辑（三轨 tab） ============ */}
+      {plan && (
+        <section className="mt-4">
+          <NLEditPanel
+            plan={plan}
+            projectStep="compose"
+            onApplied={setPlan}
+            selectedSceneId={selectedSceneId}
+          />
+        </section>
+      )}
+
       {/* 底部 next steps */}
       {plan && (
         <div className="mt-4 flex flex-col gap-2 sm:flex-row sm:items-center">
@@ -930,13 +982,13 @@ export default function ComposePage() {
           <button
             onClick={() => void handleProceedToRender()}
             disabled={
-              analyzing || filling || finalizing === 'filling-gaps' || finalizing === 'packaging'
+              analyzing || anyGapBusy || finalizing === 'filling-gaps' || finalizing === 'packaging'
             }
             title="先用文案补全所有未补缺口，再生成包装轨（转场 + 封面），最后进入渲染"
             className={cn(
               'rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90',
               (analyzing ||
-                filling ||
+                anyGapBusy ||
                 finalizing === 'filling-gaps' ||
                 finalizing === 'packaging') &&
                 'cursor-not-allowed opacity-60',

@@ -22,7 +22,6 @@ from __future__ import annotations
 
 import logging
 import re
-import uuid
 from typing import Any, Optional
 
 from ..llm_client import LLMError, get_llm_client
@@ -33,6 +32,7 @@ from ...schemas import (
     PackagingRecommendation,
     Plan,
     Scene,
+    SceneTransition,
     TransitionStyle,
     TransitionSuggestion,
 )
@@ -265,38 +265,46 @@ async def recommend_packaging(plan: Plan, *, apply: bool = True) -> PackagingRec
 
 
 def _write_to_plan(plan: Plan, rec: PackagingRecommendation) -> None:
-    """把建议转成 PackagingItem 写入 plan.packaging_track（清掉旧的 transition/cover，幂等）。
+    """把建议转成主轨 Scene.transition_in + 包装轨 cover PackagingItem。
 
-    其它 kind（subtitle/title_bar/sticker）保留原样，不动 plan.build 给的内容。
+    - 转场不再走 packaging_track（kind='transition' 是历史包装项，已废弃；
+      真转场需要 ffmpeg xfade 修改主轨相邻段时长，concat demuxer 做不出来）。
+    - 落点：每条 TransitionSuggestion 找到 start≈at_seconds 的 to_scene，把
+      SceneTransition(style, duration) 写到 to_scene.transition_in。
+    - 幂等：写入前先清掉所有 main_track scene 的 transition_in，再按本次建议刷一遍。
+    - cover 仍写 packaging_track（透明 PNG overlay，不占主轨时长，OK）。
     """
+    # 包装轨：保留 subtitle/title_bar/sticker，丢弃旧 transition / cover（cover 一会重写）
     keep = [it for it in plan.packaging_track if it.kind not in ("transition", "cover")]
 
-    new_items: list[PackagingItem] = []
+    # 主轨：先清掉所有 transition_in（幂等）
+    for sc in plan.main_track:
+        sc.transition_in = None
+
+    # 按 scene.start 建索引，便于 at_seconds → to_scene 反查
+    scenes_by_start = sorted(plan.main_track, key=lambda s: s.start)
+
+    transition_count = 0
     for tr in rec.transitions:
-        # 防御：scene.start 可能超过实际 plan.duration_seconds（plan.py 的 _build_scene
-        # 会把 timeline_duration 截短到 shot_duration，但 timeline_start 是硬编码的）。
-        # 落不到时间线内的转场跳过，不让 packaging_track 里出现 end<start 的非法 item。
         if tr.at_seconds <= 0 or tr.at_seconds >= plan.duration_seconds:
             continue
-        half = tr.duration / 2
-        start = max(0.0, tr.at_seconds - half)
-        end = min(plan.duration_seconds, tr.at_seconds + half)
-        if end <= start:
+        # 在 ±0.5s 容差内找最匹配 to_scene；找不到则跳过（不再回落到包装轨 transition）
+        target = None
+        best_delta = 0.6
+        for sc in scenes_by_start:
+            if sc is plan.main_track[0]:
+                continue  # sc-0 没有上一段
+            delta = abs(sc.start - tr.at_seconds)
+            if delta <= best_delta:
+                best_delta = delta
+                target = sc
+        if target is None:
+            log.info("[packaging] transition skip: 找不到 at=%.2fs 对应的 scene", tr.at_seconds)
             continue
-        new_items.append(PackagingItem(
-            item_id=tr.item_id or f"pkg-tr-{uuid.uuid4().hex[:6]}",
-            kind="transition",
-            start=start,
-            end=end,
-            text=None,
-            style={
-                "transition_style": tr.style,
-                "from": tr.from_section,
-                "to": tr.to_section,
-                "reason": tr.reason,
-            },
-        ))
+        target.transition_in = SceneTransition(style=tr.style, duration=tr.duration)
+        transition_count += 1
 
+    new_items: list[PackagingItem] = []
     if rec.cover is not None:
         first_dur = plan.main_track[0].duration if plan.main_track else plan.duration_seconds
         cover_end = max(0.8, min(1.5, first_dur))
@@ -316,5 +324,5 @@ def _write_to_plan(plan: Plan, rec: PackagingRecommendation) -> None:
 
     plan.packaging_track = keep + new_items
     plan_store.replace(plan)
-    log.info("[packaging] plan=%s wrote %d transitions + cover=%s",
-             plan.plan_id, len(rec.transitions), rec.cover is not None)
+    log.info("[packaging] plan=%s wrote %d scene.transition_in + cover=%s",
+             plan.plan_id, transition_count, rec.cover is not None)
