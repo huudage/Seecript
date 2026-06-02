@@ -7,13 +7,16 @@ import LibraryPage from '@/pages/Library'
 import DecomposePage from '@/pages/Decompose'
 import ComposePage from '@/pages/Compose'
 import MigratePage from '@/pages/Migrate'
-import RenderPage from '@/pages/Render'
 import { StepIndicator } from '@/components/nav/StepIndicator'
 import { useProjectsStore } from '@/stores/projects'
 import type { ProjectStepState, StepName, StepStatus } from '@/types/schemas'
 
 /**
- * 顶部导航 = 项目工作流的 4 步状态机指示器。
+ * 顶部导航 = 项目工作流的 3 步状态机指示器。
+ *
+ * 渲染（'render'）不在前端 STEP_ORDER 里——后端仍把 render 作为 step_states 的一项
+ * 跟踪（编辑锁、status==rendered 标记都依赖它），但 UI 上不再单独成页：渲染流水线
+ * 内联在 compose 长页底部，结果视频在同页展示。
  *
  * 步骤可达规则（canEnterStep）：
  * - `saved` / `dirty` → 可点（回看 / 编辑——已有产物，回去改不会丢）
@@ -21,18 +24,18 @@ import type { ProjectStepState, StepName, StepStatus } from '@/types/schemas'
  * - `current_step` 之后的第一步 → 可点（线性推进；UX 上当成"下一步在哪"提示）
  * - 其它 `pending` → 禁点（防止用户跳过中间步骤导致产物对不上）
  */
-const STEP_ORDER: StepName[] = ['library', 'decompose', 'compose', 'render']
+const STEP_ORDER: StepName[] = ['library', 'decompose', 'compose']
 const ROUTE_OF: Record<StepName, string> = {
   library: '/library',
   decompose: '/decompose',
   compose: '/compose',
-  render: '/render',
+  render: '/compose', // render 不再独立成页；保留映射避免类型缺项
 }
 const LABEL_OF: Record<StepName, string> = {
   library: '选样例',
   decompose: '样例拆解',
-  compose: '新素材 / 缺口',
-  render: '生成 / 编辑',
+  compose: '新素材 / 缺口 / 渲染',
+  render: '渲染', // 不出现在导航里；仅类型完整
 }
 
 function canEnterStep(
@@ -53,7 +56,7 @@ function canEnterStep(
 
 // 需要 currentProjectId 才能访问的 path —— 没有项目时回首页。
 // 素材库不强制（用户可以浏览样例后再决定建项目）。
-const PROJECT_REQUIRED_PATHS = new Set<string>(['/decompose', '/compose', '/migrate', '/render'])
+const PROJECT_REQUIRED_PATHS = new Set<string>(['/decompose', '/compose', '/migrate'])
 
 function ProjectGuard({ children }: { children: React.ReactNode }) {
   const location = useLocation()
@@ -111,14 +114,8 @@ export default function App() {
               </ProjectGuard>
             }
           />
-          <Route
-            path="/render"
-            element={
-              <ProjectGuard>
-                <RenderPage />
-              </ProjectGuard>
-            }
-          />
+          {/* /render 路由已并入 /compose；旧链接重定向 */}
+          <Route path="/render" element={<Navigate to="/compose" replace />} />
         </Routes>
       </main>
     </div>

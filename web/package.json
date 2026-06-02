@@ -14,6 +14,8 @@
     "@dnd-kit/core": "^6.3.1",
     "@dnd-kit/sortable": "^10.0.0",
     "@dnd-kit/utilities": "^3.2.2",
+    "@remotion/player": "^4.0.471",
+    "@remotion/transitions": "^4.0.471",
     "@xyflow/react": "^12.10.2",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
@@ -22,6 +24,7 @@
     "react-dom": "^19.2.6",
     "react-router-dom": "^7.15.1",
     "recharts": "^3.8.1",
+    "remotion": "^4.0.471",
     "tailwind-merge": "^3.6.0",
     "zustand": "^5.0.13"
   },

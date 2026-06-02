@@ -273,6 +273,14 @@ class Material(BaseModel):
     media_type: Literal["video", "image", "audio"]
     duration_seconds: Optional[float] = None
     thumbnail_url: Optional[str] = None
+    file_url: Optional[str] = Field(
+        default=None,
+        description=(
+            "可访问的素材原文件 URL，例如 /uploads/<sid>/<material_id>_<filename>。"
+            "前端 Remotion Player 实时预览时按此 URL 直接喂 <Video src> / <Audio src>。"
+            "Optional 是为了兼容老 plan 持久化里没有该字段的 Material 记录。"
+        ),
+    )
     tags: list[str] = Field(default_factory=list, description="多模态 LLM 打标：物体/场景/风格")
     recommended_section: Optional[SectionRole] = Field(
         default=None, description="LLM 推荐它适合放在样例的哪种 role 段（opening/development/climax/closing）"
@@ -558,6 +566,39 @@ class PackagingItem(BaseModel):
     style: dict[str, Any] = Field(default_factory=dict, description="字体/颜色/位置/动画参数")
 
 
+class BGMAnalysisSegment(BaseModel):
+    """BGM 结构片段（doubao-seed 音频理解切出的段落）。"""
+
+    start: float = Field(ge=0.0, description="片段起始（秒，相对 BGM 自身 t=0）")
+    end: float = Field(ge=0.0, description="片段结束（秒）")
+    energy: Literal["low", "mid", "high"] = Field(description="能量层级：低=铺垫 / 中=推进 / 高=高潮")
+    label: str = Field(max_length=40, description="段落概括，如『前奏铺垫』『副歌爆发』")
+    fit_with_video: str = Field(max_length=80, description="该段如何与视频节奏匹配（哪里激昂哪里舒缓）")
+
+
+class BGMAnalysis(BaseModel):
+    """LLM 音频理解结果：曲名/情绪 + 结构起伏 + 视频匹配建议。
+
+    替代旧 librosa peak 单点参考线——展示给用户的不再是一条曲线，而是几段标好能量层级 + 配合建议的色块。
+    plan 绑定 BGM 时一次性算好放进 BGMConfig.analysis，渲染层不参与。
+    """
+
+    title_guess: str = Field(max_length=60, description="曲风/曲目猜测，无版权信息时给『未知名/电子节拍』之类概括")
+    mood_tags: list[str] = Field(default_factory=list, max_length=6, description="情绪标签 3-6 个")
+    theme_fit_score: float = Field(ge=0.0, le=1.0, description="0-1：曲子与 brief 的契合度")
+    theme_fit_reason: str = Field(max_length=140, description="一句话讲为什么契合或不契合")
+    structure: list[BGMAnalysisSegment] = Field(
+        default_factory=list,
+        max_length=8,
+        description="4-6 段结构切片；首尾覆盖 0 ~ duration_seconds",
+    )
+    overall_advice: str = Field(
+        max_length=160,
+        description="一段总体建议：哪里激昂哪里舒缓、应该怎么对齐视频节奏",
+    )
+    backend: str = Field(description="生成 backend：doubao_ark / mock")
+
+
 class BGMConfig(BaseModel):
     bgm_asset_id: Optional[str] = Field(
         default=None,
@@ -591,6 +632,11 @@ class BGMConfig(BaseModel):
         description="有口播段时 BGM 自动闪避（sidechain compress）",
     )
     duck_attenuation_db: float = Field(default=-9.0, ge=-30.0, le=0.0)
+    analysis: Optional[BGMAnalysis] = Field(
+        default=None,
+        description="LLM 音频理解结果：曲风/情绪/结构/视频匹配建议。绑定 BGM 时由 plan.py 异步填充，"
+                    "失败/超时则保持 None，前端兜底用 librosa 的 peak/duration。",
+    )
 
     @model_validator(mode="before")
     @classmethod

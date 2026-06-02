@@ -81,7 +81,7 @@ class Settings(BaseSettings):
     public_audio_base_url: str = Field(default="")
     asr_timeout_seconds: int = Field(default=120, ge=10, le=600)
     asr_poll_interval_seconds: float = Field(default=2.0, ge=0.5, le=30.0)
-    asr_poll_max_seconds: float = Field(default=180.0, ge=10.0, le=600.0)
+    asr_poll_max_seconds: float = Field(default=300.0, ge=10.0, le=600.0)
 
     # === T2V（视频生成，doubao-seedance-2.0 多模态参考帧/参考视频/参考音频）===
     # 默认 mock：开箱即用；切到 doubao_ark 需在 .env 设 ARK_API_KEY 或独立 ARK_T2V_API_KEY。

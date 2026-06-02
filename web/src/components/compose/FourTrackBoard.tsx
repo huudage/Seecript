@@ -45,6 +45,14 @@ interface Props {
   selectedGapId: string | null
   /** 点击内容轨某个 scene → 通知父级选中对应 gap（如有）/段。 */
   onSelectScene: (scene: Scene, gap: Gap | null, section: AdaptedSection | null) => void
+  /** 点击口播轨某段 → 通知父级选中对应 scene 做口播 NL 编辑。 */
+  onSelectVoice?: (scene: Scene) => void
+  /** 点击包装轨某项 → 通知父级选中 PackagingItem 做包装 NL 编辑。 */
+  onSelectPackaging?: (item: PackagingItem) => void
+  /** 当前选中的 scene（用于内容轨/口播轨高亮）。 */
+  selectedSceneId?: string | null
+  /** 当前选中的包装项 item_id（用于包装轨高亮）。 */
+  selectedPackagingItemId?: string | null
   /** 单段 TTS 合成。 */
   onSynthesizeScene?: (sceneId: string) => void | Promise<void>
   /** 一键全段 TTS 合成。 */
@@ -75,6 +83,10 @@ interface Props {
    * - 'full'（默认）：四轨全展开。
    */
   phase?: 'content-only' | 'full'
+  /** Remotion Player 当前秒；驱动轨道上的垂直播放头。 */
+  playheadSeconds?: number
+  /** 标尺 / 空白区域 / scene block 点击时回调（秒）→ Player seek。 */
+  onSeek?: (seconds: number) => void
 }
 
 const STATUS_COLOR: Record<GapStatus, string> = {
@@ -131,6 +143,10 @@ export function FourTrackBoard({
   filledGapIds,
   selectedGapId,
   onSelectScene,
+  onSelectVoice,
+  onSelectPackaging,
+  selectedSceneId = null,
+  selectedPackagingItemId = null,
   onSynthesizeScene,
   onSynthesizeAll,
   onClearVoice,
@@ -144,6 +160,8 @@ export function FourTrackBoard({
   busy = false,
   readOnly = false,
   phase = 'full',
+  playheadSeconds = 0,
+  onSeek,
 }: Props) {
   const total = plan.duration_seconds || 0
   const scenes = plan.main_track
@@ -300,11 +318,26 @@ export function FourTrackBoard({
   }
 
   return (
-    <div className="space-y-2 rounded-lg border border-border bg-card p-4">
+    <div className="relative space-y-2 overflow-hidden rounded-lg border border-border bg-card p-4">
       {/* ===================== 时间标尺 ===================== */}
       <div className="grid grid-cols-[88px_1fr] items-center">
         <span className="text-[10px] font-semibold text-muted-foreground">时间轴</span>
-        <div className="relative h-5 border-b border-border">
+        <div
+          className={cn(
+            'relative h-5 border-b border-border',
+            onSeek ? 'cursor-pointer' : undefined,
+          )}
+          onClick={
+            onSeek
+              ? (e) => {
+                  const rect = e.currentTarget.getBoundingClientRect()
+                  const x = e.clientX - rect.left
+                  const ratio = rect.width > 0 ? x / rect.width : 0
+                  onSeek(Math.max(0, Math.min(total, ratio * total)))
+                }
+              : undefined
+          }
+        >
           {ticks.map((t) => (
             <span
               key={t}
@@ -314,6 +347,17 @@ export function FourTrackBoard({
               {t.toFixed(0)}s
             </span>
           ))}
+          {/* 播放头：1px 竖线 + 红光，自标尺顶端贯穿到所有轨（靠 9999px 高度溢出兄弟层） */}
+          {total > 0 && (
+            <div
+              className="pointer-events-none absolute top-0 z-30 w-px bg-rose-500/95"
+              style={{
+                left: `${pctOf(playheadSeconds, total)}%`,
+                height: '9999px',
+                boxShadow: '0 0 6px rgba(244,63,94,0.6)',
+              }}
+            />
+          )}
         </div>
       </div>
 
@@ -470,24 +514,36 @@ export function FourTrackBoard({
             const state = hasAudio ? 'ready' : hasNarration ? 'pending' : 'empty'
             const subtitle = subtitleBySceneId.get(scene.scene_id)
             const subtitleText = (subtitle?.text ?? scene.narration ?? '').trim()
+            const voiceSelected = selectedSceneId === scene.scene_id
             return (
               <div
                 key={scene.scene_id}
+                role="button"
+                tabIndex={0}
+                onClick={() => onSelectVoice?.(scene)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter' || e.key === ' ') {
+                    e.preventDefault()
+                    onSelectVoice?.(scene)
+                  }
+                }}
                 className={cn(
-                  'absolute top-1 bottom-1 overflow-hidden rounded-md border text-[10px] shadow-sm',
+                  'absolute top-1 bottom-1 overflow-hidden rounded-md border text-left text-[10px] shadow-sm transition',
                   state === 'ready'
                     ? 'border-emerald-400/60 bg-emerald-500/15 text-emerald-700 dark:text-emerald-300'
                     : state === 'pending'
                       ? 'border-amber-400/60 bg-amber-500/10 text-amber-700 dark:text-amber-300'
                       : 'border-dashed border-border bg-background/40 text-muted-foreground',
+                  onSelectVoice && 'cursor-pointer',
+                  voiceSelected ? 'ring-2 ring-primary' : onSelectVoice ? 'hover:brightness-110' : '',
                 )}
                 style={{ left: `${left}%`, width: `calc(${width}% - 2px)` }}
                 title={
                   state === 'ready'
-                    ? `已合成 · ${scene.narration ?? ''}${subtitleText ? `\n字幕：${subtitleText}` : ''}`
+                    ? `已合成 · ${scene.narration ?? ''}${subtitleText ? `\n字幕：${subtitleText}` : ''}\n点击：自然语言改口播`
                     : state === 'pending'
-                      ? `待合成 · ${scene.narration ?? ''}${subtitleText ? `\n字幕：${subtitleText}` : ''}`
-                      : '该段无 narration'
+                      ? `待合成 · ${scene.narration ?? ''}${subtitleText ? `\n字幕：${subtitleText}` : ''}\n点击：自然语言改口播`
+                      : '该段无 narration · 点击：自然语言改口播'
                 }
               >
                 <div className="flex h-full flex-col gap-0.5 px-1 py-0.5">
@@ -578,22 +634,28 @@ export function FourTrackBoard({
           nonSubtitleItems.map((it, i) => {
             const left = pctOf(it.start, total)
             const span = Math.max(0.6, pctOf(it.end - it.start, total))
+            const pkgSelected = selectedPackagingItemId === it.item_id
             return (
-              <div
+              <button
                 key={`${it.item_id}-${i}`}
+                type="button"
+                onClick={() => onSelectPackaging?.(it)}
                 className={cn(
-                  'absolute top-1 bottom-1 flex items-center justify-center overflow-hidden rounded text-[10px] font-medium shadow',
+                  'absolute top-1 bottom-1 flex items-center justify-center overflow-hidden rounded text-[10px] font-medium shadow transition',
                   PACKAGING_KIND_COLOR[it.kind],
+                  onSelectPackaging && 'cursor-pointer',
+                  pkgSelected ? 'ring-2 ring-primary ring-offset-1 ring-offset-card' : onSelectPackaging ? 'hover:brightness-110' : '',
                 )}
                 style={{ left: `${left}%`, width: `calc(${span}% - 1px)` }}
                 title={
-                  it.text
+                  (it.text
                     ? `${PACKAGING_KIND_LABEL[it.kind]} · ${it.text}`
-                    : `${PACKAGING_KIND_LABEL[it.kind]} · ${(it.end - it.start).toFixed(1)}s`
+                    : `${PACKAGING_KIND_LABEL[it.kind]} · ${(it.end - it.start).toFixed(1)}s`) +
+                  '\n点击：自然语言改包装'
                 }
               >
                 <span className="truncate px-1">{it.text || PACKAGING_KIND_LABEL[it.kind]}</span>
-              </div>
+              </button>
             )
           })
         )}
@@ -671,6 +733,11 @@ export function FourTrackBoard({
           </div>
         )}
       </TrackRow>
+      )}
+
+      {/* BGM 分析卡：LLM 切的曲风 / 情绪 / 4-6 段结构 / 视频匹配建议 */}
+      {showSecondaryTracks && bgm?.analysis && (
+        <BgmAnalysisCard analysis={bgm.analysis} />
       )}
 
       {/* ============== 图例 ============== */}
@@ -756,10 +823,16 @@ function BgmStripe({
   const blockLeft = ((anchor - rangeMin) / rangeSpan) * 100
   const blockWidth = (duration / rangeSpan) * 100
 
-  // peak 在 BGM 内部的相对偏移
+  // 优先用 LLM analysis.structure[] 切色块；没分析结果时回落老 peak 单点视觉。
+  const segments = (bgm.analysis?.structure ?? []).filter(
+    (s) => s.end > s.start && duration > 0,
+  )
+  const hasAnalysis = segments.length > 0
+
+  // peak 在 BGM 内部的相对偏移（仅在没有 LLM 分析时显示）
   const peakRel =
-    bgm.peak_seconds != null && bgm.peak_seconds >= 0 && duration > 0
-      ? (bgm.peak_seconds / duration) * blockWidth
+    !hasAnalysis && bgm.peak_seconds != null && bgm.peak_seconds >= 0 && duration > 0
+      ? (bgm.peak_seconds / duration) * 100
       : null
 
   // 视频可见区域 [0, total]，用浅色背景标出来；超出范围部分会被裁掉视觉感
@@ -776,26 +849,58 @@ function BgmStripe({
       {/* BGM 块 */}
       <div
         className={cn(
-          'absolute inset-y-1 cursor-grab rounded border border-violet-400/60 bg-gradient-to-r from-violet-400/30 to-fuchsia-400/30 active:cursor-grabbing',
+          'absolute inset-y-1 overflow-hidden rounded border border-violet-400/60 bg-violet-400/10 active:cursor-grabbing',
+          'cursor-grab',
           draggingAnchor != null && 'ring-2 ring-violet-400/60',
         )}
         style={{ left: `${blockLeft}%`, width: `${blockWidth}%` }}
         onMouseDown={onMouseDown}
-        title={`BGM anchor = ${anchor.toFixed(1)}s（拖动改起点）\n正值=视频先静音；负值=跳过 BGM 头`}
+        title={
+          hasAnalysis
+            ? `BGM anchor = ${anchor.toFixed(1)}s · 拖动改起点。色块为 LLM 切出的能量段（深=高潮 / 浅=铺垫）`
+            : `BGM anchor = ${anchor.toFixed(1)}s（拖动改起点）\n正值=视频先静音；负值=跳过 BGM 头`
+        }
       >
-        {/* peak 标记 */}
-        {peakRel != null && (
-          <span
-            className="absolute -top-2 -translate-x-1/2 rounded bg-rose-500 px-1 text-[9px] font-bold text-white shadow"
-            style={{ left: `${peakRel}%` }}
-            title={`AI 探测峰值 @ ${bgm.peak_seconds?.toFixed(1)}s`}
-          >
-            ↑peak
-          </span>
+        {hasAnalysis ? (
+          <>
+            {segments.map((seg, idx) => {
+              const segLeft = (seg.start / duration) * 100
+              const segWidth = ((seg.end - seg.start) / duration) * 100
+              return (
+                <div
+                  key={idx}
+                  className={cn(
+                    'absolute inset-y-0 border-r border-violet-400/40 last:border-r-0',
+                    seg.energy === 'high' && 'bg-fuchsia-500/55',
+                    seg.energy === 'mid' && 'bg-violet-400/40',
+                    seg.energy === 'low' && 'bg-violet-300/20',
+                  )}
+                  style={{ left: `${segLeft}%`, width: `${segWidth}%` }}
+                  title={`${seg.label} · ${seg.energy} · ${seg.start.toFixed(1)}–${seg.end.toFixed(1)}s\n${seg.fit_with_video}`}
+                />
+              )
+            })}
+            <span className="pointer-events-none absolute inset-0 flex items-center justify-center text-[10px] font-semibold text-violet-900 dark:text-violet-100">
+              BGM · {anchor.toFixed(1)}s · {segments.length} 段
+            </span>
+          </>
+        ) : (
+          <>
+            <div className="absolute inset-0 bg-gradient-to-r from-violet-400/30 to-fuchsia-400/30" />
+            {peakRel != null && (
+              <span
+                className="absolute -top-2 -translate-x-1/2 rounded bg-rose-500 px-1 text-[9px] font-bold text-white shadow"
+                style={{ left: `${peakRel}%` }}
+                title={`librosa 探测峰值 @ ${bgm.peak_seconds?.toFixed(1)}s（未跑 LLM 分析时的兜底）`}
+              >
+                ↑peak
+              </span>
+            )}
+            <span className="absolute inset-0 flex items-center justify-center text-[10px] font-semibold text-violet-900 dark:text-violet-200">
+              BGM · {anchor.toFixed(1)}s
+            </span>
+          </>
         )}
-        <span className="absolute inset-0 flex items-center justify-center text-[10px] font-semibold text-violet-900 dark:text-violet-200">
-          BGM · {anchor.toFixed(1)}s
-        </span>
       </div>
       {/* 起点参考线（视频 t=0） */}
       <div
@@ -803,6 +908,77 @@ function BgmStripe({
         style={{ left: `${visibleLeft}%` }}
         title="视频 t=0"
       />
+    </div>
+  )
+}
+
+/* ---------------- BGM 分析卡 ---------------- */
+
+function BgmAnalysisCard({ analysis }: { analysis: NonNullable<BGMConfig['analysis']> }) {
+  const score = Math.max(0, Math.min(1, analysis.theme_fit_score))
+  const scoreLabel = score >= 0.7 ? '高契合' : score >= 0.4 ? '中等契合' : '低契合'
+  return (
+    <div className="mt-2 grid grid-cols-[88px_1fr] gap-1">
+      <div className="pr-1 text-[10px] text-muted-foreground">
+        <span className="font-semibold text-foreground">BGM 分析</span>
+        <p className="mt-0.5 text-[9px] leading-tight">doubao-seed · 音频理解</p>
+      </div>
+      <div className="space-y-1.5 rounded-md border border-violet-400/40 bg-violet-400/5 p-2 text-[11px]">
+        <div className="flex flex-wrap items-center gap-1.5">
+          <span className="rounded-full bg-violet-500/15 px-2 py-0.5 font-medium text-violet-700 dark:text-violet-200">
+            {analysis.title_guess || '未知曲风'}
+          </span>
+          {analysis.mood_tags.slice(0, 6).map((tag) => (
+            <span
+              key={tag}
+              className="rounded-full border border-violet-400/40 px-1.5 py-0.5 text-[10px] text-violet-700 dark:text-violet-200"
+            >
+              {tag}
+            </span>
+          ))}
+          <span
+            className={cn(
+              'ml-auto rounded px-1.5 py-0.5 font-mono text-[10px]',
+              score >= 0.7 && 'bg-emerald-500/15 text-emerald-700 dark:text-emerald-300',
+              score >= 0.4 && score < 0.7 && 'bg-amber-500/15 text-amber-700 dark:text-amber-300',
+              score < 0.4 && 'bg-rose-500/15 text-rose-700 dark:text-rose-300',
+            )}
+            title="LLM 判断该曲与 brief 的契合度（0-1）"
+          >
+            {scoreLabel} · {(score * 100).toFixed(0)}%
+          </span>
+        </div>
+        {analysis.theme_fit_reason && (
+          <p className="text-[10.5px] leading-snug text-muted-foreground">{analysis.theme_fit_reason}</p>
+        )}
+        {analysis.structure.length > 0 && (
+          <ul className="space-y-0.5 text-[10.5px] leading-snug">
+            {analysis.structure.map((seg, idx) => (
+              <li key={idx} className="flex gap-2">
+                <span
+                  className={cn(
+                    'inline-block h-2 w-2 flex-shrink-0 self-center rounded',
+                    seg.energy === 'high' && 'bg-fuchsia-500',
+                    seg.energy === 'mid' && 'bg-violet-400',
+                    seg.energy === 'low' && 'bg-violet-300/70',
+                  )}
+                  aria-label={seg.energy}
+                />
+                <span className="font-mono text-[10px] text-muted-foreground">
+                  {seg.start.toFixed(1)}–{seg.end.toFixed(1)}s
+                </span>
+                <span className="font-medium text-foreground">{seg.label}</span>
+                <span className="text-muted-foreground">· {seg.fit_with_video}</span>
+              </li>
+            ))}
+          </ul>
+        )}
+        {analysis.overall_advice && (
+          <p className="rounded bg-background/60 px-2 py-1 text-[10.5px] leading-snug text-foreground/80">
+            <span className="text-muted-foreground">建议：</span>{analysis.overall_advice}
+          </p>
+        )}
+      </div>
     </div>
   )
 }

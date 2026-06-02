@@ -19,6 +19,7 @@ from ..config import get_settings
 from ..schemas import DecomposeRequest, DecomposeSubmitResponse, VideoType
 from ..services.agent.decompose_agent import decompose
 from ..services.jobs import job_store
+from ..services.video import ffmpeg as ffmpeg_util
 
 log = logging.getLogger("seecript.decompose")
 router = APIRouter()
@@ -30,6 +31,10 @@ _SAMPLES_ROOT = Path(__file__).resolve().parents[2] / "samples"
 # 用户上传待拆解视频：server/var/uploads/decompose/<sample_id>/video.mp4
 _USER_VIDEO_ALLOWED = {"video/mp4", "video/quicktime", "video/webm"}
 _USER_VIDEO_MAX_BYTES = 200 * 1024 * 1024  # 单视频 200MB（比通用 material 50MB 宽松：拆解通常吃整段视频）
+# 时长上限：3 分钟 + 20s 余量（容器/封装层可能比真实视频流多几秒，给点宽松）。
+# 拒掉超时长视频是为了：① 防 LLM/ASR/T2V 配额浪费 ② 防 _segment_with_roles
+# 在 50+ shots 下 token 飙升 ③ 给前端清晰的 UX 反馈（SSE 跑 5 分钟才报错很糟）。
+_USER_VIDEO_MAX_DURATION_SECONDS = 200.0
 
 
 def _user_uploads_root() -> Path:
@@ -138,6 +143,32 @@ async def upload_for_decompose(
     target_dir.mkdir(parents=True, exist_ok=True)
     target_path = target_dir / "video.mp4"
     target_path.write_bytes(data)
+
+    # 时长校验：ffprobe 拿真实秒数（容器头里 metadata 不一定准），>3min+20s 余量直接退还。
+    # ffprobe 不可用时（开发机没装 ffmpeg）放过，后续真链路会再撞同样的问题；
+    # 比起在上传环节卡死开发者，让流水线自己降级更友好。
+    try:
+        probe_info = ffmpeg_util.probe(target_path)
+        duration = probe_info.duration_seconds
+    except (ffmpeg_util.FFmpegError, FileNotFoundError, OSError) as exc:
+        log.warning("[decompose.upload] ffprobe failed for %s: %s; 跳过时长校验", target_path, exc)
+        duration = None
+
+    if duration is not None and duration > _USER_VIDEO_MAX_DURATION_SECONDS:
+        # 删文件 + 空目录回收，防止 var/uploads/decompose 下堆超时长样例
+        try:
+            target_path.unlink(missing_ok=True)
+            target_dir.rmdir()
+        except OSError:
+            pass
+        raise HTTPException(
+            status_code=413,
+            detail=(
+                f"视频时长 {duration:.1f}s 超过 3 分钟上限"
+                f"（最长 {_USER_VIDEO_MAX_DURATION_SECONDS:.0f}s）"
+            ),
+        )
+
     # 元数据：让 /library?source=user 能列出来（title/video_type/size）
     safe_title = (title or Path(file.filename or "video.mp4").stem)[:80]
     import time

@@ -204,6 +204,7 @@ async def _build_material(
         media_type=media_type,  # type: ignore[arg-type]
         duration_seconds=None,
         thumbnail_url=thumbnail_url,
+        file_url=f"/uploads/{sid}/{dest.name}",
         tags=tags,
         recommended_section=recommended_section,
         highlight_score=highlight_score,

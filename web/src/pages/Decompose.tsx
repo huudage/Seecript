@@ -23,6 +23,7 @@ import {
   VIDEO_TYPE_LABEL,
 } from '@/lib/sections'
 import { cn } from '@/lib/utils'
+import { readVideoDuration, VIDEO_UPLOAD_MAX_DURATION_SECONDS } from '@/lib/video'
 
 const VIDEO_TYPE_OPTIONS: VideoType[] = ['marketing', 'editing', 'motion_graph']
 
@@ -72,6 +73,14 @@ export default function DecomposePage() {
     async (file: File | null) => {
       if (!file) return
       setError(null)
+      // 客户端时长预检：HTMLVideoElement.duration 拿真实秒数，>180s 直接退给用户，
+      // 不再走一次上传 + ffprobe 才被退回。读不出来时（编码不被浏览器支持）放过，
+      // 让后端 ffprobe 兜底校验。
+      const duration = await readVideoDuration(file)
+      if (duration != null && duration > VIDEO_UPLOAD_MAX_DURATION_SECONDS) {
+        setError(`视频时长 ${duration.toFixed(1)}s 超过 3 分钟上限，请改用更短的素材`)
+        return
+      }
       setUploading(true)
       try {
         const fd = new FormData()
@@ -129,6 +138,19 @@ export default function DecomposePage() {
       sseRef.current?.close()
     }
   }, [])
+
+  // 系统样例：选完直接自动拆解。video_type 已锁定，没有可调参数，再让用户点一次按钮是冗余。
+  // 用户上传分支故意不自动触发——他们可能要先在 VideoTypePicker 里改类型。
+  // ref 保证同一 sampleId 只 auto-fire 一次，避免 strict-mode 双挂载或 snapshot 回写导致重复提交。
+  const autoRunFiredRef = useRef<string | null>(null)
+  useEffect(() => {
+    if (!isSystemSample || !selectedSampleId) return
+    if (autoRunFiredRef.current === selectedSampleId) return
+    if (manifest || running) return
+    autoRunFiredRef.current = selectedSampleId
+    void run()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isSystemSample, selectedSampleId, manifest, running])
 
   // mount：拉一次 decompose 步骤快照——若已 commit 过且当前没 manifest，把 sample_id 同步到 session
   useEffect(() => {
@@ -252,7 +274,7 @@ export default function DecomposePage() {
                   {uploading ? '上传中…' : '上传自己的视频'}
                 </span>
                 <span className="text-[11px] text-muted-foreground">
-                  mp4 / mov / webm，单文件 ≤ 200MB；上传后选类型再拆。
+                  mp4 / mov / webm，≤ 3 分钟、单文件 ≤ 200MB；上传后选类型再拆。
                 </span>
               </button>
             </div>

@@ -13,12 +13,15 @@ from __future__ import annotations
 
 import json
 import logging
+import time
+import uuid
 from pathlib import Path
 from typing import Optional
 
-from fastapi import APIRouter, HTTPException, Query
-from pydantic import ValidationError
+from fastapi import APIRouter, File, Form, HTTPException, Query, UploadFile
+from pydantic import BaseModel, ValidationError
 
+from ..config import get_settings
 from ..schemas import (
     LibraryItem,
     LibrarySource,
@@ -30,6 +33,7 @@ from ..schemas import (
     Shot,
     VideoType,
 )
+from ..services.video import ffmpeg as ffmpeg_util
 
 log = logging.getLogger("seecript.library")
 router = APIRouter()
@@ -37,6 +41,13 @@ router = APIRouter()
 
 # server/samples 目录——precompute_samples 把 manifest.json 写在这里
 _SAMPLES_ROOT = Path(__file__).resolve().parents[2] / "samples"
+
+# === 上传到「系统样例库」的校验阈值 ===
+# 沿用 decompose.upload 的同一套约束:mp4/mov/webm,单文件 200MB,时长 3 分钟 + 20s 余量
+# (容器封装层可能比真实流多几秒)。和 decompose 那边保持一致,避免两条上传链路语义漂移。
+_SYSTEM_UPLOAD_ALLOWED = {"video/mp4", "video/quicktime", "video/webm"}
+_SYSTEM_UPLOAD_MAX_BYTES = 200 * 1024 * 1024
+_SYSTEM_UPLOAD_MAX_DURATION_SECONDS = 200.0
 
 
 def _load_real_manifest(sample_id: str) -> Optional[SampleManifest]:
@@ -100,9 +111,80 @@ _SYSTEM_LIBRARY: list[LibraryItem] = [
     ),
 ]
 
+# 内置 3 条爆款样例的 ID 黑名单——_scan_system_library_extras 用它跳过这些目录,
+# 避免把硬编码 LibraryItem 和扫盘出来的副本重复列出。
+_BUILTIN_SYSTEM_IDS: set[str] = {it.id for it in _SYSTEM_LIBRARY}
+
 
 # 用户样例库：当前 MVP 不持久化，留空。下一期可接入 user_library_store + 上传转录流程。
 _USER_LIBRARY: list[LibraryItem] = []
+
+
+_SCENE_LABEL_BY_TYPE: dict[VideoType, str] = {
+    "marketing": "营销",
+    "editing": "剪辑",
+    "motion_graph": "Motion Graph",
+}
+
+
+def _scan_system_library_extras() -> list[LibraryItem]:
+    """扫 server/samples/ 下不在 _BUILTIN_SYSTEM_IDS 里的目录,
+    把用户通过 /api/library/system/upload 上传的样例也列入「系统样例库」tab。
+
+    判定标准:目录含 video.mp4。meta.json 用于还原 title / video_type / uploaded_at,
+    缺失时退化到目录名 + marketing 默认值。duration / shot_count 走预拆解 manifest,
+    没拆过给 0(前端列表会显示 "0s · 0 镜头",提示用户先拆解)。
+    """
+    if not _SAMPLES_ROOT.is_dir():
+        return []
+    items: list[LibraryItem] = []
+    for child in _SAMPLES_ROOT.iterdir():
+        if not child.is_dir():
+            continue
+        sample_id = child.name
+        if sample_id in _BUILTIN_SYSTEM_IDS:
+            continue
+        if not (child / "video.mp4").is_file():
+            continue
+        title = sample_id
+        video_type: VideoType = "marketing"
+        meta_path = child / "meta.json"
+        if meta_path.is_file():
+            try:
+                meta = json.loads(meta_path.read_text(encoding="utf-8"))
+                title = str(meta.get("title") or sample_id)[:80]
+                vt = meta.get("video_type")
+                if vt in ("marketing", "editing", "motion_graph"):
+                    video_type = vt  # type: ignore[assignment]
+            except (json.JSONDecodeError, OSError) as exc:
+                log.warning("[library] system extra meta %s parse failed: %s", meta_path, exc)
+        mf = _load_real_manifest(sample_id)
+        duration = mf.duration_seconds if mf else 0.0
+        shot_count = len(mf.shots) if mf else 0
+        cover_url = f"/samples/{sample_id}/cover.jpg"
+        if not (child / "cover.jpg").is_file():
+            cover_url = f"/samples/{sample_id}/video.mp4"
+        items.append(LibraryItem(
+            id=sample_id,
+            title=title,
+            video_type=video_type,
+            scene=_SCENE_LABEL_BY_TYPE.get(video_type, "系统上传"),
+            duration_seconds=duration,
+            shot_count=shot_count,
+            cover_url=cover_url,
+            source="system",
+        ))
+
+    def _uploaded_at(it: LibraryItem) -> float:
+        p = _SAMPLES_ROOT / it.id / "meta.json"
+        if p.is_file():
+            try:
+                return float(json.loads(p.read_text(encoding="utf-8")).get("uploaded_at", 0.0))
+            except Exception:  # noqa: BLE001
+                return 0.0
+        return 0.0
+    items.sort(key=_uploaded_at, reverse=True)
+    return items
 
 
 def _scan_user_library() -> list[LibraryItem]:
@@ -300,10 +382,10 @@ async def list_library(
         return out
 
     if source == "system":
-        return _augment(_SYSTEM_LIBRARY)
+        return _augment(_SYSTEM_LIBRARY) + _scan_system_library_extras()
     if source == "user":
         return _scan_user_library()
-    return _augment(_SYSTEM_LIBRARY) + _scan_user_library()
+    return _augment(_SYSTEM_LIBRARY) + _scan_system_library_extras() + _scan_user_library()
 
 
 @router.get("/sample/{sample_id}/manifest", response_model=SampleManifest)
@@ -316,6 +398,17 @@ async def get_sample_manifest(sample_id: str) -> SampleManifest:
                 return real
             log.warning("[library] %s 无预拆解 manifest.json，回落等分 stub", sample_id)
             return _stub_manifest(sample_id, item)
+    # 用户上传到「系统样例库」的样例(server/samples/<sys-hex>/),走预拆解 manifest;
+    # 没拆过就 409 提示去拆解,而不是回落 stub——stub 的 shot_count/duration 必须靠真元数据。
+    for item in _scan_system_library_extras():
+        if item.id == sample_id:
+            real = _load_real_manifest(sample_id)
+            if real is not None:
+                return real
+            raise HTTPException(
+                status_code=409,
+                detail=f"sample {sample_id} 尚未拆解，请先在「样例拆解」页跑一次 decompose",
+            )
     # 用户上传样例：先扫盘确认 sample 真实存在，再取预拆解 manifest
     user_items = _scan_user_library()
     for item in user_items:
@@ -328,3 +421,110 @@ async def get_sample_manifest(sample_id: str) -> SampleManifest:
                 detail=f"sample {sample_id} 尚未拆解，请先在「样例拆解」页跑一次 decompose",
             )
     raise HTTPException(status_code=404, detail=f"sample not found: {sample_id}")
+
+
+# ---------------------------------------------------------------------------
+# 上传到「系统样例库」: POST /api/library/system/upload
+# ---------------------------------------------------------------------------
+# 与 /api/decompose/upload 的区别:
+#   - 物理路径落到 server/samples/<sys-hex>/ 而不是 var/uploads/decompose/<user-hex>/
+#   - sample_id 前缀 sys- (vs user-),避免和 _BUILTIN_SYSTEM_IDS / user 上传冲突
+#   - 在「系统样例库」tab 列出,所有用户共享(本期单租户,等价于"管理员上传一段公共样例")
+#   - 校验阈值复用一套(200MB/3min),避免两条上传链路语义漂移
+class LibrarySystemUploadResponse(BaseModel):
+    """`POST /api/library/system/upload` 返回——前端拿到 sample_id 后再走 /api/decompose 触发拆解。"""
+
+    sample_id: str
+    title: str
+    video_type: VideoType
+    filename: str
+    size_bytes: int
+    video_url: str
+
+
+@router.post("/library/system/upload", response_model=LibrarySystemUploadResponse)
+async def upload_to_system_library(
+    file: UploadFile = File(...),
+    video_type: VideoType = Form(default="marketing"),
+    title: Optional[str] = Form(default=None),
+) -> LibrarySystemUploadResponse:
+    """把一段视频上传到「系统样例库」,落到 server/samples/<sys-hex>/video.mp4。
+
+    - 仅接受 video/mp4 | video/quicktime | video/webm
+    - 单文件硬上限 200MB,时长上限 3 分钟(+ 20s 余量)
+    - sample_id 形如 sys-<hex>,与内置 demo (sample-marketing-01 等) 不冲突
+    - meta.json 记录 title/video_type/uploaded_at,供 _scan_system_library_extras 还原列表
+    - 上传后调用方需走 /api/decompose 触发实际拆解,manifest 生成完才能在「样例拆解」页用
+    """
+    if file.content_type not in _SYSTEM_UPLOAD_ALLOWED:
+        raise HTTPException(
+            status_code=415,
+            detail=f"unsupported content-type: {file.content_type}（支持 mp4/mov/webm）",
+        )
+
+    data = await file.read()
+    if len(data) > _SYSTEM_UPLOAD_MAX_BYTES:
+        raise HTTPException(
+            status_code=413,
+            detail=f"{file.filename} 超过 {_SYSTEM_UPLOAD_MAX_BYTES // (1024 * 1024)}MB 上限",
+        )
+
+    sample_id = f"sys-{uuid.uuid4().hex[:10]}"
+    target_dir = _SAMPLES_ROOT / sample_id
+    # parents=True:确保 server/samples 根本不存在时也能起来(开发机第一次跑没 samples 目录)
+    target_dir.mkdir(parents=True, exist_ok=True)
+    target_path = target_dir / "video.mp4"
+    target_path.write_bytes(data)
+
+    # 时长校验:ffprobe 拿真实秒数(容器头里 metadata 不一定准)。
+    # ffprobe 不可用时(开发机没装 ffmpeg)放过——后续真链路会再撞同样的问题,
+    # 比起在上传环节卡死开发者,让流水线自己降级更友好。
+    try:
+        probe_info = ffmpeg_util.probe(target_path)
+        duration = probe_info.duration_seconds
+    except (ffmpeg_util.FFmpegError, FileNotFoundError, OSError) as exc:
+        log.warning("[library.system.upload] ffprobe failed for %s: %s; 跳过时长校验", target_path, exc)
+        duration = None
+
+    if duration is not None and duration > _SYSTEM_UPLOAD_MAX_DURATION_SECONDS:
+        try:
+            target_path.unlink(missing_ok=True)
+            target_dir.rmdir()
+        except OSError:
+            pass
+        raise HTTPException(
+            status_code=413,
+            detail=(
+                f"视频时长 {duration:.1f}s 超过 3 分钟上限"
+                f"(最长 {_SYSTEM_UPLOAD_MAX_DURATION_SECONDS:.0f}s)"
+            ),
+        )
+
+    safe_title = (title or Path(file.filename or "video.mp4").stem)[:80]
+    meta = {
+        "sample_id": sample_id,
+        "title": safe_title,
+        "video_type": video_type,
+        "filename": Path(file.filename or "video.mp4").name,
+        "size_bytes": len(data),
+        "uploaded_at": time.time(),
+        "uploaded_via": "library.system.upload",
+    }
+    (target_dir / "meta.json").write_text(
+        json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8"
+    )
+    log.info(
+        "[library.system.upload] sample=%s type=%s saved %s (%d bytes)",
+        sample_id,
+        video_type,
+        target_path,
+        len(data),
+    )
+    return LibrarySystemUploadResponse(
+        sample_id=sample_id,
+        title=safe_title,
+        video_type=video_type,
+        filename=Path(file.filename or "video.mp4").name,
+        size_bytes=len(data),
+        video_url=f"/samples/{sample_id}/video.mp4",
+    )

@@ -35,6 +35,7 @@ from ..services.assets import asset_store
 from ..services.materials import gap_store
 from ..services.plans import plan_store
 from ..services.projects import project_store
+from ..services.video.bgm_analysis import analyze_bgm_with_llm
 
 log = logging.getLogger("seecript.plan")
 router = APIRouter()
@@ -137,6 +138,42 @@ def _build_bgm_config(bgm_asset_id: Optional[str]) -> BGMConfig:
         fade_out=2.0,
         duck_with_voice=True,
     )
+
+
+async def _attach_bgm_llm_analysis(
+    bgm: BGMConfig, *, brief: str, video_goal: str,
+) -> BGMConfig:
+    """绑定 BGM 时跑一次 doubao-seed 音频理解，把结果挂到 bgm.analysis。
+
+    设计：
+    - 没绑 BGM → 直接返回（不调 LLM）
+    - 已有 analysis 字段且未换曲（外层先 _build_bgm_config 会重置 analysis=None）→ 跳过
+    - LLM 失败/超时 → 保持 None，前端兜底走 librosa peak
+
+    LLM 拿的是公网 URL（PUBLIC_AUDIO_BASE_URL + asset.file_url），与 ASR 同一条暴露路径。
+    """
+    if not bgm.bgm_asset_id or not bgm.track_url:
+        return bgm
+    if bgm.analysis is not None:
+        return bgm
+    try:
+        raw = await analyze_bgm_with_llm(
+            file_url=bgm.track_url,
+            duration_seconds=float(bgm.duration_seconds or 0.0),
+            brief=brief or "",
+            video_goal=video_goal or "",
+        )
+    except Exception as exc:  # noqa: BLE001
+        log.warning("[plan] bgm LLM 分析异常 asset=%s: %s", bgm.bgm_asset_id, exc)
+        raw = None
+    if raw is None:
+        return bgm
+    try:
+        from ..schemas import BGMAnalysis
+        bgm.analysis = BGMAnalysis.model_validate(raw)
+    except Exception as exc:  # noqa: BLE001
+        log.warning("[plan] bgm LLM 结果 schema 校验失败 asset=%s: %s", bgm.bgm_asset_id, exc)
+    return bgm
 
 
 @router.post("/plan/build", response_model=Plan)
@@ -315,7 +352,11 @@ async def build_plan(req: PlanBuildRequest) -> Plan:
         duration_seconds=actual_total,
         main_track=main_track,
         packaging_track=packaging_track,
-        bgm=_build_bgm_config(req.bgm_asset_id),
+        bgm=await _attach_bgm_llm_analysis(
+            _build_bgm_config(req.bgm_asset_id),
+            brief=req.brief or "",
+            video_goal=req.video_goal or "",
+        ),
         settings=settings,
     )
     plan_store.put(plan)
@@ -379,8 +420,11 @@ async def patch_plan_bgm(plan_id: str, body: PlanBgmPatch) -> Plan:
             # 清空 BGM
             bgm = BGMConfig()
         else:
-            # 替换 BGM：重新从 asset 拉 duration/peak，并重置 anchor
+            # 替换 BGM：重新从 asset 拉 duration/peak，并重置 anchor + 重跑 LLM 分析
             bgm = _build_bgm_config(new_id)
+            bgm = await _attach_bgm_llm_analysis(
+                bgm, brief=plan.brief or "", video_goal=plan.video_goal or "",
+            )
 
     for field in ("video_anchor_seconds", "volume", "fade_in", "fade_out", "duck_with_voice"):
         if field in patch and patch[field] is not None:

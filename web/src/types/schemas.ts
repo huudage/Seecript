@@ -152,6 +152,8 @@ export interface Material {
   media_type: MediaType
   duration_seconds?: number | null
   thumbnail_url?: string | null
+  /** 原文件 URL，如 /uploads/<sid>/<material_id>_<filename>，Remotion Player 直接喂 <Video src>。 */
+  file_url?: string | null
   tags: string[]
   recommended_section?: SectionRole | null
   /** 高光评分 0-1：0.7+ 适合开头/高潮，0.4-0.7 中段铺陈，<0.4 仅 B-roll。 */
@@ -283,6 +285,38 @@ export interface PackagingItem {
   style: Record<string, unknown>
 }
 
+export interface BGMAnalysisSegment {
+  /** 起始（秒，相对 BGM t=0）。 */
+  start: number
+  /** 结束（秒）。 */
+  end: number
+  /** 能量层级：低=铺垫 / 中=推进 / 高=高潮。 */
+  energy: 'low' | 'mid' | 'high'
+  /** 段名（≤16 字），如『前奏铺垫』『副歌爆发』。 */
+  label: string
+  /** 该段如何与视频节奏匹配（哪里激昂哪里舒缓）。 */
+  fit_with_video: string
+}
+
+/**
+ * LLM 音频理解结果（doubao-seed-2.0-lite）：曲风/情绪 + 4-6 段结构 + 视频匹配建议。
+ *
+ * 替代旧 librosa 单点 peak 参考线——展示给用户的是几段标好能量层级的色块 + 一段总体建议。
+ * 后端在 plan 绑定 BGM 时一次性算好，挂在 BGMConfig.analysis；失败/超时则保持 null，
+ * 前端兜底用 BGMConfig.peak_seconds（librosa）。
+ */
+export interface BGMAnalysis {
+  title_guess: string
+  mood_tags: string[]
+  /** 0-1：曲子与 brief 的契合度。 */
+  theme_fit_score: number
+  theme_fit_reason: string
+  structure: BGMAnalysisSegment[]
+  overall_advice: string
+  /** 生成 backend：doubao_ark / mock。 */
+  backend: string
+}
+
 export interface BGMConfig {
   /** BGM 资产 ID（asset library 中的 id）。 */
   asset_id?: string | null
@@ -304,6 +338,8 @@ export interface BGMConfig {
   duck_with_voice: boolean
   /** ducking 衰减强度（dB），负值。 */
   duck_attenuation_db: number
+  /** LLM 音频理解结果；绑定时异步填充，失败/超时保持 null。 */
+  analysis?: BGMAnalysis | null
 }
 
 /** TTS voice 角色 —— 火山引擎可选音色（与后端 TTSVoice 镜像）。 */

@@ -27,6 +27,7 @@ from ..llm_client import get_llm_client, _extract_json
 from ..asr_client import get_asr_client, ASRError, ASRTranscript, Utterance as ASRUtterance
 from ..assets import resolve_reference_image_urls
 from ..video import scene_detect, audio_analysis, voice_detect
+from ..video.scene_detect import DetectedShot
 from ...config import get_settings
 from ...schemas import (
     PackagingProfile,
@@ -46,6 +47,50 @@ log = logging.getLogger("seecript.agent.decompose")
 # server/samples/<sample_id>/shot-NN.jpg 实际存在范围——agent 拿到 shot 索引后
 # 先查盘上有没有对应的 jpg，没有就置 None，避免前端 404。
 _SAMPLES_ROOT = Path(__file__).resolve().parents[3] / "samples"
+
+
+# 长视频（≤3min）适配的两个上限：
+# - _MAX_SHOTS：PySceneDetect 在 3min 高密度剪辑下可能给 100+ shots，下游 _attach_frame_tags
+#   的批数、_segment_with_roles 的文本 payload 都会跟着膨胀；先把最短相邻镜头合并到 80 个以内
+# - _SEGMENT_LLM_MAX_IMAGES：seed-2.0-lite 单请求图像有事实上限（30 张左右就开始截断或丢图），
+#   _segment_with_roles 之前是把全部缩略图都喂进去；超过这个数就均匀采样代表帧，
+#   文字 shot 列表仍是全集——LLM 按 shot_index 输出标注即可。
+_MAX_SHOTS = 80
+_SEGMENT_LLM_MAX_IMAGES = 20
+
+
+def _compact_shots(raw_shots: list[DetectedShot]) -> list[DetectedShot]:
+    """超过 _MAX_SHOTS 时反复挑出"最短的那一段"和它较短的邻居合并，直到 ≤ _MAX_SHOTS。
+
+    合并后保留前一段的 index/start 与后一段的 end，duration 重算。
+    index 不重排（thumbnail 文件 shot-NN.jpg 用原 index 命名），合并掉的后段
+    缩略图就此被丢弃——3min 视频下牺牲少数过短镜头的封面是可接受的。
+    """
+    if len(raw_shots) <= _MAX_SHOTS:
+        return list(raw_shots)
+    shots = list(raw_shots)
+    while len(shots) > _MAX_SHOTS:
+        # 最短一段 + 它较短的邻居
+        min_i = min(range(len(shots)), key=lambda i: shots[i].duration)
+        if min_i == 0:
+            merge_j = 1
+        elif min_i == len(shots) - 1:
+            merge_j = len(shots) - 2
+        else:
+            merge_j = (
+                min_i - 1
+                if shots[min_i - 1].duration <= shots[min_i + 1].duration
+                else min_i + 1
+            )
+        a, b = sorted((min_i, merge_j))
+        merged = DetectedShot(
+            index=shots[a].index,
+            start=shots[a].start,
+            end=shots[b].end,
+            duration=shots[b].end - shots[a].start,
+        )
+        shots = shots[:a] + [merged] + shots[b + 1:]
+    return shots
 
 
 def _shot_thumbnail_url(sample_id: str, index: int) -> Optional[str]:
@@ -139,6 +184,17 @@ async def decompose(
     except Exception as exc:
         log.warning("scene_detect failed, using mock: %s", exc)
         raw_shots = scene_detect.detect_shots("")
+    # 长视频降密：超过 _MAX_SHOTS 把最短相邻镜头合并到上限内，控制下游 LLM payload
+    raw_count = len(raw_shots)
+    raw_shots = _compact_shots(raw_shots)
+    if len(raw_shots) < raw_count:
+        log.info("[decompose] compact shots %d → %d (max=%d)",
+                 raw_count, len(raw_shots), _MAX_SHOTS)
+        push("scene_detect", 10, {
+            "note": f"镜头过多，合并最短相邻 {raw_count} → {len(raw_shots)}",
+            "raw_count": raw_count,
+            "compacted_count": len(raw_shots),
+        })
     shots = [
         Shot(
             index=s.index,
@@ -256,24 +312,33 @@ async def decompose(
         climax_position=_compute_climax(sections, rhythm, total_duration),
     )
 
-    # 用户上传样例：video_url 改指 /uploads/decompose/<sample_id>/video.mp4，
-    # 并把 manifest 落到同目录，让 /api/sample/<id>/manifest 后续直接命中。
+    # 用户上传样例:把 manifest.json 落到 video 同目录,让 /api/sample/<id>/manifest 后续直接命中。
+    # 两条上传链路:
+    #   A) /api/decompose/upload → var/uploads/decompose/<user-xxx>/ → video_url 改 /uploads/...
+    #   B) /api/library/system/upload → server/samples/<sys-xxx>/ → video_url 保持 /samples/...
     if video_path:
         vp = Path(str(video_path)).resolve()
+        manifest_dst: Optional[Path] = None
         if "uploads" in vp.parts and "decompose" in vp.parts:
+            # A) 用户样例:改 video_url 指向 /uploads/decompose
             manifest = manifest.model_copy(update={
                 "video_url": f"/uploads/decompose/{sample_id}/video.mp4",
             })
+            manifest_dst = vp.parent / "manifest.json"
+        elif sample_id.startswith("sys-") and vp.parent.parent.name == "samples":
+            # B) 系统上传样例:video_url 已经是 /samples/<sys-xxx>/video.mp4,
+            # 直接把 manifest 落到 server/samples/<sys-xxx>/manifest.json
+            manifest_dst = vp.parent / "manifest.json"
+        if manifest_dst is not None:
             try:
                 import json as _json
-                manifest_dst = vp.parent / "manifest.json"
                 manifest_dst.write_text(
                     _json.dumps(manifest.model_dump(), ensure_ascii=False, indent=2),
                     encoding="utf-8",
                 )
-                log.info("[decompose] 用户样例 %s manifest 已落盘：%s", sample_id, manifest_dst)
+                log.info("[decompose] 上传样例 %s manifest 已落盘:%s", sample_id, manifest_dst)
             except OSError as exc:
-                log.warning("[decompose] 写 manifest 失败 %s：%s", sample_id, exc)
+                log.warning("[decompose] 写 manifest 失败 %s:%s", sample_id, exc)
 
     if job_id:
         job_store.complete(job_id, payload={"sample_id": sample_id, "manifest": manifest.model_dump()})
@@ -572,7 +637,26 @@ async def _segment_with_roles(
         "镜头列表（请为每一个镜头给出 role + theme）：\n" + "\n".join(payload_lines)
     )
 
-    images = [sh.thumbnail_url or "" for sh in shots]
+    # 长视频降图：seed-2.0-lite 单请求图像过多会被截断；镜头数 > 上限时均匀采样代表帧，
+    # 文字镜头列表仍是全集——让 LLM 按 shot_index 输出每一个镜头的标注。
+    if len(shots) <= _SEGMENT_LLM_MAX_IMAGES:
+        images = [sh.thumbnail_url or "" for sh in shots]
+    else:
+        step = len(shots) / _SEGMENT_LLM_MAX_IMAGES
+        sampled_idx = [int(i * step) for i in range(_SEGMENT_LLM_MAX_IMAGES)]
+        # 确保覆盖首末镜头
+        if sampled_idx[0] != 0:
+            sampled_idx[0] = 0
+        if sampled_idx[-1] != len(shots) - 1:
+            sampled_idx[-1] = len(shots) - 1
+        images = [shots[i].thumbnail_url or "" for i in sampled_idx]
+        sampled_shot_indices = [shots[i].index for i in sampled_idx]
+        user += (
+            f"\n\n注意：由于镜头较多，附带的 {len(images)} 张缩略图是均匀采样的代表帧"
+            f"（对应 shot_index = {sampled_shot_indices}），不是每个镜头都有图。"
+            f"请仍按上方文字列表里全部 {len(shots)} 个 shot_index 输出标注。"
+        )
+
     try:
         text = await llm.complete_multimodal(_SHOT_ROLE_SYSTEM, user, images)
         data = _extract_json(text)

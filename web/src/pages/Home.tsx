@@ -44,7 +44,8 @@ export default function HomePage() {
     try {
       const loaded = await resumeProject(proj.project_id)
       if (!loaded) return
-      if (loaded.status === 'rendered') navigate('/render')
+      // 渲染页已并入 compose 长页：rendered 项目回到 /compose 看结果
+      if (loaded.status === 'rendered') navigate('/compose')
       else if (loaded.status === 'planned') navigate('/compose')
       else navigate('/decompose')
     } finally {
