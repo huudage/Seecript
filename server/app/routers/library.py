@@ -19,7 +19,7 @@ from pathlib import Path
 from typing import Optional
 
 from fastapi import APIRouter, File, Form, HTTPException, Query, UploadFile
-from pydantic import BaseModel, ValidationError
+from pydantic import BaseModel
 
 from ..config import get_settings
 from ..schemas import (
@@ -28,11 +28,13 @@ from ..schemas import (
     PackagingProfile,
     RhythmCurve,
     SampleManifest,
+    SampleVersionInfo,
     Section,
     SectionRole,
     Shot,
     VideoType,
 )
+from ..services.library import manifest_store
 from ..services.video import ffmpeg as ffmpeg_util
 
 log = logging.getLogger("seecript.library")
@@ -51,28 +53,39 @@ _SYSTEM_UPLOAD_MAX_DURATION_SECONDS = 200.0
 
 
 def _load_real_manifest(sample_id: str) -> Optional[SampleManifest]:
-    """尝试加载预计算好的真 manifest.json。失败/不存在返回 None。
+    """已发布的 sample manifest——代理到 manifest_store.load_active。
 
-    查找顺序：
-    1. `server/samples/<sample_id>/manifest.json`（内置样例，precompute_samples.py 写）
-    2. `server/var/uploads/decompose/<sample_id>/manifest.json`（用户上传样例，decompose_agent 写）
+    保留这个名字是为 plan.py / gap.py / 本文件其它点的旧调用兼容。
+    v3 语义上 = "当前 active 版本"，由 manifest.active 指针决定。
     """
-    candidates = [_SAMPLES_ROOT / sample_id / "manifest.json"]
-    try:
-        from ..config import get_settings
-        user_root = get_settings().log_dir.parent / "var" / "uploads" / "decompose"
-        candidates.append(user_root / sample_id / "manifest.json")
-    except Exception:  # noqa: BLE001
-        pass
-    for p in candidates:
-        if not p.is_file():
-            continue
-        try:
-            data = json.loads(p.read_text(encoding="utf-8"))
-            return SampleManifest.model_validate(data)
-        except (json.JSONDecodeError, ValidationError, OSError) as exc:
-            log.warning("[library] %s 解析失败，跳过：%s", p, exc)
-    return None
+    return manifest_store.load_active(sample_id)
+
+
+def _attach_status(item: LibraryItem) -> LibraryItem:
+    """填 manifest_status / version_count / active_slot——Library 列表统一走这一道。"""
+    cnt = manifest_store.version_count(item.id)
+    return item.model_copy(update={
+        "manifest_status": "ready" if cnt > 0 else "none",
+        "version_count": cnt,
+        "active_slot": manifest_store.get_active_slot(item.id),
+    })
+
+
+def _build_version_list(sample_id: str) -> list[SampleVersionInfo]:
+    """list_versions（按 mtime 升序）→ SampleVersionInfo，加 v1/v2 标签。
+
+    最旧 = v1，最新 = v2。标签由位置决定，slot_id 才是稳定 id。
+    """
+    raw = manifest_store.list_versions(sample_id)
+    return [
+        SampleVersionInfo(
+            slot_id=v.slot_id,
+            label=f"v{i + 1}",
+            updated_at=v.updated_at,
+            is_active=v.is_active,
+        )
+        for i, v in enumerate(raw)
+    ]
 
 
 
@@ -373,54 +386,189 @@ async def list_library(
         for it in items:
             mf = _load_real_manifest(it.id)
             if mf is None:
-                out.append(it)
+                base = it
             else:
-                out.append(it.model_copy(update={
+                base = it.model_copy(update={
                     "shot_count": len(mf.shots),
                     "duration_seconds": mf.duration_seconds,
-                }))
+                })
+            out.append(_attach_status(base))
         return out
 
     if source == "system":
-        return _augment(_SYSTEM_LIBRARY) + _scan_system_library_extras()
+        return _augment(_SYSTEM_LIBRARY) + [_attach_status(it) for it in _scan_system_library_extras()]
     if source == "user":
-        return _scan_user_library()
-    return _augment(_SYSTEM_LIBRARY) + _scan_system_library_extras() + _scan_user_library()
+        return [_attach_status(it) for it in _scan_user_library()]
+    return (
+        _augment(_SYSTEM_LIBRARY)
+        + [_attach_status(it) for it in _scan_system_library_extras()]
+        + [_attach_status(it) for it in _scan_user_library()]
+    )
 
 
 @router.get("/sample/{sample_id}/manifest", response_model=SampleManifest)
-async def get_sample_manifest(sample_id: str) -> SampleManifest:
-    for item in _SYSTEM_LIBRARY + _USER_LIBRARY:
+async def get_sample_manifest(
+    sample_id: str,
+    slot: Optional[str] = Query(
+        default=None,
+        description="指定版本槽 slot_id；不传则取 active 槽。",
+    ),
+) -> SampleManifest:
+    """取样例的 manifest。
+
+    - slot 不传 → 当前 active 槽（Compose / Library 默认行为）
+    - slot=<slot_id> → 取指定槽（Decompose 页对比 v1/v2 时按 slot 显式拉）
+    - 没有任何版本槽且不是内置 stub fallback → 409，让前端跳 Decompose 页拆解
+    """
+    if manifest_store.locate_sample_dir(sample_id) is None:
+        # 兜底：内置 _SYSTEM_LIBRARY 即使没 sample dir 也回 stub manifest，保证旧前端跑通
+        for item in _SYSTEM_LIBRARY:
+            if item.id == sample_id:
+                log.warning("[library] %s 无样例目录，返回 stub manifest", sample_id)
+                return _stub_manifest(sample_id, item)
+        raise HTTPException(status_code=404, detail=f"sample not found: {sample_id}")
+
+    if slot is not None:
+        mf = manifest_store.load_version(sample_id, slot)
+        if mf is None:
+            raise HTTPException(status_code=404, detail=f"slot {slot} 不存在")
+        return mf
+
+    active = manifest_store.load_active(sample_id)
+    if active is not None:
+        return active
+
+    # 没任何版本——内置 3 条退化到 stub 让旧 Compose 跑通；其它的拒绝
+    for item in _SYSTEM_LIBRARY:
         if item.id == sample_id:
-            real = _load_real_manifest(sample_id)
-            if real is not None:
-                log.info("[library] %s 使用预拆解 manifest（%d shots）", sample_id, len(real.shots))
-                return real
-            log.warning("[library] %s 无预拆解 manifest.json，回落等分 stub", sample_id)
+            log.warning("[library] %s 无 active manifest，回落等分 stub", sample_id)
             return _stub_manifest(sample_id, item)
-    # 用户上传到「系统样例库」的样例(server/samples/<sys-hex>/),走预拆解 manifest;
-    # 没拆过就 409 提示去拆解,而不是回落 stub——stub 的 shot_count/duration 必须靠真元数据。
-    for item in _scan_system_library_extras():
-        if item.id == sample_id:
-            real = _load_real_manifest(sample_id)
-            if real is not None:
-                return real
-            raise HTTPException(
-                status_code=409,
-                detail=f"sample {sample_id} 尚未拆解，请先在「样例拆解」页跑一次 decompose",
-            )
-    # 用户上传样例：先扫盘确认 sample 真实存在，再取预拆解 manifest
-    user_items = _scan_user_library()
-    for item in user_items:
-        if item.id == sample_id:
-            real = _load_real_manifest(sample_id)
-            if real is not None:
-                return real
-            raise HTTPException(
-                status_code=409,
-                detail=f"sample {sample_id} 尚未拆解，请先在「样例拆解」页跑一次 decompose",
-            )
-    raise HTTPException(status_code=404, detail=f"sample not found: {sample_id}")
+    raise HTTPException(
+        status_code=409,
+        detail=f"sample {sample_id} 尚未拆解，请先在「视频拆解」页跑一次 decompose",
+    )
+
+
+# ---------------------------------------------------------------------------
+# Manifest 版本槽 CRUD
+# ---------------------------------------------------------------------------
+class ManifestStatusResponse(BaseModel):
+    """`GET /api/sample/{id}/manifest/status` —— Compose 入口判断要不要弹"未拆解"提示用。
+
+    versions 列表给 Decompose 页画版本 tabs；version_count == 0 时为空数组。
+    """
+
+    sample_id: str
+    version_count: int
+    max_versions: int
+    active_slot: Optional[str]
+    versions: list[SampleVersionInfo]
+
+
+class VersionMutationResponse(BaseModel):
+    """update / activate / delete / regenerate 共用返回体——前端按此刷新版本 tabs。"""
+
+    sample_id: str
+    version_count: int
+    active_slot: Optional[str]
+    versions: list[SampleVersionInfo]
+
+
+def _mutation_response(sample_id: str) -> VersionMutationResponse:
+    return VersionMutationResponse(
+        sample_id=sample_id,
+        version_count=manifest_store.version_count(sample_id),
+        active_slot=manifest_store.get_active_slot(sample_id),
+        versions=_build_version_list(sample_id),
+    )
+
+
+@router.get("/sample/{sample_id}/manifest/status", response_model=ManifestStatusResponse)
+async def get_manifest_status(sample_id: str) -> ManifestStatusResponse:
+    """轻量探针——Compose 入口批量调，确认每个 sample 是否已拆解 + 列出版本槽。"""
+    if manifest_store.locate_sample_dir(sample_id) is None:
+        # 内置 _SYSTEM_LIBRARY 即使没目录也能列出（视作未拆）
+        if not any(it.id == sample_id for it in _SYSTEM_LIBRARY):
+            raise HTTPException(status_code=404, detail=f"sample not found: {sample_id}")
+    return ManifestStatusResponse(
+        sample_id=sample_id,
+        version_count=manifest_store.version_count(sample_id),
+        max_versions=manifest_store.MAX_VERSIONS,
+        active_slot=manifest_store.get_active_slot(sample_id),
+        versions=_build_version_list(sample_id),
+    )
+
+
+@router.get("/sample/{sample_id}/versions", response_model=list[SampleVersionInfo])
+async def list_sample_versions(sample_id: str) -> list[SampleVersionInfo]:
+    """列出某样例的所有版本槽（≤ MAX_VERSIONS=2，按 mtime 升序）。"""
+    if manifest_store.locate_sample_dir(sample_id) is None:
+        if not any(it.id == sample_id for it in _SYSTEM_LIBRARY):
+            raise HTTPException(status_code=404, detail=f"sample not found: {sample_id}")
+    return _build_version_list(sample_id)
+
+
+@router.put("/sample/{sample_id}/manifest", response_model=VersionMutationResponse)
+async def put_sample_manifest(
+    sample_id: str,
+    manifest: SampleManifest,
+    slot: Optional[str] = Query(
+        default=None,
+        description="目标 slot_id；不传则写入 active 槽。**就地编辑**——不开新版本。",
+    ),
+) -> VersionMutationResponse:
+    """整段替换某槽的内容——用户在 Decompose 页编辑后点"保存"调这个。
+
+    不开新版本（重新拆解才会开新槽），不做语义校验（用户明确要求允许任意修改）。
+    Pydantic 只做格式校验。slot 不存在抛 404。
+    """
+    if manifest_store.locate_sample_dir(sample_id) is None:
+        raise HTTPException(status_code=404, detail=f"sample not found: {sample_id}")
+    target_slot = slot or manifest_store.get_active_slot(sample_id)
+    if target_slot is None:
+        raise HTTPException(
+            status_code=409,
+            detail=f"sample {sample_id} 没有任何版本槽，请先跑一次拆解",
+        )
+    if manifest.sample_id and manifest.sample_id != sample_id:
+        raise HTTPException(
+            status_code=400,
+            detail=f"manifest.sample_id={manifest.sample_id} 与 URL {sample_id} 不一致",
+        )
+    manifest = manifest.model_copy(update={"sample_id": sample_id})
+    try:
+        manifest_store.update_version(sample_id, target_slot, manifest)
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except OSError as exc:
+        raise HTTPException(status_code=500, detail=f"写槽失败: {exc}") from exc
+    return _mutation_response(sample_id)
+
+
+@router.post("/sample/{sample_id}/versions/{slot_id}/activate", response_model=VersionMutationResponse)
+async def activate_sample_version(sample_id: str, slot_id: str) -> VersionMutationResponse:
+    """切换 active 指针到指定槽。slot 不存在抛 404。"""
+    if manifest_store.locate_sample_dir(sample_id) is None:
+        raise HTTPException(status_code=404, detail=f"sample not found: {sample_id}")
+    try:
+        manifest_store.activate(sample_id, slot_id)
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    return _mutation_response(sample_id)
+
+
+@router.delete("/sample/{sample_id}/versions/{slot_id}", response_model=VersionMutationResponse)
+async def delete_sample_version(sample_id: str, slot_id: str) -> VersionMutationResponse:
+    """删除一个版本槽。被删的若是 active，自动跳到剩下那个。
+
+    - slot 不存在 → 404
+    - 删完没版本了：active 自动清空，前端走"未拆解"分支
+    """
+    if manifest_store.locate_sample_dir(sample_id) is None:
+        raise HTTPException(status_code=404, detail=f"sample not found: {sample_id}")
+    if not manifest_store.delete_version(sample_id, slot_id):
+        raise HTTPException(status_code=404, detail=f"slot {slot_id} 不存在")
+    return _mutation_response(sample_id)
 
 
 # ---------------------------------------------------------------------------

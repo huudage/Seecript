@@ -79,7 +79,23 @@ export default function LibraryPage() {
 
   const handlePick = async (item: LibraryItem) => {
     selectSamples([item.id], [item.title], item.video_type, item.source)
-    // 已有项目：让用户继续在该项目内（不换 sample），并提交 library 步骤快照
+    // 未拆解（version_count=0）→ 跳 Decompose 引导用户先拆解；别让 Compose 拿到半成品
+    if (item.version_count === 0) {
+      if (currentProjectId) {
+        try {
+          await commitStep(currentProjectId, 'library', { sample_ids: [item.id] })
+        } catch (err) {
+          setError(err instanceof Error ? err.message : '保存步骤失败')
+          return
+        }
+      }
+      navigate('/decompose')
+      if (!currentProjectId) {
+        setNewProjectSampleId(item.id)
+      }
+      return
+    }
+    // 已拆解（≥1 个版本槽）：沿用原有 Compose 跳转链
     if (currentProjectId) {
       try {
         await commitStep(currentProjectId, 'library', { sample_ids: [item.id] })
@@ -127,8 +143,8 @@ export default function LibraryPage() {
 
   return (
     <PageShell
-      title="素材库"
-      subtitle="管理样例视频与你的常用素材：BGM、参考图、参考视频。"
+      title="资产库"
+      subtitle="样例视频 + 拆解结果（最多 2 版本可对比） + 你的常用素材：BGM、参考图、参考视频。"
     >
       <div className="mb-5 inline-flex items-center gap-1 rounded-lg border border-border bg-card p-1 text-sm">
         {(['samples', 'assets'] as const).map((s) => (
@@ -255,6 +271,7 @@ export default function LibraryPage() {
                 <h3 className="line-clamp-2 text-sm font-semibold leading-snug">
                   {item.title}
                 </h3>
+                <ManifestStatusBadge versionCount={item.version_count} />
                 <div className="mt-auto flex items-center justify-between text-xs text-muted-foreground">
                   <span>{item.duration_seconds.toFixed(1)}s</span>
                   <span>{item.shot_count} 镜头</span>
@@ -331,6 +348,23 @@ function PreviewModal({ item, onClose }: { item: LibraryItem; onClose: () => voi
         </video>
       </div>
     </div>
+  )
+}
+
+function ManifestStatusBadge({ versionCount }: { versionCount: number }) {
+  if (versionCount === 0) {
+    return (
+      <span className="inline-flex items-center gap-1.5 rounded-full border border-border bg-muted px-2 py-0.5 text-[10px] font-medium text-muted-foreground">
+        <span className="h-1.5 w-1.5 rounded-full bg-muted-foreground/60" />
+        未拆解
+      </span>
+    )
+  }
+  return (
+    <span className="inline-flex items-center gap-1.5 rounded-full border border-emerald-400/40 bg-emerald-400/10 px-2 py-0.5 text-[10px] font-medium text-emerald-600 dark:text-emerald-300">
+      <span className="h-1.5 w-1.5 rounded-full bg-emerald-500" />
+      已拆解 · {versionCount} 版本
+    </span>
   )
 }
 

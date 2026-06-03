@@ -23,6 +23,7 @@ from pathlib import Path
 from typing import Optional
 
 from ..jobs import job_store
+from ..library import manifest_store
 from ..llm_client import get_llm_client, _extract_json
 from ..asr_client import get_asr_client, ASRError, ASRTranscript, Utterance as ASRUtterance
 from ..assets import resolve_reference_image_urls
@@ -163,11 +164,16 @@ async def decompose(
     title: str = "",
     video_type: VideoType = "marketing",
     reference_asset_ids: Optional[list[str]] = None,
+    nl_prompt: Optional[str] = None,
+    replace_slot: Optional[str] = None,
 ) -> SampleManifest:
     """完整拆解流水线。每一步失败都降级为 mock 数据但不中断。
 
     job_id 提供时通过 JobStore 推进度；不提供时纯函数式跑通。
     reference_asset_ids 是用户素材库参考素材（图/视频抽帧），在视频理解阶段作为额外视觉上下文。
+    nl_prompt 是用户对本次拆解的自由文本指引（『更看重开场』『压短结尾』之类），
+    注入到视频理解 + 段落切分的 LLM user message 末尾。
+    replace_slot 给版本槽满时用——告诉 manifest_store.create_version 替换哪个旧槽。
     """
 
     def push(step: str, percent: float, payload: dict | None = None) -> None:
@@ -269,6 +275,7 @@ async def decompose(
     understanding = await _video_understand(
         shots, video_type, has_voice, total_duration,
         reference_asset_ids=reference_asset_ids,
+        nl_prompt=nl_prompt,
     )
     push("video_understand", 84, {
         "archetype": understanding.archetype,
@@ -278,7 +285,10 @@ async def decompose(
 
     # ---- 6. LLM 角色+主题切段（v2 重构）----
     push("llm_section", 93, {"note": f"LLM 段落分析 · 基于画像切 {understanding.suggested_segments} 段"})
-    sections = await _segment_with_roles(shots, total_duration, understanding, has_voice)
+    sections = await _segment_with_roles(
+        shots, total_duration, understanding, has_voice,
+        nl_prompt=nl_prompt,
+    )
 
     # ---- 7. 打包 PackagingProfile（video_type 仍驱动包装风格）----
     subtitle_styles = [s for sh in shots for s in (sh.tags or []) if isinstance(s, str) and "字幕" in s]
@@ -312,36 +322,34 @@ async def decompose(
         climax_position=_compute_climax(sections, rhythm, total_duration),
     )
 
-    # 用户上传样例:把 manifest.json 落到 video 同目录,让 /api/sample/<id>/manifest 后续直接命中。
-    # 两条上传链路:
-    #   A) /api/decompose/upload → var/uploads/decompose/<user-xxx>/ → video_url 改 /uploads/...
+    # 拆解结果写入一个**新版本槽**——不再有 draft / publish 概念，写完即可被 Compose 消费。
+    # replace_slot：当 sample 已有 MAX_VERSIONS 个版本时，路由层让用户选了要替换哪个；否则 None。
+    # 两条上传链路（决定 video_url 怎么写）:
+    #   A) /api/decompose/upload → var/uploads/decompose/<user-xxx>/ → video_url 指 /uploads/...
     #   B) /api/library/system/upload → server/samples/<sys-xxx>/ → video_url 保持 /samples/...
+    new_slot_id: Optional[str] = None
     if video_path:
         vp = Path(str(video_path)).resolve()
-        manifest_dst: Optional[Path] = None
         if "uploads" in vp.parts and "decompose" in vp.parts:
-            # A) 用户样例:改 video_url 指向 /uploads/decompose
             manifest = manifest.model_copy(update={
                 "video_url": f"/uploads/decompose/{sample_id}/video.mp4",
             })
-            manifest_dst = vp.parent / "manifest.json"
-        elif sample_id.startswith("sys-") and vp.parent.parent.name == "samples":
-            # B) 系统上传样例:video_url 已经是 /samples/<sys-xxx>/video.mp4,
-            # 直接把 manifest 落到 server/samples/<sys-xxx>/manifest.json
-            manifest_dst = vp.parent / "manifest.json"
-        if manifest_dst is not None:
-            try:
-                import json as _json
-                manifest_dst.write_text(
-                    _json.dumps(manifest.model_dump(), ensure_ascii=False, indent=2),
-                    encoding="utf-8",
-                )
-                log.info("[decompose] 上传样例 %s manifest 已落盘:%s", sample_id, manifest_dst)
-            except OSError as exc:
-                log.warning("[decompose] 写 manifest 失败 %s:%s", sample_id, exc)
+        try:
+            new_slot_id = manifest_store.create_version(
+                sample_id, manifest, replace_slot=replace_slot, activate=True,
+            )
+        except manifest_store.SlotsFullError as exc:
+            # 不应该到这里——路由层应当在 kickoff 前就拦下让用户选；走到这里说明并发或调用方忘了传 replace_slot。
+            log.warning("[decompose] %s slots full at write time: %s", sample_id, exc)
+        except (FileNotFoundError, OSError, ValueError) as exc:
+            log.warning("[decompose] 写版本槽失败 %s: %s", sample_id, exc)
 
     if job_id:
-        job_store.complete(job_id, payload={"sample_id": sample_id, "manifest": manifest.model_dump()})
+        job_store.complete(job_id, payload={
+            "sample_id": sample_id,
+            "manifest": manifest.model_dump(),
+            "slot_id": new_slot_id,
+        })
 
     return manifest
 
@@ -512,6 +520,7 @@ async def _video_understand(
     total_duration: float,
     *,
     reference_asset_ids: Optional[list[str]] = None,
+    nl_prompt: Optional[str] = None,
 ) -> VideoUnderstanding:
     """LLM 给整支视频的语义画像。失败时按 video_type 兜底。
 
@@ -561,6 +570,11 @@ async def _video_understand(
             f"\n\n附带 {len(ref_urls)} 张『用户参考画面』——来自用户素材库，"
             f"不属于样例视频，仅作为用户希望对齐的视觉气质提示。请仍以样例镜头为主体做分析。"
         )
+
+    if nl_prompt:
+        # 用户的自由文本指引（来自"重新生成"对话框）。注入到 user message 末尾——
+        # 让 LLM 在做画像 / 切段时偏向用户期望，但不替换硬约束。
+        user += f"\n\n【用户额外要求】{nl_prompt.strip()[:300]}"
     try:
         text = await llm.complete_multimodal(_UNDERSTAND_SYSTEM, user, images)
         data = _extract_json(text)
@@ -605,6 +619,8 @@ async def _segment_with_roles(
     total: float,
     understanding: VideoUnderstanding,
     has_voice: bool,
+    *,
+    nl_prompt: Optional[str] = None,
 ) -> list[Section]:
     """Shot-first 分类：让 LLM 给**每个镜头**打 role + theme，再合并相邻同 role 镜头成段落。
 
@@ -656,6 +672,11 @@ async def _segment_with_roles(
             f"（对应 shot_index = {sampled_shot_indices}），不是每个镜头都有图。"
             f"请仍按上方文字列表里全部 {len(shots)} 个 shot_index 输出标注。"
         )
+
+    if nl_prompt:
+        # 用户的自由文本指引——告诉 LLM 在 role/theme 选择上向哪边偏。
+        # 注入位置在硬约束之后，避免覆盖"首=opening 尾=closing"的结构稳定性。
+        user += f"\n\n【用户额外要求】{nl_prompt.strip()[:300]}"
 
     try:
         text = await llm.complete_multimodal(_SHOT_ROLE_SYSTEM, user, images)

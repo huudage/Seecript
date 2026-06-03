@@ -109,6 +109,22 @@ LibrarySource = Literal["system", "user"]
 """
 
 
+ManifestStatus = Literal["none", "ready"]
+"""样例的拆解状态：
+- none   未拆解：只有 video.mp4 + meta.json，Compose 拿不到
+- ready  已有 ≥1 个版本槽：当前 active 槽供 Compose / Library 列表用
+"""
+
+
+class SampleVersionInfo(BaseModel):
+    """单个版本槽的列表元信息。前端按 updated_at 升序展示标签 v1/v2。"""
+
+    slot_id: str = Field(..., description="后端内部 slot id（8 hex），前端不展示，调用 API 时回传")
+    label: str = Field(..., description="展示用标签，如 v1/v2，由列表中的位置决定")
+    updated_at: float = Field(..., description="manifest 文件 mtime（秒）")
+    is_active: bool = Field(..., description="是否当前 active 槽（Compose / Library 用的就是它）")
+
+
 class LibraryItem(BaseModel):
     """`GET /api/library` 列表项。"""
 
@@ -122,6 +138,19 @@ class LibraryItem(BaseModel):
     source: LibrarySource = Field(
         default="system",
         description="system=内置样例（所有用户共享），user=用户上传到样例库的样例。",
+    )
+    manifest_status: ManifestStatus = Field(
+        default="none",
+        description="拆解状态。none=未拆；ready=至少 1 个版本槽可用。",
+    )
+    version_count: int = Field(
+        default=0,
+        ge=0,
+        description="已存在的版本槽数量（0–MAX_VERSIONS=2）。",
+    )
+    active_slot: Optional[str] = Field(
+        default=None,
+        description="当前 active slot id；version_count=0 时为空。",
     )
 
 
@@ -254,6 +283,15 @@ class DecomposeRequest(BaseModel):
         default_factory=list,
         max_length=6,
         description="用户素材库中的参考素材 id 列表（图/视频抽帧），喂给多模态 LLM 做风格/调性参考",
+    )
+    nl_prompt: Optional[str] = Field(
+        default=None,
+        max_length=500,
+        description="用户自由文本指引（『更看重开场』『压短结尾』之类）；注入到 LLM 视频理解+切段 prompt。",
+    )
+    replace_slot: Optional[str] = Field(
+        default=None,
+        description="版本槽已满时要覆盖的 slot_id；槽未满时必须为空。后端在路由层预校验。",
     )
 
 
@@ -566,35 +604,72 @@ class PackagingItem(BaseModel):
     style: dict[str, Any] = Field(default_factory=dict, description="字体/颜色/位置/动画参数")
 
 
-class BGMAnalysisSegment(BaseModel):
-    """BGM 结构片段（doubao-seed 音频理解切出的段落）。"""
+EnergyShape = Literal["flat", "single_peak", "multi_peak", "build_up", "wave"]
+"""BGM 能量形态——叙事性的整体走向，决定怎么和视频配合。
 
-    start: float = Field(ge=0.0, description="片段起始（秒，相对 BGM 自身 t=0）")
-    end: float = Field(ge=0.0, description="片段结束（秒）")
-    energy: Literal["low", "mid", "high"] = Field(description="能量层级：低=铺垫 / 中=推进 / 高=高潮")
-    label: str = Field(max_length=40, description="段落概括，如『前奏铺垫』『副歌爆发』")
-    fit_with_video: str = Field(max_length=80, description="该段如何与视频节奏匹配（哪里激昂哪里舒缓）")
+- flat         全程平稳：无明显峰值，适合科普/Vlog/治愈类视频做底色，不抢戏
+- single_peak  单峰爆发：一条主高潮线（典型副歌），适合带 CTA / 卖点对比 / 反转视频
+- multi_peak   多峰起伏：两次以上峰值，适合长剧情 / 多卖点串烧
+- build_up     渐强推进：能量从低到高一直走，适合预告 / 蓄势 / 反差揭示
+- wave         波浪起伏：高低反复，适合情绪 Vlog / 故事性叙事
+"""
+
+
+class BGMHighlight(BaseModel):
+    """BGM 关键节点——高潮、转折、骤停等"值得用户对齐"的时间点。"""
+
+    at_seconds: float = Field(ge=0.0, description="节点出现的时间（秒，相对 BGM t=0）")
+    kind: Literal["climax", "drop", "build_start", "release", "break"] = Field(
+        description="节点类型：climax 主高潮 / drop 骤降 / build_start 蓄势起点 / release 释放 / break 留白",
+    )
+    label: str = Field(max_length=24, description="节点小标，例『副歌入』『鼓点 drop』")
+    fit_with_video: str = Field(
+        max_length=80,
+        description="建议把这个节点对齐到视频的什么动作（卖点出现 / 反转点 / CTA 起手）",
+    )
+
+
+class BGMCalmSegment(BaseModel):
+    """BGM 平稳段——可以承载长口播 / 慢镜头的"安全区间"。"""
+
+    start: float = Field(ge=0.0)
+    end: float = Field(ge=0.0)
+    note: str = Field(max_length=60, description="为什么这段适合做铺垫，例『纯钢琴留白，适合压口播』")
 
 
 class BGMAnalysis(BaseModel):
-    """LLM 音频理解结果：曲名/情绪 + 结构起伏 + 视频匹配建议。
+    """LLM 音频理解结果：先定能量形态，再标关键节点 + 平稳段，最后给视频配合建议。
 
-    替代旧 librosa peak 单点参考线——展示给用户的不再是一条曲线，而是几段标好能量层级 + 配合建议的色块。
+    设计取舍（v2）：
+    - 旧版按 4-6 段强切色块罗列，对全程平稳的曲子很别扭、对真高潮迭起的曲子又割裂
+    - 新版 energy_shape 一句话定调，climaxes 仅标真正值得对齐的"鼓点"（可空），calm_segments 标安全口播区间
+    - 全程平稳的 flat 曲子可以 climaxes=[]，由 overall_advice 解释"为什么平稳反而合适"
+
     plan 绑定 BGM 时一次性算好放进 BGMConfig.analysis，渲染层不参与。
     """
 
-    title_guess: str = Field(max_length=60, description="曲风/曲目猜测，无版权信息时给『未知名/电子节拍』之类概括")
+    title_guess: str = Field(max_length=60, description="曲风/曲目猜测，无版权信息时给『钢琴抒情』『鼓点节拍』概括")
     mood_tags: list[str] = Field(default_factory=list, max_length=6, description="情绪标签 3-6 个")
+    energy_shape: EnergyShape = Field(description="能量整体走向——决定视频该怎么用这首曲子")
+    energy_shape_reason: str = Field(
+        max_length=140,
+        description="一句话讲为什么是这种形态（听到了什么），以及这种形态适合什么类型视频",
+    )
     theme_fit_score: float = Field(ge=0.0, le=1.0, description="0-1：曲子与 brief 的契合度")
     theme_fit_reason: str = Field(max_length=140, description="一句话讲为什么契合或不契合")
-    structure: list[BGMAnalysisSegment] = Field(
+    climaxes: list[BGMHighlight] = Field(
         default_factory=list,
-        max_length=8,
-        description="4-6 段结构切片；首尾覆盖 0 ~ duration_seconds",
+        max_length=4,
+        description="真正值得对齐的高潮/鼓点（0-3 个）；全程平稳时为空",
+    )
+    calm_segments: list[BGMCalmSegment] = Field(
+        default_factory=list,
+        max_length=4,
+        description="平稳/留白区间，可以承载长口播 / 慢镜头",
     )
     overall_advice: str = Field(
-        max_length=160,
-        description="一段总体建议：哪里激昂哪里舒缓、应该怎么对齐视频节奏",
+        max_length=200,
+        description="叙事性总建议：曲子和视频的配合策略（高潮放哪、平稳处怎么用、整体节奏怎么把）",
     )
     backend: str = Field(description="生成 backend：doubao_ark / mock")
 

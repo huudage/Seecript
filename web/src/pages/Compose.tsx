@@ -36,6 +36,7 @@ import type {
   GapDetectRequest,
   GapFillAllResponse,
   GapFillRequest,
+  ManifestStatusResponse,
   MaterialUploadResponse,
   PackagingRecommendRequest,
   Plan,
@@ -210,6 +211,33 @@ export default function ComposePage() {
     () => materials.slice().sort((a, b) => a.sort_order - b.sort_order),
     [materials],
   )
+
+  // ====== 入口拦截:任何被选中的样例尚未拆解(无版本槽)→ 拦下来,引导用户去 Decompose ======
+  // 不主动跑拆解流水线(LLM/Seedance/ASR 都吃配额),让用户先看再决定。
+  // 错过 Library 卡片的版本徽章,这里是兜底。
+  const [unpublishedSamples, setUnpublishedSamples] = useState<string[] | null>(null)
+  useEffect(() => {
+    if (selectedSampleIds.length === 0) return
+    let cancelled = false
+    void (async () => {
+      const checks = await Promise.all(
+        selectedSampleIds.map(async (id) => {
+          try {
+            const s = await api.get<ManifestStatusResponse>(
+              `/sample/${id}/manifest/status`,
+            )
+            return { id, hasVersion: s.version_count > 0 }
+          } catch {
+            return { id, hasVersion: false }
+          }
+        }),
+      )
+      if (cancelled) return
+      const missing = checks.filter((c) => !c.hasVersion).map((c) => c.id)
+      setUnpublishedSamples(missing.length ? missing : null)
+    })()
+    return () => { cancelled = true }
+  }, [selectedSampleIds])
 
   // 选中 gap → 拿对应的 fill（如果已经做过）
   const selectedGap = useMemo(
@@ -847,6 +875,20 @@ export default function ComposePage() {
         <div className="mb-3 rounded-md border border-destructive/40 bg-destructive/5 px-4 py-2 text-sm text-destructive">
           {error}
         </div>
+      )}
+
+      {unpublishedSamples && unpublishedSamples.length > 0 && (
+        <UnpublishedSamplesGate
+          samples={unpublishedSamples}
+          onGoDecompose={() => {
+            // 跳第一个未拆解的去拆解;若有项目,先 commit library step
+            const firstId = unpublishedSamples[0]
+            useSessionStore.getState().selectSamples([firstId])
+            navigate('/decompose')
+          }}
+          onChangeSample={() => navigate('/library')}
+          onDismiss={() => setUnpublishedSamples(null)}
+        />
       )}
 
       {/* ====== 参考样例 chips（最多 2 个）====== */}
@@ -1520,6 +1562,61 @@ function SectionsBar({ manifest }: { manifest: SampleManifest | null }) {
           </div>
         )
       })}
+    </div>
+  )
+}
+
+// 未拆解样例拦截弹窗:Compose 入口检测到任何选中的 sample 没有版本槽时显示。
+// 不主动跑拆解流水线(吃配额),给 3 个出口:去 Decompose / 换样例 / 取消(让用户自己决定怎么往下走)。
+function UnpublishedSamplesGate({
+  samples,
+  onGoDecompose,
+  onChangeSample,
+  onDismiss,
+}: {
+  samples: string[]
+  onGoDecompose: () => void
+  onChangeSample: () => void
+  onDismiss: () => void
+}) {
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 px-4">
+      <div className="w-full max-w-lg rounded-lg border border-border bg-card p-5 shadow-xl">
+        <h3 className="text-base font-semibold">该样例还未拆解</h3>
+        <p className="mt-2 text-sm text-muted-foreground">
+          Compose 需要已拆解的结构知识库才能跑;以下样例当前没有任何版本槽:
+        </p>
+        <ul className="mt-3 space-y-1 text-xs">
+          {samples.map((id) => (
+            <li key={id} className="flex items-center justify-between rounded-md bg-muted px-2 py-1.5">
+              <span className="font-mono text-muted-foreground">{id}</span>
+              <span className="rounded-full border border-border bg-card px-2 py-0.5 text-[10px] text-muted-foreground">
+                未拆解
+              </span>
+            </li>
+          ))}
+        </ul>
+        <div className="mt-5 flex flex-wrap gap-2">
+          <button
+            onClick={onGoDecompose}
+            className="rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground"
+          >
+            去拆解 / 发布 →
+          </button>
+          <button
+            onClick={onChangeSample}
+            className="rounded-md border border-border bg-card px-4 py-2 text-sm font-medium hover:bg-secondary"
+          >
+            换一个样例
+          </button>
+          <button
+            onClick={onDismiss}
+            className="ml-auto rounded-md px-3 py-2 text-xs text-muted-foreground hover:bg-secondary"
+          >
+            稍后再说
+          </button>
+        </div>
+      </div>
     </div>
   )
 }

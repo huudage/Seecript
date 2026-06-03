@@ -38,6 +38,16 @@ export type MediaType = 'video' | 'image' | 'audio'
 // Module 1 — Library
 // =========================================================================
 
+export type ManifestStatus = 'none' | 'ready'
+
+export interface SampleVersionInfo {
+  slot_id: string
+  /** 展示用标签 v1/v2（按 updated_at 升序）。 */
+  label: string
+  updated_at: number
+  is_active: boolean
+}
+
 export interface LibraryItem {
   id: SampleId
   title: string
@@ -47,6 +57,27 @@ export interface LibraryItem {
   shot_count: number
   cover_url: string
   source: 'system' | 'user'
+  /** none = 未拆解；ready = 至少 1 个版本槽可用。 */
+  manifest_status: ManifestStatus
+  /** 已存在的版本槽数量（0–2）。 */
+  version_count: number
+  /** 当前 active slot id；version_count=0 时为空。 */
+  active_slot: string | null
+}
+
+export interface VersionMutationResponse {
+  sample_id: SampleId
+  version_count: number
+  active_slot: string | null
+  versions: SampleVersionInfo[]
+}
+
+export interface ManifestStatusResponse {
+  sample_id: SampleId
+  version_count: number
+  max_versions: number
+  active_slot: string | null
+  versions: SampleVersionInfo[]
 }
 
 export interface Shot {
@@ -136,6 +167,12 @@ export interface SampleManifest {
 export interface DecomposeRequest {
   sample_id: SampleId
   video_type: VideoType
+  /** 参考素材 id 列表（图/视频抽帧），喂给多模态 LLM 做风格/调性参考；最多 6 个。 */
+  reference_asset_ids?: string[]
+  /** 用户自由文本指引（≤500 字），影响 LLM 视频画像 + 分段决策。 */
+  nl_prompt?: string | null
+  /** 版本槽已满时要覆盖的 slot_id（前端在 409 槽满后让用户挑）。 */
+  replace_slot?: string | null
 }
 
 export interface DecomposeSubmitResponse {
@@ -285,33 +322,59 @@ export interface PackagingItem {
   style: Record<string, unknown>
 }
 
-export interface BGMAnalysisSegment {
-  /** 起始（秒，相对 BGM t=0）。 */
-  start: number
-  /** 结束（秒）。 */
-  end: number
-  /** 能量层级：低=铺垫 / 中=推进 / 高=高潮。 */
-  energy: 'low' | 'mid' | 'high'
-  /** 段名（≤16 字），如『前奏铺垫』『副歌爆发』。 */
+export type BGMEnergyShape = 'flat' | 'single_peak' | 'multi_peak' | 'build_up' | 'wave'
+/**
+ * BGM 能量形态——叙事性的整体走向，决定怎么和视频配合。
+ *
+ * - flat         全程平稳，适合科普/Vlog/治愈类视频做底色
+ * - single_peak  单峰爆发，适合带 CTA / 卖点对比 / 反转视频
+ * - multi_peak   多峰起伏，适合长剧情 / 多卖点串烧
+ * - build_up     渐强推进，适合预告 / 蓄势 / 反差揭示
+ * - wave         波浪起伏，适合情绪 Vlog / 故事性叙事
+ */
+
+export type BGMHighlightKind = 'climax' | 'drop' | 'build_start' | 'release' | 'break'
+
+export interface BGMHighlight {
+  /** 节点出现的时间（秒，相对 BGM t=0）。 */
+  at_seconds: number
+  kind: BGMHighlightKind
+  /** 节点小标，例『副歌入』『鼓点 drop』（≤12 字）。 */
   label: string
-  /** 该段如何与视频节奏匹配（哪里激昂哪里舒缓）。 */
+  /** 建议把这个节点对齐到视频的什么动作（卖点/反转/CTA）。 */
   fit_with_video: string
 }
 
+export interface BGMCalmSegment {
+  start: number
+  end: number
+  /** 为什么这段适合做铺垫，例『纯钢琴留白，适合压口播』。 */
+  note: string
+}
+
 /**
- * LLM 音频理解结果（doubao-seed-2.0-lite）：曲风/情绪 + 4-6 段结构 + 视频匹配建议。
+ * LLM 音频理解结果（doubao-seed-2.0-lite v2）：能量形态 + 关键节点 + 平稳段 + 视频配合建议。
  *
- * 替代旧 librosa 单点 peak 参考线——展示给用户的是几段标好能量层级的色块 + 一段总体建议。
- * 后端在 plan 绑定 BGM 时一次性算好，挂在 BGMConfig.analysis；失败/超时则保持 null，
- * 前端兜底用 BGMConfig.peak_seconds（librosa）。
+ * 替代旧 4-6 段切片色块——重点不是"段落罗列"而是"叙事性能量走向 + 真正值得对齐的鼓点"。
+ * 全程平稳的曲子可以 climaxes=[]，由 overall_advice 解释为什么平稳反而合适。
+ *
+ * 后端在 plan 绑定 BGM 时一次性算好，挂在 BGMConfig.analysis；失败/超时则保持 null。
  */
 export interface BGMAnalysis {
   title_guess: string
   mood_tags: string[]
+  /** 能量整体走向——决定视频该怎么用这首曲子。 */
+  energy_shape: BGMEnergyShape
+  /** 一句话讲为什么是这种形态、适合什么类型视频。 */
+  energy_shape_reason: string
   /** 0-1：曲子与 brief 的契合度。 */
   theme_fit_score: number
   theme_fit_reason: string
-  structure: BGMAnalysisSegment[]
+  /** 真正值得对齐的高潮/鼓点（0-3 个）；全程平稳时为空数组。 */
+  climaxes: BGMHighlight[]
+  /** 平稳/留白区间，可以承载长口播 / 慢镜头。 */
+  calm_segments: BGMCalmSegment[]
+  /** 叙事性总建议：曲子和视频的配合策略。 */
   overall_advice: string
   /** 生成 backend：doubao_ark / mock。 */
   backend: string
