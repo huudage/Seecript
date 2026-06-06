@@ -15,6 +15,12 @@
 - 失败一律落到 status='failed'，shots=[]，不阻塞用户用素材（fallback 到 truncate 行为）。
 - 单镜头时长 < 0.8s 的合并到相邻；> 8s 的不切（VLM 帧抽中间一帧足够代表）。
 - 上限 12 个 shot：超过把最短相邻合并到 12 个；防止 LLM payload 爆炸。
+
+OOP 重构（stage-20 收尾）：
+- 5 步流水线封装到 `VideoPreprocessor` 类，状态（duration / shots_compact /
+  thumbnail_paths / captions）作为实例属性，每步是一个私有方法。
+- 模块顶层只剩 `dispatch(project_id, material_id, video_path)` 兼容入口，
+  内部实例化 VideoPreprocessor 并 fire-and-forget。
 """
 from __future__ import annotations
 
@@ -46,14 +52,6 @@ _SHOT_SYSTEM = (
     "\"recommended_role\": string（必须从 allowed_roles 里选一个）}。\n"
     "字段名固定；不要漏。"
 )
-
-
-def _shots_dir(project_id: str, material_id: str) -> Path:
-    """缩略图按 material_id 子目录隔离：var/uploads/<sid>/shots/<material_id>/。"""
-    settings = get_settings()
-    root = settings.log_dir.parent / "var" / "uploads" / project_id / "shots" / material_id
-    root.mkdir(parents=True, exist_ok=True)
-    return root
 
 
 def _compact_shots(raw: list[scene_detect.DetectedShot]) -> list[scene_detect.DetectedShot]:
@@ -122,9 +120,7 @@ def _compact_shots(raw: list[scene_detect.DetectedShot]) -> list[scene_detect.De
     ]
 
 
-async def _caption_shot(
-    image_path: Path,
-) -> tuple[str, float, SectionRole]:
+async def _caption_shot(image_path: Path) -> tuple[str, float, SectionRole]:
     """单帧 → LLM 多模态描述 + action_density + role。失败回落 placeholder。"""
     user_text = (
         f"allowed_roles={list(_ALLOWED_ROLES)}\n"
@@ -163,126 +159,172 @@ async def _caption_shot(
     return caption, action_density, role
 
 
-async def preprocess_video_material(
-    project_id: str,
-    material_id: str,
-    video_path: Path,
-) -> None:
-    """后台任务：切片 + 缩略图 + VLM caption；结果写回 material_store。
+class VideoPreprocessor:
+    """单条视频素材的预处理流水线，5 个 stage 串成一个对象的状态机。
 
-    任意一步失败都把 status='failed'，shots=[]——_pick 会自动 fallback 到旧的 truncate 行为。
+    用法（与旧 preprocess_video_material 等价）：
+        await VideoPreprocessor(project_id, material_id, video_path).run()
+
+    设计：
+    - 任一步失败立刻把 status='failed' 写回 store 并 return；上层不抛异常
+    - 状态属性（duration / shots_compact / thumbnail_paths / captions）按 stage 顺序填充
+    - _shots_dir 按 material_id 子目录隔离，避免不同 material 的 shot-XX.jpg 互盖
     """
-    log.info("[preprocess] start project=%s material=%s path=%s", project_id, material_id, video_path)
-    material_store.update(project_id, material_id, preprocess_status="running")
 
-    if not video_path.exists():
-        material_store.update(
-            project_id, material_id,
-            preprocess_status="failed",
-            preprocess_error="文件不存在",
+    SEMAPHORE_LIMIT = 4  # 并发 VLM caption 上限——避免火山速率
+
+    def __init__(self, project_id: str, material_id: str, video_path: Path) -> None:
+        self.project_id = project_id
+        self.material_id = material_id
+        self.video_path = video_path
+
+        self.duration: float | None = None
+        self.shots_compact: list[scene_detect.DetectedShot] = []
+        self.thumbnail_paths: list[Path | None] = []
+        self.captions: list[tuple[str, float, SectionRole]] = []
+
+    # --- 路径辅助 ---
+    @property
+    def shots_dir(self) -> Path:
+        """缩略图按 material_id 子目录隔离：var/uploads/<sid>/shots/<material_id>/."""
+        settings = get_settings()
+        root = (
+            settings.log_dir.parent / "var" / "uploads" / self.project_id
+            / "shots" / self.material_id
         )
-        return
+        root.mkdir(parents=True, exist_ok=True)
+        return root
 
-    # 1) 时长 probe → 同时回填 duration_seconds
-    duration: float | None = None
-    try:
-        info = await asyncio.to_thread(ffmpeg_svc.probe, video_path)
-        duration = float(info.duration_seconds or 0.0)
-        if duration > 0.0:
-            material_store.update(project_id, material_id, duration_seconds=duration)
-    except (ffmpeg_svc.FFmpegError, FileNotFoundError) as exc:
-        log.warning("[preprocess] probe failed material=%s: %s", material_id, exc)
+    # --- 状态写回辅助 ---
+    def _mark_running(self) -> None:
+        material_store.update(self.project_id, self.material_id, preprocess_status="running")
+
+    def _mark_failed(self, reason: str) -> None:
         material_store.update(
-            project_id, material_id,
+            self.project_id, self.material_id,
             preprocess_status="failed",
-            preprocess_error=f"probe 失败: {exc}",
+            preprocess_error=reason,
         )
-        return
 
-    if duration is None or duration < _MIN_SHOT_SECONDS:
-        material_store.update(
-            project_id, material_id,
-            preprocess_status="failed",
-            preprocess_error="视频时长过短",
-        )
-        return
+    # --- 5 个 stage ---
+    async def _stage_probe(self) -> bool:
+        """ffprobe 时长；同时回填 duration_seconds。失败 → status=failed。"""
+        if not self.video_path.exists():
+            self._mark_failed("文件不存在")
+            return False
+        try:
+            info = await asyncio.to_thread(ffmpeg_svc.probe, self.video_path)
+            duration = float(info.duration_seconds or 0.0)
+            if duration > 0.0:
+                material_store.update(
+                    self.project_id, self.material_id, duration_seconds=duration,
+                )
+        except (ffmpeg_svc.FFmpegError, FileNotFoundError) as exc:
+            log.warning("[preprocess] probe failed material=%s: %s", self.material_id, exc)
+            self._mark_failed(f"probe 失败: {exc}")
+            return False
 
-    # 2) 切片
-    try:
-        raw_shots = await asyncio.to_thread(scene_detect.detect_shots, str(video_path))
-    except Exception as exc:  # noqa: BLE001
-        log.warning("[preprocess] scene_detect failed material=%s: %s", material_id, exc)
-        material_store.update(
-            project_id, material_id,
-            preprocess_status="failed",
-            preprocess_error=f"切片失败: {exc}",
-        )
-        return
+        if duration < _MIN_SHOT_SECONDS:
+            self._mark_failed("视频时长过短")
+            return False
+        self.duration = duration
+        return True
 
-    if not raw_shots:
-        material_store.update(
-            project_id, material_id,
-            preprocess_status="failed",
-            preprocess_error="未检测出镜头",
-        )
-        return
+    async def _stage_detect_shots(self) -> bool:
+        """PySceneDetect 切片 + compact。失败/无镜头 → status=failed。"""
+        try:
+            raw_shots = await asyncio.to_thread(
+                scene_detect.detect_shots, str(self.video_path),
+            )
+        except Exception as exc:  # noqa: BLE001
+            log.warning("[preprocess] scene_detect failed material=%s: %s",
+                        self.material_id, exc)
+            self._mark_failed(f"切片失败: {exc}")
+            return False
 
-    shots_compact = _compact_shots(raw_shots)
-    log.info("[preprocess] %s shots %d → %d (after compact)",
-             material_id, len(raw_shots), len(shots_compact))
+        if not raw_shots:
+            self._mark_failed("未检测出镜头")
+            return False
 
-    # 3) 每片中间帧抽缩略图
-    shots_dir = _shots_dir(project_id, material_id)
-    thumb_paths: list[Path | None] = []
-    if not ffmpeg_svc.ffmpeg_available():
-        log.warning("[preprocess] ffmpeg unavailable; skip thumbnails")
-        thumb_paths = [None] * len(shots_compact)
-    else:
-        for sh in shots_compact:
+        self.shots_compact = _compact_shots(raw_shots)
+        log.info("[preprocess] %s shots %d → %d (after compact)",
+                 self.material_id, len(raw_shots), len(self.shots_compact))
+        return True
+
+    async def _stage_extract_thumbnails(self) -> None:
+        """每片中间帧抽缩略图。ffmpeg 不可用时全部 None；single shot 失败保留 None。"""
+        if not ffmpeg_svc.ffmpeg_available():
+            log.warning("[preprocess] ffmpeg unavailable; skip thumbnails")
+            self.thumbnail_paths = [None] * len(self.shots_compact)
+            return
+        out: list[Path | None] = []
+        for sh in self.shots_compact:
             mid = (sh.start + sh.end) / 2.0
-            dst = shots_dir / f"shot-{sh.index:02d}.jpg"
+            dst = self.shots_dir / f"shot-{sh.index:02d}.jpg"
             try:
-                await asyncio.to_thread(ffmpeg_svc.extract_frame, video_path, mid, dst)
-                thumb_paths.append(dst)
+                await asyncio.to_thread(ffmpeg_svc.extract_frame, self.video_path, mid, dst)
+                out.append(dst)
             except ffmpeg_svc.FFmpegError as exc:
                 log.warning("[preprocess] frame %d failed: %s", sh.index, exc)
-                thumb_paths.append(None)
+                out.append(None)
+        self.thumbnail_paths = out
 
-    # 4) VLM caption（并发，但限制为 4 路避免火山速率）
-    sem = asyncio.Semaphore(4)
+    async def _stage_caption(self) -> None:
+        """VLM 并发打标，限速 SEMAPHORE_LIMIT 路。"""
+        sem = asyncio.Semaphore(self.SEMAPHORE_LIMIT)
 
-    async def _one(idx: int, tp: Path | None) -> tuple[str, float, SectionRole]:
-        if tp is None:
-            return ("[auto] 待打标", 0.5, "development")
-        async with sem:
-            return await _caption_shot(tp)
+        async def _one(tp: Path | None) -> tuple[str, float, SectionRole]:
+            if tp is None:
+                return ("[auto] 待打标", 0.5, "development")
+            async with sem:
+                return await _caption_shot(tp)
 
-    captions = await asyncio.gather(*(_one(i, tp) for i, tp in enumerate(thumb_paths)))
-
-    # 5) 组装 MaterialShot 落库
-    shots: list[MaterialShot] = []
-    for sh, tp, (cap, density, role) in zip(shots_compact, thumb_paths, captions):
-        url = (
-            f"/uploads/{project_id}/shots/{material_id}/{tp.name}"
-            if tp is not None else None
+        self.captions = await asyncio.gather(
+            *(_one(tp) for tp in self.thumbnail_paths)
         )
-        shots.append(MaterialShot(
-            index=sh.index,
-            start=round(sh.start, 3),
-            end=round(sh.end, 3),
-            duration=round(sh.duration, 3),
-            thumbnail_url=url,
-            caption=cap,
-            action_density=density,
-            recommended_role=role,
-        ))
 
-    material_store.update(
-        project_id, material_id,
-        preprocess_status="ready",
-        shots=[s.model_dump() for s in shots],
-    )
-    log.info("[preprocess] done material=%s shots=%d", material_id, len(shots))
+    def _stage_persist(self) -> None:
+        """组装 MaterialShot 写回 store；status=ready。"""
+        shots: list[MaterialShot] = []
+        for sh, tp, (cap, density, role) in zip(
+            self.shots_compact, self.thumbnail_paths, self.captions,
+        ):
+            url = (
+                f"/uploads/{self.project_id}/shots/{self.material_id}/{tp.name}"
+                if tp is not None else None
+            )
+            shots.append(MaterialShot(
+                index=sh.index,
+                start=round(sh.start, 3),
+                end=round(sh.end, 3),
+                duration=round(sh.duration, 3),
+                thumbnail_url=url,
+                caption=cap,
+                action_density=density,
+                recommended_role=role,
+            ))
+
+        material_store.update(
+            self.project_id, self.material_id,
+            preprocess_status="ready",
+            shots=[s.model_dump() for s in shots],
+        )
+        log.info("[preprocess] done material=%s shots=%d", self.material_id, len(shots))
+
+    # --- orchestration ---
+    async def run(self) -> None:
+        """执行 5 个 stage；任一前置 stage 失败立即返回，已经在内部写过 failed 状态。"""
+        log.info("[preprocess] start project=%s material=%s path=%s",
+                 self.project_id, self.material_id, self.video_path)
+        self._mark_running()
+
+        if not await self._stage_probe():
+            return
+        if not await self._stage_detect_shots():
+            return
+        await self._stage_extract_thumbnails()
+        await self._stage_caption()
+        self._stage_persist()
 
 
 def dispatch(project_id: str, material_id: str, video_path: Path) -> None:
@@ -292,4 +334,5 @@ def dispatch(project_id: str, material_id: str, video_path: Path) -> None:
     except RuntimeError:
         log.error("[preprocess] no running loop; cannot dispatch %s", material_id)
         return
-    loop.create_task(preprocess_video_material(project_id, material_id, video_path))
+    pre = VideoPreprocessor(project_id, material_id, video_path)
+    loop.create_task(pre.run())
