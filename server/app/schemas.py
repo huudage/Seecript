@@ -303,15 +303,29 @@ class LibraryItem(BaseModel):
 
 
 class Shot(BaseModel):
-    """PySceneDetect 输出的镜头切片。"""
+    """PySceneDetect 输出的镜头切片（stage-23 起作为「分镜」最小表达单元）。"""
 
     index: int
     start: float
     end: float
     duration: float
     thumbnail_url: Optional[str] = None
-    transcript: Optional[str] = Field(default=None, description="本镜头对应的 ASR 口播片段")
+    transcript: Optional[str] = Field(default=None, description="本镜头对应的 ASR 口播片段（原始）")
     tags: list[str] = Field(default_factory=list, description="VLM 帧打标（封面风格/转场/字幕样式等）")
+    visual_summary: str = Field(
+        default="",
+        max_length=120,
+        description="画面内容描述：这一镜的视觉主体/动作/构图（≤60 中文字）",
+    )
+    script: str = Field(
+        default="",
+        max_length=200,
+        description="本镜口播/字幕脚本——有 voice 时清洗自 transcript；无 voice 时由 LLM 看画面写代字幕",
+    )
+    merged_from: list[int] = Field(
+        default_factory=list,
+        description="语义合并保留：被并入的原 shot indices；len>1 表示「N 镜合 1」",
+    )
 
 
 class Utterance(BaseModel):
@@ -425,6 +439,49 @@ class VideoUnderstanding(BaseModel):
         return data
 
 
+HighlightAspect = Literal["hook", "narrative", "visual", "audio", "rhythm", "copy", "cta"]
+ImprovementAspect = Literal[
+    "hook", "narrative", "visual", "audio", "rhythm", "copy", "cta", "structure"
+]
+
+
+class HighlightItem(BaseModel):
+    """全片亮点条目——LLM 复盘视频强点；plan_agent 拿来作为「迁移时必须保留这些表达」的硬约束。"""
+
+    aspect: HighlightAspect = Field(..., description="亮点类型（钩子/叙事/视觉/音频/节奏/文案/CTA）")
+    text: str = Field(..., max_length=80, description="≤40 字描述这条亮点是什么")
+    shot_indices: list[int] = Field(
+        default_factory=list,
+        description="可选：相关 shot.index；用于前端高亮对应行",
+    )
+
+
+class ImprovementItem(BaseModel):
+    """全片改进建议——LLM 指出弱点 + 写「怎么改」；plan_agent 当作迁移时主动规避的方向。"""
+
+    aspect: ImprovementAspect = Field(..., description="改进维度（含 structure）")
+    text: str = Field(..., max_length=80, description="≤40 字描述这个不足是什么")
+    suggestion: str = Field(..., max_length=120, description="具体怎么改的建议（≤60 字）")
+    shot_indices: list[int] = Field(default_factory=list, description="可选：相关 shot.index")
+
+
+class SampleAnalysis(BaseModel):
+    """全片复盘——给定 understanding + sections + shots + audio_understanding 后的 LLM 综合评估。
+
+    用于 Decompose 页 AnalysisCard 展示（亮点 / 改进），并作为 plan_agent / copy_outline_agent
+    的迁移引导：保留亮点，规避改进项。
+    """
+
+    highlights: list[HighlightItem] = Field(default_factory=list, max_length=6)
+    improvements: list[ImprovementItem] = Field(default_factory=list, max_length=6)
+    overall_score: int = Field(default=70, ge=0, le=100, description="主观打分（LLM 给出，0-100）")
+    one_line_verdict: str = Field(
+        default="",
+        max_length=60,
+        description="一句话总评（≤30 字），可作为前端大字标题",
+    )
+
+
 class PackagingProfile(BaseModel):
     """画面包装统计（字幕样式 / 标题条 / 转场 / 封面风格）。"""
 
@@ -459,6 +516,13 @@ class SampleManifest(BaseModel):
     climax_position: Optional[float] = Field(
         default=None,
         description="高潮时间点（秒）。优先取 role=climax 段中点；无 climax 时回落 BGM 能量峰值。前端节奏图叠 ReferenceLine。",
+    )
+    analysis: Optional[SampleAnalysis] = Field(
+        default=None,
+        description=(
+            "stage-23 起：全片亮点 + 改进建议 + 总评分。LLM 在 segment 之后跑一次综合评估。"
+            "旧版本槽未跑过此步骤时为 None；plan_agent 会兜底处理。"
+        ),
     )
     audio_understanding: Optional["BGMAnalysis"] = Field(
         default=None,
@@ -1286,6 +1350,15 @@ ToneStyle = Literal["tight_hype", "calm_narrative", "casual_daily", "professiona
 """
 
 
+MigrationPreference = Literal["mirror", "amp_emotion", "amp_pace"]
+"""结构迁移倾向 (stage-23) —— 用户在 Compose Step1 选「我想要哪个版本」。
+
+- mirror        平淡复刻：保持原片结构与调性，仅替换素材主题；不主动加强情绪 / 不加快节奏。
+- amp_emotion   情绪增强（默认）：钩子更猛、收尾更有共鸣、CTA 更燃；情绪曲线抬高 20-30%。
+- amp_pace      节奏紧凑：每段比原片缩短 10-25%，去掉缓冲过渡，让信息更密集。
+"""
+
+
 TTSVoice = Literal[
     "zh_female_qingxin",
     "zh_male_jieshuo",
@@ -1499,6 +1572,13 @@ class ComposeSettings(BaseModel):
     tone: ToneStyle = Field(
         default="tight_hype",
         description="整体调性。影响 LLM 段落结构与口播倾向。",
+    )
+    migration_preference: MigrationPreference = Field(
+        default="amp_emotion",
+        description=(
+            "结构迁移倾向（stage-23）：mirror=平淡复刻 / amp_emotion=情绪增强 / amp_pace=节奏紧凑。"
+            "plan_agent + copy_outline_agent + aigc_prompt_agent 都会读这个字段调 prompt。"
+        ),
     )
     cta: str = Field(
         default="",

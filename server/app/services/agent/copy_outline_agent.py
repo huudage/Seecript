@@ -22,6 +22,7 @@ from ...schemas import (
     TextCardSpec,
 )
 from ..llm_client import LLMError, _extract_json, get_llm_client
+from .preference import preference_hint
 
 log = logging.getLogger("seecript.agent.copy_outline")
 
@@ -175,6 +176,8 @@ async def generate_copy_outline(
     if cta:
         user_lines.append(f"结尾 CTA：{cta}")
     user_lines.append(f"全局关键词：{', '.join(keywords) if keywords else '（无）'}")
+    if settings is not None:
+        user_lines.append(preference_hint(settings.migration_preference))
     frame = getattr(settings, "frame_design", None) if settings else None
     if frame is not None:
         fd_parts: list[str] = []

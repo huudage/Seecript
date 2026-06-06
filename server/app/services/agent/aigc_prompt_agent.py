@@ -16,6 +16,7 @@ import logging
 from typing import Optional
 
 from ..llm_client import LLMError, get_llm_client, _extract_json
+from .preference import preference_hint
 from ...schemas import AdaptedSection, Gap, ImageSpec, Plan, all_role_names
 
 log = logging.getLogger("seecript.agent.aigc_prompt")
@@ -88,6 +89,8 @@ async def generate_aigc_prompt(
         user_lines.append(f"视频整体主题：{brief}")
     if goal:
         user_lines.append(f"视频要求与目的：{goal}")
+    if settings is not None:
+        user_lines.append(preference_hint(settings.migration_preference))
     frame = getattr(settings, "frame_design", None) if settings else None
     if frame is not None:
         fd_parts: list[str] = []
@@ -239,6 +242,8 @@ async def generate_image_specs(
         user_lines.append(f"视频整体主题：{brief}")
     if goal:
         user_lines.append(f"视频要求与目的：{goal}")
+    if settings is not None:
+        user_lines.append(preference_hint(settings.migration_preference))
     frame = getattr(settings, "frame_design", None) if settings else None
     if frame is not None:
         fd_parts: list[str] = []

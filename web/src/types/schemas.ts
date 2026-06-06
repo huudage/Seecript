@@ -138,6 +138,12 @@ export interface Shot {
   thumbnail_url?: string | null
   transcript?: string | null
   tags: string[]
+  /** stage-23：画面内容描述（≤60 中文字）。LLM 看缩略图 + tags 写出来的画面在演什么。 */
+  visual_summary?: string
+  /** stage-23：本镜口播 / 代字幕脚本。有口播时清洗自 transcript；无口播时 LLM 写代字幕参考文案。 */
+  script?: string
+  /** stage-23：语义合并保留——被并入的原 shot indices；length>1 表示「N 镜合 1」。 */
+  merged_from?: number[]
 }
 
 export interface RhythmCurve {
@@ -225,6 +231,34 @@ export interface SampleManifest {
   climax_position?: number | null
   /** LLM 多模态音频理解（拿样例视频音轨跑 doubao），有此字段时优先于 librosa 的 BPM 单点估算。 */
   audio_understanding?: BGMAnalysis | null
+  /** stage-23：全片亮点 / 改进建议 / 总评分。旧版本槽未跑过此步骤时为 null。 */
+  analysis?: SampleAnalysis | null
+}
+
+/** stage-23：全片复盘亮点的维度。 */
+export type HighlightAspect = 'hook' | 'narrative' | 'visual' | 'audio' | 'rhythm' | 'copy' | 'cta'
+
+/** stage-23：改进建议的维度（多一个 structure）。 */
+export type ImprovementAspect = HighlightAspect | 'structure'
+
+export interface HighlightItem {
+  aspect: HighlightAspect
+  text: string
+  shot_indices: number[]
+}
+
+export interface ImprovementItem {
+  aspect: ImprovementAspect
+  text: string
+  suggestion: string
+  shot_indices: number[]
+}
+
+export interface SampleAnalysis {
+  highlights: HighlightItem[]
+  improvements: ImprovementItem[]
+  overall_score: number
+  one_line_verdict: string
 }
 
 // =========================================================================
@@ -671,6 +705,12 @@ export type AspectRatio = '9:16' | '16:9' | '1:1'
 export type ToneStyle = 'tight_hype' | 'calm_narrative' | 'casual_daily' | 'professional_cool'
 
 /**
+ * stage-23 结构迁移倾向 —— 用户在 Compose Step1 选「我想要哪个版本」。
+ * mirror 平淡复刻 / amp_emotion 情绪增强（默认） / amp_pace 节奏紧凑。
+ */
+export type MigrationPreference = 'mirror' | 'amp_emotion' | 'amp_pace'
+
+/**
  * Compose 页用户配置 —— 与 brief/video_goal 一起驱动结构改编。
  * 折叠"高级设置"暴露，全部带默认值。
  */
@@ -683,6 +723,8 @@ export interface ComposeSettings {
   aspect_ratio: AspectRatio
   /** 整体调性。影响 LLM 段落结构与口播倾向。 */
   tone: ToneStyle
+  /** stage-23：结构迁移倾向（情绪增强 / 节奏紧凑 / 平淡复刻）。 */
+  migration_preference: MigrationPreference
   /** 核心 CTA 文案（≤20 字）。closing 段自动套用。 */
   cta: string
   /** 必须出现的关键词（最多 5 个）。每段 narration 至少出现 1 个。 */
@@ -830,6 +872,7 @@ export const DEFAULT_COMPOSE_SETTINGS: ComposeSettings = {
   target_platform: 'douyin',
   aspect_ratio: '9:16',
   tone: 'tight_hype',
+  migration_preference: 'amp_emotion',
   cta: '',
   keywords: [],
   subtitle_enabled: false,

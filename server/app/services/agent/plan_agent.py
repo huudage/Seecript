@@ -20,6 +20,7 @@ from typing import Optional
 
 from ..llm_client import get_llm_client, _extract_json
 from ..assets import resolve_reference_image_urls
+from .preference import preference_hint, analysis_hint
 from ...schemas import (
     AdaptedSection,
     ComposeSettings,
@@ -233,6 +234,17 @@ async def adapt_structure(
         f"{'2-8' if pattern == 'listicle' else '3-7'} 段，遵守硬约束，"
         f"所有段时长之和贴近 {target_total:.0f}s）。"
     )
+
+    # stage-23：迁移倾向 + 原片亮点/改进 注入到 user prompt 顶部，让 LLM 在改编时
+    # 既保留原片强点、又规避其弱点，并按用户选的版本（情绪增强 / 节奏紧凑 / 平淡复刻）调倾向。
+    pref_block = preference_hint(settings.migration_preference)
+    analysis_block = "\n\n".join(
+        block for block in (analysis_hint(m.analysis) for m in manifests) if block
+    )
+    leading_blocks = [pref_block]
+    if analysis_block:
+        leading_blocks.append(analysis_block)
+    user = "\n\n".join(leading_blocks) + "\n\n" + user
 
     # 个性知识库注入（top-10 最近完成项目 + 用户手动启用的额外项目）。
     # 失败仅 warn 不阻 plan/build：profile 是增强、不是依赖。

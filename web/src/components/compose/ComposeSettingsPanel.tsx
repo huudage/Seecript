@@ -1,7 +1,7 @@
 import { useState, type ChangeEvent, type KeyboardEvent } from 'react'
 
 import { cn } from '@/lib/utils'
-import type { AspectRatio, ComposeSettings, FrameDesignSystem, TargetPlatform, ToneStyle } from '@/types/schemas'
+import type { AspectRatio, ComposeSettings, FrameDesignSystem, MigrationPreference, TargetPlatform, ToneStyle } from '@/types/schemas'
 import { FrameDesignPicker } from './FrameDesignPicker'
 
 /**
@@ -32,6 +32,12 @@ const TONE_OPTIONS: { value: ToneStyle; label: string; hint: string }[] = [
   { value: 'calm_narrative', label: '沉稳叙事', hint: '长镜头 + 余韵' },
   { value: 'casual_daily', label: '轻松日常', hint: '口语化' },
   { value: 'professional_cool', label: '专业冷静', hint: '高信息密度' },
+]
+
+const MIGRATION_OPTIONS: { value: MigrationPreference; label: string; hint: string }[] = [
+  { value: 'amp_emotion', label: '情绪增强', hint: '钩子更猛 / 收尾燃 / CTA 强' },
+  { value: 'amp_pace', label: '节奏紧凑', hint: '段段缩短 / 信息更密' },
+  { value: 'mirror', label: '平淡复刻', hint: '保持原片调性' },
 ]
 
 export function ComposeSettingsPanel({
@@ -182,6 +188,34 @@ export function ComposeSettingsPanel({
                   className={cn(
                     'rounded-md border px-2 py-1.5 text-left text-xs transition',
                     value.tone === opt.value
+                      ? 'border-primary bg-primary/10 text-foreground'
+                      : 'border-border bg-background/60 text-muted-foreground hover:border-primary/60',
+                  )}
+                >
+                  <div className="font-semibold">{opt.label}</div>
+                  <div className="text-[10px] text-muted-foreground">{opt.hint}</div>
+                </button>
+              ))}
+            </div>
+          </div>
+
+          {/* stage-23：结构迁移倾向 —— 决定 plan/copy/aigc agent 的"调性版本" */}
+          <div>
+            <label className="text-[11px] font-semibold text-muted-foreground">
+              结构迁移倾向
+              <span className="ml-2 font-normal text-muted-foreground/70">
+                决定新结构相对原片的偏向
+              </span>
+            </label>
+            <div className="mt-1 grid grid-cols-3 gap-1.5">
+              {MIGRATION_OPTIONS.map((opt) => (
+                <button
+                  key={opt.value}
+                  type="button"
+                  onClick={() => onChange({ migration_preference: opt.value })}
+                  className={cn(
+                    'rounded-md border px-2 py-1.5 text-left text-xs transition',
+                    value.migration_preference === opt.value
                       ? 'border-primary bg-primary/10 text-foreground'
                       : 'border-border bg-background/60 text-muted-foreground hover:border-primary/60',
                   )}

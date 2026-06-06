@@ -31,8 +31,11 @@ from ..video import scene_detect, audio_analysis, voice_detect
 from ..video.scene_detect import DetectedShot
 from ...config import get_settings
 from ...schemas import (
+    HighlightItem,
+    ImprovementItem,
     PackagingProfile,
     RhythmCurve,
+    SampleAnalysis,
     SampleManifest,
     Section,
     SectionRole,
@@ -95,6 +98,14 @@ def _compact_shots(raw_shots: list[DetectedShot]) -> list[DetectedShot]:
         )
         shots = shots[:a] + [merged] + shots[b + 1:]
     return shots
+
+
+# 语义相似合并的阈值（stage-23）。
+# 目标：物理切镜后同机位连续表达合一，让"分镜"颗粒接近用户主观感知。
+# 保守：tags 集合 Jaccard 高 + 时长合计够短 + 总数最多压到原 50%。
+_MERGE_JACCARD = 0.6
+_MERGE_MAX_DURATION = 8.0
+_MERGE_MIN_RATIO = 0.5  # 最多压到 50%（防过度合并）
 
 
 def _shot_thumbnail_url(sample_id: str, index: int) -> Optional[str]:
@@ -306,6 +317,17 @@ async def decompose(
     push("vlm_tag", 65, {"note": "多模态 LLM 帧打标 (seed-2.0-lite)"})
     await _attach_frame_tags(shots)
 
+    # ---- 4b. 语义相似合并（stage-23）：把"同机位连续表达"合一 ----
+    pre_merge = len(shots)
+    shots = _merge_similar_shots(shots)
+    if len(shots) < pre_merge:
+        log.info("[decompose] semantic merge %d → %d", pre_merge, len(shots))
+        push("vlm_tag", 70, {
+            "note": f"语义合并相似分镜 {pre_merge} → {len(shots)}",
+            "pre_merge": pre_merge,
+            "post_merge": len(shots),
+        })
+
     # ---- 5. 视频理解（v2 新增）----
     push("video_understand", 80, {"note": "LLM 视频画像：archetype / narrative / segments / tone"})
     understanding = await _video_understand(
@@ -319,6 +341,18 @@ async def decompose(
         "structural_pattern": understanding.structural_pattern,
         "estimated_segments": understanding.estimated_segments,
     })
+
+    # ---- 5b. stage-23：每镜画面描述 + 脚本（含清洗 / 代字幕）----
+    push("visual_script", 88, {"note": "LLM 给每镜写 visual + script"})
+    try:
+        await _attach_visual_and_script(shots, has_voice, tone_hint=understanding.tone or "")
+    except Exception as exc:  # noqa: BLE001
+        log.warning("[decompose] _attach_visual_and_script outer failure: %s", exc)
+        for sh in shots:
+            if not sh.visual_summary:
+                sh.visual_summary = ("/".join((sh.tags or [])[:3]))[:120]
+            if not sh.script:
+                sh.script = (sh.transcript or "")[:200]
 
     # ---- 6. LLM 角色+主题切段（v2 重构）----
     push("llm_section", 93, {"note": f"LLM 段落分析 · 基于画像（{understanding.structural_pattern}）切 {understanding.estimated_segments} 段"})
@@ -334,6 +368,15 @@ async def decompose(
         "mood_curve": mood_curve,
         "bgm_fit_score": fit_score,
         "bgm_fit_note": fit_note,
+    })
+
+    # ---- 6c. stage-23 全片复盘：亮点 + 改进 + 总评 ----
+    push("video_analysis", 96, {"note": "LLM 全片复盘：亮点 / 改进建议 / 总评"})
+    analysis = await _video_analysis(understanding, sections, shots, audio_understanding)
+    push("video_analysis", 97, {
+        "highlights": len(analysis.highlights),
+        "improvements": len(analysis.improvements),
+        "overall_score": analysis.overall_score,
     })
 
     # ---- 7. 打包 PackagingProfile（video_type 仍驱动包装风格）----
@@ -367,6 +410,7 @@ async def decompose(
         ],
         climax_position=_compute_climax(sections, rhythm, total_duration),
         audio_understanding=audio_understanding,
+        analysis=analysis,
     )
 
     # stage-15: persist=False 是默认草稿模式——SSE done 把 manifest 推到前端 zustand,
@@ -624,6 +668,252 @@ async def _attach_frame_tags(shots: list[Shot]) -> None:
     for i, sh in enumerate(shots):
         item = all_items[i] if i < len(all_items) else {}
         sh.tags = list(item.get("tags", []))
+
+
+def _merge_similar_shots(shots: list[Shot]) -> list[Shot]:
+    """stage-23：物理切镜后做一遍**语义相似合并**。
+
+    相邻两 shot 同时满足：
+    - tags 集合 Jaccard ≥ _MERGE_JACCARD
+    - 时长合计 ≤ _MERGE_MAX_DURATION
+    则合一；合并后 tags 取并集，transcript 拼接（中间补"。"），
+    merged_from 累计被并入的原 indices（含原本镜的 index）。
+
+    硬限：最多压到原数 50%（_MERGE_MIN_RATIO）；防止 LLM tag 抽风把全片合一锅。
+    不调 LLM，纯标签+时长规则，省一次大模型调用、可解释、可手测。
+    """
+    if len(shots) <= 2:
+        return shots
+    floor = max(1, int(len(shots) * _MERGE_MIN_RATIO))
+    out: list[Shot] = []
+    for sh in shots:
+        if not out:
+            # 第一个：复制并初始化 merged_from
+            out.append(sh.model_copy(update={"merged_from": list(sh.merged_from) or [sh.index]}))
+            continue
+        if len(out) + (len(shots) - shots.index(sh) - 1) < floor + 1:
+            # 已经接近 floor，停止合并
+            out.append(sh.model_copy(update={"merged_from": list(sh.merged_from) or [sh.index]}))
+            continue
+        prev = out[-1]
+        # 计算 Jaccard
+        s1 = set(prev.tags or [])
+        s2 = set(sh.tags or [])
+        if s1 and s2:
+            jaccard = len(s1 & s2) / max(1, len(s1 | s2))
+        else:
+            jaccard = 0.0
+        combined_dur = (sh.end - prev.start)
+        if jaccard >= _MERGE_JACCARD and combined_dur <= _MERGE_MAX_DURATION:
+            merged_tags = list(dict.fromkeys((prev.tags or []) + (sh.tags or [])))
+            transcripts = [t for t in (prev.transcript, sh.transcript) if t]
+            merged_transcript = "。".join(transcripts) if transcripts else None
+            merged_from = list(prev.merged_from) + ([sh.index] if sh.index not in prev.merged_from else [])
+            out[-1] = prev.model_copy(update={
+                "end": sh.end,
+                "duration": combined_dur,
+                "tags": merged_tags,
+                "transcript": merged_transcript,
+                "merged_from": merged_from,
+            })
+        else:
+            out.append(sh.model_copy(update={"merged_from": list(sh.merged_from) or [sh.index]}))
+
+    if len(out) >= floor:
+        return out
+    # 兜底：合得过狠就回退
+    return shots
+
+
+# stage-23 prompts: 画面描述 + 脚本清洗
+_VISUAL_SCRIPT_SYSTEM = (
+    "你是短视频拆解助手。给定一组按时间排序的镜头（含缩略图、tags、可能的口播片段），"
+    "为**每个镜头**生成两个字段：\n"
+    "- visual：≤60 中文字，描述这一镜的画面主体/动作/构图；不要照抄 tags，要写画面在演什么\n"
+    "- script：≤80 中文字，本镜的口播或代字幕文案。\n"
+    "    · 有 transcript 时：清洗（去 'emm/啊/呃' 这类口语停顿、修标点）后填进去\n"
+    "    · 无 transcript 时（纯 BGM 视频）：根据画面 + 整片调性写一句『代字幕』参考文案，不要瞎编台词\n"
+    "返回 JSON：{\"items\": [{\"shot_index\": int, \"visual\": str, \"script\": str}, ...]}\n"
+    "items 长度等于镜头数，按 shot_index 升序。"
+)
+
+
+async def _attach_visual_and_script(shots: list[Shot], has_voice: bool, tone_hint: str = "") -> None:
+    """stage-23：一次 LLM 调用给所有 shot 填 visual_summary + script。
+
+    任意失败都降级 per-shot：visual = (tags[:3] 拼接)；script = (transcript or "")。
+    """
+    if not shots:
+        return
+    llm = get_llm_client()
+
+    lines: list[str] = []
+    for sh in shots:
+        speech = sh.transcript or ""
+        tags = "/".join(sh.tags) if sh.tags else ""
+        line = f"#{sh.index} {sh.start:.1f}-{sh.end:.1f}s ({sh.duration:.1f}s)"
+        if tags:
+            line += f" | tags: {tags}"
+        if speech:
+            line += f" | transcript: {speech[:60]}"
+        lines.append(line)
+
+    voice_hint = "有口播（用 transcript 清洗为 script）" if has_voice else "纯 BGM 无口播（script 为代字幕参考）"
+    user = (
+        f"整体调性：{tone_hint or '通用'}；声音情况：{voice_hint}\n\n"
+        f"镜头列表（{len(shots)} 个）：\n" + "\n".join(lines)
+    )
+
+    # ≤20 张缩略图给多模态模型；超出走采样代表帧
+    if len(shots) <= 20:
+        sampled_indices = list(range(len(shots)))
+    else:
+        step = len(shots) / 20
+        sampled_indices = [int(i * step) for i in range(20)]
+    images = [shots[i].thumbnail_url or "" for i in sampled_indices]
+
+    items: list[dict] = []
+    try:
+        text = await llm.complete_multimodal(_VISUAL_SCRIPT_SYSTEM, user, images)
+        data = _extract_json(text)
+        if isinstance(data, dict):
+            raw = data.get("items") or []
+            if isinstance(raw, list):
+                items = [it for it in raw if isinstance(it, dict)]
+    except Exception as exc:  # noqa: BLE001
+        log.warning("[decompose] visual_script LLM failed, falling back: %s", exc)
+
+    by_index = {int(it.get("shot_index", -1)): it for it in items if "shot_index" in it}
+
+    for sh in shots:
+        item = by_index.get(sh.index, {})
+        visual = str(item.get("visual", "") or "").strip()[:120]
+        script = str(item.get("script", "") or "").strip()[:200]
+        if not visual:
+            visual = ("/".join((sh.tags or [])[:3]))[:120]
+        if not script:
+            script = (sh.transcript or "")[:200]
+        sh.visual_summary = visual
+        sh.script = script
+
+
+# stage-23 全片复盘 prompt
+_VIDEO_ANALYSIS_SYSTEM = (
+    "你是短视频复盘专家。给定视频画像 + 段落结构 + 各分镜画面与脚本 + BGM 走势，"
+    "输出全片亮点与改进建议。\n\n"
+    "亮点（highlights）≤6 条；改进建议（improvements）≤6 条；不足可少。\n"
+    "每条 aspect 取自：hook（钩子）/ narrative（叙事）/ visual（视觉）/ audio（声音/BGM）/ "
+    "rhythm（节奏）/ copy（文案）/ cta（行动呼吁），improvements 多一个 'structure' 选项（结构问题）。\n"
+    "text ≤40 中文字描述这条是什么；improvements 还要 suggestion ≤60 中文字写「具体怎么改」。\n"
+    "可选 shot_indices（数组，相关分镜 index），不知道就给空数组。\n\n"
+    "返回 JSON：{"
+    "\"highlights\": [{aspect, text, shot_indices}], "
+    "\"improvements\": [{aspect, text, suggestion, shot_indices}], "
+    "\"overall_score\": int 0-100（综合质量，60-75 是常见区间）, "
+    "\"one_line_verdict\": str ≤30 中文字一句话总评"
+    "}"
+)
+
+
+_VALID_HIGHLIGHT_ASPECTS = {"hook", "narrative", "visual", "audio", "rhythm", "copy", "cta"}
+_VALID_IMPROVEMENT_ASPECTS = _VALID_HIGHLIGHT_ASPECTS | {"structure"}
+
+
+async def _video_analysis(
+    understanding: VideoUnderstanding,
+    sections: list[Section],
+    shots: list[Shot],
+    audio_understanding,
+) -> SampleAnalysis:
+    """stage-23：跑完段落后做一次全片复盘，给亮点 + 改进 + 总评。失败安静返默认空。"""
+    llm = get_llm_client()
+
+    # 构建 user content：理解 + 段落 + 镜头摘要 + BGM
+    section_lines: list[str] = []
+    for i, sec in enumerate(sections):
+        section_lines.append(
+            f"段{i + 1} [{sec.role}] {sec.theme or ''} {sec.start:.1f}-{sec.end:.1f}s | {sec.summary[:60]}"
+        )
+
+    shot_lines: list[str] = []
+    for sh in shots[:60]:  # 防 prompt 爆炸；60 镜以上截断
+        line = f"#{sh.index} {sh.start:.1f}-{sh.end:.1f}s | {sh.visual_summary[:50]}"
+        if sh.script:
+            line += f" | 词: {sh.script[:40]}"
+        shot_lines.append(line)
+    if len(shots) > 60:
+        shot_lines.append(f"... (后续 {len(shots) - 60} 镜略)")
+
+    bgm_hint = ""
+    if audio_understanding is not None:
+        bgm_hint = (
+            f"BGM 走向：energy_shape={getattr(audio_understanding, 'energy_shape', '?')}; "
+            f"climaxes={len(getattr(audio_understanding, 'climaxes', None) or [])}; "
+            f"calm_segments={len(getattr(audio_understanding, 'calm_segments', None) or [])}"
+        )
+
+    user = (
+        f"视频原型：{understanding.archetype} | 调性：{understanding.tone}\n"
+        f"叙事模式：{understanding.structural_pattern} | 估计段数：{understanding.estimated_segments}\n"
+        f"narrative：{understanding.narrative_summary}\n"
+        f"{bgm_hint}\n\n"
+        f"段落（{len(sections)}）：\n" + "\n".join(section_lines) + "\n\n"
+        f"分镜（{len(shots)}）：\n" + "\n".join(shot_lines)
+    )
+
+    try:
+        text = await llm.complete(_VIDEO_ANALYSIS_SYSTEM, user)
+        data = _extract_json(text)
+        if not isinstance(data, dict):
+            return SampleAnalysis()
+
+        highlights: list[HighlightItem] = []
+        for it in (data.get("highlights") or [])[:6]:
+            if not isinstance(it, dict):
+                continue
+            aspect = str(it.get("aspect", "") or "").strip().lower()
+            if aspect not in _VALID_HIGHLIGHT_ASPECTS:
+                continue
+            text_v = str(it.get("text", "") or "").strip()[:80]
+            if not text_v:
+                continue
+            indices_raw = it.get("shot_indices") or []
+            indices = [int(x) for x in indices_raw if isinstance(x, (int, float))] if isinstance(indices_raw, list) else []
+            highlights.append(HighlightItem(aspect=aspect, text=text_v, shot_indices=indices))  # type: ignore[arg-type]
+
+        improvements: list[ImprovementItem] = []
+        for it in (data.get("improvements") or [])[:6]:
+            if not isinstance(it, dict):
+                continue
+            aspect = str(it.get("aspect", "") or "").strip().lower()
+            if aspect not in _VALID_IMPROVEMENT_ASPECTS:
+                continue
+            text_v = str(it.get("text", "") or "").strip()[:80]
+            sugg = str(it.get("suggestion", "") or "").strip()[:120]
+            if not text_v or not sugg:
+                continue
+            indices_raw = it.get("shot_indices") or []
+            indices = [int(x) for x in indices_raw if isinstance(x, (int, float))] if isinstance(indices_raw, list) else []
+            improvements.append(ImprovementItem(  # type: ignore[arg-type]
+                aspect=aspect, text=text_v, suggestion=sugg, shot_indices=indices,
+            ))
+
+        try:
+            score = int(data.get("overall_score", 70))
+        except (TypeError, ValueError):
+            score = 70
+        score = max(0, min(100, score))
+        verdict = str(data.get("one_line_verdict", "") or "").strip()[:60]
+
+        return SampleAnalysis(
+            highlights=highlights,
+            improvements=improvements,
+            overall_score=score,
+            one_line_verdict=verdict,
+        )
+    except Exception as exc:  # noqa: BLE001
+        log.warning("[decompose] _video_analysis failed: %s", exc)
+        return SampleAnalysis()
 
 
 # ----------------------------- 视频理解子例程 ---------------------------------

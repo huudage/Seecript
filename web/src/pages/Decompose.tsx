@@ -7,6 +7,8 @@ import { commitStep, getStepSnapshot } from '@/api/steps'
 import { createSSE, type SSEHandle } from '@/api/sse'
 import { PageShell } from '@/components/layout/PageShell'
 import { BgmAnalysisCard } from '@/components/compose/BgmAnalysisCard'
+import { AnalysisCard } from '@/components/decompose/AnalysisCard'
+import { DecomposeTable } from '@/components/decompose/DecomposeTable'
 import { useProjectsStore } from '@/stores/projects'
 import { useSessionStore } from '@/stores/session'
 import type {
@@ -1397,41 +1399,15 @@ function ManifestView({ manifest, compact = false }: { manifest: SampleManifest;
       </div>
 
       <div className="rounded-lg border border-border bg-card p-4">
-        <h2 className="mb-3 text-sm font-semibold">镜头切片（{manifest.shots.length}）</h2>
-        <div className={cn(
-          'grid gap-3',
-          compact
-            ? 'grid-cols-2 sm:grid-cols-3'
-            : 'grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-6',
-        )}>
-          {manifest.shots.map((shot) => (
-            <div key={shot.index} className="overflow-hidden rounded-md border border-border bg-secondary/40">
-              <div
-                className="aspect-video w-full bg-gradient-to-br from-secondary to-muted"
-                style={{
-                  backgroundImage: shot.thumbnail_url ? `url(${shot.thumbnail_url})` : undefined,
-                  backgroundSize: 'cover',
-                }}
-              />
-              <div className="space-y-1 p-2 text-[11px] leading-tight">
-                <div className="flex items-center justify-between text-muted-foreground">
-                  <span>#{shot.index + 1}</span>
-                  <span>{shot.duration.toFixed(1)}s</span>
-                </div>
-                <p className="line-clamp-2 text-foreground">{shot.transcript || '（无口播）'}</p>
-                {shot.tags.length > 0 && (
-                  <div className="flex flex-wrap gap-1">
-                    {shot.tags.slice(0, 3).map((tag) => (
-                      <span key={tag} className="rounded bg-secondary px-1 py-0.5 text-[10px] text-muted-foreground">
-                        {tag}
-                      </span>
-                    ))}
-                  </div>
-                )}
-              </div>
-            </div>
-          ))}
-        </div>
+        <h2 className="mb-3 text-sm font-semibold">全片复盘</h2>
+        <AnalysisCard analysis={manifest.analysis} />
+      </div>
+
+      <div className="rounded-lg border border-border bg-card p-4">
+        <h2 className="mb-3 text-sm font-semibold">
+          拆解表（{manifest.shots.length} 分镜 · {manifest.sections.length} 段）
+        </h2>
+        <DecomposeTable manifest={manifest} />
       </div>
     </div>
   )
