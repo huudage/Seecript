@@ -1,6 +1,21 @@
-import type { AdaptedSection, Gap, GapStatus } from '@/types/schemas'
-import { SECTION_BG, SECTION_LABEL, SECTION_SHORT } from '@/lib/sections'
+import type { AdaptedSection, Gap, GapStatus, StructuralPattern } from '@/types/schemas'
+import { getSectionMeta } from '@/lib/sections'
 import { cn } from '@/lib/utils'
+
+const TEMPO_LABEL: Record<string, string> = {
+  slow: '慢',
+  medium: '中',
+  fast: '快',
+  peak: '峰值',
+  deceleration: '减速',
+}
+const TEMPO_TONE: Record<string, string> = {
+  slow: 'bg-sky-500/15 text-sky-700 dark:text-sky-300',
+  medium: 'bg-slate-500/15 text-slate-700 dark:text-slate-300',
+  fast: 'bg-amber-500/15 text-amber-700 dark:text-amber-300',
+  peak: 'bg-rose-500/15 text-rose-700 dark:text-rose-300',
+  deceleration: 'bg-emerald-500/15 text-emerald-700 dark:text-emerald-300',
+}
 
 const STATUS_COLOR: Record<GapStatus, string> = {
   ok: 'bg-emerald-500/15 text-emerald-700 dark:text-emerald-300',
@@ -32,9 +47,9 @@ function rollup(gaps: Gap[], filledGapIds: Set<string>): SectionStatus {
 
 const SECTION_STATUS_LABEL: Record<SectionStatus, string> = {
   ok: '✅ 完整',
-  warn: '⚠️ 需调整',
-  miss: '❌ 待补全',
-  empty: '— 无槽位',
+  warn: '⚠️ 还差点',
+  miss: '❌ 缺素材',
+  empty: '— 不需要补',
 }
 
 const SECTION_STATUS_COLOR: Record<SectionStatus, string> = {
@@ -58,18 +73,20 @@ export function AdaptedSectionList({
   gaps,
   selectedGapId,
   filledGapIds,
+  pattern,
   onSelect,
 }: {
   adaptedSections: AdaptedSection[]
   gaps: Gap[]
   selectedGapId: string | null
   filledGapIds: Set<string>
+  pattern?: StructuralPattern
   onSelect: (gapId: string) => void
 }) {
   if (adaptedSections.length === 0) {
     return (
       <div className="rounded-md border border-dashed border-border bg-background/30 p-6 text-center text-xs text-muted-foreground">
-        还没有改编后的结构；填好主题和视频目的，点上方「智能分析」开始。
+        还没生成结构。先填好主题和目的，再点上方「智能分析」。
       </div>
     )
   }
@@ -104,6 +121,8 @@ export function AdaptedSectionList({
       {adaptedSections.map((sec) => {
         const sectionGaps = gapsBySectionId.get(sec.section_id) ?? []
         const status = rollup(sectionGaps, filledGapIds)
+        const meta = getSectionMeta(sec.role, pattern)
+        const tempo = sec.tempo
         return (
           <li
             key={sec.section_id}
@@ -113,15 +132,20 @@ export function AdaptedSectionList({
               <span
                 className={cn(
                   'h-2 w-2 shrink-0 rounded-full',
-                  SECTION_BG[sec.role],
+                  meta.bg,
                 )}
               />
               <span className="font-mono text-[10px] text-muted-foreground">
-                {SECTION_SHORT[sec.role]}
+                {meta.short}
               </span>
               <span className="font-semibold text-foreground">
-                {sec.theme || SECTION_LABEL[sec.role]}
+                {sec.theme || meta.label}
               </span>
+              {tempo && (
+                <span className={cn('rounded px-1.5 py-0.5 text-[10px]', TEMPO_TONE[tempo] ?? 'bg-secondary text-muted-foreground')}>
+                  {TEMPO_LABEL[tempo] ?? tempo}
+                </span>
+              )}
               <span
                 className={cn(
                   'ml-auto rounded px-1.5 py-0.5 text-[10px]',
@@ -133,8 +157,13 @@ export function AdaptedSectionList({
             </header>
             <div className="border-t border-border/60 bg-secondary/30 px-3 py-2">
               <p className="text-[11px] leading-relaxed text-foreground/90">
-                {sec.content_description || '（暂无内容说明）'}
+                {sec.content_description || '（暂无说明）'}
               </p>
+              {sec.adaptation_note && (
+                <p className="mt-1 text-[10px] italic text-muted-foreground">
+                  改编思路：{sec.adaptation_note}
+                </p>
+              )}
             </div>
             {sectionGaps.length > 0 ? (
               <ul className="space-y-1 px-3 py-2">
@@ -157,13 +186,13 @@ export function AdaptedSectionList({
                             {STATUS_GLYPH[gap.status]}
                           </span>
                           <span className="rounded bg-secondary px-1 py-0.5 font-mono text-[10px]">
-                            槽 {gap.slot_index + 1}
+                            镜头 {gap.slot_index + 1}
                           </span>
                           <span className="flex items-center gap-1">
                             <span className={cn('h-1.5 w-1.5 rounded-full', IMPACT_COLOR[gap.impact])} />
                           </span>
                           {filled && (
-                            <span className="ml-auto text-emerald-500" title="已采纳补全" aria-label="已采纳">
+                            <span className="ml-auto text-emerald-500" title="已采纳" aria-label="已采纳">
                               ●
                             </span>
                           )}
@@ -173,7 +202,7 @@ export function AdaptedSectionList({
                         </p>
                         {gap.matched_material_id && (
                           <p className="mt-0.5 text-[10px] text-muted-foreground">
-                            命中 <span className="font-mono">{gap.matched_material_id}</span>
+                            已配上 <span className="font-mono">{gap.matched_material_id}</span>
                           </p>
                         )}
                       </button>
@@ -183,7 +212,7 @@ export function AdaptedSectionList({
               </ul>
             ) : (
               <p className="px-3 py-2 text-[11px] text-muted-foreground">
-                无槽位待补——本段已按结构规划完成。
+                这一段不需要补素材——已经按结构规划完成。
               </p>
             )}
           </li>

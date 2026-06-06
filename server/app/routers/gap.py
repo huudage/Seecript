@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 from typing import Optional
 
 from fastapi import APIRouter, HTTPException
@@ -17,8 +18,16 @@ from pydantic import BaseModel
 from ..routers.library import _LIBRARY, _load_real_manifest, _stub_manifest
 from ..schemas import (
     AdaptedSection,
+    AigcImageSpecRequest,
+    AigcImageSpecResponse,
     AigcPromptRequest,
     AigcPromptResponse,
+    AigcSeedreamRequest,
+    AigcSeedreamResponse,
+    AigcTailFrameRequest,
+    AigcTailFrameResponse,
+    CopyOutlineRequest,
+    CopyOutlineResponse,
     FillResult,
     Gap,
     GapDetectRequest,
@@ -27,36 +36,31 @@ from ..schemas import (
     GapFillRequest,
     Material,
     SampleManifest,
+    SeedreamImage,
 )
-from ..services.agent.aigc_prompt_agent import generate_aigc_prompt
-from ..services.agent.gap_agent import detect_gaps, fill_gap, refresh_aigc_task
+from ..services.agent.aigc_prompt_agent import generate_aigc_prompt, generate_image_specs
+from ..services.agent.copy_outline_agent import generate_copy_outline
+from ..services.agent.gap_agent import (
+    _extract_tail_frame_data_url,
+    detect_gaps,
+    fill_gap,
+    refresh_aigc_task,
+)
+from ..services.seedream_client import SeedreamError, get_seedream_client
 from ..services.materials import gap_store, material_store
 from ..services.plans import plan_store
 from ..services.tts import TTSError, backend_name as tts_backend_name, synthesize_scene_voice
-from ..services.video.aspect import aspect_for_platform
+from ..services.video.aspect import aspect_for_platform, aspect_for_settings
 
 log = logging.getLogger("seecript.gap")
 router = APIRouter()
 
 
-def _mock_materials() -> list[Material]:
-    """session 为空时的兜底素材——保留以便没上传也能跑通 UI demo。"""
-    return [
-        Material(material_id="mat-mock-001", filename="opening-1.mp4", media_type="video",
-                 duration_seconds=3.2, tags=["[mock] 近景", "[mock] 口播"], recommended_section="opening"),
-        Material(material_id="mat-mock-002", filename="dev-1.mp4", media_type="video",
-                 duration_seconds=6.0, tags=["[mock] 产品", "[mock] 特写"], recommended_section="development"),
-        Material(material_id="mat-mock-003", filename="dev-2.mp4", media_type="video",
-                 duration_seconds=5.0, tags=["[mock] 对比", "[mock] 实拍"], recommended_section="development"),
-        Material(material_id="mat-mock-004", filename="closing-1.mp4", media_type="video",
-                 duration_seconds=4.0, tags=["[mock] 大字幕"], recommended_section="closing"),
-    ]
-
-
 def _resolve_manifest(plan_id: str) -> SampleManifest:
-    """plan_id → 第一个 sample_id → manifest；优先真预解析 manifest.json，None 时才回落 stub。
+    """plan_id → 第一个参考版本对应的 manifest；优先按 (sample_id, slot_id) 精确加载，
+    退而求次到 _load_real_manifest，再回落 stub。
 
-    多样例项目（plan.sample_ids 长度 > 1）gap 视图仍以第一份样例为参考缩略图基线，
+    多样例项目（plan.reference_versions 长度 > 1）gap 视图仍以第一份为参考缩略图基线，
     因为跨样例 shot 编号会重号；plan_agent 已在跨样例段把 source_shot_indices 置空。
     """
     plan = plan_store.get(plan_id)
@@ -64,7 +68,15 @@ def _resolve_manifest(plan_id: str) -> SampleManifest:
         log.warning("[gap] plan_id=%s 未找到，回退 _LIBRARY[0]", plan_id)
         sample = _LIBRARY[0]
         return _load_real_manifest(sample.id) or _stub_manifest(sample.id, sample)
-    sample_id = plan.sample_ids[0] if plan.sample_ids else _LIBRARY[0].id
+    if plan.reference_versions:
+        primary = plan.reference_versions[0]
+        from ..services.library import manifest_store
+        precise = manifest_store.load_version(primary.sample_id, primary.slot_id)
+        if precise is not None:
+            return precise
+        sample_id = primary.sample_id
+    else:
+        sample_id = _LIBRARY[0].id
     sample = next((s for s in _LIBRARY if s.id == sample_id), _LIBRARY[0])
     return _load_real_manifest(sample.id) or _stub_manifest(sample.id, sample)
 
@@ -86,14 +98,12 @@ def _legacy_wrap(manifest: SampleManifest) -> list[AdaptedSection]:
     return out
 
 
-def _resolve_materials(session_id: str | None, allow_mock: bool) -> list[Material]:
+def _resolve_materials(session_id: str | None) -> list[Material]:
     if session_id:
         items = material_store.list(session_id)
         if items:
             return sorted(items, key=lambda m: m.sort_order)
         log.info("[gap] session=%s 暂无上传素材", session_id)
-    if allow_mock:
-        return _mock_materials()
     return []
 
 
@@ -114,7 +124,7 @@ def _inject_aigc_params(gap: Gap, params: dict) -> dict:
     """Seedance fill 前补齐 plan 派生参数：duration_seconds + ratio（画幅）。
 
     - duration_seconds：未传则取 AdaptedSection.duration_seconds
-    - ratio：未传则取 plan.settings.target_platform → "9:16" / "16:9"
+    - ratio：未传则取 plan.settings.aspect_ratio（v2 显式字段，回落 target_platform）
     """
     out = dict(params or {})
     plan = _plan_for_gap(gap)
@@ -123,7 +133,7 @@ def _inject_aigc_params(gap: Gap, params: dict) -> dict:
         if sec and sec.duration_seconds > 0:
             out["duration_seconds"] = float(sec.duration_seconds)
     if "ratio" not in out and "size" not in out and plan is not None:
-        spec = aspect_for_platform(plan.settings.target_platform)
+        spec = aspect_for_settings(plan.settings)
         out["ratio"] = spec.ratio
     return out
 
@@ -199,12 +209,24 @@ def _resolve_plan_and_scene_for_gap_by_section(section_id: str):
     return None, None
 
 
+def _resolve_plan_id_for_gap(gap: Gap) -> str:
+    """gap → plan_id：gap_store._by_plan 反查；找不到回退空串（trace 仍可写，仅缺指针）。"""
+    try:
+        with gap_store._lock:  # type: ignore[attr-defined]
+            for pid, gaps in gap_store._by_plan.items():  # type: ignore[attr-defined]
+                if any(g.gap_id == gap.gap_id for g in gaps):
+                    return pid
+    except Exception:  # noqa: BLE001
+        pass
+    return ""
+
+
 @router.post("/gap/detect", response_model=list[Gap])
 async def detect(req: GapDetectRequest) -> list[Gap]:
     # v2 起 session_id == project_id；老前端只传 session_id 时仍可工作
     pid = (req.project_id or req.session_id or "").strip() or None
     manifest = _resolve_manifest(req.plan_id)
-    materials = _resolve_materials(pid, req.allow_mock)
+    materials = _resolve_materials(pid)
     plan = plan_store.get(req.plan_id)
     adapted = (
         plan.adapted_sections if (plan and plan.adapted_sections) else _legacy_wrap(manifest)
@@ -244,7 +266,44 @@ async def fill(req: GapFillRequest) -> FillResult:
         )
     params = _inject_aigc_params(gap, req.params) if req.action == "aigc" else req.params
     result = await fill_gap(gap, req.action, params)
-    return await asyncio.to_thread(_maybe_auto_tts, result)
+    result = await asyncio.to_thread(_maybe_auto_tts, result)
+    # Trace B：用户在 gap fill 上有自然语言输入时记一条。
+    # - copy   ：params.prompt_hint（用户在 copy 面板填的文案要求）
+    # - aigc   ：params.prompt（用户在 AIGC 面板填的 T2V prompt）
+    # 失败仅 warn 不阻塞 fill 返回。
+    try:
+        user_input = ""
+        if req.action == "copy":
+            user_input = str(req.params.get("prompt_hint") or "").strip()
+        elif req.action == "aigc":
+            user_input = str(req.params.get("prompt") or "").strip()
+        if user_input:
+            from ..services.profile import DEFAULT_USER_ID, TraceB, append_trace_b
+            import time as _time
+            trace = TraceB(
+                ts=int(_time.time()),
+                project_id=gap.project_id or "__legacy",
+                plan_id=_resolve_plan_id_for_gap(gap),
+                user_id=DEFAULT_USER_ID,
+                context="gap_fill",
+                gap_id=gap.gap_id,
+                section_role=gap.section,
+                user_input=user_input,
+                before={
+                    "requirement": gap.requirement,
+                    "status": gap.status,
+                    "action": req.action,
+                },
+                after={
+                    "narration": result.narration or "",
+                    "alternatives": result.alternatives or [],
+                    "status": result.status,
+                },
+            )
+            append_trace_b(DEFAULT_USER_ID, trace)
+    except Exception as exc:  # noqa: BLE001
+        log.warning("[gap] profile.trace_b (gap_fill) write failed: %s", exc)
+    return result
 
 
 @router.post("/gap/fill-all", response_model=GapFillAllResponse)
@@ -264,6 +323,12 @@ async def fill_all(req: GapFillAllRequest) -> GapFillAllResponse:
             stopped_reason="该 plan 没有缺口（请先 /gap/detect）",
         )
     pending = [g for g in all_gaps if g.status != "ok"]
+    skip_set = set(req.skip_gap_ids or [])
+    if skip_set:
+        before = len(pending)
+        pending = [g for g in pending if g.gap_id not in skip_set]
+        log.info("[gap-fill-all] plan=%s skip %d gap_ids → pending %d→%d",
+                 req.plan_id, len(skip_set), before, len(pending))
     if not pending:
         return GapFillAllResponse(
             plan_id=req.plan_id, fills=[],
@@ -282,8 +347,37 @@ async def fill_all(req: GapFillAllRequest) -> GapFillAllResponse:
             prompt = template or f"短视频画面：{gap.requirement}"
             params = _inject_aigc_params(gap, {"prompt": prompt})
         else:
-            # copy：复用 single-fill 的 prompt_hint 协议
-            params = {"prompt_hint": gap.requirement}
+            # copy：复用 single-fill 的 prompt_hint 协议；
+            # 同步把 plan 里已有字卡的版式快照传过去，让后续生成的字卡保持一致风格。
+            # 优先用前端透传（req.existing_text_cards）——绕过『fill-all 抢在 runAnalyze 之前
+            # 用旧 plan_id 调进来时 plan.main_track 字卡为空』的时序竞态。
+            existing_cards: list[dict[str, object]] = []
+            if req.existing_text_cards:
+                for spec in req.existing_text_cards:
+                    existing_cards.append(spec.model_dump())
+            else:
+                for sc in plan.main_track:
+                    if sc.text_card_spec is None:
+                        continue
+                    # 跳过当前 gap 自己对应的段（不让自己抄自己，循环驱动风格漂移）
+                    if gap.section_id:
+                        m = re.match(r"^sc-(\d+)$", sc.scene_id or "")
+                        if m:
+                            sec = next(
+                                (s for s in plan.adapted_sections if s.order == int(m.group(1))), None,
+                            )
+                            if sec and sec.section_id == gap.section_id:
+                                continue
+                    existing_cards.append(sc.text_card_spec.model_dump())
+            log.info(
+                "[gap-fill-all] copy gap=%s existing_cards=%d (from %s)",
+                gap.gap_id, len(existing_cards),
+                "frontend" if req.existing_text_cards else "plan.main_track",
+            )
+            params = {
+                "prompt_hint": gap.requirement,
+                "existing_text_cards": existing_cards,
+            }
         try:
             result = await fill_gap(gap, req.action, params)
         except Exception as exc:
@@ -356,5 +450,125 @@ async def aigc_prompt(req: AigcPromptRequest) -> AigcPromptResponse:
             detail=f"gap not found: {req.gap_id}（请先调用 /gap/detect）",
         )
     plan, section = _find_section_for_gap(gap)
-    prompt = await generate_aigc_prompt(gap, plan, section, user_hint=req.hint or "")
-    return AigcPromptResponse(gap_id=gap.gap_id, prompt=prompt)
+    prompt, thinking = await generate_aigc_prompt(gap, plan, section, user_hint=req.hint or "")
+    return AigcPromptResponse(gap_id=gap.gap_id, prompt=prompt, thinking=thinking)
+
+
+@router.post("/gap/aigc-image-spec", response_model=AigcImageSpecResponse)
+async def aigc_image_spec(req: AigcImageSpecRequest) -> AigcImageSpecResponse:
+    """LLM 判断本段需要的参考图清单（1-3 张）：caption + Seedream prompt + ratio。
+
+    给前端 FillAigcPanel 的 spec 阶段消费。失败由 generate_image_specs 内部兜底
+    返回 1 张 ImageSpec，保证 UI 始终能渲染。
+    """
+    gap = gap_store.get(req.gap_id)
+    if gap is None:
+        raise HTTPException(
+            status_code=404,
+            detail=f"gap not found: {req.gap_id}（请先调用 /gap/detect）",
+        )
+    plan, section = _find_section_for_gap(gap)
+    default_ratio = "16:9"
+    if plan is not None:
+        default_ratio = aspect_for_settings(plan.settings).ratio
+    specs, thinking = await generate_image_specs(
+        gap, plan, section,
+        user_hint=req.hint or "",
+        default_ratio=default_ratio,
+    )
+    return AigcImageSpecResponse(gap_id=gap.gap_id, specs=specs, thinking=thinking)
+
+
+@router.post("/gap/copy-outline", response_model=CopyOutlineResponse)
+async def copy_outline(req: CopyOutlineRequest) -> CopyOutlineResponse:
+    """LLM 给出本段口播文案的写作大纲：core_message / emotional_hook / 关键词 / 字数 / 调性微调。
+
+    前端 FillCopyPanel 的 analyzing 阶段消费——拿到 outline 后让用户调参，
+    再发 /gap/fill action=copy 携带 outline 字段做强化生成。失败时 generate_copy_outline
+    内部兜底返回默认 outline，保证 UI 始终可渲染。
+    """
+    gap = gap_store.get(req.gap_id)
+    if gap is None:
+        raise HTTPException(
+            status_code=404,
+            detail=f"gap not found: {req.gap_id}（请先调用 /gap/detect）",
+        )
+    plan, section = _find_section_for_gap(gap)
+    outline, thinking = await generate_copy_outline(
+        gap, plan, section, user_hint=req.hint or "",
+    )
+    return CopyOutlineResponse(gap_id=gap.gap_id, outline=outline, thinking=thinking)
+
+
+@router.post("/gap/aigc-seedream", response_model=AigcSeedreamResponse)
+async def aigc_seedream(req: AigcSeedreamRequest) -> AigcSeedreamResponse:
+    """直调 Seedream 文生图，返回 1-N 张图片 url。
+
+    供 FillAigcPanel 的 image 阶段消费——用户对每个 ImageSpec 可选『上传 / Seedream』，
+    选 Seedream 时调本接口。url 是 ARK 临时 CDN（豆包 1h-7d 有效），下游 Seedance
+    立即消费即可，本期不落盘。
+    """
+    try:
+        results = await get_seedream_client().generate(
+            req.prompt, ratio=req.ratio, n=req.n,
+        )
+    except SeedreamError as exc:
+        raise HTTPException(
+            status_code=502,
+            detail=f"Seedream 失败：{exc}（code={exc.code}）",
+        ) from exc
+    return AigcSeedreamResponse(
+        images=[
+            SeedreamImage(url=r.url, width=r.width, height=r.height)
+            for r in results
+        ],
+    )
+
+
+@router.post("/gap/aigc-tail-frame", response_model=AigcTailFrameResponse)
+async def aigc_tail_frame(req: AigcTailFrameRequest) -> AigcTailFrameResponse:
+    """从前一段 scene 的 aigc_video_urls 末段抽尾帧，返回 base64 data URL。
+
+    供 FillAigcPanel 『尾帧承接前段』开关消费——勾选后前端调本接口拿 data URL，
+    填到 fill 的 params.first_frame_url，让 Seedance 用上一段尾帧驱动新视频。
+    """
+    plan = plan_store.get(req.plan_id)
+    if plan is None:
+        raise HTTPException(
+            status_code=404,
+            detail=f"plan not found: {req.plan_id}",
+        )
+    cur_scene = next(
+        (s for s in plan.main_track if s.scene_id == req.scene_id), None,
+    )
+    if cur_scene is None:
+        raise HTTPException(
+            status_code=404,
+            detail=f"scene not found: {req.scene_id}",
+        )
+    # main_track 的 scene_id 形如 sc-{order}；按 order 找前一段
+    sorted_scenes = sorted(plan.main_track, key=lambda s: s.scene_id)
+    idx = next(
+        (i for i, s in enumerate(sorted_scenes) if s.scene_id == req.scene_id), -1,
+    )
+    if idx <= 0:
+        raise HTTPException(
+            status_code=400,
+            detail="本段是第一段，没有可承接的前段",
+        )
+    prev_scene = sorted_scenes[idx - 1]
+    if not prev_scene.aigc_video_urls:
+        raise HTTPException(
+            status_code=400,
+            detail="前一段尚未补全（缺 aigc_video_urls），无法用尾帧承接",
+        )
+    try:
+        data_url = await _extract_tail_frame_data_url(prev_scene.aigc_video_urls[-1])
+    except Exception as exc:  # noqa: BLE001
+        log.warning("[gap] tail-frame extract failed plan=%s scene=%s: %s",
+                    req.plan_id, req.scene_id, exc)
+        raise HTTPException(
+            status_code=502,
+            detail=f"尾帧抽取失败：{exc}",
+        ) from exc
+    return AigcTailFrameResponse(frame_data_url=data_url)

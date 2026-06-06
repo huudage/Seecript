@@ -33,7 +33,7 @@ export function MaterialCard({
           <img src={thumb} alt={material.filename} className="h-full w-full object-cover" />
         ) : (
           <div className="flex h-full w-full items-center justify-center text-xs text-muted-foreground">
-            {material.media_type === 'audio' ? '🎵 音频' : '— 无预览'}
+            {material.media_type === 'audio' ? '🎵 音频' : '— 没有预览图'}
           </div>
         )}
 
@@ -58,7 +58,7 @@ export function MaterialCard({
               'absolute right-1 bottom-7 rounded px-1.5 py-0.5 text-[10px] font-bold text-black',
               material.highlight_score >= 0.75 ? 'bg-yellow-300' : 'bg-slate-200',
             )}
-            title={material.highlight_reason ?? '高光评分'}
+            title={material.highlight_reason ?? '高光评分（AI 判断）'}
           >
             {material.highlight_score >= 0.75 ? '⭐ ' : ''}
             {Math.round(material.highlight_score * 100)}

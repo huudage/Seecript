@@ -6,7 +6,8 @@ import type {
   Project,
   ProjectListResponse,
   ProjectUpdateRequest,
-  SampleId,
+  ReferenceVersion,
+  VideoType,
 } from '@/types/schemas'
 
 import { usePlanStore } from './plan'
@@ -37,8 +38,12 @@ interface ProjectsState {
   refresh: () => Promise<void>
   /** 切换当前项目；传 null 清空。 */
   setCurrentProject: (id: string | null) => void
-  /** 新建项目 → 后端落盘 → 自动 setCurrent。 sampleIds 长度必须 1-2。 */
-  createProject: (name: string, sampleIds: SampleId[]) => Promise<Project>
+  /** 新建项目 → 后端落盘 → 自动 setCurrent。reference_versions 可空（用户在 Decompose 选样例后回填）。 */
+  createProject: (
+    name: string,
+    referenceVersions: ReferenceVersion[],
+    videoType?: VideoType | null,
+  ) => Promise<Project>
   /** 切到该项目并同步进 session 上下文（brief/goal/settings）；清空 plan 残留。 */
   resumeProject: (id: string) => Promise<Project | null>
   /** PATCH 单项目字段。 */
@@ -51,7 +56,7 @@ const STORAGE_KEY = 'seecript:projects:current'
 
 function applyProjectToSession(proj: Project) {
   // 把项目内已保存的 brief / video_goal / settings 灌回 session store；
-  // 不动 selectedSampleIds / videoType（让用户进 Compose 时再选；samples 由 Library/Decompose 驱动）
+  // refs 为空时（新建未选样例）跳过 selectSamples 但仍同步 videoType
   const session = useSessionStore.getState()
   // 切项目时必须清掉上一个项目的 manifest / materials；否则 Compose 页会显示别人的素材
   useSessionStore.setState({ manifest: null, materials: [] })
@@ -62,8 +67,27 @@ function applyProjectToSession(proj: Project) {
   }
   // session_id 与 project_id 等价：后端把 project_id 当 session 路由键
   session.setSession(proj.project_id)
-  // 选中样例（视频类型在样例加载后补；标题先用 sample_id 兜底，Library 加载到 LibraryItem 后会刷新）
-  session.selectSamples(proj.sample_ids, proj.sample_ids, undefined, 'system')
+  // 项目级 videoType：建项目时即定，优先于样例覆盖
+  if (proj.video_type) {
+    session.setVideoType(proj.video_type)
+  }
+  // refs 为空 → 用户还没选样例，清空 selectedSampleIds / selectedReferences
+  if (proj.reference_versions.length === 0) {
+    useSessionStore.setState({
+      selectedSampleIds: [],
+      selectedSampleTitles: [],
+      selectedReferences: [],
+    })
+  } else {
+    // 选中样例（视频类型在样例加载后补；标题先用 sample_id 兜底,Library 加载到 LibraryItem 后会刷新）
+    // stage-15:Project 用 reference_versions(sample_id+slot_id)模型；这里只灌 sample_id 给
+    // selectedSampleIds(Decompose 页用)。Compose 顶部 ReferencePicker 会根据用户在该项目内的选择
+    // 单独管理 selectedReferences,不再串这条链。
+    const sampleIds = proj.reference_versions.map((rv) => rv.sample_id)
+    session.selectSamples(sampleIds, sampleIds, proj.video_type ?? undefined, 'system')
+    // 把已保存的 references 灌进 selectedReferences,让 Compose ReferencePicker 默认选中
+    useSessionStore.setState({ selectedReferences: [...proj.reference_versions] })
+  }
   // 切项目时清空残留的 plan/gaps/fills + 编辑历史，避免误以为是本项目的产物
   usePlanStore.getState().reset()
   useEditStore.getState().reset()
@@ -92,9 +116,13 @@ export const useProjectsStore = create<ProjectsState>()(
 
       setCurrentProject: (id) => set({ currentProjectId: id }),
 
-      createProject: async (name, sampleIds) => {
+      createProject: async (name, referenceVersions, videoType) => {
         set({ error: null })
-        const created = await api.post<Project>('/project', { name, sample_ids: sampleIds })
+        const created = await api.post<Project>('/project', {
+          name,
+          video_type: videoType ?? null,
+          reference_versions: referenceVersions,
+        })
         set((state) => ({
           projects: [created, ...state.projects.filter((p) => p.project_id !== created.project_id)],
           currentProjectId: created.project_id,

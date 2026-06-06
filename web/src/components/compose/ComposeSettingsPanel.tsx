@@ -1,20 +1,29 @@
 import { useState, type ChangeEvent, type KeyboardEvent } from 'react'
 
 import { cn } from '@/lib/utils'
-import type { ComposeSettings, TargetPlatform, ToneStyle } from '@/types/schemas'
+import type { AspectRatio, ComposeSettings, TargetPlatform, ToneStyle } from '@/types/schemas'
 
 /**
- * Compose 页"高级设置"折叠面板：目标时长 / 平台 / 调性 / CTA / 关键词。
+ * Compose 页"高级设置"折叠面板：目标时长 / 平台 / 画面比例 / 调性 / CTA / 关键词。
  *
- * 注：口播 TTS 与字幕相关设置已迁移到四轨板的"口播 / 字幕轨"——开篇不再让用户选音色，
- * 而是在内容轨准备好之后，由字幕轨上的一键 TTS 操作驱动；这里只保留全局结构参数。
+ * v2 起：『目标平台』决定节奏 + 字幕风格；『画面比例』独立控件，允许 B 站发竖屏等组合。
+ *
+ * 注：字幕轨 / 口播轨 已迁移到四轨板——字幕轨默认关，开关在 step2 字幕轨左侧；
+ * 口播 TTS 默认关，开关与音色选择在 step3 口播轨左侧（一键合成同位置触发）。
+ * 这里只保留全局结构参数。
  */
 
 const PLATFORM_OPTIONS: { value: TargetPlatform; label: string; hint: string }[] = [
-  { value: 'douyin', label: '抖音', hint: '9:16 强字幕 节奏紧凑' },
-  { value: 'wechat', label: '视频号', hint: '9:16 节奏温和' },
-  { value: 'xiaohongshu', label: '小红书', hint: '9:16 文艺克制' },
-  { value: 'bilibili', label: 'B 站', hint: '16:9 叙事感' },
+  { value: 'douyin', label: '抖音', hint: '强字幕 节奏紧凑' },
+  { value: 'wechat', label: '视频号', hint: '节奏温和' },
+  { value: 'xiaohongshu', label: '小红书', hint: '文艺克制' },
+  { value: 'bilibili', label: 'B 站', hint: '叙事感' },
+]
+
+const ASPECT_OPTIONS: { value: AspectRatio; label: string; hint: string }[] = [
+  { value: '9:16', label: '9:16', hint: '竖屏短视频' },
+  { value: '16:9', label: '16:9', hint: '横屏长内容' },
+  { value: '1:1', label: '1:1', hint: '方版橱窗' },
 ]
 
 const TONE_OPTIONS: { value: ToneStyle; label: string; hint: string }[] = [
@@ -31,7 +40,7 @@ export function ComposeSettingsPanel({
   value: ComposeSettings
   onChange: (patch: Partial<ComposeSettings>) => void
 }) {
-  const [open, setOpen] = useState(false)
+  const [open, setOpen] = useState(true)
   const [draftKw, setDraftKw] = useState('')
 
   const handleAddKeyword = () => {
@@ -78,9 +87,11 @@ export function ComposeSettingsPanel({
           <span className="ml-2 font-normal text-muted-foreground">
             {value.target_duration_seconds}s · {PLATFORM_OPTIONS.find((p) => p.value === value.target_platform)?.label}
             {' · '}
+            {value.aspect_ratio}
+            {' · '}
             {TONE_OPTIONS.find((t) => t.value === value.tone)?.label}
-            {value.cta ? ` · CTA「${value.cta}」` : ''}
-            {value.keywords.length > 0 ? ` · ${value.keywords.length} 关键词` : ''}
+            {value.cta ? ` · 结尾「${value.cta}」` : ''}
+            {value.keywords.length > 0 ? ` · ${value.keywords.length} 个关键词` : ''}
           </span>
         </span>
         <span className="text-muted-foreground">{open ? '▾' : '▸'}</span>
@@ -135,6 +146,29 @@ export function ComposeSettingsPanel({
             </div>
           </div>
 
+          {/* 画面比例（v2 与平台解耦） */}
+          <div>
+            <label className="text-[11px] font-semibold text-muted-foreground">画面比例</label>
+            <div className="mt-1 grid grid-cols-3 gap-1.5">
+              {ASPECT_OPTIONS.map((opt) => (
+                <button
+                  key={opt.value}
+                  type="button"
+                  onClick={() => onChange({ aspect_ratio: opt.value })}
+                  className={cn(
+                    'rounded-md border px-2 py-1.5 text-left text-xs transition',
+                    value.aspect_ratio === opt.value
+                      ? 'border-primary bg-primary/10 text-foreground'
+                      : 'border-border bg-background/60 text-muted-foreground hover:border-primary/60',
+                  )}
+                >
+                  <div className="font-mono font-semibold">{opt.label}</div>
+                  <div className="text-[10px] text-muted-foreground">{opt.hint}</div>
+                </button>
+              ))}
+            </div>
+          </div>
+
           {/* 调性 */}
           <div>
             <label className="text-[11px] font-semibold text-muted-foreground">整体调性</label>
@@ -163,7 +197,7 @@ export function ComposeSettingsPanel({
           {/* CTA */}
           <div>
             <div className="flex items-center justify-between">
-              <label className="text-[11px] font-semibold text-muted-foreground">收尾 CTA（≤20 字）</label>
+              <label className="text-[11px] font-semibold text-muted-foreground">结尾引导语（最多 20 字）</label>
               <span className="font-mono text-[10px] text-muted-foreground">{value.cta.length}/20</span>
             </div>
             <input
@@ -178,7 +212,7 @@ export function ComposeSettingsPanel({
           {/* 关键词 */}
           <div>
             <div className="flex items-center justify-between">
-              <label className="text-[11px] font-semibold text-muted-foreground">必出关键词（最多 5 个）</label>
+              <label className="text-[11px] font-semibold text-muted-foreground">必须出现的关键词（最多 5 个）</label>
               <span className="font-mono text-[10px] text-muted-foreground">{value.keywords.length}/5</span>
             </div>
             <div className="mt-1 flex flex-wrap items-center gap-1.5">

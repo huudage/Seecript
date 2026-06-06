@@ -11,14 +11,14 @@ import type {
 } from '@/types/schemas'
 
 const KIND_LABEL: Record<AssetKind, string> = {
-  bgm: 'BGM',
+  bgm: '背景音乐',
   reference_image: '参考图',
   reference_video: '参考视频',
 }
 
 const KIND_DESC: Record<AssetKind, string> = {
-  bgm: '渲染时混音的背景音乐',
-  reference_image: '风格/构图/调性参考画面',
+  bgm: '出片时混入视频的背景音乐',
+  reference_image: '风格 / 构图 / 调性参考画面',
   reference_video: '叙事节奏参考视频（自动抽 8 帧）',
 }
 
@@ -102,7 +102,7 @@ export function AssetLibraryView() {
   const onFilesSelected = async (files: FileList | null) => {
     if (!files || files.length === 0) return
     if (!currentProjectId) {
-      setError('请先在首页新建/选择一个项目，再上传资产')
+      setError('请先在首页新建或选一个项目，再上传素材')
       return
     }
     setBusy(true)
@@ -126,7 +126,7 @@ export function AssetLibraryView() {
   }
 
   const onDelete = async (assetId: string) => {
-    if (!confirm('确定删除该素材？删除后该 asset 已被使用的旧 plan 仍可继续渲染（旧文件还在），但库里不再可见。')) {
+    if (!confirm('确定删除这份素材？已经在用它的旧方案还能继续出片，但素材库里看不到了。')) {
       return
     }
     try {
@@ -221,13 +221,19 @@ export function AssetLibraryView() {
       {items && items.length === 0 && (
         <div className="rounded-lg border border-dashed border-border bg-card p-8 text-center">
           <p className="text-sm text-muted-foreground">
-            还没有 {KIND_LABEL[kind]} 素材。上传后可在编排页选用。
+            还没有 {KIND_LABEL[kind]} 素材。上传后就能在视频工坊里选用。
           </p>
         </div>
       )}
 
       {items && items.length > 0 && (
-        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
+        <div
+          className={cn(
+            kind === 'bgm'
+              ? 'divide-y divide-border overflow-hidden rounded-lg border border-border bg-card'
+              : 'grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3',
+          )}
+        >
           {items.map((asset) => (
             <AssetCard
               key={asset.asset_id}
@@ -289,6 +295,90 @@ function AssetCard({
     }
   }
 
+  // BGM 紧密排布：不展示图，单行罗列名字 + 状态 + 音频 + 编辑/删除
+  if (asset.kind === 'bgm') {
+    return (
+      <div className="flex items-center gap-3 px-3 py-1.5 text-sm hover:bg-muted/30">
+        <span
+          className={cn(
+            'shrink-0 rounded-full border px-1.5 py-0.5 text-[10px] font-medium',
+            STATUS_BADGE[asset.status],
+          )}
+        >
+          {STATUS_LABEL[asset.status]}
+        </span>
+        {isEditing ? (
+          <div className="flex flex-1 items-center gap-2">
+            <input
+              type="text"
+              value={title}
+              onChange={(e) => setTitle(e.target.value)}
+              maxLength={120}
+              className="flex-1 rounded border border-input bg-background px-2 py-1 text-sm"
+              placeholder="标题"
+            />
+            <input
+              type="text"
+              value={tags}
+              onChange={(e) => setTags(e.target.value)}
+              className="flex-1 rounded border border-input bg-background px-2 py-1 text-xs"
+              placeholder="标签，逗号分隔"
+            />
+            <button
+              type="button"
+              onClick={onCancelEdit}
+              disabled={saving}
+              className="shrink-0 rounded-md px-2 py-1 text-xs text-muted-foreground hover:bg-secondary"
+            >
+              取消
+            </button>
+            <button
+              type="button"
+              onClick={onSave}
+              disabled={saving}
+              className="shrink-0 rounded-md bg-primary px-2 py-1 text-xs text-primary-foreground hover:opacity-90 disabled:opacity-50"
+            >
+              {saving ? '保存中…' : '保存'}
+            </button>
+          </div>
+        ) : (
+          <>
+            <span className="flex-1 truncate font-medium" title={asset.title || asset.file_name}>
+              {asset.title || asset.file_name}
+            </span>
+            <span className="shrink-0 text-[11px] text-muted-foreground">
+              {formatBytes(asset.file_size)}
+              {dur && ` · ${dur}`}
+              {asset.use_count > 0 && ` · 已用 ${asset.use_count}`}
+            </span>
+            {asset.status === 'ready' && (
+              <audio
+                src={asset.file_url}
+                controls
+                className="h-7 w-48 shrink-0"
+                preload="none"
+              />
+            )}
+            <button
+              type="button"
+              onClick={onEdit}
+              className="shrink-0 rounded-md px-2 py-1 text-[11px] text-muted-foreground hover:bg-secondary hover:text-foreground"
+            >
+              编辑
+            </button>
+            <button
+              type="button"
+              onClick={onDelete}
+              className="shrink-0 rounded-md px-2 py-1 text-[11px] text-destructive hover:bg-destructive/10"
+            >
+              删除
+            </button>
+          </>
+        )}
+      </div>
+    )
+  }
+
   return (
     <div className="overflow-hidden rounded-lg border border-border bg-card">
       <div className="relative h-32 w-full bg-gradient-to-br from-secondary to-muted">
@@ -300,10 +390,7 @@ function AssetCard({
             loading="lazy"
           />
         )}
-        {!thumb && asset.kind === 'bgm' && (
-          <div className="flex h-full w-full items-center justify-center text-3xl">🎵</div>
-        )}
-        {!thumb && asset.kind !== 'bgm' && (
+        {!thumb && (
           <div className="flex h-full w-full items-center justify-center text-2xl text-muted-foreground">
             {asset.status === 'processing' ? '⏳' : '?'}
           </div>
@@ -334,7 +421,7 @@ function AssetCard({
               value={tags}
               onChange={(e) => setTags(e.target.value)}
               className="w-full rounded border border-input bg-background px-2 py-1 text-xs"
-              placeholder="标签，用逗号分隔（≤12 个）"
+              placeholder="标签，用逗号分隔（最多 12 个）"
             />
             <div className="flex justify-end gap-2">
               <button
@@ -379,13 +466,10 @@ function AssetCard({
             )}
             {asset.error && (
               <p className="text-[11px] text-destructive" title={asset.error}>
-                后台探测失败：{asset.error.slice(0, 60)}
+                分析失败：{asset.error.slice(0, 60)}
               </p>
             )}
             <div className="flex items-center justify-between gap-1 pt-1">
-              {asset.kind === 'bgm' && asset.status === 'ready' && (
-                <audio src={asset.file_url} controls className="h-8 max-w-[60%]" preload="none" />
-              )}
               <div className="ml-auto flex gap-1">
                 <button
                   type="button"

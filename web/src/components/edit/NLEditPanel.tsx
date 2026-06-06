@@ -1,7 +1,7 @@
 /**
  * 自然语言编辑 · 三轨 tab 版。
  *
- * - 顶 3 个 tab：内容轨 / 包装轨 / 口播轨
+ * - 顶 3 个 tab：内容轨 / 包装轨 / 字幕 & 口播轨
  * - lockedTracks 包含 'main' 时（Render 页），内容轨 tab 禁用 + 提示语
  * - 每个 tab 对应不同的 placeholder + LLM tools 子集（后端按 req.track 分流）
  * - 提交完成回调 onApplied(newPlan)，由父组件 push 到 undo 栈
@@ -32,20 +32,20 @@ interface Props {
 
 const TRACK_META: Record<EditTrack, { label: string; placeholder: string; hint: string }> = {
   main: {
-    label: '内容轨',
+    label: '镜头',
     placeholder:
-      '例：缩短 sc-1 到 3 秒；把 sc-2 换成 mat-xxx；sc-3 加个 dissolve 转场（style ∈ {hard_cut, dissolve, slide, zoom, whip, wipe}）',
-    hint: '只修改主轨：时长 / 素材 / 转场。不改字幕、口播、BGM。',
+      '例：把第 1 段缩短到 3 秒；第 2 段换成另一个素材；第 3 段加个溶解转场',
+    hint: '只改镜头本身：时长 / 用的素材 / 转场。不动字幕、口播、背景音乐。',
   },
   packaging: {
-    label: '包装轨',
-    placeholder: '例：把 pkg-sub-1 的字幕改成 "限时 5 折"；BGM 调到 0.3',
-    hint: '只修改包装层：字幕/标题/贴纸文字 + BGM 音量。',
+    label: '包装',
+    placeholder: '例：把第 1 条字幕改成「限时 5 折」；背景音乐音量调到 0.3',
+    hint: '只改包装层：字幕 / 标题 / 贴纸文字 + 背景音乐音量。',
   },
   voice: {
-    label: '口播轨',
-    placeholder: '例：把 sc-1 的口播改得更口语化；sc-2 口播改成「现在下单立减 99」',
-    hint: '只修改 narration（口播文字）。系统会自动重新合成 wav。',
+    label: '字幕 / 口播',
+    placeholder: '例：第 1 段字幕改得更口语化一点；第 2 段改成「现在下单立减 99」',
+    hint: '只改字幕文案。字幕轨立刻刷新；如果开启了口播，配音也会自动重合成。',
   },
 }
 
@@ -88,7 +88,7 @@ export function NLEditPanel({
   const handleSubmit = useCallback(async () => {
     if (!instruction.trim()) return
     if (lockedSet.has(activeTrack)) {
-      setEditError(`${TRACK_META[activeTrack].label}在当前步骤被锁定，无法编辑。`)
+      setEditError(`「${TRACK_META[activeTrack].label}」当前步骤改不了。`)
       return
     }
     setApplying(true)
@@ -121,8 +121,8 @@ export function NLEditPanel({
   return (
     <section className="rounded-lg border border-border bg-card p-4">
       <div className="mb-3 flex items-center gap-2">
-        <h2 className="text-sm font-semibold">模块 7 · 自然语言编辑</h2>
-        <span className="text-xs text-muted-foreground">LLM 按轨道分流 tool · 意图识别更准</span>
+        <h2 className="text-sm font-semibold">用一句话改这段</h2>
+        <span className="text-xs text-muted-foreground">AI 会按你说的话改对应内容</span>
       </div>
 
       {/* tabs */}
@@ -144,7 +144,7 @@ export function NLEditPanel({
                   ? 'cursor-not-allowed text-muted-foreground opacity-50'
                   : 'hover:bg-secondary',
               )}
-              title={locked ? '该轨道在当前步骤被锁定' : TRACK_META[t].hint}
+              title={locked ? '当前步骤无法改这个' : TRACK_META[t].hint}
             >
               {TRACK_META[t].label}
               {locked && <span className="ml-1">🔒</span>}
@@ -155,7 +155,7 @@ export function NLEditPanel({
 
       {renderLocked && (
         <div className="mb-3 rounded-md border border-amber-400/40 bg-amber-50 px-3 py-2 text-xs text-amber-900 dark:bg-amber-950/30 dark:text-amber-200">
-          已进入渲染流程，内容轨改动请回 Compose 步骤；当前可改：包装轨 / 口播轨。
+          已进入出片流程，镜头改动请回上一步；当前可改：包装 / 字幕 & 口播。
         </div>
       )}
 
@@ -176,11 +176,11 @@ export function NLEditPanel({
         </div>
         <div className="space-y-2 text-xs">
           <div>
-            <label className="text-muted-foreground">marks（可选区段）</label>
+            <label className="text-muted-foreground">作用区间（可选）</label>
             <div className="mt-1 flex gap-2">
               <input
                 type="number"
-                placeholder="start"
+                placeholder="起"
                 value={markStart}
                 onChange={(e) => setMarkStart(e.target.value)}
                 className="w-20 rounded-md border border-border bg-background px-2 py-1"
@@ -188,7 +188,7 @@ export function NLEditPanel({
               <span className="self-center text-muted-foreground">–</span>
               <input
                 type="number"
-                placeholder="end"
+                placeholder="止"
                 value={markEnd}
                 onChange={(e) => setMarkEnd(e.target.value)}
                 className="w-20 rounded-md border border-border bg-background px-2 py-1"

@@ -155,17 +155,30 @@ def test_coerce_transition_clamps_duration_to_max():
 
 
 def test_coerce_transition_rejects_invalid_role():
-    """from_section='blah' → 丢弃整条。"""
+    """空 from_section / 异常长 from_section → 丢弃整条。
+
+    Stage-16 起 role 是自由字符串（要支持 step_N/item_N），不再校验白名单；
+    仅在 role 为空或长度超 30 时拒绝。
+    """
     prefs = PackagingPreferences()
-    raw = {
+    raw_empty = {
         "style": "dissolve",
         "at_seconds": 3.0,
         "duration": 0.4,
-        "from_section": "blah",
+        "from_section": "",
         "to_section": "development",
         "reason": "test",
     }
-    assert _coerce_transition(raw, 0, prefs) is None
+    assert _coerce_transition(raw_empty, 0, prefs) is None
+    raw_too_long = {
+        "style": "dissolve",
+        "at_seconds": 3.0,
+        "duration": 0.4,
+        "from_section": "x" * 50,
+        "to_section": "development",
+        "reason": "test",
+    }
+    assert _coerce_transition(raw_too_long, 0, prefs) is None
 
 
 @pytest.mark.asyncio
@@ -178,8 +191,9 @@ async def test_recommend_packaging_respects_minimalist_allowed_styles():
 
     rec = await recommend_packaging(plan, apply=True, preferences=prefs)
 
-    assert len(rec.transitions) > 0, "至少应有一条 transition（兜底也算）"
-    for tr in rec.transitions:
+    primary = rec.versions[0]
+    assert len(primary.transitions) > 0, "至少应有一条 transition（兜底也算）"
+    for tr in primary.transitions:
         assert tr.style in ("hard_cut", "dissolve"), (
             f"minimalist 预设下出现非法 style={tr.style}（应只有 hard_cut/dissolve）"
         )
@@ -200,8 +214,9 @@ async def test_recommend_packaging_custom_single_style_funnels():
 
     rec = await recommend_packaging(plan, apply=False, preferences=prefs)
 
-    assert len(rec.transitions) > 0
-    for tr in rec.transitions:
+    primary = rec.versions[0]
+    assert len(primary.transitions) > 0
+    for tr in primary.transitions:
         assert tr.style == "zoom"
         assert tr.duration <= 0.5
 
@@ -219,13 +234,18 @@ async def test_recommend_packaging_video_goal_drives_cover_title():
 
     rec = await recommend_packaging(plan, apply=False, preferences=prefs)
 
-    assert rec.cover is not None
+    primary = rec.versions[0]
+    assert primary.cover is not None
     expected_prefix = plan.video_goal[:12]  # type: ignore[index]
-    assert rec.cover.title == expected_prefix
+    assert primary.cover.title == expected_prefix
 
 
 def test_router_persists_preferences_to_plan_settings(client):
-    """POST /api/packaging/recommend → plan.settings.packaging_prefs 被请求体覆盖并写盘。"""
+    """POST /api/packaging/recommend → plan.settings.packaging_prefs 被请求体覆盖并写盘。
+
+    V2 起 /recommend 返回的是 PackagingRecommendationV2（5 维度候选），
+    但偏好持久化路径不变。
+    """
     plan = _make_plan(f"plan-persist-{int(time.time() * 1000)}")
     _TEST_PLAN_IDS.append(plan.plan_id)
     plan_store.put(plan)
@@ -250,6 +270,10 @@ def test_router_persists_preferences_to_plan_settings(client):
     }
     resp = client.post("/api/packaging/recommend", json=body)
     assert resp.status_code == 200, resp.text
+    # V2 响应：5 维度键齐
+    data = resp.json()
+    for k in ("subtitle_styles", "title_bars", "stickers", "transition_bundles", "covers"):
+        assert k in data
 
     # plan.settings.packaging_prefs 应被请求体覆盖
     fresh = plan_store.get(plan.plan_id)
@@ -316,9 +340,15 @@ def test_subtitle_items_seeded_with_prefs_on_plan_build(client):
     _TEST_PLAN_IDS.append(plan["plan_id"])
 
     # 找到 subtitle item
+    # 注:auto-narration 已移除(用户在第 2 步会显式触发 copy/AIGC 才有 narration),
+    # 所以 plan/build 直出时 main_track scene.narration 为空 → 没有 subtitle 烧入。
+    # 这里转而验证 packaging_prefs 已落盘到 plan.settings,后续 LLM/burn 阶段会读取。
     subs = [it for it in plan["packaging_track"] if it["kind"] == "subtitle"]
-    assert len(subs) > 0, "voiceover_enabled=True 应至少生成一条 subtitle"
-    sub = subs[0]
-    # dialogue 预设展开后 subtitle_font_size 应被覆盖为 large、bilingual=true
-    assert sub["style"]["font_size"] == "large"
-    assert sub["style"]["bilingual"] is True
+    if subs:
+        sub = subs[0]
+        # dialogue 预设展开后 subtitle_font_size 应被覆盖为 large、bilingual=true
+        assert sub["style"]["font_size"] == "large"
+        assert sub["style"]["bilingual"] is True
+    # plan.settings.packaging_prefs 必须落盘——下游 burn / 包装阶段读它
+    prefs = plan["settings"].get("packaging_prefs") or {}
+    assert prefs.get("preset") == "dialogue", prefs

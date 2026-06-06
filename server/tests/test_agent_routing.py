@@ -22,12 +22,13 @@ from app.schemas import (
     Section,
     SectionRole,
     Shot,
+    allowed_roles_for,
 )
 from app.services.agent.decompose_agent import decompose
 from app.services.agent.gap_agent import detect_gaps, fill_gap
 
 
-_ALLOWED_ROLES: set[SectionRole] = set(get_args(SectionRole))  # type: ignore[arg-type]
+_ALLOWED_ROLES: set[str] = set(allowed_roles_for("dramatic"))
 
 
 def _adapt_from_manifest(manifest: SampleManifest) -> list[AdaptedSection]:

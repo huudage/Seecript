@@ -194,6 +194,7 @@ class DoubaoArkT2VClient(T2VClient):
         self._default_ratio = settings.t2v_default_ratio
         self._default_generate_audio = settings.t2v_generate_audio
         self._default_watermark = settings.t2v_watermark
+        self._resolution = settings.ark_t2v_resolution
 
     def _headers(self) -> dict[str, str]:
         return {"Authorization": f"Bearer {self._api_key}", "Content-Type": "application/json"}
@@ -237,6 +238,7 @@ class DoubaoArkT2VClient(T2VClient):
             "model": self._model,
             "content": content,
             "ratio": ratio or self._default_ratio,
+            "resolution": self._resolution,
             "duration": int(duration_seconds),
             "generate_audio": (
                 self._default_generate_audio if generate_audio is None else bool(generate_audio)

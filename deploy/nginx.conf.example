@@ -183,4 +183,35 @@ server {
         add_header Cross-Origin-Embedder-Policy "credentialless" always;
         add_header Cache-Control "public, max-age=3600";
     }
+
+    # /aigc-videos/ : Seedance T2V 落盘的同源静态视频（豆包临时签名 URL 不能直接喂 <video>，
+    # 跨域预检 + 1h-7d 过期双杀；后端 gap_agent._persist_aigc_video 把 CDN 文件下载到
+    # var/aigc_videos/ 后，前端通过这个前缀同源访问）。
+    location /aigc-videos/ {
+        proxy_pass http://127.0.0.1:__BACKEND_PORT__;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_buffering off;
+        add_header Cross-Origin-Opener-Policy "same-origin" always;
+        add_header Cross-Origin-Embedder-Policy "credentialless" always;
+        add_header Cache-Control "public, max-age=3600";
+    }
+
+    # /aigc-images/ : Seedream 文生图落盘后的同源静态图（同 aigc-videos 思路）。
+    # render pipeline 也通过本地 var/aigc_images/<filename> 直接读，不走 HTTP。
+    location /aigc-images/ {
+        proxy_pass http://127.0.0.1:__BACKEND_PORT__;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_buffering off;
+        add_header Cross-Origin-Opener-Policy "same-origin" always;
+        add_header Cross-Origin-Embedder-Policy "credentialless" always;
+        add_header Cache-Control "public, max-age=3600";
+    }
 }

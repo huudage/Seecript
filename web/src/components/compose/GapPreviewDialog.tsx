@@ -33,7 +33,7 @@ export function GapPreviewDialog({ gap, onClose }: { gap: Gap | null; onClose: (
       >
         <div className="flex items-center justify-between border-b border-border px-4 py-2">
           <h3 className="text-sm font-semibold">
-            {SECTION_LABEL[gap.section]} · slot {gap.slot_index}
+            {SECTION_LABEL[gap.section]} · 镜头 {gap.slot_index + 1}
           </h3>
           <button
             onClick={onClose}
@@ -52,11 +52,11 @@ export function GapPreviewDialog({ gap, onClose }: { gap: Gap | null; onClose: (
             />
           ) : (
             <div className="flex h-48 items-center justify-center rounded-md border border-dashed border-border text-xs text-muted-foreground">
-              样例无截图（mock 数据或未抽帧）
+              样例没有截图
             </div>
           )}
           <div className="space-y-1 text-sm">
-            <p className="font-medium">需求</p>
+            <p className="font-medium">这一段需要什么</p>
             <p className="text-muted-foreground">{gap.requirement}</p>
           </div>
           {gap.note && (

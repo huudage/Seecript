@@ -34,7 +34,7 @@ from pathlib import Path
 from typing import Any, Optional
 
 from ...config import get_settings
-from ...schemas import Project, ProjectStatus
+from ...schemas import Project, ProjectStatus, ReferenceVersion
 
 log = logging.getLogger("seecript.projects")
 
@@ -108,27 +108,92 @@ class ProjectStore:
                 continue
             try:
                 raw = json.loads(manifest.read_text(encoding="utf-8"))
-                project = Project.model_validate(raw)
+                project = self._project_from_dict(raw)
                 self._by_id[project.project_id] = project
                 loaded += 1
             except Exception as exc:  # noqa: BLE001
                 log.warning("[projects] skip broken manifest %s: %s", manifest, exc)
         log.info("[projects] loaded %d project(s) from %s", loaded, root)
 
+    @staticmethod
+    def _project_from_dict(raw: dict) -> Project:
+        """stage-15 兼容层：把旧版 `sample_ids: list[str]` 或更早的 `sample_id: str` 升级为
+        `reference_versions`。
+
+        旧项目落盘时还没有版本槽概念，sample_ids 隐式指向 active 槽。本方法在启动加载时
+        懒迁移：按当前 active slot 回填，原字段移到 `_legacy_sample_ids` 保留备份。
+        找不到 active slot（样例被删 / 未拆解）→ 该 sid 跳过，结果可能为空（项目会被 schema 拒绝）。
+        """
+        if "reference_versions" in raw and raw.get("reference_versions"):
+            return Project.model_validate(raw)
+        legacy_ids: list[str] = []
+        sids = raw.get("sample_ids")
+        if isinstance(sids, list) and sids:
+            legacy_ids = [s for s in sids if isinstance(s, str)]
+        else:
+            sid_one = raw.get("sample_id")
+            if isinstance(sid_one, str) and sid_one:
+                legacy_ids = [sid_one]
+        if legacy_ids:
+            from ..library import manifest_store
+            refs: list[dict] = []
+            for sid in legacy_ids:
+                active = manifest_store.get_active_slot(sid)
+                if active:
+                    refs.append({"sample_id": sid, "slot_id": active})
+            raw["reference_versions"] = refs
+            raw["_legacy_sample_ids"] = legacy_ids
+            raw.pop("sample_ids", None)
+            raw.pop("sample_id", None)
+        return Project.model_validate(raw)
+
     # ---------- CRUD ----------
-    def create(self, name: str, sample_ids: list[str]) -> Project:
+    def create(
+        self,
+        name: str,
+        reference_versions: list[ReferenceVersion] | None = None,
+        *,
+        sample_ids: list[str] | None = None,
+        video_type: Optional[str] = None,
+    ) -> Project:
+        """新建项目。
+
+        - 主入口：传 `reference_versions=[ReferenceVersion(sample_id, slot_id), ...]`，0-2 个均可
+          （为空表示「未选样例」态——前端在 Decompose 页选定后回写）
+        - 兼容入口：传 `sample_ids=[sid, ...]`，按当时 active slot 反查填进 reference_versions
+          （供老测试和迁移期代码使用）。两个都传时以 reference_versions 为准。
+        - `video_type`：建项目时即定的视频种类，前端按它过滤样例。
+        """
+        if not reference_versions and sample_ids:
+            from ..library import manifest_store
+            resolved: list[ReferenceVersion] = []
+            for sid in sample_ids:
+                active = manifest_store.get_active_slot(sid)
+                if active:
+                    resolved.append(ReferenceVersion(sample_id=sid, slot_id=active))
+                else:
+                    # 还没拆解 → 用占位 slot_id,后续测试 / 调用方按需重写
+                    resolved.append(ReferenceVersion(sample_id=sid, slot_id="legacy"))
+            reference_versions = resolved
+        # reference_versions 允许为空（建项目可只选种类）
+        reference_versions = list(reference_versions or [])
         with self._lock:
             now = time.time()
             project = Project(
                 project_id=_new_project_id(),
                 name=name,
-                sample_ids=list(sample_ids),
+                video_type=video_type,
+                reference_versions=reference_versions,
                 created_at=now,
                 updated_at=now,
             )
             self._by_id[project.project_id] = project
             self._persist(project)
-            log.info("[projects] created %s name=%r samples=%s", project.project_id, name, sample_ids)
+            log.info(
+                "[projects] created %s name=%r video_type=%s refs=%s",
+                project.project_id, name, video_type,
+                [(rv.sample_id, rv.slot_id) for rv in reference_versions],
+            )
             return project
 
     def get(self, project_id: str) -> Optional[Project]:

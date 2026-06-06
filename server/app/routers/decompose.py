@@ -66,6 +66,7 @@ async def _run_decompose(
     reference_asset_ids: Optional[list[str]] = None,
     nl_prompt: Optional[str] = None,
     replace_slot: Optional[str] = None,
+    persist: bool = False,
 ) -> None:
     try:
         await decompose(
@@ -76,6 +77,7 @@ async def _run_decompose(
             reference_asset_ids=reference_asset_ids,
             nl_prompt=nl_prompt,
             replace_slot=replace_slot,
+            persist=persist,
         )
     except Exception as exc:  # pragma: no cover
         log.exception("[%s] decompose failed: %s", job_id, exc)
@@ -86,43 +88,49 @@ async def _run_decompose(
 async def submit_decompose(req: DecomposeRequest, bg: BackgroundTasks) -> DecomposeSubmitResponse:
     """触发拆解流水线。
 
-    版本槽预校验（"重新生成"流程）：
-    - 槽满（=MAX_VERSIONS）且未指定 replace_slot → 409，body 列出现有版本让前端弹"删哪个"。
-    - 槽未满但指定了 replace_slot → 422，避免无意义覆盖。
+    stage-15 起 persist 默认 False(草稿模式):跑完 SSE done 推 manifest 给前端 zustand,
+    用户在 Decompose 页点「保存到资产库」时再调 POST /sample/{id}/manifest/save 入版本槽。
+    persist=True 走老行为(直接写槽),仅供需要无人值守自动入库的内部场景。
+
+    版本槽预校验仅在 persist=True 时跑(草稿模式根本不写槽):
+    - 槽满(=MAX_VERSIONS)且未指定 replace_slot → 409,body 列出现有版本让前端弹「删哪个」
+    - 槽未满但指定了 replace_slot → 422,避免无意义覆盖
     """
     real_path = _resolve_video_path(req.sample_id)
-    # 预校验版本槽容量——比起跑 2 分钟流水线后撞墙，提前几毫秒拒掉好得多
-    cur_count = manifest_store.version_count(req.sample_id)
-    if req.replace_slot is None and cur_count >= manifest_store.MAX_VERSIONS:
-        existing = manifest_store.list_versions(req.sample_id)
-        raise HTTPException(
-            status_code=409,
-            detail={
-                "error": "slots_full",
-                "message": f"sample {req.sample_id} 已有 {cur_count} 个版本，请先选一个删除",
-                "max_versions": manifest_store.MAX_VERSIONS,
-                "versions": [
-                    {
-                        "slot_id": v.slot_id,
-                        "updated_at": v.updated_at,
-                        "is_active": v.is_active,
-                    }
-                    for v in existing
-                ],
-            },
-        )
-    if req.replace_slot is not None:
-        if cur_count < manifest_store.MAX_VERSIONS:
+    # 草稿模式跳过槽位预校验——不写槽就不用提前拒绝。
+    # persist=True 时仍按老逻辑预校验,免得跑完 2 分钟流水线撞墙。
+    if req.persist:
+        cur_count = manifest_store.version_count(req.sample_id)
+        if req.replace_slot is None and cur_count >= manifest_store.MAX_VERSIONS:
+            existing = manifest_store.list_versions(req.sample_id)
             raise HTTPException(
-                status_code=422,
-                detail=f"slot 还有空位（{cur_count}/{manifest_store.MAX_VERSIONS}），不应传 replace_slot",
+                status_code=409,
+                detail={
+                    "error": "slots_full",
+                    "message": f"sample {req.sample_id} 已有 {cur_count} 个版本,请先选一个删除",
+                    "max_versions": manifest_store.MAX_VERSIONS,
+                    "versions": [
+                        {
+                            "slot_id": v.slot_id,
+                            "updated_at": v.updated_at,
+                            "is_active": v.is_active,
+                        }
+                        for v in existing
+                    ],
+                },
             )
-        valid_ids = {v.slot_id for v in manifest_store.list_versions(req.sample_id)}
-        if req.replace_slot not in valid_ids:
-            raise HTTPException(
-                status_code=404,
-                detail=f"replace_slot={req.replace_slot} 不存在",
-            )
+        if req.replace_slot is not None:
+            if cur_count < manifest_store.MAX_VERSIONS:
+                raise HTTPException(
+                    status_code=422,
+                    detail=f"slot 还有空位({cur_count}/{manifest_store.MAX_VERSIONS}),不应传 replace_slot",
+                )
+            valid_ids = {v.slot_id for v in manifest_store.list_versions(req.sample_id)}
+            if req.replace_slot not in valid_ids:
+                raise HTTPException(
+                    status_code=404,
+                    detail=f"replace_slot={req.replace_slot} 不存在",
+                )
 
     job_id = job_store.create(
         "decompose",
@@ -133,6 +141,7 @@ async def submit_decompose(req: DecomposeRequest, bg: BackgroundTasks) -> Decomp
             "reference_asset_ids": list(req.reference_asset_ids or []),
             "nl_prompt": req.nl_prompt,
             "replace_slot": req.replace_slot,
+            "persist": req.persist,
         },
     )
     bg.add_task(
@@ -144,6 +153,7 @@ async def submit_decompose(req: DecomposeRequest, bg: BackgroundTasks) -> Decomp
         list(req.reference_asset_ids or []),
         req.nl_prompt,
         req.replace_slot,
+        req.persist,
     )
     return DecomposeSubmitResponse(job_id=job_id)
 

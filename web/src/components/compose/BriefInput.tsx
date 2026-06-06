@@ -46,7 +46,7 @@ export function BriefInput({
         )}
       />
       {errorVisible && (
-        <p className="mt-1 text-[11px] text-destructive">主题不能为空——LLM 需要它作为语义锚定。</p>
+        <p className="mt-1 text-[11px] text-destructive">主题不能为空——AI 需要它来定方向。</p>
       )}
     </div>
   )

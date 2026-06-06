@@ -82,6 +82,48 @@ async def _run_render(job_id: str, plan_id: str, variant: str) -> None:
                 project_store.mark_rendered(plan.project_id, job_id)
             except Exception as exc:  # noqa: BLE001
                 log.warning("[%s] mark_rendered(%s) 失败: %s", job_id, plan.project_id, exc)
+        # Trace A：渲染成功后落"结构迁移 diff"——v0=initial_snapshot vs v1=current plan。
+        # 失败不阻塞渲染产物——profile 是后台沉淀，不该影响主流程。
+        try:
+            from ..services.profile import (
+                DEFAULT_USER_ID,
+                TraceA,
+                append_trace_a,
+                load_settings,
+                structure_diff,
+                to_snapshot,
+            )
+            v0 = plan.initial_snapshot or to_snapshot(plan)  # 老 plan 没 initial_snapshot 时降级 self-self
+            v1 = to_snapshot(plan)
+            diff = structure_diff(v0, v1)
+            import time as _time
+            trace = TraceA(
+                ts=int(_time.time()),
+                project_id=plan.project_id or "__legacy",
+                plan_id=plan.plan_id,
+                user_id=DEFAULT_USER_ID,
+                sample_ids=list(plan.sample_ids),
+                v0=v0,
+                v1=v1,
+                diff=diff,
+            )
+            append_trace_a(DEFAULT_USER_ID, trace)
+            log.info("[%s] profile.trace_a written project=%s diff_secs=%d roles=%d srcs=%d nars=%d",
+                     job_id, trace.project_id, diff.section_count_delta,
+                     len(diff.role_changes), len(diff.source_changes), len(diff.narration_diffs))
+            # 实时蒸馏：默认开启，可在 settings 关。失败仅 warn 不影响 trace。
+            try:
+                if load_settings(DEFAULT_USER_ID).realtime_distill_enabled:
+                    from ..services.profile.distill import distill_project_kb
+                    await distill_project_kb(DEFAULT_USER_ID, trace.project_id)
+            except ImportError:
+                # P2 distill 未上线时直接跳过——只落 trace 不蒸馏，不影响主链路
+                pass
+            except Exception as exc:  # noqa: BLE001
+                log.warning("[%s] realtime distill failed project=%s: %s",
+                            job_id, trace.project_id, exc)
+        except Exception as exc:  # noqa: BLE001
+            log.warning("[%s] profile.trace_a write failed: %s", job_id, exc)
     except Exception as exc:
         log.exception("[%s] render failed: %s", job_id, exc)
         job_store.fail(job_id, str(exc))

@@ -13,14 +13,26 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 import uuid
 from typing import Callable
 
 from fastapi import APIRouter, HTTPException
 
-from ..schemas import EditApplyRequest, Plan, SceneTransition, TransitionStyle
+from ..schemas import (
+    ComposeEditDiff,
+    ComposeEditDismissRequest,
+    ComposeEditRequest,
+    ComposeEditResponse,
+    EditApplyRequest,
+    Plan,
+    SceneTransition,
+    TransitionStyle,
+)
+from ..services.agent.compose_edit_agent import make_new_plan_id, replay_compose_ops, run_compose_edit
 from ..services.llm_client import get_llm_client
 from ..services.plans import plan_store
+from ..services.profile import DEFAULT_USER_ID, TraceB, append_trace_b
 from ..services.projects import project_store
 from ..services.tts import TTSError, synthesize_scene_voice
 
@@ -37,6 +49,10 @@ _SYSTEM_MAIN = (
     "『转场 / 过渡 / 切换 / dissolve / 渐变 / 推拉 / 缩放 / 擦除』→ set_scene_transition；"
     "set_scene_transition 的 style 必须取自 {hard_cut, dissolve, slide, zoom, whip, wipe}，"
     "其他词都先归到 dissolve；duration 不填默认 0.4 秒（范围 0.1-1.5）。"
+    "\n时长量化规则（用户表达模糊时按倍数算，再调用 edit_scene_duration）："
+    "稍短=×0.85 / 短一点=×0.8 / 短很多=×0.6；"
+    "稍长=×1.15 / 长一点=×1.2 / 长很多=×1.5；"
+    "明确『N 秒』直接用 N。所有结果钳制到 [0.5, 30] 秒区间。"
 )
 
 
@@ -46,6 +62,12 @@ _SYSTEM_PACKAGING = (
     "禁止改 scene 时长、口播、素材 —— 那些是其他轨道的工具。"
     "『字幕 / 标题 / 文字 / 改成 / 写成』→ update_packaging_text；"
     "『BGM / 背景音乐 / 音量 / 大声 / 小声 / 调到』→ update_bgm_volume。"
+    "\nBGM 量化规则（用户用模糊词时按倍数算）："
+    "小一点=×0.8 / 调小=×0.6 / 静音附近=×0.2；"
+    "大一点=×1.2 / 调大=×1.5；明确『N%』直接用 N/100。"
+    "所有音量钳制到 [0.0, 1.5] 区间。"
+    "\n字幕文本：增量替换优先（用户说『把第 2 段字幕改成 X』→ 只改对应 item.text）；"
+    "全局重写仅在用户明确说『所有字幕都换成 X』时使用。"
 )
 
 
@@ -55,6 +77,12 @@ _SYSTEM_VOICE = (
     "可选 tool：仅 edit_scene_narration。"
     "禁止改时长、字幕、素材、BGM。"
     "『口播 / 旁白 / 念白 / 朗读 / 口语化 / 改得更…』→ edit_scene_narration。"
+    "\n口语化改写策略 5 条："
+    "1) 短句优先（每句 ≤ 20 字）；"
+    "2) 用『你/我们/咱』替代书面化人称；"
+    "3) 数字按读法（『3.5』→『三点五』、『50%』→『百分之五十』）；"
+    "4) 去掉书面连接词（然而/此外/综上）；"
+    "5) 句末用语气词（呀/吧/啦）替代书面句号。"
 )
 
 
@@ -365,3 +393,136 @@ async def apply_edit(req: EditApplyRequest) -> Plan:
              current.plan_id, new_plan.plan_id, req.track, applied)
     plan_store.put(new_plan)
     return new_plan
+
+
+@router.post("/edit/compose", response_model=ComposeEditResponse)
+async def apply_compose_edit(req: ComposeEditRequest) -> ComposeEditResponse:
+    """Compose 态自然语言编辑（⌘K command bar）。
+
+    - step2：可改文案 / 段时长 / 删段 / 字卡 / BGM 偏移 / compose 设置
+    - step3：禁内容轨结构变更，可改字卡 / 包装项 / BGM 偏移 / compose 设置
+    - apply=False（默认）→ dry-run，返回 diff 不落盘
+    - apply=True → 写一份新 plan 到 plan_store，返回新 plan
+    """
+    current = plan_store.get(req.plan_id)
+    if current is None:
+        raise HTTPException(status_code=404, detail=f"plan not found: {req.plan_id}")
+
+    if req.step not in ("step2", "step3"):
+        raise HTTPException(status_code=400, detail=f"未知 step：{req.step}")
+
+    working = current.model_copy(deep=True)
+
+    # apply=True 且前端回传 confirmed_ops → 走确定性回放，跳过 LLM
+    if req.apply and req.confirmed_ops:
+        diffs = replay_compose_ops(working, req.confirmed_ops, req.step)
+        log.info(
+            "[compose_edit.replay] plan=%s step=%s ops=%d → diffs=%d",
+            req.plan_id, req.step, len(req.confirmed_ops), len(diffs),
+        )
+        if not diffs:
+            return ComposeEditResponse(
+                plan_id=current.plan_id, diffs=[], applied=False, plan=None,
+                note="确认的修改在回放时全部失败（目标 id 可能已被其它编辑改动；请重新发送指令）。",
+            )
+        working.plan_id = make_new_plan_id()
+        plan_store.put(working)
+        _record_compose_trace(working, req.instruction, diffs, req.step, dismissed=False)
+        return ComposeEditResponse(
+            plan_id=working.plan_id, diffs=diffs, applied=True, plan=working, note=None,
+        )
+
+    working, diffs, note = await run_compose_edit(working, req.instruction, req.step)
+
+    log.info(
+        "[compose_edit] plan=%s step=%s instruction=%r diffs=%d apply=%s",
+        req.plan_id, req.step, req.instruction[:60], len(diffs), req.apply,
+    )
+
+    if not req.apply or not diffs:
+        return ComposeEditResponse(
+            plan_id=current.plan_id,
+            diffs=diffs,
+            applied=False,
+            plan=None,
+            note=note,
+        )
+
+    working.plan_id = make_new_plan_id()
+    plan_store.put(working)
+    _record_compose_trace(working, req.instruction, diffs, req.step, dismissed=False)
+    return ComposeEditResponse(
+        plan_id=working.plan_id,
+        diffs=diffs,
+        applied=True,
+        plan=working,
+        note=note,
+    )
+
+
+def _record_compose_trace(
+    plan: Plan,
+    instruction: str,
+    diffs: list[ComposeEditDiff],
+    step: str,
+    *,
+    dismissed: bool,
+) -> None:
+    """把 ⌘K compose_edit 落盘成 TraceB——蒸馏器按 context 区分正负信号。
+
+    dismissed=False → context='compose_edit'（用户应用了 N 项，正信号）
+    dismissed=True  → context='compose_edit_dismissed'（用户预览后撤回，负信号）
+
+    失败仅 warn，不阻塞主流程。
+    """
+    try:
+        ops_payload = [
+            {"op": d.op, "target_id": d.target_id, **(d.args or {})}
+            for d in diffs
+        ]
+        trace = TraceB(
+            ts=int(time.time()),
+            project_id=plan.project_id or "__legacy",
+            plan_id=plan.plan_id,
+            user_id=DEFAULT_USER_ID,
+            context="compose_edit_dismissed" if dismissed else "compose_edit",
+            section_role=None,
+            user_input=instruction,
+            before={"step": step},
+            after={"ops": ops_payload, "diff_count": len(ops_payload)},
+        )
+        append_trace_b(DEFAULT_USER_ID, trace)
+    except Exception as exc:  # noqa: BLE001
+        log.warning("[edit] profile.trace_b (compose_edit dismissed=%s) write failed: %s",
+                    dismissed, exc)
+
+
+@router.post("/edit/compose/dismiss")
+async def dismiss_compose_edit(req: ComposeEditDismissRequest) -> dict[str, bool]:
+    """前端用户在 ⌘K dry-run 后撤回某条 diff —— 落 TraceB 负信号（蒸馏后变『避免 X』）。
+
+    无副作用，纯沉淀；返回 {"ok": True}。
+    """
+    current = plan_store.get(req.plan_id)
+    if current is None:
+        raise HTTPException(status_code=404, detail=f"plan not found: {req.plan_id}")
+
+    fake_diffs: list[ComposeEditDiff] = []
+    for op in req.dismissed_ops:
+        if not isinstance(op, dict):
+            continue
+        op_name = str(op.get("op") or "")
+        if not op_name:
+            continue
+        args = {k: v for k, v in op.items() if k != "op"}
+        fake_diffs.append(
+            ComposeEditDiff(
+                op=op_name,
+                target_id=str(args.get("section_id") or args.get("scene_id") or args.get("item_id") or "") or None,
+                summary=f"dismissed:{op_name}",
+                args={"op": op_name, **args},
+            )
+        )
+    _record_compose_trace(current, req.instruction, fake_diffs, req.step, dismissed=True)
+    log.info("[compose_edit.dismiss] plan=%s step=%s ops=%d", req.plan_id, req.step, len(fake_diffs))
+    return {"ok": True}

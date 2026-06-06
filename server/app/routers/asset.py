@@ -30,6 +30,7 @@ from ..schemas import (
     Asset,
     AssetKind,
     AssetListResponse,
+    AssetSaveFromUrlRequest,
     AssetUpdateRequest,
 )
 from ..services.assets import asset_store
@@ -308,3 +309,120 @@ async def touch_asset(asset_id: str) -> Asset:
     if a is None:
         raise HTTPException(status_code=404, detail=f"asset not found: {asset_id}")
     return a
+
+
+@router.post("/asset/save-from-url", response_model=Asset)
+async def save_asset_from_url(
+    body: AssetSaveFromUrlRequest,
+    background_tasks: BackgroundTasks,
+) -> Asset:
+    """把外部 URL 的图片 / 参考视频下载入库。
+
+    主要场景：
+    - Seedream 生成的临时图片 CDN（1h-7d 有效）→ 用户点『保存到素材库』
+    - 用户输入一段外站参考视频 URL → 入库当作参考视频素材
+
+    永久落盘 + 复用 _dispatch_probe 流程做缩略图 / 抽帧 / MIME 校验。
+    禁 `bgm`：避免被滥用抓取音乐。
+    """
+    project_id = _require_project_id(body.project_id)
+    if body.kind not in ("reference_image", "reference_video"):
+        raise HTTPException(
+            status_code=400,
+            detail="save-from-url 仅支持 reference_image / reference_video",
+        )
+    url = body.url.strip()
+    if not (url.startswith("http://") or url.startswith("https://")):
+        raise HTTPException(status_code=400, detail="url 必须是 http/https")
+
+    import httpx
+    try:
+        async with httpx.AsyncClient(timeout=60.0) as cli:
+            resp = await cli.get(url)
+    except httpx.HTTPError as exc:
+        raise HTTPException(status_code=502, detail=f"下载失败：{exc}") from exc
+    if resp.status_code >= 400:
+        raise HTTPException(status_code=502, detail=f"下载失败 HTTP {resp.status_code}")
+    data = resp.content
+    if not data:
+        raise HTTPException(status_code=502, detail="下载到空响应")
+
+    allowed_mimes, max_bytes = _kind_constraints(body.kind)
+    if len(data) > max_bytes:
+        raise HTTPException(status_code=413, detail=f"file exceeds {max_bytes // (1024*1024)}MB")
+
+    # 优先用响应 content-type；CDN 偶尔返回 application/octet-stream，按扩展名推断兜底。
+    ct = (resp.headers.get("content-type") or "").split(";")[0].strip().lower()
+    if ct not in allowed_mimes:
+        # 按 url 后缀兜底
+        suffix = Path(url.split("?")[0]).suffix.lower()
+        if body.kind == "reference_video":
+            ct = {
+                ".mp4": "video/mp4",
+                ".mov": "video/quicktime",
+                ".webm": "video/webm",
+                ".m4v": "video/mp4",
+            }.get(suffix, "video/mp4")  # Seedance / 豆包 默认 mp4
+        else:
+            ct = {
+                ".jpg": "image/jpeg",
+                ".jpeg": "image/jpeg",
+                ".png": "image/png",
+                ".webp": "image/webp",
+            }.get(suffix, "image/jpeg")  # Seedream 默认 jpeg
+
+    from ..services.assets.store import sha256_of_bytes
+    content_hash = sha256_of_bytes(data)
+    existing = asset_store.find_by_hash(project_id, content_hash)
+    if existing is not None:
+        asset_store.touch(existing.asset_id)
+        log.info("[asset.save-from-url] dedup id=%s project=%s", existing.asset_id, project_id)
+        return existing
+
+    asset_id = asset_store.new_asset_id()
+    if body.kind == "reference_video":
+        ext = {
+            "video/mp4": "mp4",
+            "video/quicktime": "mov",
+            "video/webm": "webm",
+        }.get(ct, "mp4")
+        name_prefix = f"aigc-{asset_id}"
+    else:
+        ext = {
+            "image/jpeg": "jpg",
+            "image/png": "png",
+            "image/webp": "webp",
+        }.get(ct, "jpg")
+        name_prefix = f"seedream-{asset_id}"
+    safe_name = (body.title or name_prefix)[:80] + f".{ext}"
+    target_path = _kind_dir(project_id, body.kind) / f"{asset_id}.{ext}"
+    target_path.write_bytes(data)
+
+    tag_list = body.tags or []
+
+    asset = Asset(
+        asset_id=asset_id,
+        owner=project_id,
+        kind=body.kind,
+        file_name=safe_name,
+        file_url=f"/assets/{project_id}/{body.kind}/{target_path.name}",
+        file_size=len(data),
+        content_hash=content_hash,
+        mime=ct,
+        title=(body.title or safe_name)[:120],
+        description=f"来自外部 URL：{url[:200]}",
+        tags=tag_list,
+        metadata={"source_url": url[:500]},
+        status="processing",
+        error=None,
+        created_at=time.time(),
+        last_used_at=None,
+        use_count=0,
+    )
+    asset_store.upsert(asset)
+    log.info(
+        "[asset.save-from-url] ok id=%s project=%s size=%d hash=%s...",
+        asset_id, project_id, len(data), content_hash[:8],
+    )
+    background_tasks.add_task(_dispatch_probe, asset, target_path)
+    return asset

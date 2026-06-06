@@ -1,45 +1,26 @@
 import { useState } from 'react'
 
-import { api } from '@/api/client'
 import { patchPlanScene } from '@/api/plan'
 import { SECTION_LABEL } from '@/lib/sections'
 import { cn } from '@/lib/utils'
-import type {
-  EditApplyRequest,
-  PackagingItem,
-  Plan,
-  Scene,
-} from '@/types/schemas'
-
-type NLIntent = 'main' | 'voice'
-
-const NL_META: Record<NLIntent, { label: string; placeholder: string; hint: string }> = {
-  main: {
-    label: '改本段（时长/转场/素材）',
-    placeholder: '例：把这段压到 3 秒；换成 mat-xxx；前面加个 dissolve 转场',
-    hint: 'LLM 会按本段定位（已自动 mark 起止）改 main 轨。',
-  },
-  voice: {
-    label: '改口播（自动重合成）',
-    placeholder: '例：口播改得更口语化；改成「现在下单立减 99」',
-    hint: '保存后系统会自动重新跑 TTS。',
-  },
-}
+import type { PackagingItem, Plan, Scene } from '@/types/schemas'
 
 const PKG_KIND_LABEL: Record<PackagingItem['kind'], string> = {
   subtitle: '字幕',
   title_bar: '标题条',
   sticker: '贴纸/水印',
-  transition: '转场',
+  transition: '切换',
   cover: '封面',
 }
 
 /**
- * 轨道段编辑面板（内容/口播/包装三轨共用入口）。
+ * 轨道段编辑面板（内容/字幕/口播/包装多轨共用入口）。
+ *
+ * 自然语言编辑统一收敛到 ⌘K 对话编辑小助手 agent，本面板只保留逐字段直改。
  *
  * 调度：
- * - 优先 packagingItem：包装轨被选中，渲染包装编辑面板（NL 限定 track=packaging）
- * - 否则 scene：内容/口播轨被选中（口播段视觉上属于同一 scene_id），渲染段落编辑
+ * - 优先 packagingItem：包装轨被选中，渲染包装编辑面板（只读 + 样式详情）
+ * - 否则 scene：内容/字幕/口播轨被选中（共用同一 scene_id），渲染段落编辑
  * - 否则：占位提示
  *
  * 草稿初始化：父级用 `key={selection}` 强制切段时整组件重挂，
@@ -48,7 +29,7 @@ const PKG_KIND_LABEL: Record<PackagingItem['kind'], string> = {
 
 interface Props {
   plan: Plan
-  /** 当前内容/口播轨选中的 scene_id。 */
+  /** 当前内容/字幕/口播轨选中的 scene_id。 */
   selectedSceneId: string | null
   /** 当前包装轨选中的 PackagingItem（互斥于 scene）。 */
   selectedPackagingItem?: PackagingItem | null
@@ -73,14 +54,7 @@ export function SceneEditPanel({
   disabled = false,
 }: Props) {
   if (selectedPackagingItem) {
-    return (
-      <PackagingPanel
-        plan={plan}
-        item={selectedPackagingItem}
-        onSaved={onSaved}
-        disabled={disabled}
-      />
-    )
+    return <PackagingPanel item={selectedPackagingItem} />
   }
   return (
     <ScenePanel
@@ -109,37 +83,30 @@ function ScenePanel({
 
   const [theme, setTheme] = useState(section?.theme ?? '')
   const [content, setContent] = useState(section?.content_description ?? '')
-  const [narration, setNarration] = useState(scene?.narration ?? '')
   const [saving, setSaving] = useState(false)
   const [err, setErr] = useState<string | null>(null)
-
-  const [nlIntent, setNlIntent] = useState<NLIntent>('main')
-  const [nlInstruction, setNlInstruction] = useState('')
-  const [nlApplying, setNlApplying] = useState(false)
-  const [nlErr, setNlErr] = useState<string | null>(null)
 
   if (!scene) {
     return (
       <div className="rounded-md border border-dashed border-border bg-background/30 p-4 text-center text-[11px] text-muted-foreground">
-        点四轨中任意片段（内容 / 口播 / 包装），在这里编辑文字、改口播或对该段做自然语言编辑。
+        点四轨中任意片段（镜头 / 字幕 / 口播 / 包装），在这里编辑文字；
+        要批量改或用一句话改请按 <kbd className="rounded bg-secondary px-1">⌘K</kbd> 找对话编辑小助手。
       </div>
     )
   }
 
   const dirty =
     theme !== (section?.theme ?? '') ||
-    content !== (section?.content_description ?? '') ||
-    narration !== (scene.narration ?? '')
+    content !== (section?.content_description ?? '')
 
   const handleSave = async () => {
-    if (!selectedSceneId || !dirty) return
+    if (!selectedSceneId || !dirty || !section) return
     setSaving(true)
     setErr(null)
     try {
       const fresh = await patchPlanScene(plan.plan_id, selectedSceneId, {
-        theme: section ? theme : undefined,
-        content_description: section ? content : undefined,
-        narration,
+        theme,
+        content_description: content,
       })
       onSaved(fresh)
     } catch (e) {
@@ -151,40 +118,11 @@ function ScenePanel({
 
   const busy = disabled || saving
 
-  const handleNLApply = async () => {
-    if (!scene || !nlInstruction.trim()) return
-    setNlApplying(true)
-    setNlErr(null)
-    try {
-      const body: EditApplyRequest = {
-        plan_id: plan.plan_id,
-        track: nlIntent,
-        instruction: nlInstruction.trim(),
-        marks: [
-          {
-            track: 'main',
-            start: Number(scene.start.toFixed(1)),
-            end: Number((scene.start + scene.duration).toFixed(1)),
-            target_id: scene.scene_id,
-          },
-        ],
-      }
-      const fresh = await api.post<Plan>('/edit/apply', body)
-      onSaved(fresh)
-      setNlInstruction('')
-    } catch (e) {
-      setNlErr(e instanceof Error ? e.message : 'NL 编辑失败')
-    } finally {
-      setNlApplying(false)
-    }
-  }
-  const nlBusy = disabled || nlApplying
-
   return (
     <div className="space-y-2 rounded-md border border-border bg-card p-3">
       <div className="flex items-center justify-between">
         <h3 className="text-xs font-semibold">
-          段落内容编辑 ·{' '}
+          段落编辑 ·{' '}
           <span className="text-muted-foreground">
             {SECTION_LABEL[scene.section]} · {scene.scene_id}
           </span>
@@ -195,7 +133,7 @@ function ScenePanel({
       {section ? (
         <>
           <label className="block space-y-0.5">
-            <span className="text-[10px] text-muted-foreground">段主题（迁移结构标题）</span>
+            <span className="text-[10px] text-muted-foreground">段主题</span>
             <input
               value={theme}
               maxLength={80}
@@ -206,7 +144,7 @@ function ScenePanel({
             />
           </label>
           <label className="block space-y-0.5">
-            <span className="text-[10px] text-muted-foreground">结构内容（迁移后的段落描述）</span>
+            <span className="text-[10px] text-muted-foreground">段落描述</span>
             <textarea
               value={content}
               maxLength={400}
@@ -214,28 +152,15 @@ function ScenePanel({
               onChange={(e) => setContent(e.target.value)}
               rows={3}
               className="w-full resize-y rounded border border-border bg-background px-2 py-1 text-xs disabled:opacity-60"
-              placeholder="这段画面 / 节奏要表达什么——LLM 补全和缺口推断以此为锚定"
+              placeholder="这段画面 / 节奏想表达什么——AI 会照这个写字幕文案和找素材"
             />
           </label>
         </>
       ) : (
         <p className="rounded bg-muted/40 px-2 py-1 text-[10px] text-muted-foreground">
-          该段无关联 AdaptedSection（老数据），仅可改口播。
+          该段无关联 AdaptedSection（老数据），无法在此直改；请按 ⌘K 找对话编辑小助手。
         </p>
       )}
-
-      <label className="block space-y-0.5">
-        <span className="text-[10px] text-muted-foreground">口播文案（TTS 合成走这一行）</span>
-        <textarea
-          value={narration}
-          maxLength={2000}
-          disabled={busy}
-          onChange={(e) => setNarration(e.target.value)}
-          rows={2}
-          className="w-full resize-y rounded border border-border bg-background px-2 py-1 text-xs disabled:opacity-60"
-          placeholder="留空则保持当前；改完保存后可在口播轨重新合成"
-        />
-      </label>
 
       {err && <p className="text-[10px] text-destructive">{err}</p>}
 
@@ -255,7 +180,6 @@ function ScenePanel({
             onClick={() => {
               setTheme(section?.theme ?? '')
               setContent(section?.content_description ?? '')
-              setNarration(scene.narration ?? '')
               setErr(null)
             }}
             disabled={busy}
@@ -266,104 +190,15 @@ function ScenePanel({
         )}
       </div>
 
-      {/* NL 编辑：针对当前段、marks 自动取 scene.start ~ +duration */}
-      <div className="space-y-1.5 border-t border-border pt-2">
-        <div className="flex items-center justify-between">
-          <span className="text-[11px] font-medium">自然语言编辑（仅作用于本段）</span>
-          <span className="font-mono text-[10px] text-muted-foreground">
-            mark {scene.start.toFixed(1)}–{(scene.start + scene.duration).toFixed(1)}s
-          </span>
-        </div>
-        <div className="flex gap-1 rounded-md border border-border bg-background p-0.5">
-          {(['main', 'voice'] as NLIntent[]).map((t) => (
-            <button
-              key={t}
-              type="button"
-              disabled={nlBusy}
-              onClick={() => setNlIntent(t)}
-              className={cn(
-                'flex-1 rounded px-2 py-1 text-[10px] transition-colors',
-                nlIntent === t
-                  ? 'bg-primary text-primary-foreground'
-                  : 'text-muted-foreground hover:bg-secondary',
-                nlBusy && 'cursor-not-allowed opacity-60',
-              )}
-              title={NL_META[t].hint}
-            >
-              {NL_META[t].label}
-            </button>
-          ))}
-        </div>
-        <textarea
-          value={nlInstruction}
-          onChange={(e) => setNlInstruction(e.target.value)}
-          placeholder={NL_META[nlIntent].placeholder}
-          rows={2}
-          disabled={nlBusy}
-          maxLength={500}
-          className="w-full resize-y rounded border border-border bg-background px-2 py-1 text-xs disabled:opacity-60"
-        />
-        <p className="text-[10px] text-muted-foreground">{NL_META[nlIntent].hint}</p>
-        {nlErr && <p className="text-[10px] text-destructive">{nlErr}</p>}
-        <button
-          onClick={() => void handleNLApply()}
-          disabled={nlBusy || !nlInstruction.trim()}
-          className={cn(
-            'rounded-md border border-border bg-background px-3 py-1 text-xs hover:bg-secondary',
-            (nlBusy || !nlInstruction.trim()) && 'cursor-not-allowed opacity-60',
-          )}
-        >
-          {nlApplying ? '应用中…' : '应用 NL 编辑'}
-        </button>
-      </div>
+      <p className="border-t border-border pt-2 text-[10px] text-muted-foreground">
+        想改字幕文案 / BGM / 调性，或用一句话批量改（"删除 sec-2"、"BGM 推迟 2 秒"）？按{' '}
+        <kbd className="rounded bg-secondary px-1">⌘K</kbd> 找对话编辑小助手。
+      </p>
     </div>
   )
 }
 
-function PackagingPanel({
-  plan,
-  item,
-  onSaved,
-  disabled,
-}: {
-  plan: Plan
-  item: PackagingItem
-  onSaved: (plan: Plan) => void
-  disabled: boolean
-}) {
-  const [nlInstruction, setNlInstruction] = useState('')
-  const [nlApplying, setNlApplying] = useState(false)
-  const [nlErr, setNlErr] = useState<string | null>(null)
-
-  const handleNLApply = async () => {
-    if (!nlInstruction.trim()) return
-    setNlApplying(true)
-    setNlErr(null)
-    try {
-      const body: EditApplyRequest = {
-        plan_id: plan.plan_id,
-        track: 'packaging',
-        instruction: nlInstruction.trim(),
-        marks: [
-          {
-            track: 'packaging',
-            start: Number(item.start.toFixed(1)),
-            end: Number(item.end.toFixed(1)),
-            target_id: item.item_id,
-          },
-        ],
-      }
-      const fresh = await api.post<Plan>('/edit/apply', body)
-      onSaved(fresh)
-      setNlInstruction('')
-    } catch (e) {
-      setNlErr(e instanceof Error ? e.message : 'NL 编辑失败')
-    } finally {
-      setNlApplying(false)
-    }
-  }
-  const nlBusy = disabled || nlApplying
-
+function PackagingPanel({ item }: { item: PackagingItem }) {
   return (
     <div className="space-y-2 rounded-md border border-border bg-card p-3">
       <div className="flex items-center justify-between">
@@ -387,54 +222,18 @@ function PackagingPanel({
 
       {Object.keys(item.style).length > 0 && (
         <details className="text-[10px]">
-          <summary className="cursor-pointer text-muted-foreground">样式 JSON</summary>
+          <summary className="cursor-pointer text-muted-foreground">样式详情</summary>
           <pre className="mt-1 overflow-x-auto rounded bg-background/60 px-2 py-1 font-mono">
             {JSON.stringify(item.style, null, 2)}
           </pre>
         </details>
       )}
 
-      <div className="space-y-1.5 border-t border-border pt-2">
-        <div className="flex items-center justify-between">
-          <span className="text-[11px] font-medium">自然语言编辑（仅作用于该包装段）</span>
-          <span className="font-mono text-[10px] text-muted-foreground">
-            mark {item.start.toFixed(1)}–{item.end.toFixed(1)}s
-          </span>
-        </div>
-        <textarea
-          value={nlInstruction}
-          onChange={(e) => setNlInstruction(e.target.value)}
-          placeholder={
-            item.kind === 'subtitle'
-              ? '例：把字幕改成「现在下单立减 99」；字体放大；放屏幕底部'
-              : item.kind === 'title_bar'
-                ? '例：标题改成「夏季大促」；底色换成红色'
-                : item.kind === 'transition'
-                  ? '例：换成 dissolve；持续时间改 0.5 秒'
-                  : item.kind === 'cover'
-                    ? '例：封面文案改成「3 步搞定」；右下加 logo'
-                    : '例：贴纸改成 emoji 火焰；右上角'
-          }
-          rows={3}
-          disabled={nlBusy}
-          maxLength={500}
-          className="w-full resize-y rounded border border-border bg-background px-2 py-1 text-xs disabled:opacity-60"
-        />
-        <p className="text-[10px] text-muted-foreground">
-          LLM 按本包装段定位（已自动 mark 起止），改完即时回写 packaging_track。
-        </p>
-        {nlErr && <p className="text-[10px] text-destructive">{nlErr}</p>}
-        <button
-          onClick={() => void handleNLApply()}
-          disabled={nlBusy || !nlInstruction.trim()}
-          className={cn(
-            'rounded-md border border-border bg-background px-3 py-1 text-xs hover:bg-secondary',
-            (nlBusy || !nlInstruction.trim()) && 'cursor-not-allowed opacity-60',
-          )}
-        >
-          {nlApplying ? '应用中…' : '应用 NL 编辑'}
-        </button>
-      </div>
+      <p className="border-t border-border pt-2 text-[10px] text-muted-foreground">
+        要改文字 / BGM 偏移 / 调性等，按{' '}
+        <kbd className="rounded bg-secondary px-1">⌘K</kbd> 找对话编辑小助手——
+        告诉它 item_id「{item.item_id}」就行。
+      </p>
     </div>
   )
 }

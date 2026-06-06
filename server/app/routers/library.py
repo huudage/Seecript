@@ -25,7 +25,9 @@ from ..config import get_settings
 from ..schemas import (
     LibraryItem,
     LibrarySource,
+    ManifestSaveRequest,
     PackagingProfile,
+    ReferenceListItem,
     RhythmCurve,
     SampleManifest,
     SampleVersionInfo,
@@ -344,9 +346,9 @@ def _stub_manifest(sample_id: str, item: LibraryItem) -> SampleManifest:
     ]
     rhythm = RhythmCurve(
         times=[s.start for s in shots],
-        cut_density=[1.0 if i % 2 == 0 else 0.6 for i in range(item.shot_count)],
+        cut_density=[],
         bgm_energy=[round((i % 5) / 5.0, 2) for i in range(item.shot_count)],
-        tempo_bpm=120.0,
+        tempo_bpm=None,
     )
     sections = _stub_sections(item)
     packaging = PackagingProfile(
@@ -559,15 +561,148 @@ async def activate_sample_version(sample_id: str, slot_id: str) -> VersionMutati
 
 @router.delete("/sample/{sample_id}/versions/{slot_id}", response_model=VersionMutationResponse)
 async def delete_sample_version(sample_id: str, slot_id: str) -> VersionMutationResponse:
-    """删除一个版本槽。被删的若是 active，自动跳到剩下那个。
+    """删除一个版本槽。被删的若是 active,自动跳到剩下那个。
 
     - slot 不存在 → 404
-    - 删完没版本了：active 自动清空，前端走"未拆解"分支
+    - 删完没版本了:active 自动清空,前端走"未拆解"分支
     """
     if manifest_store.locate_sample_dir(sample_id) is None:
         raise HTTPException(status_code=404, detail=f"sample not found: {sample_id}")
     if not manifest_store.delete_version(sample_id, slot_id):
         raise HTTPException(status_code=404, detail=f"slot {slot_id} 不存在")
+    return _mutation_response(sample_id)
+
+
+# ---------------------------------------------------------------------------
+# stage-15: 全局结构知识库
+# ---------------------------------------------------------------------------
+# Compose 顶部 ReferencePicker 通过 GET /references 拍平所有 (sample, slot) 让用户
+# 按 slot 粒度选 1-2 个版本作为结构参考(可同一 sample 双槽)。POST /manifest/save
+# 是 Decompose 页「保存到资产库」的入口:用户跑完拆解先拿到草稿(SSE done.manifest
+# 在前端 zustand),确认后调它落到版本槽。
+
+def _library_item_lookup() -> dict[str, LibraryItem]:
+    """汇总 system 内置 + system extras + user 上传所有样例,按 id 索引。
+
+    给 /references 用 —— 拍平 (sample, slot) 时需要 title/video_type/scene/cover 等
+    sample 级元数据,直接复用 LibraryItem 现成构造逻辑。
+    """
+    items: dict[str, LibraryItem] = {}
+    for it in _SYSTEM_LIBRARY:
+        items[it.id] = it
+    for it in _scan_system_library_extras():
+        items[it.id] = it
+    for it in _scan_user_library():
+        items[it.id] = it
+    return items
+
+
+@router.get("/references", response_model=list[ReferenceListItem])
+async def list_references() -> list[ReferenceListItem]:
+    """全局结构知识库:拍平所有样例的所有版本槽。
+
+    返回顺序:按 sample 在 library 列表中的顺序;同 sample 内按 v1→v2(updated_at 升序)。
+    Compose 顶部 ReferencePicker 直接渲染这个列表让用户多选 1-2 个版本。
+    """
+    items = _library_item_lookup()
+    out: list[ReferenceListItem] = []
+    # 用 _LIBRARY-like 顺序:先系统内置 → 系统 extras → 用户上传(_library_item_lookup
+    # 的 dict 顺序就是这个,Python 3.7+ dict 保插入序)
+    for sample_id, item in items.items():
+        versions = _build_version_list(sample_id)
+        for v in versions:
+            mf = manifest_store.load_version(sample_id, v.slot_id)
+            # mf 理论不会 None(list_versions 拿出来的槽都有文件),保险起见用 item 兜底
+            duration = mf.duration_seconds if mf else item.duration_seconds
+            shot_count = len(mf.shots) if mf else item.shot_count
+            out.append(ReferenceListItem(
+                sample_id=sample_id,
+                sample_title=item.title,
+                slot_id=v.slot_id,
+                label=v.label,
+                video_type=item.video_type,
+                scene=item.scene,
+                duration_seconds=duration,
+                shot_count=shot_count,
+                cover_url=item.cover_url,
+                source=item.source,
+                updated_at=v.updated_at,
+                is_active=v.is_active,
+            ))
+    return out
+
+
+@router.post("/sample/{sample_id}/manifest/save", response_model=VersionMutationResponse)
+async def save_sample_manifest(
+    sample_id: str,
+    req: ManifestSaveRequest,
+) -> VersionMutationResponse:
+    """把前端草稿落到资产库的版本槽。
+
+    Decompose 页用户跑完拆解 → SSE done 把 manifest 推到前端 zustand → 用户点
+    「保存到资产库」时把整段 manifest 通过这个端点写进版本槽。
+
+    槽容量逻辑(复用 manifest_store.create_version 内置规则):
+    - 槽未满 + 无 replace_slot → 新建槽并 activate
+    - 槽未满 + 传了 replace_slot → 422(防止误覆盖空位)
+    - 槽满 + 无 replace_slot → 409 slots_full,前端弹覆盖对话框让用户挑
+    - 槽满 + replace_slot → 覆盖该槽,保留另一个不动
+    """
+    if manifest_store.locate_sample_dir(sample_id) is None:
+        raise HTTPException(status_code=404, detail=f"sample not found: {sample_id}")
+
+    # manifest.sample_id 兜底校验(前端可能漏填或填错)
+    if req.manifest.sample_id and req.manifest.sample_id != sample_id:
+        raise HTTPException(
+            status_code=400,
+            detail=f"manifest.sample_id={req.manifest.sample_id} 与 URL {sample_id} 不一致",
+        )
+    manifest = req.manifest.model_copy(update={"sample_id": sample_id})
+
+    cur_count = manifest_store.version_count(sample_id)
+    # 预校验:槽未满但传了 replace_slot → 422(让 manifest_store 内部抛 ValueError 也行,
+    # 但 422 比 500 友好)
+    if req.replace_slot is not None and cur_count < manifest_store.MAX_VERSIONS:
+        raise HTTPException(
+            status_code=422,
+            detail=f"slot 还有空位({cur_count}/{manifest_store.MAX_VERSIONS}),不应传 replace_slot",
+        )
+    # 预校验:槽满 + 无 replace_slot → 409 复用 stage-14 slots_full 协议体,
+    # 前端 Decompose 页 SaveOverwriteDialog 解析它列出 v1/v2 让用户挑
+    if req.replace_slot is None and cur_count >= manifest_store.MAX_VERSIONS:
+        existing = manifest_store.list_versions(sample_id)
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "error": "slots_full",
+                "message": f"sample {sample_id} 已有 {cur_count} 个版本,请先选一个覆盖",
+                "max_versions": manifest_store.MAX_VERSIONS,
+                "versions": [
+                    {
+                        "slot_id": v.slot_id,
+                        "updated_at": v.updated_at,
+                        "is_active": v.is_active,
+                    }
+                    for v in existing
+                ],
+            },
+        )
+
+    try:
+        manifest_store.create_version(
+            sample_id,
+            manifest,
+            replace_slot=req.replace_slot,
+            activate=True,
+        )
+    except manifest_store.SlotsFullError as exc:
+        # 理论已被上面预校验拦下,但 manifest_store 内部也防御性抛了,这里兜底转 409
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except (FileNotFoundError, OSError) as exc:
+        raise HTTPException(status_code=500, detail=f"写槽失败: {exc}") from exc
+
     return _mutation_response(sample_id)
 
 

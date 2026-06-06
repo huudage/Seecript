@@ -22,7 +22,7 @@ from typing import Any, Optional
 from fastapi import APIRouter, File, Form, HTTPException, UploadFile
 
 from ..config import get_settings
-from ..schemas import Material, MaterialUploadResponse, SectionRole, VideoType
+from ..schemas import Material, MaterialUploadResponse, SectionRole, VideoType, all_role_names
 from ..services.llm_client import LLMError, get_llm_client
 from ..services.materials import material_store
 from ..services.video.ffmpeg import FFmpegError, extract_frame, ffmpeg_available
@@ -35,16 +35,17 @@ _ALLOWED_IMAGE = {"image/jpeg", "image/png", "image/webp"}
 _ALLOWED_AUDIO = {"audio/mpeg", "audio/wav", "audio/x-wav"}
 _MAX_BYTES = 50 * 1024 * 1024  # 50MB 单文件硬上限
 
-# allowed_sections 现在统一是 SectionRole 4 元枚举，不再按 video_type 切换
-_ALLOWED_ROLES: tuple[SectionRole, ...] = ("opening", "development", "climax", "closing")
+# Stage-16：允许 5 模式下任何静态 role 名（step_N/item_N 走正则兜底）。
+# 上传时不知道用户最终用哪个 pattern，所以只过滤"明显非法"的字符串。
+_ALLOWED_ROLES: tuple[str, ...] = tuple(all_role_names())
 
 _MATERIAL_TAG_SYSTEM = (
     "你是短视频素材打标 Agent。看一帧画面，返回 JSON：\n"
     "{\"tags\": [string]（3-5 个，物体/场景/构图/风格关键词），"
-    "\"recommended_section\": string（必须从 allowed_sections 里选一个 role："
-    "opening 适合做开场钩子/标题铺垫；development 适合主体铺陈/对比/演示；"
-    "climax 适合视觉/情绪顶点强构图；closing 适合行动引导/落版/余韵），"
-    "\"highlight_score\": number（0.0-1.0；0.8+ 强冲击/可做开头或高潮，"
+    "\"recommended_section\": string（必须从 allowed_sections 里选一个 role；"
+    "若 allowed_sections 含动态后缀如 step_*/item_*，可输出 step_1/item_2 这种带序号形式；"
+    "若不确定使用第一个 target_role 作为默认值），"
+    "\"highlight_score\": number（0.0-1.0；0.8+ 强冲击/可做开场或峰值，"
     "0.5-0.8 标准镜头适合中段，<0.5 仅 B-roll），"
     "\"highlight_reason\": string（一句话理由：构图/动作/情绪/光线，≤20 字）}。\n"
     "字段名 frame_tags / material_tag 是 mock 路由用，不要漏。"
@@ -134,10 +135,15 @@ async def _tag_with_llm(
     if not tags:
         return _placeholder_tags(media_type, video_type)
 
-    # role 校验：必须是 4 元枚举之一；不合规回落 development
+    # role 校验：必须是 17 个静态 role 之一或 step_N/item_N 形式；否则回落 development
+    import re as _re
     role: SectionRole
-    if isinstance(raw_section, str) and raw_section in _ALLOWED_ROLES:
-        role = raw_section  # type: ignore[assignment]
+    if isinstance(raw_section, str):
+        cleaned = _re.sub(r"^(step|item)\s*0*(\d+)$", r"\1_\2", raw_section.strip())
+        if cleaned in _ALLOWED_ROLES or _re.match(r"^(step|item)_\d+$", cleaned):
+            role = cleaned
+        else:
+            role = "development"
     else:
         role = "development"
 
@@ -239,3 +245,16 @@ async def upload_material(
     materials = await asyncio.gather(*tasks)
     material_store.put(sid, list(materials))
     return MaterialUploadResponse(session_id=sid, materials=list(materials))
+
+
+@router.get("/material", response_model=list[Material])
+async def list_materials(project_id: str) -> list[Material]:
+    """列出某 project 已上传的素材。
+
+    刷新页面后前端用它回灌素材库（in-memory MaterialStore，进程重启清空——本期接受）。
+    project_id 在 store 内即 session_id 别名（详见 upload_material）。
+    """
+    sid = project_id.strip()
+    if not sid:
+        raise HTTPException(status_code=400, detail="project_id 必填")
+    return material_store.list(sid)

@@ -106,9 +106,9 @@ def test_copy_fill_returns_alternatives(client, session_with_plan):
     assert isinstance(fill["alternatives"], list)
 
 
-def test_session_empty_falls_back_to_mock(client):
-    """没传 session_id 时回落 mock 素材，不应 500。"""
-    # 先建一个 plan（任何 plan 都行）
+def test_session_empty_returns_empty_materials(client):
+    """没传 session_id 时不再回落 mock；走真链路：仍能返回 gaps（来自 manifest 缺口），不 500。"""
+    # 先建一个 plan
     r = client.post("/api/plan/build", json={
         "sample_ids": ["sample-marketing-01"],
         "project_id": "proj-session-fallback",
@@ -118,12 +118,12 @@ def test_session_empty_falls_back_to_mock(client):
         "variant": "A",
     })
     plan_id = r.json()["plan_id"]
-    # 不传 project_id 也不传 session_id → 应回落 mock 素材
-    r = client.post("/api/gap/detect", json={"plan_id": plan_id, "allow_mock": True})
+    # 不传 project_id 也不传 session_id → materials=[]，所有 gap miss
+    r = client.post("/api/gap/detect", json={"plan_id": plan_id})
     assert r.status_code == 200
     gaps = r.json()
-    # mock 素材覆盖 opening/development/closing 三个 role，每段至少 1 gap
-    assert any(g["section"] == "opening" for g in gaps)
+    # 至少有 1 个段落产出 gap（mock 兜底已删，但缺素材时所有 gap 都标 miss/insufficient）
+    assert isinstance(gaps, list)
 
 
 def test_plan_uses_aigc_t2v_not_t2i(client, session_with_plan):

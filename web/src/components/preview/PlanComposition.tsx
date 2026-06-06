@@ -2,7 +2,7 @@ import { AbsoluteFill, Audio, Img, Sequence, Video } from 'remotion'
 
 import { SECTION_HEX, SECTION_LABEL } from '@/lib/sections'
 import { resolveSceneMedia } from '@/lib/scene_url'
-import type { BGMConfig, Material, PackagingItem, Plan, Scene } from '@/types/schemas'
+import type { BGMConfig, Material, PackagingItem, Plan, Scene, TextCardSpec } from '@/types/schemas'
 
 import { Cover, type CoverStyle } from './packaging/Cover'
 import { StickerOverlay } from './packaging/StickerOverlay'
@@ -125,9 +125,21 @@ const SceneClip: React.FC<{ scene: Scene; materials: Material[]; fps: number }> 
   materials,
   fps,
 }) => {
-  const media = resolveSceneMedia(scene, materials)
   const voiceover = scene.voiceover_url ?? null
 
+  // 优先：copy fill 的 TextCardSpec —— 即便 plan 还在 rebuild，scene.text_card_spec 已
+  // 被后端 plan/build 落进 main_track；预览里直接复刻 ffmpeg drawtext 输出，让"刚生成
+  // 的字卡画面"立刻可见，不要再退化成 SECTION_LABEL 色卡。
+  if (scene.text_card_spec) {
+    return (
+      <AbsoluteFill style={{ backgroundColor: '#000' }}>
+        <TextCardScene spec={scene.text_card_spec} />
+        {voiceover && <Audio src={voiceover} />}
+      </AbsoluteFill>
+    )
+  }
+
+  const media = resolveSceneMedia(scene, materials)
   if (media.kind === 'video') {
     const mat = materials.find((m) => m.material_id === scene.source_ref)
     const isImage = mat?.media_type === 'image'
@@ -151,8 +163,22 @@ const SceneClip: React.FC<{ scene: Scene; materials: Material[]; fps: number }> 
       </AbsoluteFill>
     )
   }
+  if (media.kind === 'image') {
+    // aigc_image：Seedream 静帧；后端 /aigc-images/<file> 同源，直接给浏览器拉。
+    // 后续若 scene.animation_spec.engine === 'remotion'，那是渲染管线的事——
+    // 预览画面这里只做静帧呈现，避免引 Remotion AnimatedImage 的 zod props 复杂度。
+    return (
+      <AbsoluteFill style={{ backgroundColor: '#000' }}>
+        <Img
+          src={media.url}
+          style={{ width: '100%', height: '100%', objectFit: 'cover' }}
+        />
+        {voiceover && <Audio src={voiceover} />}
+      </AbsoluteFill>
+    )
+  }
 
-  // text_card / 资源缺失兜底
+  // 资源缺失兜底
   return (
     <AbsoluteFill
       style={{
@@ -188,6 +214,106 @@ const SceneClip: React.FC<{ scene: Scene; materials: Material[]; fps: number }> 
         {media.text}
       </div>
       {voiceover && <Audio src={voiceover} />}
+    </AbsoluteFill>
+  )
+}
+
+/**
+ * 把 TextCardSpec 在 1080×1920 画布上铺满复刻：与 FillCopyPanel 的 CardPreview / FourTrackBoard
+ * 的 TextCardThumb 视觉对齐，但用大字号填充整屏，匹配后端 ffmpeg drawtext 最终输出。
+ *
+ * 由于 Remotion 画布是固定 1080×1920，所以这里直接用绝对像素值——比 CSS rem 更稳定。
+ */
+const TextCardScene: React.FC<{ spec: TextCardSpec }> = ({ spec }) => {
+  const bg: React.CSSProperties = (() => {
+    switch (spec.bg_mode) {
+      case 'gradient':
+        return { background: `linear-gradient(135deg, ${spec.bg_color} 0%, ${spec.accent_color} 100%)` }
+      case 'dark_overlay':
+        return { background: spec.bg_color, boxShadow: 'inset 0 0 0 9999px rgba(0,0,0,0.45)' }
+      case 'image_blur':
+        return { background: `radial-gradient(circle at 30% 30%, ${spec.accent_color}55, ${spec.bg_color})` }
+      default:
+        return { background: spec.bg_color }
+    }
+  })()
+  const fontFamily =
+    spec.font_family === 'tech_mono'
+      ? '"JetBrains Mono", "Roboto Mono", monospace'
+      : spec.font_family === 'serif_classic'
+      ? '"Noto Serif SC", "Source Han Serif", serif'
+      : spec.font_family === 'handwriting'
+      ? '"Ma Shan Zheng", "Zhi Mang Xing", cursive'
+      : '"Noto Sans CJK SC", "PingFang SC", sans-serif'
+  const letterSpacing = spec.font_family === 'tech_mono' ? '0.05em' : 'normal'
+
+  const isSplit = spec.layout === 'split_top_bottom'
+  const justify =
+    spec.layout === 'top'
+      ? 'flex-start'
+      : spec.layout === 'bottom'
+      ? 'flex-end'
+      : isSplit
+      ? 'space-between'
+      : 'center'
+  const padding = spec.layout === 'top' ? '160px 80px 80px' : spec.layout === 'bottom' ? '80px 80px 160px' : '120px 80px'
+
+  return (
+    <AbsoluteFill
+      style={{
+        ...bg,
+        flexDirection: 'column',
+        justifyContent: justify,
+        alignItems: 'center',
+        padding,
+        textAlign: 'center',
+      }}
+    >
+      <div
+        style={{
+          color: spec.text_color,
+          fontFamily,
+          fontWeight: 900,
+          fontSize: 120,
+          lineHeight: 1.18,
+          letterSpacing,
+          textShadow: spec.animation === 'bounce_word' ? `0 6px 0 ${spec.accent_color}` : '0 4px 18px rgba(0,0,0,0.35)',
+        }}
+      >
+        {spec.main_text || '主标题'}
+      </div>
+      {spec.sub_text && (
+        <div
+          style={{
+            color: spec.accent_color,
+            fontFamily,
+            fontWeight: 500,
+            fontSize: 56,
+            lineHeight: 1.4,
+            marginTop: isSplit ? 0 : 32,
+            letterSpacing,
+          }}
+        >
+          {spec.sub_text}
+        </div>
+      )}
+      {spec.emoji_decor.length > 0 && (
+        <div
+          style={{
+            position: 'absolute',
+            top: 48,
+            right: 64,
+            display: 'flex',
+            gap: 16,
+            fontSize: 80,
+            lineHeight: 1,
+          }}
+        >
+          {spec.emoji_decor.slice(0, 3).map((e, i) => (
+            <span key={`${i}-${e}`}>{e}</span>
+          ))}
+        </div>
+      )}
     </AbsoluteFill>
   )
 }

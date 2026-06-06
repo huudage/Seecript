@@ -49,18 +49,18 @@ export function FillRerankPanel({
   return (
     <div className="space-y-3 rounded-md border border-border bg-background/40 p-3">
       <div className="flex items-center justify-between">
-        <h4 className="text-xs font-semibold">结构重排预览</h4>
+        <h4 className="text-xs font-semibold">换素材预览</h4>
         <span className="text-[11px] text-muted-foreground">
           {swapMaterial
             ? `候选素材 ${swapMaterial.filename}`
             : fill.new_material_id
               ? `候选 ${fill.new_material_id}`
-              : '无候选素材'}
+              : '没有候选素材'}
         </span>
       </div>
 
-      <TimelineTrack label="原 Plan" duration={plan.duration_seconds || 1} items={renderItems(plan.main_track)} />
-      <TimelineTrack label="重排后" duration={plan.duration_seconds || 1} items={renderItems(reranked)} />
+      <TimelineTrack label="原方案" duration={plan.duration_seconds || 1} items={renderItems(plan.main_track)} />
+      <TimelineTrack label="换后" duration={plan.duration_seconds || 1} items={renderItems(reranked)} />
 
       {fill.note && <p className="text-[11px] text-muted-foreground">{fill.note}</p>}
 
@@ -84,7 +84,7 @@ export function FillRerankPanel({
             (loading || confirmed) && 'cursor-not-allowed opacity-60',
           )}
         >
-          {confirmed ? '已采纳' : loading ? '应用中…' : '采纳重排'}
+          {confirmed ? '已采纳' : loading ? '应用中…' : '采纳这次替换'}
         </button>
       </div>
     </div>

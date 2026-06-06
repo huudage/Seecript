@@ -29,7 +29,7 @@ from ...schemas import Plan, Scene
 from ..jobs import job_store
 from ..video import ffmpeg as ffmpeg_svc
 from ..video import remotion as remotion_svc
-from ..video.aspect import aspect_for_platform
+from ..video.aspect import aspect_for_platform, aspect_for_settings
 
 log = logging.getLogger("seecript.render.pipeline")
 
@@ -85,20 +85,39 @@ def _render_text_card(
     height: int = 1920,
     fps: int = 30,
 ) -> Path | None:
-    """无画面素材的 scene 落「文字卡」：纯色背景持续 scene.duration，
-    真实文案由 packaging 字幕在上层叠加。
+    """无画面素材的 scene 落「文字卡」：
+
+    - 若 scene.text_card_spec 存在 → 用 ffmpeg drawtext 渲染个性字卡（主标 + 副标 +
+      情绪化配色 + 动画 + emoji）。这条路径覆盖 copy fill 的 action=copy 产出。
+    - 否则 → 退回 color_clip 纯色底，由 packaging 字幕在上层叠文案。
 
     覆盖 4 类情形：
-    - source=="text_card"（plan 显式安排）
-    - source=="aigc_t2v" URL 下载失败
-    - source=="user_material" 找不到文件或 trim 失败
-    - source=="sample" 老 plan 残留（新 plan 已不再产生）
+    - source=="text_card" + spec → 个性字卡（stage-19+）
+    - source=="text_card" 无 spec → 纯色底片（兼容旧 plan）
+    - source=="aigc_t2v" URL 下载失败 → 纯色兜底
+    - source=="user_material" 找不到文件或 trim 失败 → 纯色兜底
 
     返回 None → 连 ffmpeg 都不可用，上层走 mock。
     """
     if not ffmpeg_svc.ffmpeg_available():
         return None
     dur = max(0.5, float(scene.duration or 1.0))
+
+    if scene.text_card_spec is not None:
+        dst = segments_dir / f"text-card-{idx:02d}.mp4"
+        # spec 的 duration_seconds 可能比 scene.duration 短/长——以 scene.duration 为准，
+        # 因为 main_track 上 scene.duration 已经被 timeline 锁死。
+        spec_dict = scene.text_card_spec.model_dump()
+        spec_dict["duration_seconds"] = dur
+        try:
+            return ffmpeg_svc.text_card_clip(
+                spec_dict, dst, width=width, height=height, fps=fps,
+            )
+        except ffmpeg_svc.FFmpegError as exc:
+            log.warning("[render] text_card_spec scene=%d failed (fallback to color): %s",
+                        idx, exc)
+            # 渲染失败 → 仍走纯色兜底，不让段落丢失
+
     dst = segments_dir / f"text-card-{idx:02d}.mp4"
     try:
         return ffmpeg_svc.color_clip(dur, dst, width=width, height=height, fps=fps)
@@ -141,7 +160,8 @@ async def _resolve_aigc_scene(scene: Scene, segments_dir: Path, idx: int) -> Pat
     if not locals_:
         return None
     if len(locals_) == 1:
-        return locals_[0]
+        single = locals_[0]
+        return await _maybe_extend_freeze(single, scene, segments_dir, idx)
     # 多 chunk → concat
     if not ffmpeg_svc.ffmpeg_available():
         # 没 ffmpeg 时只用第一段，至少 demo 能播
@@ -150,10 +170,175 @@ async def _resolve_aigc_scene(scene: Scene, segments_dir: Path, idx: int) -> Pat
     dst = segments_dir / f"aigc-scene-{idx:02d}.mp4"
     try:
         await asyncio.to_thread(ffmpeg_svc.concat, locals_, dst, reencode=True)
-        return dst
+        return await _maybe_extend_freeze(dst, scene, segments_dir, idx)
     except ffmpeg_svc.FFmpegError as exc:
         log.warning("[render] aigc concat scene=%d failed: %s → 仅用第 1 段", idx, exc)
         return locals_[0]
+
+
+async def _maybe_extend_freeze(src: Path, scene: Scene, segments_dir: Path, idx: int) -> Path:
+    """L4: 若 AIGC 视频实际时长 < scene.duration - 0.3s，用 tpad 冻结尾帧补足。
+
+    阈值 0.3s 留给抖动余量，避免因为 ffprobe 浮点误差白白多过一次 ffmpeg。
+    失败时返回原片，让上层 trim 走兜底（截短优于报错）。
+    """
+    target = float(scene.duration or 0.0)
+    if target <= 0.5 or not ffmpeg_svc.ffmpeg_available():
+        return src
+    try:
+        info = await asyncio.to_thread(ffmpeg_svc.probe, src)
+    except (ffmpeg_svc.FFmpegError, FileNotFoundError) as exc:
+        log.warning("[render] probe failed for freeze-extend scene=%d: %s", idx, exc)
+        return src
+    actual = float(info.duration_seconds or 0.0)
+    if actual >= target - 0.3:
+        return src
+    dst = segments_dir / f"aigc-extend-{idx:02d}.mp4"
+    try:
+        await asyncio.to_thread(
+            ffmpeg_svc.extend_freeze_tail, src, dst, target_duration=target,
+        )
+        log.info(
+            "[render] scene %d freeze-extend %.2fs → %.2fs (Δ=%.2fs)",
+            idx, actual, target, target - actual,
+        )
+        return dst
+    except ffmpeg_svc.FFmpegError as exc:
+        log.warning("[render] freeze-extend scene=%d failed: %s", idx, exc)
+        return src
+
+
+async def _resolve_aigc_image_scene(
+    scene: Scene,
+    segments_dir: Path,
+    idx: int,
+    *,
+    width: int,
+    height: int,
+) -> Path | None:
+    """source=aigc_image 的 scene：解析本地 /aigc-images/... 路径，
+    用 ffmpeg.image_to_video loop 成 scene.duration 长度的 mp4（静帧 + 静音）。
+
+    aigc_image_url 形如 `/aigc-images/<gap_id>-<ts>.png`——直接拼 var/aigc_images/<filename>。
+    历史/兜底兼容：也接受完整 http(s) URL（如落盘失败时回落的原 CDN URL）。
+    """
+    src_url = (scene.aigc_image_url or "").strip()
+    if not src_url:
+        return None
+    if not ffmpeg_svc.ffmpeg_available():
+        return None
+
+    settings = get_settings()
+    images_dir = settings.log_dir.parent / "var" / "aigc_images"
+
+    local_path: Path | None = None
+    if src_url.startswith("/aigc-images/"):
+        local_path = images_dir / src_url[len("/aigc-images/"):]
+        if not local_path.exists():
+            log.warning("[render] aigc_image scene %d 本地缺失 %s", idx, local_path)
+            local_path = None
+    elif src_url.startswith("http"):
+        # 兜底：URL 没落盘成功；现下载到 aigc_cache 临时目录
+        h = hashlib.sha1(src_url.encode("utf-8")).hexdigest()[:16]
+        suffix = ".png"
+        for ext in (".png", ".jpg", ".jpeg", ".webp"):
+            if src_url.lower().split("?", 1)[0].endswith(ext):
+                suffix = ext if ext != ".jpeg" else ".jpg"
+                break
+        dl = _aigc_cache_root() / f"img-{h}{suffix}"
+        if not dl.exists() or dl.stat().st_size == 0:
+            try:
+                async with httpx.AsyncClient(timeout=60.0, follow_redirects=True) as client:
+                    resp = await client.get(src_url)
+                    resp.raise_for_status()
+                    dl.write_bytes(resp.content)
+            except Exception as exc:  # noqa: BLE001
+                log.warning("[render] aigc_image scene %d 下载失败 %s: %s", idx, src_url[:60], exc)
+                return None
+        local_path = dl
+
+    if local_path is None:
+        return None
+
+    dur = max(0.5, float(scene.duration or 1.0))
+    dst = segments_dir / f"aigc-image-{idx:02d}.mp4"
+
+    # Remotion 动效路径：scene.animation_spec.engine == 'remotion' 时优先尝试
+    spec = getattr(scene, "animation_spec", None)
+    if spec is not None and getattr(spec, "engine", "ffmpeg") == "remotion":
+        # 推断 ratio：根据 width/height 反推 9:16/16:9/1:1
+        if width > height:
+            ratio = "16:9"
+        elif width < height:
+            ratio = "9:16"
+        else:
+            ratio = "1:1"
+
+        # 多图（keyframe_morph / storyboard）：从 spec.image_urls 解析所有本地路径
+        multi_urls = list(getattr(spec, "image_urls", []) or [])
+        image_paths: list[Path] = []
+        if multi_urls:
+            for u in multi_urls:
+                u = u.strip()
+                if u.startswith("/aigc-images/"):
+                    candidate = images_dir / u[len("/aigc-images/"):]
+                    if candidate.exists():
+                        image_paths.append(candidate)
+                elif u.startswith("http"):
+                    h = hashlib.sha1(u.encode("utf-8")).hexdigest()[:16]
+                    suffix = ".png"
+                    for ext in (".png", ".jpg", ".jpeg", ".webp"):
+                        if u.lower().split("?", 1)[0].endswith(ext):
+                            suffix = ext if ext != ".jpeg" else ".jpg"
+                            break
+                    dl = _aigc_cache_root() / f"img-{h}{suffix}"
+                    if not dl.exists() or dl.stat().st_size == 0:
+                        try:
+                            async with httpx.AsyncClient(timeout=60.0, follow_redirects=True) as client:
+                                resp = await client.get(u)
+                                resp.raise_for_status()
+                                dl.write_bytes(resp.content)
+                        except Exception as exc:  # noqa: BLE001
+                            log.warning("[render] multi-image 下载失败 %s: %s", u[:60], exc)
+                            continue
+                    image_paths.append(dl)
+        if not image_paths:
+            image_paths = [local_path]
+
+        try:
+            from .remotion_renderer import render_animated_image, remotion_available
+            if remotion_available():
+                out = await render_animated_image(
+                    image_paths=image_paths,
+                    duration_seconds=dur,
+                    output_path=dst,
+                    animation_type=getattr(spec, "animation_type", "ken-burns") or "ken-burns",
+                    ratio=ratio,
+                    intensity=float(getattr(spec, "intensity", 0.3) or 0.3),
+                    motion_direction=getattr(spec, "motion_direction", "in") or "in",
+                    transition=getattr(spec, "transition", "cross-fade") or "cross-fade",
+                    transition_duration=float(getattr(spec, "transition_duration", 0.4) or 0.4),
+                )
+                if out is not None and out.exists() and out.stat().st_size > 0:
+                    return out
+                log.warning(
+                    "[render] aigc_image scene=%d remotion 渲染失败，回落 ffmpeg 静帧",
+                    idx,
+                )
+            else:
+                log.info("[render] aigc_image scene=%d 请求 remotion 但环境未就绪，回落 ffmpeg", idx)
+        except Exception as exc:  # noqa: BLE001
+            log.warning("[render] aigc_image scene=%d remotion 调用异常: %s", idx, exc)
+
+    try:
+        return await asyncio.to_thread(
+            ffmpeg_svc.image_to_video,
+            local_path, dur, dst,
+            width=width, height=height,
+        )
+    except ffmpeg_svc.FFmpegError as exc:
+        log.warning("[render] aigc_image scene=%d ffmpeg failed: %s", idx, exc)
+        return None
 
 
 def _resolve_scene_path(plan: Plan, scene: Scene) -> Path | None:
@@ -240,10 +425,13 @@ async def run_pipeline(job_id: str, plan: Plan) -> RenderResult:
     timings: dict[str, int] = {}
     notes: list[str] = []
 
-    # 从 plan.settings.target_platform 推导画幅
-    aspect = aspect_for_platform(plan.settings.target_platform)
+    # 画幅优先看 settings.aspect_ratio，回退到 target_platform，再回落 9:16
+    aspect = aspect_for_settings(plan.settings)
     canvas_w, canvas_h = aspect.width, aspect.height
-    notes.append(f"canvas={canvas_w}×{canvas_h} (platform={plan.settings.target_platform})")
+    notes.append(
+        f"canvas={canvas_w}×{canvas_h} "
+        f"(ratio={plan.settings.aspect_ratio} platform={plan.settings.target_platform})"
+    )
 
     # ---- Step 1 · prepare ----
     t0 = time.time()
@@ -288,6 +476,23 @@ async def run_pipeline(job_id: str, plan: Plan) -> RenderResult:
                 notes.append(f"scene {i} ({sc.section}/aigc_t2v) URL 缺失，落文字卡")
             else:
                 notes.append(f"scene {i} aigc 落文字卡失败（ffmpeg 不可用），跳过")
+            continue
+
+        if sc.source == "aigc_image":
+            img_path = await _resolve_aigc_image_scene(
+                sc, segments_dir, i, width=canvas_w, height=canvas_h,
+            )
+            if img_path is not None:
+                inputs.append(img_path)
+                continue
+            # Seedream 图缺失/解码失败 → 落文字卡，不让段落丢失
+            tc = await asyncio.to_thread(_render_text_card, sc, segments_dir, i,
+                                         width=canvas_w, height=canvas_h)
+            if tc is not None:
+                inputs.append(tc)
+                notes.append(f"scene {i} ({sc.section}/aigc_image) 图缺失，落文字卡")
+            else:
+                notes.append(f"scene {i} aigc_image 落文字卡失败（ffmpeg 不可用），跳过")
             continue
 
         # source == "user_material" 或老 plan 残留的 "sample"：尝试解析+切片，

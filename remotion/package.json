@@ -6,13 +6,15 @@
   "description": "Seecript 包装轨：字幕/标题条/转场/贴纸渲染为透明 WebM，再由后端 ffmpeg overlay 到主轨。",
   "scripts": {
     "studio": "remotion studio",
-    "render": "remotion render PackagingTrack out/packaging.webm --pixel-format=yuva420p --codec=vp8"
+    "render": "remotion render PackagingTrack out/packaging.webm --pixel-format=yuva420p --codec=vp8",
+    "render:image": "remotion render AnimatedImage out/animated.mp4 --codec=h264 --pixel-format=yuv420p"
   },
   "dependencies": {
     "@remotion/cli": "^5.5.0",
     "react": "^19.2.6",
     "react-dom": "^19.2.6",
-    "remotion": "^5.5.0"
+    "remotion": "^5.5.0",
+    "zod": "^3.23.8"
   },
   "devDependencies": {
     "@types/react": "^19.2.14",

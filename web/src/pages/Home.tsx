@@ -9,8 +9,8 @@ import type { Project, ProjectStatus } from '@/types/schemas'
 
 const STATUS_LABEL: Record<ProjectStatus, string> = {
   draft: '草稿',
-  planned: '已规划',
-  rendered: '已渲染',
+  planned: '方案已生成',
+  rendered: '成片已生成',
 }
 
 const STATUS_COLOR: Record<ProjectStatus, string> = {
@@ -44,9 +44,9 @@ export default function HomePage() {
     try {
       const loaded = await resumeProject(proj.project_id)
       if (!loaded) return
-      // 渲染页已并入 compose 长页：rendered 项目回到 /compose 看结果
-      if (loaded.status === 'rendered') navigate('/compose')
-      else if (loaded.status === 'planned') navigate('/compose')
+      // 已生成方案/已出片 → 直接进工坊；否则先去样例拆解
+      if (loaded.status === 'rendered') navigate('/workshop')
+      else if (loaded.status === 'planned') navigate('/workshop')
       else navigate('/decompose')
     } finally {
       setEnteringId(null)
@@ -69,7 +69,7 @@ export default function HomePage() {
   }
 
   return (
-    <PageShell title="首页" subtitle="管理你的历史项目，或新建一个开始创作。">
+    <PageShell title="首页" subtitle="我的项目都在这里。点一个进去继续，或者新建一个开始。">
       <div className="mb-4 flex items-center justify-between">
         <div className="text-sm text-muted-foreground">
           共 {projects.length} 个项目
@@ -92,7 +92,7 @@ export default function HomePage() {
       {projects.length === 0 && !loading ? (
         <div className="rounded-lg border border-dashed border-border bg-card p-12 text-center">
           <p className="text-sm text-muted-foreground">
-            还没有项目。点右上「新建项目」从素材库挑一个爆款样例开始。
+            还没有项目。点右上「新建项目」，从样例库挑一支爆款开始借鉴。
           </p>
         </div>
       ) : (
@@ -119,12 +119,12 @@ export default function HomePage() {
                 </div>
                 <div className="absolute inset-0 flex items-center justify-center text-xs text-muted-foreground">
                   {enteringId === proj.project_id
-                    ? '加载中…'
+                    ? '打开中…'
                     : proj.status === 'draft'
-                      ? '尚未生成预览'
+                      ? '还没开始'
                       : proj.status === 'planned'
-                        ? '已规划，未渲染'
-                        : '渲染完成'}
+                        ? '方案已生成，待出片'
+                        : '成片已生成'}
                 </div>
               </button>
 
@@ -156,7 +156,7 @@ export default function HomePage() {
 
                 <div className="flex items-center justify-between text-[11px] text-muted-foreground">
                   <span className="truncate">
-                    样例 {proj.sample_ids.join(' + ')}
+                    参考样例：{proj.reference_versions.map((rv) => rv.sample_id).join(' + ') || '—'}
                   </span>
                   <span className="font-mono">{formatTime(proj.updated_at)}</span>
                 </div>
@@ -173,7 +173,7 @@ export default function HomePage() {
                     disabled={enteringId === proj.project_id}
                     className="flex-1 rounded-md bg-primary px-3 py-1.5 text-xs font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-60"
                   >
-                    {enteringId === proj.project_id ? '加载…' : '进入'}
+                    {enteringId === proj.project_id ? '打开中…' : '打开'}
                   </button>
                   <button
                     onClick={() => handleRename(proj)}
@@ -183,7 +183,7 @@ export default function HomePage() {
                   </button>
                   <button
                     onClick={() => {
-                      if (confirm(`删除项目「${proj.name}」？\n\n这会清空该项目的素材、资产库和所有 plan/gap/fill 数据，且不可撤销。`)) {
+                      if (confirm(`删除项目「${proj.name}」？\n\n这会清空该项目下你上传的素材、配置和已生成的方案，且无法找回。`)) {
                         void deleteProject(proj.project_id)
                       }
                     }}
@@ -204,9 +204,8 @@ export default function HomePage() {
           onCreated={(id) => {
             setShowNew(false)
             void (async () => {
-              // 拿详情灌进 session，跳到 decompose
               const loaded = await resumeProject(id)
-              if (loaded) navigate('/decompose')
+              if (loaded) navigate('/workshop')
             })()
           }}
         />

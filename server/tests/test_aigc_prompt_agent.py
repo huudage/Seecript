@@ -57,12 +57,13 @@ def _mini_gap(section_id: str = "sec-0") -> Gap:
 
 
 def test_generate_aigc_prompt_mock_round_trip():
-    """mock 路径下：返回完备 prompt，无 role 元数据词，含主题关键字。"""
+    """mock 路径下：返回完备 prompt + thinking，无 role 元数据词，含主题关键字。"""
     sec = _mini_section()
     plan = _mini_plan(sec)
     gap = _mini_gap()
-    prompt = asyncio.run(generate_aigc_prompt(gap, plan, sec))
+    prompt, thinking = asyncio.run(generate_aigc_prompt(gap, plan, sec))
     assert prompt, "prompt 不能为空"
+    assert isinstance(thinking, list), "thinking 必须是 list"
     # mock 模板里有『悬念开场』作为段落主题回写
     assert "悬念开场" in prompt
     # 不应该出现 role 元数据词
@@ -74,7 +75,7 @@ def test_generate_aigc_prompt_mock_round_trip():
 def test_generate_aigc_prompt_no_section_no_plan():
     """section/plan 都 None 时也能返回非空 prompt（走 mock 或 fallback 兜底）。"""
     gap = _mini_gap()
-    prompt = asyncio.run(generate_aigc_prompt(gap, None, None))
+    prompt, _thinking = asyncio.run(generate_aigc_prompt(gap, None, None))
     assert prompt
     for bad in ("opening", "development", "climax", "closing"):
         assert bad not in prompt
@@ -85,7 +86,7 @@ def test_generate_aigc_prompt_with_user_hint():
     sec = _mini_section()
     plan = _mini_plan(sec)
     gap = _mini_gap()
-    prompt = asyncio.run(
+    prompt, _thinking = asyncio.run(
         generate_aigc_prompt(gap, plan, sec, user_hint="一定要有日落金光")
     )
     assert prompt

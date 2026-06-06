@@ -18,22 +18,30 @@ from pydantic import BaseModel, Field
 from ..routers.library import _LIBRARY, _load_real_manifest, _stub_manifest
 from ..schemas import (
     AdaptedSection,
+    AnimationSpec,
+    AspectRatio,
     BGMConfig,
     ComposeSettings,
     FillResult,
     PackagingItem,
     Plan,
     PlanBuildRequest,
+    PlanSnapshotCreateRequest,
+    PlanSnapshotEntry,
+    PlanSnapshotMeta,
+    ReferenceVersion,
     SampleManifest,
     Scene,
     TargetPlatform,
+    TextCardSpec,
     ToneStyle,
     TTSVoice,
 )
 from ..services.agent.plan_agent import adapt_structure
 from ..services.assets import asset_store
+from ..services.library import manifest_store
 from ..services.materials import gap_store
-from ..services.plans import plan_store
+from ..services.plans import plan_snapshot_store, plan_store
 from ..services.projects import project_store
 from ..services.video.bgm_analysis import analyze_bgm_with_llm
 
@@ -50,11 +58,28 @@ def _resolve_manifest(sample_id: str) -> SampleManifest:
     return _stub_manifest(sample.id, sample)
 
 
-def _resolve_manifests(sample_ids: list[str]) -> list[SampleManifest]:
-    """逐个解析 sample_ids → SampleManifest list。空列表抛 422（路由入口应已校验）。"""
-    if not sample_ids:
-        raise HTTPException(status_code=422, detail="sample_ids 不能为空")
-    return [_resolve_manifest(sid) for sid in sample_ids]
+def _resolve_manifests(refs: list[ReferenceVersion]) -> list[SampleManifest]:
+    """逐个 (sample_id, slot_id) 精确加载——找不到对应槽就回落到默认查找。
+
+    stage-15 起 Plan/Project 按槽粒度引用，不再隐式取 active 槽：
+    - 优先 manifest_store.load_version(sample_id, slot_id)，命中即用
+    - 槽不存在（slot_id 写错 / 槽被删了）→ 回落 _resolve_manifest(sample_id)，
+      让流水线仍能跑下去而不是 422 中断（前端会在 Compose 端给提示）
+    """
+    if not refs:
+        raise HTTPException(status_code=422, detail="reference_versions 不能为空")
+    out: list[SampleManifest] = []
+    for rv in refs:
+        manifest = manifest_store.load_version(rv.sample_id, rv.slot_id)
+        if manifest is not None:
+            out.append(manifest)
+            continue
+        log.warning(
+            "[plan] reference_version sample=%s slot=%s 未命中，回落默认 manifest",
+            rv.sample_id, rv.slot_id,
+        )
+        out.append(_resolve_manifest(rv.sample_id))
+    return out
 
 
 def _narration_from_content(content: str, *, limit: int = 60) -> str:
@@ -183,22 +208,30 @@ async def build_plan(req: PlanBuildRequest) -> Plan:
     # v2 起 session_id == project_id；老前端只传 session_id 时仍可工作
     effective_project_id = (req.project_id or req.session_id or "").strip() or None
     log.info(
-        "[plan] build plan=%s samples=%s project=%s materials=%d fills=%d variant=%s "
+        "[plan] build plan=%s refs=%s project=%s materials=%d fills=%d variant=%s "
         "brief=%s goal=%s target_dur=%.0fs platform=%s tone=%s",
-        plan_id, req.sample_ids, effective_project_id,
+        plan_id,
+        [(rv.sample_id, rv.slot_id) for rv in req.reference_versions],
+        effective_project_id,
         len(req.selected_materials), len(req.fills),
         req.variant, (req.brief or "")[:30], (req.video_goal or "")[:30],
         settings.target_duration_seconds, settings.target_platform, settings.tone,
     )
 
-    # 1. 取样例 manifests（1-2 个）
-    manifests = _resolve_manifests(req.sample_ids)
+    # 1. 取样例 manifests（1-2 个，按 slot 精确加载）
+    manifests = _resolve_manifests(req.reference_versions)
 
     # 2. LLM 改编段落结构（带 settings + 参考素材注入；多样例时段落结构合并参考）
-    adapted = await adapt_structure(
-        manifests, req.brief, req.video_goal, settings,
-        reference_asset_ids=req.reference_asset_ids,
-    )
+    # 增量构建：若前端透传 reuse_sections（上一版 plan.adapted_sections），跳过 LLM——
+    # 修复『5→4 段抖动』bug：每次 runAnalyze 都重跑 LLM，非确定性导致段数飘忽。
+    if req.reuse_sections:
+        adapted = list(req.reuse_sections)
+        log.info("[plan] reuse_sections=%d 跳过 adapt_structure", len(adapted))
+    else:
+        adapted = await adapt_structure(
+            manifests, req.brief, req.video_goal, settings,
+            reference_asset_ids=req.reference_asset_ids,
+        )
     if not adapted:
         # fallback：用第一份样例的 sections 1:1 兜底
         primary_sections = list(manifests[0].sections)
@@ -224,12 +257,16 @@ async def build_plan(req: PlanBuildRequest) -> Plan:
     fill_by_section = _fill_section_lookup(req.fills)
     material_cursor = 0
 
-    def _pick(sec: AdaptedSection) -> tuple[str, str, list[str], str | None, str | None]:
-        """返回 (source, source_ref, aigc_video_urls, narration_override, voiceover_url)。
+    def _pick(sec: AdaptedSection) -> tuple[str, str, list[str], str | None, str | None, "TextCardSpec | None", str | None, list[str], "AnimationSpec | None"]:
+        """返回 (source, source_ref, aigc_video_urls, narration_override, voiceover_url, text_card_spec, aigc_image_url, aigc_image_urls, animation_spec)。
 
-        优先级：本段 fill（aigc / copy） > 用户素材 > 文字卡兜底。
+        优先级：本段 fill（aigc / aigc_image / copy） > 用户素材 > 文字卡兜底。
         - aigc fill：source=aigc_t2v，source_ref=task_id，aigc_video_urls=video_urls
-        - copy fill：source=text_card（无画面素材），narration 用 fill.narration；
+        - aigc_image fill：source=aigc_image，source_ref=new_material_id，aigc_image_url=fill.aigc_image_url
+                          多镜头时 aigc_image_urls = fill.aigc_image_urls（path B 拆分用）
+                          animation_spec：若 fill 携带则透传，决定 Scene 走 remotion 渲染还是 ffmpeg 静帧
+        - copy fill：source=text_card（字卡画面），text_card_spec=fill.text_card_spec；
+                     narration 用 main_text + sub_text 拼接（供 TTS 与 LLM 上下文）；
                      若 fill.voiceover_url 已存在（gap 路由自动 TTS 写入），直接透传到 Scene。
         - 用户素材：顺位消费 selected_materials
         - 兜底：source=text_card，文案取自 content_description 首句
@@ -243,24 +280,117 @@ async def build_plan(req: PlanBuildRequest) -> Plan:
                 list(fill.video_urls),
                 None,
                 None,
+                None,
+                None,
+                [],
+                None,
+            )
+        if fill and fill.action == "aigc_image" and fill.aigc_image_url:
+            return (
+                "aigc_image",
+                fill.new_material_id or f"aigc-image-{sec.section_id}",
+                [],
+                None,
+                None,
+                None,
+                fill.aigc_image_url,
+                list(fill.aigc_image_urls or []),
+                fill.animation_spec,
             )
         narration_override = None
         voiceover_url = None
-        if fill and fill.action == "copy" and fill.narration:
-            narration_override = fill.narration
+        text_card_spec = None
+        if fill and fill.action == "copy":
+            # copy fill 的主输出是 text_card_spec；narration 字段仅为兼容
+            text_card_spec = fill.text_card_spec
+            if fill.narration:
+                narration_override = fill.narration
             voiceover_url = (fill.voiceover_url or "").strip() or None
+            # 有 text_card_spec → 直接走 text_card 分支（即使有 user_material 也不抢；用户用 copy tab 就是要字卡）
+            if text_card_spec is not None:
+                return (
+                    "text_card",
+                    f"text-card-fill-{sec.section_id}",
+                    [],
+                    narration_override,
+                    voiceover_url,
+                    text_card_spec,
+                    None,
+                    [],
+                    None,
+                )
         if material_cursor < len(req.selected_materials):
             ref = req.selected_materials[material_cursor]
             material_cursor += 1
-            return ("user_material", ref, [], narration_override, voiceover_url)
+            return ("user_material", ref, [], narration_override, voiceover_url, None, None, [], None)
         # 无 AIGC、无 copy 文案、无用户素材 → 文字卡（packaging 字幕负责显示真实文案）
-        return ("text_card", f"text-card-{sec.section_id}", [], narration_override, voiceover_url)
+        return ("text_card", f"text-card-{sec.section_id}", [], narration_override, voiceover_url, None, None, [], None)
 
     main_track: list[Scene] = []
     timeline_cursor = 0.0
     for sec in adapted:
-        source, source_ref, aigc_urls, narration_override, voiceover_url = _pick(sec)
+        source, source_ref, aigc_urls, narration_override, voiceover_url, text_card_spec, aigc_image_url, aigc_image_urls, animation_spec = _pick(sec)
         target_duration = float(sec.duration_seconds) if sec.duration_seconds > 0 else 4.0
+
+        # ---- keyframe_morph：多张图保留在同一 Scene 上，由 Remotion 渲染器一次性渐变 ----
+        # 不切子 Scene；image_urls 透传给 Remotion AnimatedImage composition。
+        if (
+            source == "aigc_image"
+            and animation_spec is not None
+            and getattr(animation_spec, "engine", "ffmpeg") == "remotion"
+            and getattr(animation_spec, "animation_type", "") == "keyframe_morph"
+            and len(aigc_image_urls) > 1
+        ):
+            spec_copy = animation_spec.model_copy(update={"image_urls": list(aigc_image_urls)})
+            scene = Scene(
+                scene_id=f"sc-{sec.order}",
+                section=sec.role,  # type: ignore[arg-type]
+                source="aigc_image",  # type: ignore[arg-type]
+                source_ref=source_ref,
+                start=timeline_cursor,
+                duration=target_duration,
+                in_point=0.0,
+                out_point=None,
+                narration=narration_override or "",
+                voiceover_url=voiceover_url,
+                aigc_video_urls=[],
+                aigc_image_url=aigc_image_urls[0],  # 兜底字段：首张图，避免渲染失败时静帧空白
+                text_card_spec=None,
+                animation_spec=spec_copy,
+            )
+            main_track.append(scene)
+            timeline_cursor += target_duration
+            continue
+
+        # ---- Path B: 多镜头 aigc_image 拆分 ----
+        # 当 fill 返回多张图（aigc_image_urls 非空且 >1），把一个 AdaptedSection
+        # 等长拆成 N 个 Scene（每个一张图）。narration 留在第一张图 Scene 上以便
+        # 后续 TTS / 字幕生成；其余子 Scene 留空 narration（packaging_track 阶段
+        # 默认会跳过空 narration，所以不会产生重复字幕）。
+        if source == "aigc_image" and len(aigc_image_urls) > 1:
+            n_shots = len(aigc_image_urls)
+            per_shot = target_duration / n_shots
+            for shot_idx, shot_url in enumerate(aigc_image_urls):
+                scene = Scene(
+                    scene_id=f"sc-{sec.order}-shot{shot_idx+1}",
+                    section=sec.role,  # type: ignore[arg-type]
+                    source="aigc_image",  # type: ignore[arg-type]
+                    source_ref=f"{source_ref}-shot{shot_idx+1}",
+                    start=timeline_cursor,
+                    duration=per_shot,
+                    in_point=0.0,
+                    out_point=None,
+                    # 仅第一张图 Scene 承载 narration / voiceover；其余留空避免重复字幕。
+                    narration=(narration_override or "") if shot_idx == 0 else "",
+                    voiceover_url=voiceover_url if shot_idx == 0 else None,
+                    aigc_video_urls=[],
+                    aigc_image_url=shot_url,
+                    text_card_spec=None,
+                    animation_spec=animation_spec,
+                )
+                main_track.append(scene)
+                timeline_cursor += per_shot
+            continue
 
         in_point = 0.0
         out_point: float | None = None
@@ -270,9 +400,12 @@ async def build_plan(req: PlanBuildRequest) -> Plan:
             in_point = 0.0
             actual_duration = target_duration
             out_point = actual_duration
-        # text_card / aigc_t2v：无 in/out 概念，actual_duration = target_duration
+        # text_card / aigc_t2v / aigc_image：无 in/out 概念，actual_duration = target_duration
 
-        narration_text = narration_override or _narration_from_content(sec.content_description)
+        # 不再用 content_description 自动种 narration——那会让用户在第 2 步看到"全段已有文案"，
+        # 误以为系统替他做了 LLM 文案补全。改成：narration 仅在显式 fill (action=copy) 时写入，
+        # 其余段落留空，由用户在 Compose UI 主动触发文案 / 配音 / AIGC。
+        narration_text = narration_override or ""
         scene = Scene(
             scene_id=f"sc-{sec.order}",
             section=sec.role,  # type: ignore[arg-type]
@@ -285,33 +418,32 @@ async def build_plan(req: PlanBuildRequest) -> Plan:
             narration=narration_text,
             voiceover_url=voiceover_url,
             aigc_video_urls=aigc_urls,
+            aigc_image_url=aigc_image_url,
+            text_card_spec=text_card_spec,
+            animation_spec=animation_spec if source == "aigc_image" else None,
         )
         main_track.append(scene)
         timeline_cursor += actual_duration
 
     actual_total = sum(sc.duration for sc in main_track) or 1.0
 
-    # 4. 包装轨：标题 + 每段独立字幕 + CTA
+    # 4. 包装轨：仅生成每段口播字幕；title_bar/sticker/cover/transition 全部走
+    # V2 流程（PackagingPanel 推荐→挑选→/packaging/apply 落盘）。
     packaging_track: list[PackagingItem] = []
-    if main_track:
-        opening = main_track[0]
-        packaging_track.append(PackagingItem(
-            item_id="pkg-title", kind="title_bar",
-            start=opening.start, end=opening.start + opening.duration,
-            text=adapted[0].theme or "开场",
-            style={"size": 64, "color": "#FFF"},
-        ))
 
     # 每个 Scene 烧一条字幕（用 scene.narration 而不是单条 placeholder）
-    # voiceover_enabled=False 时跳过：纯 BGM 视频不该自动出字幕，
-    # 但仍保留 scene.narration 文本，供 LLM 改编上下文使用。
-    if settings.voiceover_enabled:
+    # subtitle_enabled=False 时跳过：用户没在字幕轨打开开关时不该自动出字幕。
+    # scene.text_card_spec 非空的段也跳过：字卡画面已经显示主副标，字幕会与之打架。
+    # 保留 scene.narration 文本，供 LLM 改编上下文 / 后续 TTS 使用。
+    if settings.subtitle_enabled:
         prefs = settings.packaging_prefs
         # custom 时直接用 prefs 字段；非 custom 走预设展开（确保 plan/build 落盘的 subtitle 样式
         # 与 PackagingPanel 默认预设一致，不必等用户先点一次"一键包装"才生效）。
         from ..services.agent.packaging_agent import expand_preset
         effective = expand_preset(prefs)
         for idx, scene in enumerate(main_track):
+            if scene.text_card_spec is not None:
+                continue
             sub_text = (scene.narration or "").strip()
             if not sub_text:
                 continue
@@ -330,19 +462,9 @@ async def build_plan(req: PlanBuildRequest) -> Plan:
                 },
             ))
 
-    if len(main_track) >= 2:
-        closing = main_track[-1]
-        cta_text = (settings.cta or "").strip() or adapted[-1].theme or "点赞收藏"
-        packaging_track.append(PackagingItem(
-            item_id="pkg-cta", kind="sticker",
-            start=closing.start, end=closing.start + closing.duration,
-            text=cta_text,
-            style={"size": 56, "color": "#FFE600"},
-        ))
-
     plan = Plan(
         plan_id=plan_id,
-        sample_ids=req.sample_ids,
+        reference_versions=list(req.reference_versions),
         project_id=effective_project_id,
         session_id=effective_project_id,
         brief=req.brief,
@@ -359,6 +481,20 @@ async def build_plan(req: PlanBuildRequest) -> Plan:
         ),
         settings=settings,
     )
+    # 个性知识库注入统计：本次 plan/build 实际"看到"了多少条 KB 规则。
+    # 与 plan_agent 内部注入逻辑独立计算同一份数据——前端徽标用此字段。
+    try:
+        from ..services.profile import collect_active_rules, count_applied_rules
+        plan.kb_rules_applied = count_applied_rules(collect_active_rules())
+    except Exception as exc:  # noqa: BLE001
+        log.warning("[plan] kb_rules_applied 统计失败 plan=%s: %s", plan_id, exc)
+    # 蒸馏初版 snapshot：render commit 时与 v1 做 diff 落 Trace A 用。
+    # 后续 PATCH（scene 编辑 / gap fill 重建）不重写本字段，确保 v0 基准稳定。
+    try:
+        from ..services.profile import to_snapshot as _profile_to_snapshot
+        plan.initial_snapshot = _profile_to_snapshot(plan)
+    except Exception as exc:  # noqa: BLE001
+        log.warning("[plan] 写 initial_snapshot 失败 plan=%s: %s", plan_id, exc)
     plan_store.put(plan)
 
     # 回写到 Project，让首页/项目详情能拿到 last_plan_id
@@ -455,11 +591,14 @@ class PlanSettingsPatch(BaseModel):
     """PATCH /plan/{plan_id}/settings：在轨道板等位置直接翻转单个设置项。
 
     所有字段可选；只更新前端实际传入的键（`exclude_unset`），未传字段保持现值。
-    主要用法：四轨板左侧开关翻转 voiceover_enabled、Compose 设置面板切换 tts_voice。
+    主要用法：字幕轨/口播开关翻转 subtitle_enabled / voiceover_enabled、
+    Compose 设置面板切换 tts_voice。
     """
+    subtitle_enabled: Optional[bool] = None
     voiceover_enabled: Optional[bool] = None
     tts_voice: Optional[TTSVoice] = None
     target_platform: Optional[TargetPlatform] = None
+    aspect_ratio: Optional[AspectRatio] = None
     tone: Optional[ToneStyle] = None
     cta: Optional[str] = Field(default=None, max_length=20)
     keywords: Optional[list[str]] = Field(default=None, max_length=5)
@@ -471,6 +610,7 @@ async def patch_plan_settings(plan_id: str, body: PlanSettingsPatch) -> Plan:
     """部分更新 plan.settings；不重跑 LLM，仅落盘 + 返回最新 Plan。
 
     不触发结构重排——voiceover_enabled 由 voice/render 阶段读取生效，
+    subtitle_enabled 由 字幕轨展示 / burn_packaging_track 读取生效，
     tts_voice 由 /voice/synthesize 阶段读取。前端切换后页面用返回的 Plan 同步 store。
     """
     plan = plan_store.get(plan_id)
@@ -482,13 +622,15 @@ async def patch_plan_settings(plan_id: str, body: PlanSettingsPatch) -> Plan:
     current = plan.settings.model_dump()
     current.update(patch)
     plan.settings = ComposeSettings(**current)
-    # 翻到 voiceover_enabled=False 时，把已经烧好的字幕 PackagingItem 清掉——
-    # 不然 render 还会把字幕画进画面，与"纯 BGM 视频"语义打架。
-    if patch.get("voiceover_enabled") is False:
+    # 翻到 subtitle_enabled=False 时，把已经烧好的字幕 PackagingItem 清掉——
+    # 不然 render 还会把字幕画进画面，与"无字幕"语义打架。
+    # 翻到 True 时不自动重生成 subtitle（让用户去 PackagingPanel 主动选样式），
+    # 老 plan 兼容：plan.packaging_track 里如已有 subtitle 项保留不动。
+    if patch.get("subtitle_enabled") is False:
         before = len(plan.packaging_track)
         plan.packaging_track = [it for it in plan.packaging_track if it.kind != "subtitle"]
         if before != len(plan.packaging_track):
-            log.info("[plan] settings voiceover off → 移除字幕项 %d→%d",
+            log.info("[plan] settings subtitle off → 移除字幕项 %d→%d",
                      before, len(plan.packaging_track))
     plan_store.put(plan)
     log.info("[plan] settings patched plan=%s keys=%s", plan_id, list(patch.keys()))
@@ -530,9 +672,6 @@ async def patch_plan_scene(plan_id: str, scene_id: str, body: SceneEditPatch) ->
         raise HTTPException(status_code=404, detail=f"scene_id 不存在：{scene_id}")
     scene = plan.main_track[scene_idx]
 
-    if "narration" in patch:
-        plan.main_track[scene_idx] = scene.model_copy(update={"narration": patch["narration"]})
-
     # 通过 scene_id 推断 section.order；老数据可能不是 sc-<order> 形式，回落到 scene_idx
     section_order: Optional[int] = None
     if scene_id.startswith("sc-"):
@@ -547,6 +686,18 @@ async def patch_plan_scene(plan_id: str, scene_id: str, body: SceneEditPatch) ->
         (i for i, sec in enumerate(plan.adapted_sections) if sec.order == section_order),
         None,
     )
+
+    # Trace B 用：在 mutation 之前先抓 before 快照（Scene 是 immutable，model_copy 不会改原引用，
+    # 但 section_idx 处会被原地替换，所以这里必须先拍）
+    _before = {
+        "narration": scene.narration or "",
+        "theme": plan.adapted_sections[section_idx].theme if section_idx is not None else "",
+        "content_description": plan.adapted_sections[section_idx].content_description if section_idx is not None else "",
+    }
+
+    if "narration" in patch:
+        plan.main_track[scene_idx] = scene.model_copy(update={"narration": patch["narration"]})
+
     if section_idx is not None and any(k in patch for k in ("theme", "content_description")):
         sec = plan.adapted_sections[section_idx]
         update: dict[str, str] = {}
@@ -561,6 +712,37 @@ async def patch_plan_scene(plan_id: str, scene_id: str, body: SceneEditPatch) ->
         "[plan] scene patched plan=%s scene=%s keys=%s",
         plan_id, scene_id, list(patch.keys()),
     )
+    # Trace B：自然语言编辑事件——只有用户真的在 narration / theme / content_description 上写了字才记。
+    # 失败仅 warn 不影响 plan 持久化。
+    try:
+        user_input_parts = [v for v in (
+            patch.get("narration"), patch.get("theme"), patch.get("content_description"),
+        ) if v]
+        user_input = " | ".join(user_input_parts).strip()
+        if user_input:
+            from ..services.profile import DEFAULT_USER_ID, TraceB, append_trace_b
+            import time as _time
+            scene_after = plan.main_track[scene_idx]
+            sec_after = plan.adapted_sections[section_idx] if section_idx is not None else None
+            trace = TraceB(
+                ts=int(_time.time()),
+                project_id=plan.project_id or "__legacy",
+                plan_id=plan.plan_id,
+                user_id=DEFAULT_USER_ID,
+                context="scene_edit",
+                scene_id=scene_id,
+                section_role=scene_after.section,
+                user_input=user_input,
+                before=_before,
+                after={
+                    "narration": scene_after.narration or "",
+                    "theme": sec_after.theme if sec_after else "",
+                    "content_description": sec_after.content_description if sec_after else "",
+                },
+            )
+            append_trace_b(DEFAULT_USER_ID, trace)
+    except Exception as exc:  # noqa: BLE001
+        log.warning("[plan] profile.trace_b (scene_edit) write failed: %s", exc)
     return plan
 
 
@@ -569,3 +751,51 @@ async def list_plans(project_id: str) -> list[Plan]:
     """按 project_id 列出该项目所有 plans。前端进 Compose 时根据 step snapshot
     拿单个 plan_id；用本接口可在调试/历史回看时拉全量。"""
     return plan_store.list_by_project(project_id)
+
+
+# ---------------------------------------------------------------------------
+# Plan 命名快照（撤销栈以外的、用户主动保存的版本点）
+# ---------------------------------------------------------------------------
+
+@router.post("/plan/{plan_id}/snapshot", response_model=PlanSnapshotMeta)
+async def create_plan_snapshot(plan_id: str, body: PlanSnapshotCreateRequest) -> PlanSnapshotMeta:
+    """保存当前 plan 为一条命名快照；返回 meta（不含 plan 体）。"""
+    plan = plan_store.get(plan_id)
+    if plan is None:
+        raise HTTPException(status_code=404, detail=f"plan_id 不存在：{plan_id}")
+    meta = plan_snapshot_store.create(plan, name=body.name, user_id=None)
+    return PlanSnapshotMeta(**meta)
+
+
+@router.get("/plan/{plan_id}/snapshots", response_model=list[PlanSnapshotMeta])
+async def list_plan_snapshots(plan_id: str) -> list[PlanSnapshotMeta]:
+    plan = plan_store.get(plan_id)
+    if plan is None:
+        raise HTTPException(status_code=404, detail=f"plan_id 不存在：{plan_id}")
+    items = plan_snapshot_store.list(plan_id, project_id=plan.project_id)
+    return [PlanSnapshotMeta(**it) for it in items]
+
+
+@router.post("/plan/{plan_id}/snapshot/{snapshot_id}/restore", response_model=Plan)
+async def restore_plan_snapshot(plan_id: str, snapshot_id: str) -> Plan:
+    """把快照里的 Plan 写回 plan_store——同 plan_id 覆盖。前端拿到 Plan 后自行 push 撤销栈。"""
+    plan = plan_store.get(plan_id)
+    if plan is None:
+        raise HTTPException(status_code=404, detail=f"plan_id 不存在：{plan_id}")
+    record = plan_snapshot_store.get(plan_id, snapshot_id, project_id=plan.project_id)
+    if record is None:
+        raise HTTPException(status_code=404, detail=f"snapshot 不存在：{snapshot_id}")
+    snap_plan = Plan.model_validate(record["plan"])
+    plan_store.replace(snap_plan)
+    return snap_plan
+
+
+@router.delete("/plan/{plan_id}/snapshot/{snapshot_id}")
+async def delete_plan_snapshot(plan_id: str, snapshot_id: str) -> dict:
+    plan = plan_store.get(plan_id)
+    if plan is None:
+        raise HTTPException(status_code=404, detail=f"plan_id 不存在：{plan_id}")
+    ok = plan_snapshot_store.delete(plan_id, snapshot_id, project_id=plan.project_id)
+    if not ok:
+        raise HTTPException(status_code=404, detail=f"snapshot 不存在：{snapshot_id}")
+    return {"ok": True}

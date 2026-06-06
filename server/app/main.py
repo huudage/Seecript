@@ -24,7 +24,7 @@ from fastapi.staticfiles import StaticFiles
 
 from . import __version__
 from .config import get_settings
-from .routers import asr, asset, decompose, edit, gap, library, material, packaging, plan, project, render, step, voice
+from .routers import asr, asset, clarify, decompose, edit, gap, knowledge, library, material, packaging, plan, project, render, step, voice
 from .schemas import ErrorResponse, HealthResponse
 
 
@@ -146,6 +146,8 @@ def create_app() -> FastAPI:
     app.include_router(edit.router, prefix="/api", tags=["edit"])
     app.include_router(asset.router, prefix="/api", tags=["asset"])
     app.include_router(voice.router, prefix="/api", tags=["voice"])
+    app.include_router(clarify.router, prefix="/api", tags=["clarify"])
+    app.include_router(knowledge.router, prefix="/api", tags=["knowledge"])
 
     # ---- Static: 样例素材 ----
     # 把 server/samples/ 暴露成 /samples/...；前端 cover_url / shot 缩略图 / video.mp4
@@ -182,6 +184,20 @@ def create_app() -> FastAPI:
     voiceovers_dir = settings.log_dir.parent / "var" / "voiceovers"
     voiceovers_dir.mkdir(parents=True, exist_ok=True)
     app.mount("/voiceovers", StaticFiles(directory=str(voiceovers_dir)), name="voiceovers")
+
+    # /aigc-videos/<gap_id>-<ts>.mp4 → server/var/aigc_videos/...
+    # gap_agent._fill_with_seedance 拿到豆包 TOS 临时签名 URL 后立刻下载落地，让前端
+    # <video> 走同源播放，绕开跨域预检 + 签名过期导致的 failed-to-fetch。
+    aigc_videos_dir = settings.log_dir.parent / "var" / "aigc_videos"
+    aigc_videos_dir.mkdir(parents=True, exist_ok=True)
+    app.mount("/aigc-videos", StaticFiles(directory=str(aigc_videos_dir)), name="aigc_videos")
+
+    # /aigc-images/<gap_id>-<ts>.png → server/var/aigc_images/...
+    # gap_agent._fill_with_seedream_image 拿到豆包 Seedream CDN URL 后立刻下载落地，
+    # 让前端 <img> + render pipeline 走同源加载（CDN 1h-7d 过期 + 跨域预检双杀同问题）。
+    aigc_images_dir = settings.log_dir.parent / "var" / "aigc_images"
+    aigc_images_dir.mkdir(parents=True, exist_ok=True)
+    app.mount("/aigc-images", StaticFiles(directory=str(aigc_images_dir)), name="aigc_images")
 
     return app
 

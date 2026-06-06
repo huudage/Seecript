@@ -48,6 +48,14 @@ export default defineConfig({
         target: 'http://127.0.0.1:8090',
         changeOrigin: true,
       },
+      '/aigc-videos': {
+        target: 'http://127.0.0.1:8090',
+        changeOrigin: true,
+      },
+      '/aigc-images': {
+        target: 'http://127.0.0.1:8090',
+        changeOrigin: true,
+      },
     },
   },
 })

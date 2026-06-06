@@ -4,6 +4,7 @@ import {
   DEFAULT_COMPOSE_SETTINGS,
   type ComposeSettings,
   type Material,
+  type ReferenceVersion,
   type SampleId,
   type SampleManifest,
   type SessionId,
@@ -19,6 +20,12 @@ import {
  * - brief：Compose 页用户输入的主题/卖点；plan/build 时透传给后端
  * - videoGoal：Compose 页用户输入的视频要求与目的；plan/build 时透传给后端驱动结构改编
  * - settings：Compose 页用户配置（目标总时长 / 平台 / 调性 / CTA / 关键词），全部带默认值
+ *
+ * stage-15 新增：
+ * - draftManifests：未保存的草稿（zustand 内存，关浏览器丢）。
+ *   Decompose 页跑完 SSE done 写入；用户点「保存到资产库」时清除。
+ * - selectedReferences：Compose 顶部 ReferencePicker 选中的 1-2 个 (sample_id, slot_id)，
+ *   plan/build 时直接透传。与 selectedSampleIds 解耦，所以 Library 不再串到 Compose 链路。
  */
 interface SessionState {
   selectedSampleIds: SampleId[]
@@ -32,6 +39,9 @@ interface SessionState {
   brief: string
   videoGoal: string
   settings: ComposeSettings
+
+  draftManifests: Record<SampleId, SampleManifest>
+  selectedReferences: ReferenceVersion[]
 
   /**
    * 选样例：ids 长度 0-2。
@@ -49,12 +59,23 @@ interface SessionState {
   setManifest: (manifest: SampleManifest | null) => void
   setSession: (sessionId: SessionId | null) => void
   appendMaterials: (items: Material[]) => void
+  /** 整体覆写 materials（用于刷页后从后端 GET /material 回灌）。 */
+  setMaterials: (items: Material[]) => void
   removeMaterial: (materialId: string) => void
   /** 拖拽完成后传新的 material_id 顺序，store 内更新每条的 sort_order。 */
   reorderMaterials: (orderedIds: string[]) => void
   setBrief: (brief: string) => void
   setVideoGoal: (videoGoal: string) => void
   setSettings: (patch: Partial<ComposeSettings>) => void
+  setDraft: (sampleId: SampleId, manifest: SampleManifest) => void
+  clearDraft: (sampleId: SampleId) => void
+  /**
+   * Compose ReferencePicker 多选切换：已选 → 取消；未选且 < 2 → 添加；未选但已满 → 替换最旧那个。
+   * 同一 sample 的不同 slot 允许并存（决策 4：「最多 2 个」按 slot 算）。
+   */
+  toggleReference: (ref: ReferenceVersion) => void
+  setReferences: (refs: ReferenceVersion[]) => void
+  clearReferences: () => void
   reset: () => void
 }
 
@@ -69,6 +90,8 @@ export const useSessionStore = create<SessionState>((set) => ({
   brief: '',
   videoGoal: '',
   settings: { ...DEFAULT_COMPOSE_SETTINGS },
+  draftManifests: {},
+  selectedReferences: [],
 
   selectSamples: (ids, titles, videoType, source) =>
     set((state) => {
@@ -94,6 +117,10 @@ export const useSessionStore = create<SessionState>((set) => ({
       }))
       return { materials: [...state.materials, ...withOrder] }
     }),
+  setMaterials: (items) =>
+    set(() => ({
+      materials: items.map((m, i) => ({ ...m, sort_order: m.sort_order ?? i })),
+    })),
   removeMaterial: (materialId) =>
     set((state) => ({
       materials: state.materials
@@ -113,6 +140,35 @@ export const useSessionStore = create<SessionState>((set) => ({
   setVideoGoal: (videoGoal) => set({ videoGoal }),
   setSettings: (patch) =>
     set((state) => ({ settings: { ...state.settings, ...patch } })),
+  setDraft: (sampleId, manifest) =>
+    set((state) => ({
+      draftManifests: { ...state.draftManifests, [sampleId]: manifest },
+    })),
+  clearDraft: (sampleId) =>
+    set((state) => {
+      if (!(sampleId in state.draftManifests)) return state
+      const next = { ...state.draftManifests }
+      delete next[sampleId]
+      return { draftManifests: next }
+    }),
+  toggleReference: (ref) =>
+    set((state) => {
+      const eq = (a: ReferenceVersion, b: ReferenceVersion) =>
+        a.sample_id === b.sample_id && a.slot_id === b.slot_id
+      const existing = state.selectedReferences.findIndex((r) => eq(r, ref))
+      if (existing >= 0) {
+        return {
+          selectedReferences: state.selectedReferences.filter((_, i) => i !== existing),
+        }
+      }
+      if (state.selectedReferences.length < 2) {
+        return { selectedReferences: [...state.selectedReferences, ref] }
+      }
+      // 已满 2 个：替换最早那个（FIFO），让连续点击有可预期行为
+      return { selectedReferences: [state.selectedReferences[1], ref] }
+    }),
+  setReferences: (refs) => set({ selectedReferences: refs.slice(0, 2) }),
+  clearReferences: () => set({ selectedReferences: [] }),
   reset: () =>
     set({
       selectedSampleIds: [],
@@ -125,5 +181,7 @@ export const useSessionStore = create<SessionState>((set) => ({
       brief: '',
       videoGoal: '',
       settings: { ...DEFAULT_COMPOSE_SETTINGS },
+      draftManifests: {},
+      selectedReferences: [],
     }),
 }))

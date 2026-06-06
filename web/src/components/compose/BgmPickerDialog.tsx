@@ -89,7 +89,7 @@ export function BgmPickerDialog({
   const handlePick = useCallback(
     async (asset: Asset) => {
       if (asset.status !== 'ready') {
-        setError('该 BGM 还在分析中，等 ready 再选')
+        setError('该 BGM 还在分析中，等就绪后再选')
         return
       }
       setError(null)
@@ -119,7 +119,7 @@ export function BgmPickerDialog({
         onClick={(e) => e.stopPropagation()}
       >
         <header className="flex items-center justify-between border-b border-border px-4 py-3">
-          <h3 className="text-sm font-semibold">选择 / 上传 BGM</h3>
+          <h3 className="text-sm font-semibold">选 / 上传背景音乐</h3>
           <button
             onClick={onClose}
             className="rounded text-muted-foreground hover:text-foreground"
@@ -156,7 +156,7 @@ export function BgmPickerDialog({
                 uploading && 'cursor-not-allowed opacity-60',
               )}
             >
-              {uploading ? '上传中…' : '上传新 BGM（MP3/WAV ≤ 20MB）'}
+              {uploading ? '上传中…' : '上传新曲（MP3/WAV ≤ 20MB）'}
             </button>
             <button
               onClick={() => void refresh()}
@@ -170,7 +170,7 @@ export function BgmPickerDialog({
           <div className="max-h-[50vh] space-y-1.5 overflow-y-auto">
             {assets.length === 0 && !loading && (
               <p className="rounded-md border border-dashed border-border bg-background/30 px-3 py-6 text-center text-xs text-muted-foreground">
-                项目暂无 BGM 资产——先上传一首
+                项目里还没有背景音乐——先上传一首
               </p>
             )}
             {assets.map((a) => (

@@ -40,6 +40,9 @@ from ...schemas import (
     Utterance,
     VideoUnderstanding,
     VideoType,
+    role_is_closing,
+    role_is_opening,
+    role_is_peak,
 )
 
 log = logging.getLogger("seecript.agent.decompose")
@@ -116,31 +119,47 @@ _UNDERSTAND_SYSTEM = (
     "你是短视频内容分析师。看一组按时间排序的关键帧（配可能为空的口播），"
     "请对整支视频做语义画像。\n"
     "返回 JSON：{"
-    "\"archetype\": str(≤20字, 一句话定性这视频的原型；例：『艺术展宣传』『带货种草』『城市Vlog』『信息可视化解释』), "
+    "\"archetype\": str(≤20字, 一句话定性这视频的原型；例：『艺术展宣传』『带货种草』『城市Vlog』『信息可视化解释』『教程演示』『盘点合集』), "
     "\"narrative_summary\": str(≤80字, 一段话讲清整支视频在说什么、怎么说), "
-    "\"suggested_segments\": int(3-6, 你建议把视频切成几个叙事段落), "
+    "\"structural_pattern\": one of [dramatic/stepwise/listicle/atmospheric/info_dense/vlog]（"
+    "dramatic 戏剧弧（钩子→发展→高潮→收尾）；"
+    "stepwise 步骤教程（intro→step_1→step_2→…→recap）；"
+    "listicle 盘点合集（hook→item_1→item_2→…→closer）；"
+    "atmospheric 氛围/纪录有峰值（establish→flow→peak→resolve）；"
+    "info_dense 信息密集（title_card→info_block→info_block→payoff）；"
+    "vlog 日常 Vlog 无明确高潮（intro_scene→daily_1→daily_2→…→wrap_up）——"
+    "如果整支视频情绪/视觉始终平稳没有明显爆点，宁可选 vlog 也别硬塞 climax/peak"
+    "), "
+    "\"tempo\": one of [slow/medium/fast/peak/deceleration]，可选, "
+    "\"estimated_segments\": int(2-8, 你估计该切成几段；listicle 上限 8 其它一般 3-6), "
     "\"tone\": str(≤15字, 基调；例：『冷静克制』『高燃热血』『诙谐自嘲』『庄重正式』)"
     "}。\n"
-    "注意：不要套用固定模板。视频拍什么样就说什么样——艺术展就是艺术展，不要硬说『钩子→主体→引导』。"
+    "注意：先判 structural_pattern——按视频实际叙事方式选，别套 dramatic 模板。"
+    "教程类一定是 stepwise，盘点类一定是 listicle，"
+    "明显有情绪/视觉爆点的氛围片是 atmospheric，没有爆点的日常 Vlog 落 vlog，"
+    "信息可视化/纯数据是 info_dense，常规带货/故事广告才是 dramatic。"
 )
 
 
 _SHOT_ROLE_SYSTEM = (
-    "你是短视频结构分析师。给定视频画像和按时间排序的镜头列表，"
+    "你是短视频结构分析师。给定视频画像（含 structural_pattern）和按时间排序的镜头列表，"
     "为**每个镜头**标注它在叙事中的角色和主题。\n\n"
-    "角色（role）只能是以下 4 种之一：\n"
-    "- opening: 开场（吸引注意/奠定基调）\n"
-    "- development: 发展铺陈（信息展开/内容主体）\n"
-    "- climax: 高潮（情绪/视觉/冲突顶点）\n"
-    "- closing: 收尾（余韵/引导/落版）\n\n"
+    "角色（role）必须严格按 structural_pattern 来选：\n"
+    "- dramatic：opening / development / climax / closing\n"
+    "- stepwise：intro / step_1 / step_2 / step_3 / ... / recap（不超过 step_8）\n"
+    "- listicle：hook / item_1 / item_2 / ... / closer（不超过 item_8）\n"
+    "- atmospheric：establish / flow / peak / resolve\n"
+    "- info_dense：title_card / info_block / payoff\n"
+    "- vlog：intro_scene / daily_1 / daily_2 / ... / wrap_up（不超过 daily_8）\n\n"
     "硬约束：\n"
-    "1. 第一个镜头必须是 opening\n"
-    "2. 最后一个镜头必须是 closing\n"
-    "3. 中间镜头不能是 opening 或 closing\n"
-    "4. 整支视频最多 1 个镜头标 climax（也可以没有）\n"
-    "5. 相邻同 role 镜头会被合并为一个段落——所以最终段落数 ≤ 镜头数\n\n"
+    "1. 第一个镜头必须是开场类（dramatic→opening；stepwise→intro；listicle→hook；atmospheric→establish；info_dense→title_card；vlog→intro_scene）\n"
+    "2. 最后一个镜头必须是收尾类（dramatic→closing；stepwise→recap；listicle→closer；atmospheric→resolve；info_dense→payoff；vlog→wrap_up）\n"
+    "3. 中间镜头不能是开场/收尾类\n"
+    "4. dramatic/atmospheric 整支视频最多 1 个峰值类镜头（climax/peak），其余模式无峰值类（vlog 显式无峰值——不允许出 climax/peak）\n"
+    "5. stepwise 的 step_N / listicle 的 item_N / vlog 的 daily_N 必须按 1/2/3… 顺序递增，N 不能跳号\n"
+    "6. 相邻同 role 镜头会被合并为一个段落——所以最终段落数 ≤ 镜头数\n\n"
     "theme: 中文短标签（≤10 字），反映这个镜头真实在讲什么——"
-    "不要照抄 role，要从画面/口播内容里提炼。\n\n"
+    "不要照抄 role，要从画面/口播内容里提炼（例如 step_1 的 theme 可以是『准备食材』，daily_2 可以是『街角咖啡』）。\n\n"
     "返回 JSON：{\"shot_roles\": [{\"shot_index\": int, \"role\": str, \"theme\": str}]}\n"
     "数组长度必须等于镜头数，按 shot_index 升序排列。"
 )
@@ -166,6 +185,7 @@ async def decompose(
     reference_asset_ids: Optional[list[str]] = None,
     nl_prompt: Optional[str] = None,
     replace_slot: Optional[str] = None,
+    persist: bool = False,
 ) -> SampleManifest:
     """完整拆解流水线。每一步失败都降级为 mock 数据但不中断。
 
@@ -174,6 +194,9 @@ async def decompose(
     nl_prompt 是用户对本次拆解的自由文本指引（『更看重开场』『压短结尾』之类），
     注入到视频理解 + 段落切分的 LLM user message 末尾。
     replace_slot 给版本槽满时用——告诉 manifest_store.create_version 替换哪个旧槽。
+    persist (stage-15)：False（默认）= 草稿模式，跑完 SSE done 直接推 manifest 给前端 zustand，
+        不写盘；用户要保存时再走 POST /sample/{id}/manifest/save。
+        True = 老行为，跑完直接 create_version 入版本槽。
     """
 
     def push(step: str, percent: float, payload: dict | None = None) -> None:
@@ -221,11 +244,24 @@ async def decompose(
         audio = audio_analysis.analyze_audio("")
     rhythm = RhythmCurve(
         times=audio.times,
-        cut_density=[1.0 if i % 2 == 0 else 0.6 for i in range(len(audio.times))],
+        cut_density=[],  # R1 改版后弃用,前端不再消费
         bgm_energy=audio.rms_energy,
-        tempo_bpm=audio.tempo_bpm,
+        tempo_bpm=None,  # R1 改版后弃用,前端不再消费
     )
     total_duration = audio.duration_seconds or (raw_shots[-1].end if raw_shots else 30.0)
+
+    # ---- 2.5 LLM 音频理解（v3 新增）----
+    # 把样例视频音轨抽到 samples/<sid>/audio.mp3，借 /samples 静态挂载给 doubao 拉，
+    # 再走 analyze_bgm_with_llm 出 energy_shape / climaxes / calm_segments / overall_advice。
+    # 任何异常都降级为 None（前端兜底 BPM + 单点 peak），不阻断后续流水线。
+    audio_understanding = await _llm_audio_understand(
+        sample_id=sample_id,
+        video_path=video_path,
+        total_duration=total_duration,
+        title=title,
+        nl_prompt=nl_prompt,
+        push=push,
+    )
 
     # ---- 3. 人声 VAD + 条件 ASR ----
     push("voice_detect", 36, {"note": "librosa 人声 VAD 探测"})
@@ -280,15 +316,25 @@ async def decompose(
     push("video_understand", 84, {
         "archetype": understanding.archetype,
         "tone": understanding.tone,
-        "suggested_segments": understanding.suggested_segments,
+        "structural_pattern": understanding.structural_pattern,
+        "estimated_segments": understanding.estimated_segments,
     })
 
     # ---- 6. LLM 角色+主题切段（v2 重构）----
-    push("llm_section", 93, {"note": f"LLM 段落分析 · 基于画像切 {understanding.suggested_segments} 段"})
+    push("llm_section", 93, {"note": f"LLM 段落分析 · 基于画像（{understanding.structural_pattern}）切 {understanding.estimated_segments} 段"})
     sections = await _segment_with_roles(
         shots, total_duration, understanding, has_voice,
         nl_prompt=nl_prompt,
     )
+
+    # ---- 6b. R1：基于段落结构计算情绪走势 + BGM 契合度 ----
+    mood_curve = _build_mood_curve(rhythm.times, sections)
+    fit_score, fit_note = _bgm_fit(rhythm.bgm_energy, mood_curve)
+    rhythm = rhythm.model_copy(update={
+        "mood_curve": mood_curve,
+        "bgm_fit_score": fit_score,
+        "bgm_fit_note": fit_note,
+    })
 
     # ---- 7. 打包 PackagingProfile（video_type 仍驱动包装风格）----
     subtitle_styles = [s for sh in shots for s in (sh.tags or []) if isinstance(s, str) and "字幕" in s]
@@ -320,13 +366,13 @@ async def decompose(
             Utterance(text=u.text, start=u.start, end=u.end) for u in asr_utterances
         ],
         climax_position=_compute_climax(sections, rhythm, total_duration),
+        audio_understanding=audio_understanding,
     )
 
-    # 拆解结果写入一个**新版本槽**——不再有 draft / publish 概念，写完即可被 Compose 消费。
-    # replace_slot：当 sample 已有 MAX_VERSIONS 个版本时，路由层让用户选了要替换哪个；否则 None。
-    # 两条上传链路（决定 video_url 怎么写）:
-    #   A) /api/decompose/upload → var/uploads/decompose/<user-xxx>/ → video_url 指 /uploads/...
-    #   B) /api/library/system/upload → server/samples/<sys-xxx>/ → video_url 保持 /samples/...
+    # stage-15: persist=False 是默认草稿模式——SSE done 把 manifest 推到前端 zustand,
+    # 用户在 Decompose 页点「保存到资产库」时才走 POST /sample/{id}/manifest/save 落槽。
+    # persist=True 走老行为(直接 create_version),供需要无人值守自动入库的内部场景使用。
+    # video_url 改写在两种模式下都做——草稿态前端要立即播放,URL 必须正确。
     new_slot_id: Optional[str] = None
     if video_path:
         vp = Path(str(video_path)).resolve()
@@ -334,15 +380,16 @@ async def decompose(
             manifest = manifest.model_copy(update={
                 "video_url": f"/uploads/decompose/{sample_id}/video.mp4",
             })
-        try:
-            new_slot_id = manifest_store.create_version(
-                sample_id, manifest, replace_slot=replace_slot, activate=True,
-            )
-        except manifest_store.SlotsFullError as exc:
-            # 不应该到这里——路由层应当在 kickoff 前就拦下让用户选；走到这里说明并发或调用方忘了传 replace_slot。
-            log.warning("[decompose] %s slots full at write time: %s", sample_id, exc)
-        except (FileNotFoundError, OSError, ValueError) as exc:
-            log.warning("[decompose] 写版本槽失败 %s: %s", sample_id, exc)
+        if persist:
+            try:
+                new_slot_id = manifest_store.create_version(
+                    sample_id, manifest, replace_slot=replace_slot, activate=True,
+                )
+            except manifest_store.SlotsFullError as exc:
+                # 不应该到这里——路由层应当在 kickoff 前就拦下让用户选；走到这里说明并发或调用方忘了传 replace_slot。
+                log.warning("[decompose] %s slots full at write time: %s", sample_id, exc)
+            except (FileNotFoundError, OSError, ValueError) as exc:
+                log.warning("[decompose] 写版本槽失败 %s: %s", sample_id, exc)
 
     if job_id:
         job_store.complete(job_id, payload={
@@ -352,6 +399,74 @@ async def decompose(
         })
 
     return manifest
+
+
+# ----------------------------- LLM 音频理解子例程 -----------------------------
+
+async def _llm_audio_understand(
+    *,
+    sample_id: str,
+    video_path: Optional[str | Path],
+    total_duration: float,
+    title: Optional[str],
+    nl_prompt: Optional[str],
+    push,
+):
+    """抽样例视频音轨为 mp3 → doubao 多模态音频理解 → 返回 BGMAnalysis 或 None。
+
+    任一环节失败都安静降级返 None：抽轨失败、配置缺失、LLM 异常都不能阻断主流水线，
+    前端在没有 audio_understanding 时回落到 librosa 的 BPM + 单点 peak。
+    """
+    from ..video import ffmpeg as ffmpeg_svc
+    from ..video.bgm_analysis import analyze_sample_audio_with_llm
+    from ...schemas import BGMAnalysis
+
+    push("audio_understand", 28, {"note": "音轨送多模态模型听整曲"})
+
+    if not video_path:
+        log.info("[decompose.audio_understand] 无 video_path，跳过 LLM 音频分析")
+        return None
+
+    audio_dst = _SAMPLES_ROOT / sample_id / "audio.mp3"
+    try:
+        audio_dst.parent.mkdir(parents=True, exist_ok=True)
+        ffmpeg_svc.extract_audio_mp3(video_path, audio_dst)
+    except Exception as exc:
+        log.warning("[decompose.audio_understand] 抽音轨失败 sample=%s: %s", sample_id, exc)
+        return None
+
+    public_file_url = f"/samples/{sample_id}/audio.mp3"
+    try:
+        result_dict = await analyze_sample_audio_with_llm(
+            file_url=public_file_url,
+            duration_seconds=total_duration,
+            sample_title=(title or sample_id),
+            nl_prompt=(nl_prompt or "").strip(),
+        )
+    except Exception as exc:  # noqa: BLE001
+        log.warning("[decompose.audio_understand] LLM 调用异常 sample=%s: %s", sample_id, exc)
+        return None
+
+    if not result_dict:
+        log.info("[decompose.audio_understand] LLM 未返回结果（mock/缺 key/失败），sample=%s", sample_id)
+        return None
+
+    try:
+        analysis = BGMAnalysis(**result_dict)
+    except Exception as exc:  # noqa: BLE001
+        log.warning("[decompose.audio_understand] BGMAnalysis 反序列化失败 sample=%s: %s", sample_id, exc)
+        return None
+
+    push("audio_understand", 32, {
+        "energy_shape": analysis.energy_shape,
+        "climaxes": len(analysis.climaxes or []),
+        "calm_segments": len(analysis.calm_segments or []),
+    })
+    log.info(
+        "[decompose.audio_understand] ok sample=%s shape=%s climax=%d calm=%d",
+        sample_id, analysis.energy_shape, len(analysis.climaxes or []), len(analysis.calm_segments or []),
+    )
+    return analysis
 
 
 # ----------------------------- ASR 子例程 ------------------------------------
@@ -582,16 +697,24 @@ async def _video_understand(
             archetype = str(data.get("archetype", "") or "").strip()[:40]
             narrative = str(data.get("narrative_summary", "") or "").strip()[:200]
             try:
-                seg_count = int(data.get("suggested_segments", 4))
+                seg_count = int(data.get("estimated_segments", data.get("suggested_segments", 4)))
             except (TypeError, ValueError):
                 seg_count = 4
-            seg_count = max(3, min(6, seg_count))
+            seg_count = max(2, min(8, seg_count))
             tone = str(data.get("tone", "") or "").strip()[:30]
+            pattern_raw = str(data.get("structural_pattern", "") or "").strip().lower()
+            valid_patterns = {"dramatic", "stepwise", "listicle", "atmospheric", "info_dense", "vlog"}
+            pattern = pattern_raw if pattern_raw in valid_patterns else "dramatic"
+            tempo_raw = str(data.get("tempo", "") or "").strip().lower()
+            valid_tempos = {"slow", "medium", "fast", "peak", "deceleration"}
+            tempo = tempo_raw if tempo_raw in valid_tempos else None
             if archetype and narrative:
                 return VideoUnderstanding(
                     archetype=archetype,
                     narrative_summary=narrative,
-                    suggested_segments=seg_count,
+                    structural_pattern=pattern,  # type: ignore[arg-type]
+                    tempo=tempo,  # type: ignore[arg-type]
+                    estimated_segments=seg_count,
                     tone=tone or "通用",
                 )
     except Exception as exc:
@@ -607,12 +730,32 @@ async def _video_understand(
     return VideoUnderstanding(
         archetype=arche,
         narrative_summary=narr,
-        suggested_segments=seg,
+        structural_pattern="dramatic",
+        estimated_segments=seg,
         tone=tone,
     )
 
 
 # ----------------------------- 段落分析子例程 ---------------------------------
+
+def _default_role_for(pattern: str, role_class: str, *, ordinal: int = 1) -> tuple[str, str]:
+    """按 pattern 返回某一角色类的默认 role 字符串 + 中文 theme。
+
+    `ordinal` 仅 stepwise/listicle 的 main 类用——step_N / item_N 顺序编号；其他模式忽略。
+
+    Stage-16 起 _assign_shot_roles / _fallback_shot_roles 走这条路而不是硬编码 dramatic。
+    """
+    table: dict[str, dict[str, tuple[str, str]]] = {
+        "dramatic":    {"opening": ("opening", "开场"), "main": ("development", "铺陈"), "peak": ("climax", "高潮"), "closing": ("closing", "收尾")},
+        "stepwise":    {"opening": ("intro", "引入"),    "main": (f"step_{ordinal}", f"步骤 {ordinal}"), "peak": ("step_1", "步骤"), "closing": ("recap", "总结")},
+        "listicle":    {"opening": ("hook", "钩子"),     "main": (f"item_{ordinal}", f"第 {ordinal} 项"), "peak": ("item_1", "重点项"), "closing": ("closer", "收束")},
+        "atmospheric": {"opening": ("establish", "起势"), "main": ("flow", "流转"),       "peak": ("peak", "顶点"),   "closing": ("resolve", "余韵")},
+        "info_dense":  {"opening": ("title_card", "标题"), "main": ("info_block", "信息块"), "peak": ("payoff", "落版"), "closing": ("payoff", "落版")},
+        "vlog":        {"opening": ("intro_scene", "开场"), "main": (f"daily_{ordinal}", f"日常 {ordinal}"), "peak": (f"daily_{ordinal}", "日常"), "closing": ("wrap_up", "收尾")},
+    }
+    return table.get(pattern, table["dramatic"]).get(role_class, table["dramatic"]["main"])
+
+
 
 async def _segment_with_roles(
     shots: list[Shot],
@@ -647,10 +790,12 @@ async def _segment_with_roles(
         f"视频原型：{understanding.archetype}\n"
         f"叙事概览：{understanding.narrative_summary}\n"
         f"基调：{understanding.tone}\n"
+        f"structural_pattern：{understanding.structural_pattern}\n"
+        f"tempo：{understanding.tempo or '(未指定)'}\n"
         f"镜头总数：{len(shots)}\n"
         f"总时长：{total:.1f} 秒\n"
         f"{voice_hint}\n\n"
-        "镜头列表（请为每一个镜头给出 role + theme）：\n" + "\n".join(payload_lines)
+        "镜头列表（请为每一个镜头给出 role + theme，role 必须符合上面声明的 structural_pattern）：\n" + "\n".join(payload_lines)
     )
 
     # 长视频降图：seed-2.0-lite 单请求图像过多会被截断；镜头数 > 上限时均匀采样代表帧，
@@ -678,13 +823,15 @@ async def _segment_with_roles(
         # 注入位置在硬约束之后，避免覆盖"首=opening 尾=closing"的结构稳定性。
         user += f"\n\n【用户额外要求】{nl_prompt.strip()[:300]}"
 
+    pattern = understanding.structural_pattern
+
     try:
         text = await llm.complete_multimodal(_SHOT_ROLE_SYSTEM, user, images)
         data = _extract_json(text)
         raw = data.get("shot_roles", []) if isinstance(data, dict) else []
-        allowed_roles: set[SectionRole] = {"opening", "development", "climax", "closing"}
 
         # 用 index → (role, theme) 映射，方便按镜头顺序回填
+        # Stage-16 起 role 是自由字符串（要支持 step_N/item_N），仅做长度/空校验
         roles_by_index: dict[int, tuple[SectionRole, str]] = {}
         for item in raw:
             if not isinstance(item, dict):
@@ -693,62 +840,76 @@ async def _segment_with_roles(
                 idx = int(item.get("shot_index"))
             except (TypeError, ValueError):
                 continue
-            role = item.get("role", "")
-            if role not in allowed_roles:
+            role = str(item.get("role", "") or "").strip()
+            if not role or len(role) > 30:
                 continue
             theme = str(item.get("theme", "") or "").strip()[:20]
             roles_by_index[idx] = (role, theme)
 
         if roles_by_index:
-            shot_roles = _assign_shot_roles(shots, roles_by_index)
+            shot_roles = _assign_shot_roles(shots, roles_by_index, pattern)
             return _merge_shot_roles_into_sections(shots, shot_roles)
     except Exception as exc:
         log.warning("segment_with_roles failed, using shot-first fallback: %s", exc)
 
-    return _fallback_shot_roles(shots)
+    return _fallback_shot_roles(shots, pattern)
 
 
 def _assign_shot_roles(
     shots: list[Shot],
     roles_by_index: dict[int, tuple[SectionRole, str]],
+    pattern: str = "dramatic",
 ) -> list[tuple[SectionRole, str]]:
     """把 LLM 给的 {shot_index: (role, theme)} 映射成 [(role, theme)]（按 shots 顺序）。
 
-    缺漏的镜头按位置兜底：第一个镜头 opening、最后一个 closing、中间 development。
-    然后做强约束修正：首=opening、尾=closing、中间至多 1 climax，多余 climax 降为 development。
+    Stage-16 起 pattern-aware：用 STRUCTURAL_PATTERNS 判定首=开场类、尾=收尾类、
+    中间不得为开场/收尾类、峰值类至多 1 个；越界镜头降级为该 pattern 的 main 角色。
     """
     out: list[tuple[SectionRole, str]] = []
     n = len(shots)
+    open_role, open_theme = _default_role_for(pattern, "opening")
+    close_role, close_theme = _default_role_for(pattern, "closing")
+
+    # stepwise/listicle 的 main 是 step_N/item_N 顺序编号——用 step_counter 给中间镜头编号
+    step_counter = 0
     for i, sh in enumerate(shots):
         if sh.index in roles_by_index:
             role, theme = roles_by_index[sh.index]
         else:
             if i == 0:
-                role, theme = "opening", "开场"
+                role, theme = open_role, open_theme
             elif i == n - 1:
-                role, theme = "closing", "收尾"
+                role, theme = close_role, close_theme
             else:
-                role, theme = "development", "铺陈"
+                step_counter += 1
+                role, theme = _default_role_for(pattern, "main", ordinal=step_counter)
         out.append((role, theme))
 
-    # 强约束修正
+    # 强约束修正：首 = 开场类、尾 = 收尾类
     if n >= 1:
         first_role, first_theme = out[0]
-        out[0] = ("opening", first_theme or "开场")
+        if not role_is_opening(first_role, pattern):
+            out[0] = (open_role, first_theme or open_theme)
     if n >= 2:
         last_role, last_theme = out[-1]
-        out[-1] = ("closing", last_theme or "收尾")
+        if not role_is_closing(last_role, pattern):
+            out[-1] = (close_role, last_theme or close_theme)
 
-    # 中间镜头：不允许 opening/closing；至多 1 个 climax
-    climax_seen = 0
+    # 中间镜头：不允许开场/收尾类；峰值类至多 1 个
+    peak_seen = 0
+    mid_step = 0
     for i in range(1, n - 1):
         role, theme = out[i]
-        if role in ("opening", "closing"):
-            out[i] = ("development", theme or "铺陈")
-        elif role == "climax":
-            climax_seen += 1
-            if climax_seen > 1:
-                out[i] = ("development", theme or "铺陈")
+        if role_is_opening(role, pattern) or role_is_closing(role, pattern):
+            mid_step += 1
+            new_role, new_theme = _default_role_for(pattern, "main", ordinal=mid_step)
+            out[i] = (new_role, theme or new_theme)
+        elif role_is_peak(role, pattern):
+            peak_seen += 1
+            if peak_seen > 1:
+                mid_step += 1
+                new_role, new_theme = _default_role_for(pattern, "main", ordinal=mid_step)
+                out[i] = (new_role, theme or new_theme)
 
     return out
 
@@ -804,46 +965,59 @@ def _merge_shot_roles_into_sections(
 
 
 def _default_theme(role: SectionRole) -> str:
+    """老调用方兼容：根据 dramatic 角色名给中文短标签。
+
+    Stage-16 起新代码应用 _default_role_for(pattern, ...) 取 (role, theme) 对。
+    """
     return {
         "opening": "开场",
         "development": "铺陈",
         "climax": "高潮",
         "closing": "收尾",
-    }[role]
+    }.get(role, role)
 
 
-def _fallback_shot_roles(shots: list[Shot]) -> list[Section]:
-    """无 LLM 时的 shot-first 兜底：第一镜头 opening、最后 closing、中间 development。
+def _fallback_shot_roles(shots: list[Shot], pattern: str = "dramatic") -> list[Section]:
+    """无 LLM 时的 shot-first 兜底，按 pattern 给首/尾/中间角色。
 
-    镜头总数 ≥ 4 时，挑中间偏后的镜头当 climax（粗略反映"高潮在后半段"的经验）。
-    没有 LLM 也保证段落总时长 = 镜头总时长，绝不虚构超出视频长度。
+    镜头总数 ≥ 4 且 pattern 有峰值类（dramatic/atmospheric）时，挑中间偏后的镜头当峰值；
+    其他模式（stepwise/listicle/info_dense）中间镜头按 main 类编号铺开。
     """
     n = len(shots)
     if n == 0:
         return []
+    open_role, open_theme = _default_role_for(pattern, "opening")
+    close_role, close_theme = _default_role_for(pattern, "closing")
     if n == 1:
         sh = shots[0]
         return [Section(
-            role="opening", theme="开场", start=sh.start, end=sh.end,
+            role=open_role, theme=open_theme, start=sh.start, end=sh.end,
             summary="单镜头视频", shot_indices=[sh.index],
         )]
 
-    shot_roles: list[tuple[SectionRole, str]] = []
-    climax_idx: Optional[int] = None
-    if n >= 4:
-        climax_idx = int(n * 0.6)
-        if climax_idx <= 0 or climax_idx >= n - 1:
-            climax_idx = None
+    # 仅 dramatic/atmospheric 有峰值类
+    peak_role, peak_theme = _default_role_for(pattern, "peak")
+    has_peak = pattern in ("dramatic", "atmospheric")
 
+    shot_roles: list[tuple[SectionRole, str]] = []
+    peak_idx: Optional[int] = None
+    if has_peak and n >= 4:
+        peak_idx = int(n * 0.6)
+        if peak_idx <= 0 or peak_idx >= n - 1:
+            peak_idx = None
+
+    step_counter = 0
     for i in range(n):
         if i == 0:
-            shot_roles.append(("opening", "开场"))
+            shot_roles.append((open_role, open_theme))
         elif i == n - 1:
-            shot_roles.append(("closing", "收尾"))
-        elif i == climax_idx:
-            shot_roles.append(("climax", "高潮"))
+            shot_roles.append((close_role, close_theme))
+        elif i == peak_idx:
+            shot_roles.append((peak_role, peak_theme))
         else:
-            shot_roles.append(("development", "铺陈"))
+            step_counter += 1
+            r, t = _default_role_for(pattern, "main", ordinal=step_counter)
+            shot_roles.append((r, t))
 
     return _merge_shot_roles_into_sections(shots, shot_roles)
 
@@ -858,17 +1032,19 @@ def _compute_climax(
     """估算高潮时间点（秒），用于前端节奏图上的 ReferenceLine。
 
     优先级：
-    1. role=climax 段的中点
+    1. role=climax/peak 段的中点
     2. BGM 能量曲线峰值
     3. 总时长 60% 处（短视频经典高潮位）
+    4. pattern 无峰值类（stepwise/listicle/info_dense/vlog）→ 返回 None,前端不画 ReferenceLine
     """
     if total_duration <= 0:
         return None
 
     for sec in sections:
-        if sec.role == "climax":
+        if sec.role in ("climax", "peak"):
             return float((sec.start + sec.end) / 2)
 
+    # 没有显式峰值段——若 BGM 有能量峰值,沿用兜底（旧 dramatic plan 兼容）
     if rhythm.bgm_energy and rhythm.times:
         n = min(len(rhythm.bgm_energy), len(rhythm.times))
         if n > 0:
@@ -876,3 +1052,120 @@ def _compute_climax(
             return float(rhythm.times[peak_idx])
 
     return float(total_duration * 0.6)
+
+
+# ----------------------------- 情绪走势曲线 + BGM 契合度（R1） ---------------------
+
+# 角色 → 情绪基准（0..1）。无峰值类模式（stepwise/listicle/info_dense/vlog）整片只在 0.3-0.5 间起伏。
+_ROLE_MOOD_BASE: dict[str, float] = {
+    # dramatic
+    "opening": 0.35, "development": 0.40, "climax": 0.85, "closing": 0.30,
+    # stepwise
+    "intro": 0.35, "recap": 0.30,
+    # listicle
+    "hook": 0.40, "closer": 0.30,
+    # atmospheric
+    "establish": 0.35, "flow": 0.40, "peak": 0.80, "resolve": 0.30,
+    # info_dense
+    "title_card": 0.40, "info_block": 0.40, "payoff": 0.50,
+    # vlog
+    "intro_scene": 0.35, "wrap_up": 0.30,
+}
+
+
+def _role_mood_value(role: str) -> float:
+    """role → mood 基准。step_N / item_N / daily_N 走 main 类默认。"""
+    if role in _ROLE_MOOD_BASE:
+        return _ROLE_MOOD_BASE[role]
+    if role.startswith("step_"):
+        return 0.40
+    if role.startswith("item_"):
+        return 0.42
+    if role.startswith("daily_"):
+        return 0.45
+    return 0.40  # 未知 role 当 main 类
+
+
+def _smooth(values: list[float], window: int) -> list[float]:
+    """简单滑动平均（无 numpy 依赖）。window<2 时返回原值。"""
+    if window < 2 or len(values) < 2:
+        return list(values)
+    n = len(values)
+    out: list[float] = []
+    half = window // 2
+    for i in range(n):
+        lo = max(0, i - half)
+        hi = min(n, i + half + 1)
+        seg = values[lo:hi]
+        out.append(sum(seg) / len(seg))
+    return out
+
+
+def _pearson(xs: list[float], ys: list[float]) -> Optional[float]:
+    """两个等长序列的 Pearson 相关系数。退化情况返回 None。"""
+    n = len(xs)
+    if n < 3 or n != len(ys):
+        return None
+    mx = sum(xs) / n
+    my = sum(ys) / n
+    num = sum((x - mx) * (y - my) for x, y in zip(xs, ys))
+    dx = sum((x - mx) ** 2 for x in xs) ** 0.5
+    dy = sum((y - my) ** 2 for y in ys) ** 0.5
+    if dx == 0 or dy == 0:
+        return None
+    return num / (dx * dy)
+
+
+def _build_mood_curve(times: list[float], sections: list[Section]) -> list[float]:
+    """按段落基准 + 滑动平均生成情绪走势曲线。
+
+    - 每个采样时间点落到包含它的 section（按 start ≤ t < end），取该 role 的 mood_base
+    - 全曲线滑动平均一遍（窗口 ~10% 采样数,至少 3）做低频平滑——避免段落跳变出现台阶
+    """
+    if not times or not sections:
+        return []
+    sorted_sec = sorted(sections, key=lambda s: s.start)
+
+    def _mood_at(t: float) -> float:
+        for sec in sorted_sec:
+            if sec.start <= t < sec.end:
+                return _role_mood_value(sec.role)
+        # 边界：超出最后一段（浮点尾零）落到最后一段 mood
+        return _role_mood_value(sorted_sec[-1].role)
+
+    raw = [_mood_at(t) for t in times]
+    window = max(3, len(times) // 10)
+    return [round(v, 3) for v in _smooth(raw, window)]
+
+
+def _bgm_fit(bgm_energy: list[float], mood_curve: list[float]) -> tuple[Optional[float], Optional[str]]:
+    """计算 BGM 与 mood_curve 的契合度评分 + 一句话评注。
+
+    Pearson 相关系数 → 0..1 评分（负相关也映到 0..1,但 note 会指出"反向"）。
+    """
+    if not bgm_energy or not mood_curve:
+        return None, "本样例没有可分析的 BGM 信号"
+    n = min(len(bgm_energy), len(mood_curve))
+    bgm = bgm_energy[:n]
+    mood = mood_curve[:n]
+    # bgm 归一化（mood 已是 0..1）
+    bmin, bmax = min(bgm), max(bgm)
+    span = bmax - bmin
+    if span < 1e-6:
+        return 0.5, "BGM 能量整体平稳,与视频结构高低无明显关联"
+    bgm_norm = [(b - bmin) / span for b in bgm]
+    corr = _pearson(bgm_norm, mood)
+    if corr is None:
+        return None, "BGM 数据样本不足以判断契合度"
+    score = round(max(0.0, min(1.0, (corr + 1.0) / 2.0)), 3)
+    if corr >= 0.55:
+        note = "BGM 起伏与视频结构同步,峰值段也跟着抬升,情绪铺垫到位"
+    elif corr >= 0.2:
+        note = "BGM 整体起伏方向与结构一致,但局部细节匹配一般"
+    elif corr > -0.2:
+        note = "BGM 能量整体平稳,与视频结构高低无明显关联"
+    else:
+        note = "BGM 能量走向与视频结构相反,情绪铺垫可能错位"
+    return score, note
+
+

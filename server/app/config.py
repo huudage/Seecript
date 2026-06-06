@@ -46,6 +46,10 @@ class Settings(BaseSettings):
     # Seedance 2.0 fast：480p/720p、4-15s、低成本低延迟，适合 demo 高频迭代。
     # 标准版 doubao-seedance-2-0-260128 支持 1080p 但单价 + 排队耗时都更高。
     ark_t2v_model: str = Field(default="doubao-seedance-2-0-fast-260128")
+    # Seedance 输出分辨率显式锁死 720p；不再依赖『模型默认』隐式行为——
+    # fast 模型默认 720p，但若未来切到标准模型，缺省会上 1080p（贵 ~3×、排队更长）。
+    # 720p 同时被 fast / 标准模型识别，把『靠默认』升级为『显式协定』。
+    ark_t2v_resolution: Literal["480p", "720p", "1080p"] = Field(default="720p")
     # Seedance 与 LLM 通常用同一个方舟账号；如果走独立计费 Key 单独配 ARK_T2V_API_KEY，
     # 留空时 t2v_api_key 属性自动回落到 ark_api_key。
     ark_t2v_api_key: str = Field(default="")
@@ -98,6 +102,9 @@ class Settings(BaseSettings):
     t2v_default_ratio: str = Field(default="16:9")
     t2v_generate_audio: bool = Field(default=False)
     t2v_watermark: bool = Field(default=False)
+    # Seedance 输出分辨率显式锁定。fast 模型支持 480p/720p，标准模型支持 480p/720p/1080p。
+    # 不送 resolution 时方舟按模型默认（fast=720p）走；显式传以避免未来切模型时静默升档。
+    ark_t2v_resolution: str = Field(default="720p")
 
     # === TTS（口播合成，火山方舟 TTS HTTP）===
     # 默认 mock：无 Key 时合成单调正弦波 wav（足够 demo 链路跑通，文案能写进音频流）；
@@ -113,6 +120,17 @@ class Settings(BaseSettings):
     tts_default_voice: str = Field(default="zh_female_qingxin")
     tts_sample_rate: int = Field(default=24000, ge=8000, le=48000)
     tts_timeout_seconds: int = Field(default=30, ge=5, le=120)
+
+    # === Seedream（文生图，doubao-seedream 系列）===
+    # 默认 mock：返回 placehold.co 占位 PNG，便于本地链路跑通；
+    # 切到 doubao_ark 后调豆包方舟 /images/generations。
+    # Key 优先级：ARK_SEEDREAM_API_KEY > ARK_T2V_API_KEY > ARK_API_KEY，
+    # 让 Seedream 可以用独立计费 Key（与 Seedance / LLM 解耦）。
+    seedream_provider: Literal["mock", "doubao_ark"] = Field(default="mock")
+    ark_seedream_model: str = Field(default="doubao-seedream-5-0-260128")
+    ark_seedream_api_key: str = Field(default="")
+    seedream_timeout_seconds: int = Field(default=60, ge=5, le=300)
+    seedream_mock_latency_seconds: float = Field(default=1.0, ge=0.0, le=30.0)
 
     # === CORS ===
     cors_origins: str = Field(default="*")
@@ -150,6 +168,11 @@ class Settings(BaseSettings):
     def t2v_api_key(self) -> str:
         """Effective Seedance Key — 独立 ARK_T2V_API_KEY 优先，未配置回落到 ARK_API_KEY。"""
         return self.ark_t2v_api_key or self.ark_api_key
+
+    @property
+    def seedream_api_key(self) -> str:
+        """Effective Seedream Key — ARK_SEEDREAM_API_KEY 优先，否则回落 t2v_api_key 链路。"""
+        return self.ark_seedream_api_key or self.t2v_api_key
 
     @property
     def is_production(self) -> bool:

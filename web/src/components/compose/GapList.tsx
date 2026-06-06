@@ -35,7 +35,7 @@ export function GapList({
   if (gaps.length === 0) {
     return (
       <div className="rounded-md border border-dashed border-border bg-background/30 p-6 text-center text-xs text-muted-foreground">
-        还没有识别出缺口；点上方「智能分析」开始。
+        还没找出需要补的素材。点上方「智能分析」开始。
       </div>
     )
   }
@@ -69,7 +69,7 @@ export function GapList({
                 {filled && (
                   <span
                     className="ml-auto text-emerald-500"
-                    title="已采纳补全"
+                    title="已采纳"
                     aria-label="已采纳"
                   >
                     ●
@@ -79,7 +79,7 @@ export function GapList({
               <p className="mt-1 line-clamp-2 text-xs text-foreground">{gap.requirement}</p>
               {gap.matched_material_id && (
                 <p className="mt-0.5 text-[10px] text-muted-foreground">
-                  命中 <span className="font-mono">{gap.matched_material_id}</span>
+                  已配上 <span className="font-mono">{gap.matched_material_id}</span>
                 </p>
               )}
             </button>

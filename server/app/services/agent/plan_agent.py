@@ -26,36 +26,47 @@ from ...schemas import (
     SampleManifest,
     Section,
     SectionRole,
+    STRUCTURAL_PATTERNS,
+    allowed_roles_for,
+    role_is_closing,
+    role_is_main,
+    role_is_opening,
+    role_is_peak,
 )
 
 log = logging.getLogger("seecript.agent.plan")
 
 
 _ADAPT_SYSTEM = (
-    "你是短视频结构改编师。给定 1-2 个参考样例视频的真实段落结构、视频画像，以及"
-    "创作者的主题、视频目的与创作设置，请把这些样例的『骨架』改编为本次新视频的段落结构。\n\n"
+    "你是短视频结构改编师。给定 1-2 个参考样例视频的真实段落结构、视频画像（含 structural_pattern 与 tempo），"
+    "以及创作者的主题、视频目的与创作设置，请把这些样例的『骨架』改编为本次新视频的段落结构。\n\n"
     "若给了 2 个参考样例，请将它们作为对等的灵感来源，不必偏向某一份；可借用任一份的"
-    "节奏、卡点与段落创意，但不要把两份段落简单拼接（最终段数仍受 3-7 段硬约束）。\n\n"
+    "节奏、卡点与段落创意，但不要把两份段落简单拼接（最终段数仍受硬约束）。\n\n"
     "允许：增加段落、删除冗余段落、合并相邻段落、调整顺序。\n\n"
-    "硬约束：\n"
-    "1. 第一段 role 必须是 opening\n"
-    "2. 最后一段 role 必须是 closing\n"
-    "3. 整支视频最多 1 段 climax（可以没有）\n"
-    "4. 中间段都是 development（不允许中间出现 opening/closing）\n"
-    "5. 总段数 3-7\n"
+    "硬约束（按本次结构模式 pattern 决定）：\n"
+    "1. 第一段 role 必须属于 pattern 的开场类\n"
+    "2. 最后一段 role 必须属于 pattern 的收尾类\n"
+    "3. 整支视频最多 1 段峰值类（无峰值类的模式则不出现）\n"
+    "4. 中间段都不能是开场/收尾类\n"
+    "5. 段数：listicle 模式 2-8 段，其他 3-7 段\n"
     "6. 所有段 duration_seconds 之和必须接近『目标总时长』（±20% 以内）\n\n"
     "每段返回字段：\n"
-    "- role: opening | development | climax | closing\n"
+    "- role: 必须在合法 role 列表内；step_N/item_N 形式的从 1 开始按顺序编号\n"
     "- theme: 中文短标签（≤8 字），紧贴创作者主题，不照抄样例\n"
     "- content_description: 内容说明（30-100 字）—— 告诉创作者画面该呈现什么、"
     "口播该说什么、为什么放在这个位置，紧扣 brief + video_goal；若给了关键词，"
-    "尽量自然融入；若给了 CTA，closing 段口播须体现\n"
-    "- duration_seconds: 本段时长（浮点秒）。opening/closing 各 3-5s，climax 5-10s，"
-    "development 4-8s；所有段之和贴近目标总时长\n"
+    "尽量自然融入；若给了 CTA，收尾段口播须体现。"
+    "**重要**：必须明确指出本段画面的『主体』（人物/物品/场景），"
+    "若有多个并列主体（如『青铜器、玉器、瓷器』）须显式列出，"
+    "下游会据此自动拆成多个分镜——一个主体 = 一个分镜\n"
+    "- adaptation_note: 改编理由（≤60 字）—— 说明本段相比样例做了什么调整（保留/合并/重排/新增），"
+    "以及为什么这样做更贴合创作者需求；可空字符串\n"
+    "- tempo: 节奏标签（slow/medium/fast/peak/deceleration 之一，可为 null）\n"
+    "- duration_seconds: 本段时长（浮点秒）。开场/收尾 3-5s，峰值 5-10s，主体 4-8s；所有段之和贴近目标总时长\n"
     "- source_section_indices: 改编自原样例池哪些段落下标（合并后的 flat 下标）；纯新增段为 []\n\n"
     "返回 JSON：{\"adapted_sections\": [{\"role\": str, \"theme\": str, "
-    "\"content_description\": str, \"duration_seconds\": number, "
-    "\"source_section_indices\": [int]}]}"
+    "\"content_description\": str, \"adaptation_note\": str, \"tempo\": str|null, "
+    "\"duration_seconds\": number, \"source_section_indices\": [int]}]}"
 )
 
 
@@ -72,6 +83,50 @@ _DEFAULT_DURATION: dict[SectionRole, float] = {
     "climax": 7.0,
     "closing": 4.0,
 }
+
+# Stage-16：按 role 的"类"给默认时长（开场/主体/峰值/收尾）；pattern-agnostic
+_DEFAULT_DURATION_BY_CLASS: dict[str, float] = {
+    "opening": 4.0,
+    "main": 6.0,
+    "peak": 7.0,
+    "closing": 4.0,
+}
+
+
+def _default_duration_for(role: str, pattern: str) -> float:
+    """按 role 在 pattern 中的类（opening/main/peak/closing）给默认时长。
+
+    用 schemas.role_is_* 系列判定 role 的类。step_N/item_N 都归 main 类。
+    """
+    if role_is_opening(role, pattern):
+        return _DEFAULT_DURATION_BY_CLASS["opening"]
+    if role_is_closing(role, pattern):
+        return _DEFAULT_DURATION_BY_CLASS["closing"]
+    if role_is_peak(role, pattern):
+        return _DEFAULT_DURATION_BY_CLASS["peak"]
+    return _DEFAULT_DURATION_BY_CLASS["main"]
+
+_PATTERN_DESCRIPTIONS: dict[str, str] = {
+    "dramatic": "戏剧四段式（起承转合）：opening→development→climax→closing；首=opening、末=closing、≤1 段 climax",
+    "stepwise": "线性步骤式（教程/操作）：intro→step_1→step_2→...→recap；首=intro、末=recap、无 climax 类",
+    "listicle": "并列盘点式（榜单/N 个理由）：hook→item_1→item_2→...→closer；首=hook、末=closer、无 climax 类，段数可放宽到 2-8",
+    "atmospheric": "氛围推进式（Vlog/纪录）：establish→flow→peak→resolve；首=establish、末=resolve、≤1 段 peak",
+    "info_dense": "信息密集快切式：title_card→info_block→...→payoff；首=title_card、末=payoff、无独立峰值类",
+}
+
+
+def _build_pattern_hint(pattern: str, allowed_roles: list[str]) -> str:
+    """给 LLM 描述当前 pattern 的角色体系 + 段数硬约束。"""
+    desc = _PATTERN_DESCRIPTIONS.get(pattern, _PATTERN_DESCRIPTIONS["dramatic"])
+    seg_range = "2-8 段" if pattern == "listicle" else "3-7 段"
+    role_list = "、".join(allowed_roles[:20])
+    return (
+        f"本次结构模式：{pattern}\n"
+        f"模式说明：{desc}\n"
+        f"合法 role 名（必须从中选取）：{role_list}\n"
+        f"段数硬约束：{seg_range}"
+    )
+
 
 _TONE_LABEL: dict[str, str] = {
     "tight_hype": "紧凑高燃（快剪 + 强情绪，建议保留 climax）",
@@ -154,6 +209,13 @@ async def adapt_structure(
         )
     understanding_text = "\n\n".join(understanding_blocks) if understanding_blocks else "（无样例画像）"
 
+    # 从第一份样例 understanding 取 structural_pattern（Stage-16 起 LLM 改编要按模式来）
+    # 没有 understanding（老数据/缓存）则兜底 dramatic
+    primary_understanding = manifests[0].understanding
+    pattern = primary_understanding.structural_pattern if primary_understanding else "dramatic"
+    allowed_roles_list = allowed_roles_for(pattern)
+    pattern_hint = _build_pattern_hint(pattern, allowed_roles_list)
+
     user = (
         f"样例视频画像：\n{understanding_text}\n\n"
         f"创作者输入：\n"
@@ -165,10 +227,28 @@ async def adapt_structure(
         f"- 整体调性：{_TONE_LABEL.get(settings.tone, settings.tone)}\n"
         f"- 核心 CTA：{cta_text}\n"
         f"- 必须出现的关键词：{kw_text}\n\n"
+        f"{pattern_hint}\n\n"
         f"原样例共 {n_src} 段：\n" + "\n".join(sample_lines) + "\n\n"
-        f"请基于以上信息改编段落结构（3-7 段，遵守硬约束，"
+        f"请基于以上信息改编段落结构（"
+        f"{'2-8' if pattern == 'listicle' else '3-7'} 段，遵守硬约束，"
         f"所有段时长之和贴近 {target_total:.0f}s）。"
     )
+
+    # 个性知识库注入（top-10 最近完成项目 + 用户手动启用的额外项目）。
+    # 失败仅 warn 不阻 plan/build：profile 是增强、不是依赖。
+    applied_rules_count = 0
+    try:
+        from ..profile import collect_active_rules, count_applied_rules, format_rules_for_prompt
+        grouped = collect_active_rules()
+        kb_text = format_rules_for_prompt(
+            grouped, scopes=["structure", "pacing"], max_per_scope=6,
+        )
+        if kb_text:
+            user = kb_text + "\n\n" + user
+            applied_rules_count = count_applied_rules({k: grouped[k] for k in ("structure", "pacing") if k in grouped})
+            log.info("[plan-agent] KB injected: rules=%d scopes=structure,pacing", applied_rules_count)
+    except Exception as exc:  # noqa: BLE001
+        log.warning("[plan-agent] KB 注入失败（跳过，不影响生成）: %s", exc)
 
     # 参考素材：用户在素材库选定的参考图/参考视频抽帧，作为视觉风格/构图/调性指引
     ref_images: list[str] = resolve_reference_image_urls(reference_asset_ids or [])
@@ -188,32 +268,45 @@ async def adapt_structure(
             text = await llm.complete(_ADAPT_SYSTEM, user)
         data = _extract_json(text)
         raw = data.get("adapted_sections", []) if isinstance(data, dict) else []
-        items = _parse_raw_items(raw)
+        items = _parse_raw_items(raw, pattern)
         if items:
-            items = _enforce_hard_constraints(items, n_src)
+            items = _enforce_hard_constraints(items, n_src, pattern)
             items = _normalize_durations(items, target_total)
-            return _materialize(items, combined_sections)
+            return _materialize(items, combined_sections, pattern)
     except Exception as exc:
         log.warning("[plan-agent] adapt_structure LLM failed: %s → fallback", exc)
 
-    return _fallback_adaptation(list(manifests[0].sections), target_total)
+    return _fallback_adaptation(list(manifests[0].sections), target_total, pattern)
 
 
-def _parse_raw_items(raw: list) -> list[dict]:
-    """清洗 LLM 输出：保留合法 role + 截断超长字段。"""
+def _parse_raw_items(raw: list, pattern: str = "dramatic") -> list[dict]:
+    """清洗 LLM 输出：保留合法 role（按 pattern 允许集校验）+ 截断超长字段。
+
+    pattern 决定合法 role 集合（dramatic→4 元，stepwise/listicle 含 step_N/item_N 等）。
+    LLM 偶尔会输出 'step1' 而非 'step_1'，这里做轻量正则容错。
+    """
+    import re as _re
+
     out: list[dict] = []
     if not isinstance(raw, list):
         return out
+    allowed = set(allowed_roles_for(pattern))
+    valid_tempos: set[str] = {"slow", "medium", "fast", "peak", "deceleration"}
     for item in raw:
         if not isinstance(item, dict):
             continue
-        role = item.get("role", "")
-        if role not in _ALLOWED_ROLES:
+        role = str(item.get("role", "")).strip()
+        # 容错：step1 → step_1、item02 → item_2
+        role = _re.sub(r"^(step|item)\s*0*(\d+)$", r"\1_\2", role)
+        if role not in allowed:
             continue
         theme = str(item.get("theme", "") or "").strip()[:20]
         content = str(item.get("content_description", "") or "").strip()[:300]
         if not content:
             continue
+        adaptation_note = str(item.get("adaptation_note", "") or "").strip()[:60]
+        tempo_raw = str(item.get("tempo", "") or "").strip().lower()
+        tempo = tempo_raw if tempo_raw in valid_tempos else None
         src_idx_raw = item.get("source_section_indices", []) or []
         src_idx: list[int] = []
         if isinstance(src_idx_raw, list):
@@ -222,15 +315,18 @@ def _parse_raw_items(raw: list) -> list[dict]:
                     src_idx.append(int(x))
                 except (TypeError, ValueError):
                     continue
+        default_dur = _default_duration_for(role, pattern)
         try:
-            dur = float(item.get("duration_seconds") or _DEFAULT_DURATION.get(role, 5.0))
+            dur = float(item.get("duration_seconds") or default_dur)
         except (TypeError, ValueError):
-            dur = _DEFAULT_DURATION.get(role, 5.0)
+            dur = default_dur
         dur = max(_MIN_SEC, min(_MAX_SEC, dur))
         out.append({
             "role": role,
             "theme": theme,
             "content_description": content,
+            "adaptation_note": adaptation_note,
+            "tempo": tempo,
             "source_section_indices": src_idx,
             "duration_seconds": dur,
         })
@@ -283,48 +379,83 @@ def _normalize_durations(items: list[dict], target_total: float) -> list[dict]:
     return items
 
 
-def _enforce_hard_constraints(items: list[dict], n_src: int) -> list[dict]:
-    """强约束修正：首=opening、末=closing、中间无 opening/closing、≤1 climax、长度 3-7。"""
+def _enforce_hard_constraints(items: list[dict], n_src: int, pattern: str = "dramatic") -> list[dict]:
+    """强约束修正：首=opening 类、末=closing 类、中间不出现首尾类、≤1 峰值类、长度按 pattern。
+
+    各 pattern 段数：listicle 2-8，其他 3-7。
+    无 peak 类的模式（stepwise/listicle/info_dense）：中间段若是 peak 类被降级到 main 类。
+    """
     if not items:
         return items
 
     n = len(items)
 
-    # 首段强制 opening
-    items[0]["role"] = "opening"
-    if not items[0].get("theme"):
-        items[0]["theme"] = "开场钩子"
+    def _opening_role() -> tuple[str, str]:
+        slot = STRUCTURAL_PATTERNS.get(pattern, STRUCTURAL_PATTERNS["dramatic"])["opening"][0]
+        if slot.endswith("_*"):
+            slot = slot[:-2] + "_1"
+        return slot, _default_theme(slot, pattern)
 
-    # 末段强制 closing（n≥2）
+    def _closing_role() -> tuple[str, str]:
+        slot = STRUCTURAL_PATTERNS.get(pattern, STRUCTURAL_PATTERNS["dramatic"])["closing"][0]
+        if slot.endswith("_*"):
+            slot = slot[:-2] + "_1"
+        return slot, _default_theme(slot, pattern)
+
+    def _main_role(idx: int = 1) -> str:
+        slot = STRUCTURAL_PATTERNS.get(pattern, STRUCTURAL_PATTERNS["dramatic"])["main"][0]
+        if slot.endswith("_*"):
+            return slot[:-2] + f"_{idx}"
+        return slot
+
+    # 首段强制开场类
+    if not role_is_opening(items[0].get("role", ""), pattern):
+        new_role, new_theme = _opening_role()
+        items[0]["role"] = new_role
+        if not items[0].get("theme"):
+            items[0]["theme"] = new_theme
+
+    # 末段强制收尾类（n≥2）
     if n >= 2:
-        items[-1]["role"] = "closing"
-        if not items[-1].get("theme"):
-            items[-1]["theme"] = "行动引导"
+        if not role_is_closing(items[-1].get("role", ""), pattern):
+            new_role, new_theme = _closing_role()
+            items[-1]["role"] = new_role
+            if not items[-1].get("theme"):
+                items[-1]["theme"] = new_theme
 
-    # 中间段：不允许 opening/closing；至多 1 个 climax
-    climax_seen = 0
+    # 中间段：禁开场/收尾类；至多 1 个峰值；无 peak 模式则峰值降为 main
+    pattern_def = STRUCTURAL_PATTERNS.get(pattern, STRUCTURAL_PATTERNS["dramatic"])
+    has_peak_class = bool(pattern_def["peak"])
+    peak_seen = 0
+    main_counter = 1
     for i in range(1, n - 1):
-        role = items[i].get("role")
-        if role in ("opening", "closing"):
-            items[i]["role"] = "development"
-        elif role == "climax":
-            climax_seen += 1
-            if climax_seen > 1:
-                items[i]["role"] = "development"
+        role = items[i].get("role", "")
+        if role_is_opening(role, pattern) or role_is_closing(role, pattern):
+            items[i]["role"] = _main_role(main_counter)
+            main_counter += 1
+        elif role_is_peak(role, pattern):
+            if not has_peak_class:
+                items[i]["role"] = _main_role(main_counter)
+                main_counter += 1
+            else:
+                peak_seen += 1
+                if peak_seen > 1:
+                    items[i]["role"] = _main_role(main_counter)
+                    main_counter += 1
 
-    # 长度修正：<3 走 fallback；>7 截断
-    if n < 3:
-        return []  # 触发上层 fallback
-    if n > 7:
+    # 长度修正：listicle 2-8，其他 3-7
+    min_seg = 2 if pattern == "listicle" else 3
+    max_seg = 8 if pattern == "listicle" else 7
+    if n < min_seg:
+        return []
+    if n > max_seg:
         kept: list[dict] = [items[0]]
-        # 保留首个 climax + 前若干 development
-        climax_item = next((it for it in items[1:-1] if it.get("role") == "climax"), None)
-        developments = [it for it in items[1:-1] if it.get("role") == "development"]
-        # 目标段数 7，预留 opening/closing/climax 后还能装 4-5 个 development
-        budget = 7 - 2 - (1 if climax_item else 0)
-        kept.extend(developments[:budget])
-        if climax_item:
-            kept.append(climax_item)
+        peak_item = next((it for it in items[1:-1] if role_is_peak(it.get("role", ""), pattern)), None)
+        mains = [it for it in items[1:-1] if role_is_main(it.get("role", ""), pattern)]
+        budget = max_seg - 2 - (1 if peak_item else 0)
+        kept.extend(mains[:budget])
+        if peak_item:
+            kept.append(peak_item)
         kept.append(items[-1])
         items = kept
 
@@ -334,6 +465,7 @@ def _enforce_hard_constraints(items: list[dict], n_src: int) -> list[dict]:
 def _materialize(
     items: list[dict],
     combined_sections: list[tuple[int, Section, int]],
+    pattern: str = "dramatic",
 ) -> list[AdaptedSection]:
     """把清洗后的 dict 列表落地为 AdaptedSection，计算 source_shot_indices + section_id。
 
@@ -358,7 +490,6 @@ def _materialize(
         if not cross_sample:
             for i in src_idx:
                 shot_indices.extend(combined_sections[i][1].shot_indices or [])
-            # 去重保序
             seen = set()
             deduped: list[int] = []
             for s in shot_indices:
@@ -368,18 +499,20 @@ def _materialize(
             shot_indices = deduped
 
         if not shot_indices and last_shots and not cross_sample:
-            # 纯新增段：借上一段最后 1 个 shot 当占位缩略图
             shot_indices = [last_shots[-1]]
 
+        role = it["role"]
         out.append(AdaptedSection(
             section_id=f"sec-{order}",
-            role=it["role"],
-            theme=it.get("theme", "") or _default_theme(it["role"]),
+            role=role,
+            theme=it.get("theme", "") or _default_theme(role, pattern),
             content_description=it["content_description"],
+            adaptation_note=it.get("adaptation_note", "") or "",
+            tempo=it.get("tempo"),
             source_section_indices=src_idx,
             source_shot_indices=shot_indices,
             order=order,
-            duration_seconds=float(it.get("duration_seconds") or _DEFAULT_DURATION.get(it["role"], 5.0)),
+            duration_seconds=float(it.get("duration_seconds") or _default_duration_for(role, pattern)),
         ))
         if shot_indices:
             last_shots = shot_indices
@@ -387,14 +520,13 @@ def _materialize(
     return out
 
 
-def _fallback_adaptation(sample_sections, target_total: float = 30.0) -> list[AdaptedSection]:
+def _fallback_adaptation(sample_sections, target_total: float = 30.0, pattern: str = "dramatic") -> list[AdaptedSection]:
     """LLM 失败/为空时的兜底：1:1 拷贝样例段落，content_description 填占位，按 role 默认时长再缩放到目标总时长。"""
     out: list[AdaptedSection] = []
     n = len(sample_sections)
     if n == 0:
         return out
-    # 先用 role 默认时长生成 list，再按 target_total 整体缩放
-    raw_durs = [_DEFAULT_DURATION.get(sec.role, 5.0) for sec in sample_sections]
+    raw_durs = [_default_duration_for(sec.role, pattern) for sec in sample_sections]
     total = sum(raw_durs) or 1.0
     scale = target_total / total if target_total > 0 else 1.0
     durs = [
@@ -404,11 +536,13 @@ def _fallback_adaptation(sample_sections, target_total: float = 30.0) -> list[Ad
         out.append(AdaptedSection(
             section_id=f"sec-{order}",
             role=sec.role,
-            theme=sec.theme or _default_theme(sec.role),
+            theme=sec.theme or _default_theme(sec.role, pattern),
             content_description=(
                 f"[fallback] 沿用样例 {sec.role} 段结构，"
                 f"建议按本段镜头节奏组织画面与口播。"
             ),
+            adaptation_note="",
+            tempo=None,
             source_section_indices=[order],
             source_shot_indices=list(sec.shot_indices or []),
             order=order,
@@ -417,10 +551,27 @@ def _fallback_adaptation(sample_sections, target_total: float = 30.0) -> list[Ad
     return out
 
 
-def _default_theme(role: SectionRole) -> str:
-    return {
-        "opening": "开场钩子",
-        "development": "主体铺陈",
-        "climax": "卖点高潮",
-        "closing": "行动引导",
-    }[role]
+def _default_theme(role: str, pattern: str = "dramatic") -> str:
+    """按 role + pattern 给默认中文短标签。step_N/item_N 取通用 '步骤 N'/'第 N 项'。"""
+    import re as _re
+    base: dict[str, str] = {
+        # dramatic
+        "opening": "开场钩子", "development": "主体铺陈", "climax": "卖点高潮", "closing": "行动引导",
+        # stepwise
+        "intro": "引入", "recap": "总结",
+        # listicle
+        "hook": "钩子", "closer": "收尾",
+        # atmospheric
+        "establish": "起势", "flow": "流转", "peak": "顶点", "resolve": "余韵",
+        # info_dense
+        "title_card": "标题卡", "info_block": "信息块", "payoff": "落版",
+    }
+    if role in base:
+        return base[role]
+    m = _re.match(r"^step_(\d+)$", role)
+    if m:
+        return f"步骤 {m.group(1)}"
+    m = _re.match(r"^item_(\d+)$", role)
+    if m:
+        return f"第 {m.group(1)} 项"
+    return role or "段落"

@@ -143,6 +143,38 @@ def extract_audio_wav(video_path: str | Path, dst: str | Path, *, sample_rate: i
     return out
 
 
+def extract_audio_mp3(
+    video_path: str | Path,
+    dst: str | Path,
+    *,
+    sample_rate: int = 44100,
+    bitrate: str = "128k",
+) -> Path:
+    """抽视频音轨成 mp3。doubao 多模态音频理解只接公网拉的小体积音频（mp3/m4a 优）。
+
+    - 单声道 + 128k 比特率：3min 视频 ≈ 3MB，远低于 LLM 单请求 10MB 限制
+    - 失败抛 FFmpegError，上层 try/except 当作"无 LLM 分析"降级即可
+    """
+    if not ffmpeg_available():
+        raise FFmpegError("ffmpeg not found in PATH")
+    src = Path(video_path)
+    if not src.exists():
+        raise FileNotFoundError(src)
+    out = Path(dst)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    cmd = [
+        "ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
+        "-i", str(src), "-vn",
+        "-ac", "1", "-ar", str(sample_rate),
+        "-codec:a", "libmp3lame", "-b:a", bitrate,
+        str(out),
+    ]
+    proc = subprocess.run(cmd, capture_output=True, text=True, check=False)
+    if proc.returncode != 0:
+        raise FFmpegError(f"extract_audio_mp3 failed: {proc.stderr.strip()}")
+    return out
+
+
 def trim(
     src: str | Path,
     dst: str | Path,
@@ -650,6 +682,48 @@ _SUBTITLE_POSITION_Y = {
     "bottom": "h-text_h-160",
 }
 
+# title_bar：V2 写到 item.style 的 font_size / position / color / background_color
+_TITLE_BAR_FONT_SIZE_PX = {"small": 44, "medium": 56, "large": 72}
+_TITLE_BAR_POSITION_Y = {
+    "top": "h*0.08",
+    "middle": "(h-text_h)/2",
+}
+
+# sticker：四种锚点 → 位置表达式
+_STICKER_POS_XY = {
+    "bottom-center": ("(w-text_w)/2", "h-text_h-340"),
+    "top-right":     ("w-text_w-60",  "h*0.08"),
+    "bottom-right":  ("w-text_w-60",  "h-text_h-340"),
+    "middle":        ("(w-text_w)/2", "(h-text_h)/2"),
+}
+
+# cover：layout → (title_x, title_y, sub_x, sub_y)
+_COVER_LAYOUT_XY = {
+    "center":  ("(w-text_w)/2", "(h-text_h)/2-60", "(w-text_w)/2", "(h-text_h)/2+80"),
+    "left":    ("w*0.08",       "(h-text_h)/2-60", "w*0.08",       "(h-text_h)/2+80"),
+    "split":   ("(w-text_w)/2", "h*0.18",          "(w-text_w)/2", "h-text_h-260"),
+    "stacked": ("(w-text_w)/2", "h*0.32",          "(w-text_w)/2", "h*0.32+90"),
+}
+
+
+def _hex_for_drawtext(hex_str: str | None, fallback: str) -> str:
+    """`#RRGGBB` → `0xRRGGBB`；非法值回退 fallback（也按 0xRRGGBB 形式给）。"""
+    if isinstance(hex_str, str):
+        s = hex_str.strip()
+        if s.startswith("#") and len(s) == 7:
+            try:
+                int(s[1:], 16)
+                return "0x" + s[1:].upper()
+            except ValueError:
+                pass
+        if s.startswith("0x") and len(s) == 8:
+            try:
+                int(s[2:], 16)
+                return s.upper().replace("0X", "0x")
+            except ValueError:
+                pass
+    return fallback
+
 
 def _subtitle_filters(
     text: str,
@@ -763,31 +837,62 @@ def burn_packaging_track(
                 _subtitle_filters(text, esc, start, end, style, fontfile_arg)
             )
         elif kind == "title_bar":
+            size_key = str(style.get("font_size", "medium")).lower()
+            fontsize = _TITLE_BAR_FONT_SIZE_PX.get(size_key, 56)
+            pos_key = str(style.get("position", "top")).lower()
+            y_expr = _TITLE_BAR_POSITION_Y.get(pos_key, _TITLE_BAR_POSITION_Y["top"])
+            color = _hex_for_drawtext(style.get("color"), "0xFFFFFF")
+            bg_color = _hex_for_drawtext(style.get("background_color"), "0x14181F")
             filters.append(
-                f"drawtext=text='{esc}':fontcolor=white:fontsize=64:"
-                f"box=1:boxcolor=0x14181F@0.85:boxborderw=22:"
-                f"x=(w-text_w)/2:y=120:"
+                f"drawtext=text='{esc}':fontcolor={color}:fontsize={fontsize}:"
+                f"box=1:boxcolor={bg_color}@0.85:boxborderw=22:"
+                f"x=(w-text_w)/2:y={y_expr}:"
                 f"enable='{enable}'{fontfile_arg}"
             )
         elif kind == "sticker":
+            color = _hex_for_drawtext(style.get("color"), "0xFFE600")
+            bg_color = _hex_for_drawtext(style.get("background_color"), "0x000000")
+            pos_key = str(style.get("position", "bottom-center")).lower()
+            x_expr, y_expr = _STICKER_POS_XY.get(pos_key, _STICKER_POS_XY["bottom-center"])
             filters.append(
-                f"drawtext=text='{esc}':fontcolor=0xFFE600:fontsize=72:"
-                f"box=1:boxcolor=black@0.6:boxborderw=22:"
-                f"x=(w-text_w)/2:y=h-text_h-340:"
+                f"drawtext=text='{esc}':fontcolor={color}:fontsize=72:"
+                f"box=1:boxcolor={bg_color}@0.7:boxborderw=20:"
+                f"x={x_expr}:y={y_expr}:"
                 f"enable='{enable}'{fontfile_arg}"
             )
         elif kind == "cover":
+            # palette: [title_color, bg_color, subtitle_color]（hex）
+            palette_raw = style.get("palette")
+            palette = palette_raw if isinstance(palette_raw, list) else []
+            title_color = _hex_for_drawtext(
+                palette[0] if len(palette) > 0 else None, "0xFFE600",
+            )
+            bg_color = _hex_for_drawtext(
+                palette[1] if len(palette) > 1 else None, "0x14181F",
+            )
+            sub_color = _hex_for_drawtext(
+                palette[2] if len(palette) > 2 else None, "0xFFFFFF",
+            )
+            layout_key = str(style.get("layout", "center")).lower()
+            t_x, t_y, s_x, s_y = _COVER_LAYOUT_XY.get(
+                layout_key, _COVER_LAYOUT_XY["center"],
+            )
+            # 先铺底色 drawbox（整屏不透明矩形），再叠 title / subtitle
             filters.append(
-                f"drawtext=text='{esc}':fontcolor=0xFFE600:fontsize=110:"
-                f"x=(w-text_w)/2:y=(h-text_h)/2-60:"
+                f"drawbox=x=0:y=0:w=iw:h=ih:color={bg_color}@1.0:t=fill:"
+                f"enable='{enable}'"
+            )
+            filters.append(
+                f"drawtext=text='{esc}':fontcolor={title_color}:fontsize=110:"
+                f"x={t_x}:y={t_y}:"
                 f"enable='{enable}'{fontfile_arg}"
             )
             sub = style.get("subtitle")
             if isinstance(sub, str) and sub.strip():
                 esc_sub = _escape_drawtext_text(sub.strip())
                 filters.append(
-                    f"drawtext=text='{esc_sub}':fontcolor=white:fontsize=52:"
-                    f"x=(w-text_w)/2:y=(h-text_h)/2+80:"
+                    f"drawtext=text='{esc_sub}':fontcolor={sub_color}:fontsize=52:"
+                    f"x={s_x}:y={s_y}:"
                     f"enable='{enable}'{fontfile_arg}"
                 )
 
@@ -849,6 +954,288 @@ def color_clip(
     proc = subprocess.run(cmd, capture_output=True, text=True, check=False)
     if proc.returncode != 0:
         raise FFmpegError(f"color_clip failed: {proc.stderr.strip()}")
+    return out
+
+
+def extend_freeze_tail(
+    src: str | Path,
+    dst: str | Path,
+    *,
+    target_duration: float,
+    sample_rate: int = 44100,
+) -> Path:
+    """L4: 把 src 的尾帧冻结延长到 target_duration（秒）。
+
+    用 tpad=stop_mode=clone:stop_duration=Δ 让最后一帧持续 Δ 秒；音频则用 apad
+    在尾部填静音同步。仅在实际时长 < target_duration 时使用，否则用 trim 截短即可。
+
+    若 src 没有音频流，apad 会失败——这里通过 -af 加 anullsrc 兜底；不过实测多数 AIGC
+    视频自带轨，这里直接 apad 足够。
+    """
+    if not ffmpeg_available():
+        raise FFmpegError("ffmpeg not found in PATH")
+    src_p = Path(src)
+    if not src_p.exists():
+        raise FileNotFoundError(src_p)
+    out = Path(dst)
+    out.parent.mkdir(parents=True, exist_ok=True)
+
+    info = probe(src_p)
+    actual = float(info.duration_seconds or 0.0)
+    delta = float(target_duration) - actual
+    if delta <= 0.05:
+        # 已经够长 / 几乎相等：直接拷贝
+        out.write_bytes(src_p.read_bytes())
+        return out
+
+    cmd = [
+        "ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
+        "-i", str(src_p),
+        "-vf", f"tpad=stop_mode=clone:stop_duration={delta:.3f}",
+    ]
+    if info.has_audio:
+        cmd += ["-af", f"apad=pad_dur={delta:.3f}"]
+    else:
+        # 无音频：合成一段静音音轨
+        cmd += [
+            "-f", "lavfi", "-t", f"{target_duration:.3f}",
+            "-i", f"anullsrc=channel_layout=stereo:sample_rate={sample_rate}",
+            "-shortest",
+        ]
+    cmd += [
+        "-t", f"{target_duration:.3f}",
+        "-c:v", "libx264", "-preset", "veryfast", "-crf", "22",
+        "-c:a", "aac", "-b:a", "128k",
+        "-pix_fmt", "yuv420p",
+        str(out),
+    ]
+    proc = subprocess.run(cmd, capture_output=True, text=True, check=False)
+    if proc.returncode != 0:
+        raise FFmpegError(f"extend_freeze_tail failed: {proc.stderr.strip()}")
+    return out
+
+
+def image_to_video(
+    image: str | Path,
+    duration: float,
+    dst: str | Path,
+    *,
+    width: int = 1080,
+    height: int = 1920,
+    fps: int = 30,
+    sample_rate: int = 44100,
+) -> Path:
+    """把一张静态图 loop 成给定时长的 mp4（静帧 + 静音）。
+
+    用途：source=aigc_image 的 scene——Seedream 出图本质是单帧，定时填到主轨需要先包成 mp4。
+    与 color_clip 同样带静音音轨，concat reencode 时音视频流一致。
+
+    缩放策略：scale + pad 居中，保持原图比例避免拉伸；超出画布的部分被裁/留黑边。
+    """
+    if not ffmpeg_available():
+        raise FFmpegError("ffmpeg not found in PATH")
+    src = Path(image)
+    if not src.exists():
+        raise FFmpegError(f"image_to_video: source not found: {src}")
+    out = Path(dst)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    dur = max(0.5, float(duration))
+    vf = (
+        f"scale={width}:{height}:force_original_aspect_ratio=decrease,"
+        f"pad={width}:{height}:(ow-iw)/2:(oh-ih)/2:color=0x14181F,"
+        f"setsar=1,format=yuv420p,fps={fps}"
+    )
+    cmd = [
+        "ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
+        "-loop", "1", "-t", f"{dur:.3f}", "-i", str(src),
+        "-f", "lavfi", "-i", f"anullsrc=channel_layout=stereo:sample_rate={sample_rate}",
+        "-t", f"{dur:.3f}",
+        "-vf", vf,
+        "-c:v", "libx264", "-preset", "veryfast", "-crf", "22",
+        "-pix_fmt", "yuv420p",
+        "-c:a", "aac", "-b:a", "128k",
+        "-shortest",
+        str(out),
+    ]
+    proc = subprocess.run(cmd, capture_output=True, text=True, check=False)
+    if proc.returncode != 0:
+        raise FFmpegError(f"image_to_video failed: {proc.stderr.strip()}")
+    return out
+
+
+# 字卡画面用：把 TextCardSpec 字段映射到 ffmpeg drawtext + fade。font_family 没有 4 套
+# 真字体文件，只能用 CJK 单字体 + 字号/字重/边框模拟差别。
+_TEXT_CARD_FONT_STYLE = {
+    "bold_sans":     {"main_size_factor": 1.0, "main_borderw": 6, "sub_size_factor": 0.45, "sub_borderw": 2},
+    "serif_classic": {"main_size_factor": 0.95, "main_borderw": 3, "sub_size_factor": 0.40, "sub_borderw": 1},
+    "handwriting":   {"main_size_factor": 0.92, "main_borderw": 2, "sub_size_factor": 0.42, "sub_borderw": 1},
+    "tech_mono":     {"main_size_factor": 0.88, "main_borderw": 4, "sub_size_factor": 0.40, "sub_borderw": 1},
+}
+
+# 布局 → (main_y, sub_y) 表达式
+_TEXT_CARD_LAYOUT_Y = {
+    "center":           ("(h-text_h)/2-text_h*0.6", "(h-text_h)/2+text_h*1.4"),
+    "top":              ("h*0.18", "h*0.18+text_h*1.4"),
+    "bottom":           ("h*0.62", "h*0.62+text_h*1.4"),
+    "split_top_bottom": ("h*0.25", "h*0.65"),
+}
+
+
+def _drawtext_alpha_expr(animation: str, dur: float) -> str:
+    """每种动画的 alpha 表达式（0-1）。
+
+    - fade_in: 0→1 在 0.6s 内
+    - typewriter: 阶梯，每 0.08s 一档；caller 不再单独切字符（粗略近似为快速渐入 + 长稳定）
+    - bounce_word: 短暂 0.4s 渐入然后稳定
+    - zoom_pop: 0.3s 内快速冲到 1
+    """
+    if animation == "fade_in":
+        return "if(lt(t,0.6),t/0.6,1)"
+    if animation == "typewriter":
+        return "if(lt(t,0.4),t/0.4,1)"
+    if animation == "bounce_word":
+        return "if(lt(t,0.35),t/0.35,1)"
+    if animation == "zoom_pop":
+        return "if(lt(t,0.25),t/0.25,1)"
+    return "1"
+
+
+def _drawtext_y_offset(animation: str, base_y: str) -> str:
+    """bounce_word 给 y 加微小正弦偏移；其它动画 y 不变。"""
+    if animation == "bounce_word":
+        # 头 0.6 秒衰减振荡：sin(2π*t*3)*15 * exp(-2*t)
+        return f"({base_y})+if(lt(t,0.7),sin(2*PI*t*3)*15*(1-t/0.7),0)"
+    return base_y
+
+
+def text_card_clip(
+    spec_dict: dict,
+    dst: str | Path,
+    *,
+    width: int = 1080,
+    height: int = 1920,
+    fps: int = 30,
+    sample_rate: int = 44100,
+) -> Path:
+    """按 TextCardSpec 渲染纯字卡 mp4。
+
+    spec_dict 是 TextCardSpec.model_dump()——这一层不 import schemas 避免循环。
+
+    实现策略：
+    1. 用 color filter 或 gradient filter 出底背景
+    2. drawtext 渲染 main_text（+ optional sub_text）
+    3. fontcolor / fontsize / borderw / 位置 / alpha 全部按 spec 字段映射
+    4. emoji_decor 用一个额外 drawtext 在底部居中拼字符串
+    5. 输出含静音音轨，与 color_clip 一致
+    """
+    if not ffmpeg_available():
+        raise FFmpegError("ffmpeg not found in PATH")
+    out = Path(dst)
+    out.parent.mkdir(parents=True, exist_ok=True)
+
+    main_text = (spec_dict.get("main_text") or "").strip()[:24]
+    sub_text = (spec_dict.get("sub_text") or "").strip()[:40]
+    duration = max(0.5, float(spec_dict.get("duration_seconds") or 4.0))
+    bg_mode = spec_dict.get("bg_mode") or "solid"
+    bg_color = spec_dict.get("bg_color") or "#0F172A"
+    text_color = spec_dict.get("text_color") or "#FFFFFF"
+    accent_color = spec_dict.get("accent_color") or "#22D3EE"
+    font_family = spec_dict.get("font_family") or "bold_sans"
+    layout = spec_dict.get("layout") or "center"
+    animation = spec_dict.get("animation") or "fade_in"
+    emoji_decor = spec_dict.get("emoji_decor") or []
+
+    font_style = _TEXT_CARD_FONT_STYLE.get(font_family, _TEXT_CARD_FONT_STYLE["bold_sans"])
+    # 字号按竖屏 1080×1920 基准；横屏 1920×1080 自动按 min(w,h) 缩
+    base_size = min(width, height)
+    main_size = int(base_size * 0.12 * font_style["main_size_factor"])
+    sub_size = int(base_size * 0.12 * font_style["sub_size_factor"])
+
+    main_y_expr, sub_y_expr = _TEXT_CARD_LAYOUT_Y.get(layout, _TEXT_CARD_LAYOUT_Y["center"])
+
+    # 背景 input 表达式
+    bg_hex_for_ffmpeg = bg_color.replace("#", "0x")
+    accent_hex_for_ffmpeg = accent_color.replace("#", "0x")
+    text_hex_for_ffmpeg = text_color.replace("#", "0x")
+
+    if bg_mode == "gradient":
+        # ffmpeg gradients filter（lavfi 源）；c0=bg, c1=accent 渐变
+        bg_input = (
+            f"gradients=size={width}x{height}:duration={duration:.3f}"
+            f":c0={bg_hex_for_ffmpeg}:c1={accent_hex_for_ffmpeg}:speed=0.01:rate={fps}"
+        )
+    elif bg_mode == "dark_overlay":
+        # 仍是纯色但更深一档（lavfi color 不支持简单叠半透明黑），直接拿 bg_color
+        # 让前端理解 dark_overlay 含义即可
+        bg_input = f"color=c={bg_hex_for_ffmpeg}:s={width}x{height}:r={fps}:d={duration:.3f}"
+    elif bg_mode == "image_blur":
+        # 没有上段尾帧的输入，回落纯色（pipeline 上游可选传 fallback；此处简化）
+        bg_input = f"color=c={bg_hex_for_ffmpeg}:s={width}x{height}:r={fps}:d={duration:.3f}"
+    else:  # solid
+        bg_input = f"color=c={bg_hex_for_ffmpeg}:s={width}x{height}:r={fps}:d={duration:.3f}"
+
+    font = find_cjk_font()
+    fontfile_arg = _fontfile_arg(font)
+
+    # main drawtext
+    main_alpha_expr = _drawtext_alpha_expr(animation, duration)
+    main_y = _drawtext_y_offset(animation, main_y_expr)
+    main_esc = _escape_drawtext_text(main_text or " ")
+    main_drawtext = (
+        f"drawtext=text='{main_esc}':fontcolor={text_hex_for_ffmpeg}"
+        f":fontsize={main_size}:borderw={font_style['main_borderw']}"
+        f":bordercolor=black@0.55"
+        f":x=(w-text_w)/2:y={main_y}"
+        f":alpha='{main_alpha_expr}'"
+        f"{fontfile_arg}"
+    )
+
+    filters: list[str] = [main_drawtext]
+
+    if sub_text:
+        sub_alpha_expr = _drawtext_alpha_expr(animation, duration)
+        # 副标 alpha 比主标延后 0.2s
+        sub_alpha = f"if(lt(t,0.2),0,{sub_alpha_expr})"
+        sub_esc = _escape_drawtext_text(sub_text)
+        sub_drawtext = (
+            f"drawtext=text='{sub_esc}':fontcolor={accent_hex_for_ffmpeg}"
+            f":fontsize={sub_size}:borderw={font_style['sub_borderw']}"
+            f":bordercolor=black@0.45"
+            f":x=(w-text_w)/2:y={sub_y_expr}"
+            f":alpha='{sub_alpha}'"
+            f"{fontfile_arg}"
+        )
+        filters.append(sub_drawtext)
+
+    if emoji_decor:
+        emoji_text = " ".join(emoji_decor)[:24]
+        emoji_esc = _escape_drawtext_text(emoji_text)
+        emoji_drawtext = (
+            f"drawtext=text='{emoji_esc}':fontcolor={accent_hex_for_ffmpeg}"
+            f":fontsize={int(main_size*0.4)}"
+            f":x=(w-text_w)/2:y=h*0.88"
+            f":alpha='if(lt(t,0.3),0,if(lt(t,0.7),(t-0.3)/0.4,1))'"
+            f"{fontfile_arg}"
+        )
+        filters.append(emoji_drawtext)
+
+    filter_chain = ",".join(filters)
+
+    cmd = [
+        "ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
+        "-f", "lavfi", "-i", bg_input,
+        "-f", "lavfi", "-i", f"anullsrc=channel_layout=stereo:sample_rate={sample_rate}",
+        "-vf", filter_chain,
+        "-t", f"{duration:.3f}",
+        "-c:v", "libx264", "-preset", "veryfast", "-crf", "22",
+        "-pix_fmt", "yuv420p",
+        "-c:a", "aac", "-b:a", "128k",
+        "-shortest",
+        str(out),
+    ]
+    proc = subprocess.run(cmd, capture_output=True, text=True, check=False)
+    if proc.returncode != 0:
+        raise FFmpegError(f"text_card_clip failed: {proc.stderr.strip()[:500]}")
     return out
 
 

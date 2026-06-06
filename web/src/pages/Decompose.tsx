@@ -6,11 +6,13 @@ import { api, ApiError } from '@/api/client'
 import { commitStep, getStepSnapshot } from '@/api/steps'
 import { createSSE, type SSEHandle } from '@/api/sse'
 import { PageShell } from '@/components/layout/PageShell'
+import { BgmAnalysisCard } from '@/components/compose/BgmAnalysisCard'
 import { useProjectsStore } from '@/stores/projects'
 import { useSessionStore } from '@/stores/session'
 import type {
   DecomposeRequest,
   DecomposeSubmitResponse,
+  LibraryItem,
   ManifestStatusResponse,
   ProgressEventPayload,
   SampleManifest,
@@ -35,8 +37,14 @@ const NL_PROMPT_MAX = 500
 
 interface DoneEvent {
   job_id: string
+  /**
+   * stage-15: persist=false 时 slot_id=null + manifest 含完整草稿;
+   * persist=true 时 slot_id 为新写入的槽 id, manifest 也回吐(老协议兼容)
+   */
   payload: { sample_id: string; manifest: SampleManifest; slot_id?: string | null }
 }
+
+const DRAFT_SLOT = '__draft__' as const
 
 interface DecomposeUploadResponse {
   sample_id: string
@@ -65,7 +73,16 @@ export default function DecomposePage() {
   const setVideoType = useSessionStore((s) => s.setVideoType)
   const setManifest = useSessionStore((s) => s.setManifest)
   const selectSamples = useSessionStore((s) => s.selectSamples)
+  const draftManifests = useSessionStore((s) => s.draftManifests)
+  const setDraft = useSessionStore((s) => s.setDraft)
+  const clearDraft = useSessionStore((s) => s.clearDraft)
   const currentProjectId = useProjectsStore((s) => s.currentProjectId)
+  const projects = useProjectsStore((s) => s.projects)
+  const updateProject = useProjectsStore((s) => s.updateProject)
+  const currentProject = useMemo(
+    () => projects.find((p) => p.project_id === currentProjectId) ?? null,
+    [projects, currentProjectId],
+  )
   const navigate = useNavigate()
 
   const [progress, setProgress] = useState<{ step: string; percent: number; note?: string }>({
@@ -106,6 +123,16 @@ export default function DecomposePage() {
   const sseRef = useRef<SSEHandle | null>(null)
   const fileInputRef = useRef<HTMLInputElement | null>(null)
 
+  // 内嵌的系统样例 picker：空态下展示（!selectedSampleId 时）。
+  // 拉一次 /library 全量，按 source==='system' 过滤，再按 chip 二次过滤。
+  // chip 初值优先 currentProject.video_type → session.videoType → 'all'
+  const [librarySamples, setLibrarySamples] = useState<LibraryItem[] | null>(null)
+  const [libraryLoading, setLibraryLoading] = useState(false)
+  const [libraryError, setLibraryError] = useState<string | null>(null)
+  const [pickerChip, setPickerChip] = useState<VideoType | 'all'>(
+    currentProject?.video_type ?? videoType ?? 'all',
+  )
+
   // sampleSource:
   //   'system' = 从素材库挑的内置样例 → video_type 锁定，直接拆解
   //   'user'   = 用户上传到 server/var/uploads/decompose/<sample_id>/ 的视频 → video_type 可选
@@ -113,14 +140,23 @@ export default function DecomposePage() {
   const isSystemSample = sampleSource === 'system'
   const isUserSample = sampleSource === 'user'
 
-  // viewSlot 没显式指定时跟随 active；versions=[] 时也回 null
+  // viewSlot 没显式指定时跟随 active；versions=[] 时也回 null。
+  // stage-15: viewSlot === DRAFT_SLOT 时显示前端 zustand 草稿(未保存到资产库)
+  const draftManifest = selectedSampleId ? draftManifests[selectedSampleId] ?? null : null
+  const hasDraft = draftManifest !== null
   const effectiveViewSlot = useMemo(() => {
-    if (versions.length === 0) return null
+    if (viewSlot === DRAFT_SLOT && hasDraft) return DRAFT_SLOT
+    if (versions.length === 0) return hasDraft ? DRAFT_SLOT : null
     if (viewSlot && versions.some((v) => v.slot_id === viewSlot)) return viewSlot
     return activeSlot ?? versions[versions.length - 1].slot_id
-  }, [versions, viewSlot, activeSlot])
+  }, [versions, viewSlot, activeSlot, hasDraft])
 
-  const currentManifest = effectiveViewSlot ? manifestCache[effectiveViewSlot] ?? null : null
+  const isViewingDraft = effectiveViewSlot === DRAFT_SLOT
+  const currentManifest = isViewingDraft
+    ? draftManifest
+    : effectiveViewSlot
+      ? manifestCache[effectiveViewSlot] ?? null
+      : null
   // 对比模式：左旧 v1 / 右新 v2
   const compareLeft = versions[0]
   const compareRight = versions[1]
@@ -131,6 +167,60 @@ export default function DecomposePage() {
   useEffect(() => {
     setManifest(currentManifest)
   }, [currentManifest, setManifest])
+
+  // 拉一次 /library 全量，按 source==='system' 过滤后存内存；chip 在前端切
+  useEffect(() => {
+    if (selectedSampleId) return
+    let cancelled = false
+    setLibraryLoading(true)
+    setLibraryError(null)
+    api
+      .get<LibraryItem[]>('/library')
+      .then((items) => {
+        if (cancelled) return
+        setLibrarySamples(items.filter((it) => it.source === 'system'))
+        setLibraryLoading(false)
+      })
+      .catch((err: Error) => {
+        if (cancelled) return
+        setLibraryError(err.message || '加载系统样例失败')
+        setLibraryLoading(false)
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [selectedSampleId])
+
+  // 项目切换时根据 project.video_type 重置 chip
+  const projectVideoType = currentProject?.video_type
+  useEffect(() => {
+    if (projectVideoType) setPickerChip(projectVideoType)
+  }, [projectVideoType])
+
+  const filteredSamples = useMemo(() => {
+    if (!librarySamples) return []
+    if (pickerChip === 'all') return librarySamples
+    return librarySamples.filter((it) => it.video_type === pickerChip)
+  }, [librarySamples, pickerChip])
+
+  const handlePickSystemSample = useCallback(
+    async (item: LibraryItem) => {
+      // 进入"已选样例"态：填 session + 把 project.reference_versions 占位回写
+      // slot_id 此时未知（用户还没拆解）→ 用 active_slot 或占位 'pending'
+      selectSamples([item.id], [item.title], item.video_type, 'system')
+      if (currentProjectId) {
+        try {
+          const slot = item.active_slot ?? 'pending'
+          await updateProject(currentProjectId, {
+            reference_versions: [{ sample_id: item.id, slot_id: slot }],
+          })
+        } catch {
+          /* 占位回写失败不阻断；后续 commit-decompose 会重写 */
+        }
+      }
+    },
+    [currentProjectId, selectSamples, updateProject],
+  )
 
   const handlePickFile = useCallback(
     async (file: File | null) => {
@@ -192,20 +282,30 @@ export default function DecomposePage() {
     }
   }, [])
 
-  const run = useCallback(async (opts?: { nl_prompt?: string; replace_slot?: string }) => {
+  const run = useCallback(async (opts?: { nl_prompt?: string }) => {
     if (!selectedSampleId) return
     setError(null)
+    // 关掉上一轮可能残留的 SSE：onDone 后浏览器仍可能投递晚到的 'error' 事件，
+    // 把当前的 setError('SSE connection closed') 写脏；新一轮开始时统一清掉。
+    sseRef.current?.close()
+    sseRef.current = null
+    // 立刻进入"拆解中"视觉态——清掉旧草稿、切到 DRAFT_SLOT 占位，
+    // 否则 SSE done 来之前用户视野里仍是上一版结果，体感"按了没反应"。
+    clearDraft(selectedSampleId)
+    setViewSlot(DRAFT_SLOT)
+    setCompareMode(false)
     setRunning(true)
     setProgress({ step: 'submit', percent: 2, note: '提交任务' })
+    // stage-15:默认草稿模式;不写盘,SSE done 把完整 manifest 推回前端
     const req: DecomposeRequest = {
       sample_id: selectedSampleId,
       video_type: videoType,
       nl_prompt: opts?.nl_prompt?.trim() || null,
-      replace_slot: opts?.replace_slot ?? null,
+      persist: false,
     }
     try {
       const { job_id } = await api.post<DecomposeSubmitResponse>('/decompose', req)
-      sseRef.current = createSSE<DoneEvent, ProgressEventPayload>(
+      const source = createSSE<DoneEvent, ProgressEventPayload>(
         `/decompose/stream?job_id=${job_id}`,
         {
           onProgress: (ev) => {
@@ -216,50 +316,101 @@ export default function DecomposePage() {
             })
           },
           onDone: (done) => {
-            setProgress({ step: 'done', percent: 100, note: '完成' })
+            setProgress({ step: 'done', percent: 100, note: '完成（未保存）' })
             setRunning(false)
-            // 写入对应 slot 缓存 + 切换 viewSlot 到新槽
-            const newSlot = done.payload.slot_id
-            if (newSlot) {
-              setManifestCache((prev) => ({ ...prev, [newSlot]: done.payload.manifest }))
-              setViewSlot(newSlot)
-            }
-            // 重拉 versions 拿最新 active + 顺序
-            void refreshStatus(selectedSampleId)
+            // 草稿:写入 zustand,切到 DRAFT_SLOT 视图;不再 refreshStatus
+            setDraft(selectedSampleId, done.payload.manifest)
+            setViewSlot(DRAFT_SLOT)
+            setCompareMode(false)
+            // done 之后浏览器仍可能投递 'error' 事件——我们手动 close 并把
+            // sseRef 清空,onError 用 ref guard 忽略晚到的关闭事件。
+            sseRef.current = null
           },
           onError: (err) => {
+            // sseRef 已被 onDone 清空 → 晚到的 close 事件,忽略不弄脏 UI。
+            if (!sseRef.current) return
             setError(err.detail || '拆解失败')
             setRunning(false)
+            sseRef.current = null
           },
         },
       )
+      sseRef.current = source
     } catch (err) {
       setRunning(false)
-      // 409 slots_full → 弹"挑要替换的版本"对话框
-      if (err instanceof ApiError && err.status === 409) {
-        const payload = err.payload
-        if (
-          payload &&
-          typeof payload === 'object' &&
-          'detail' in payload &&
-          (payload as { detail?: { error?: string } }).detail?.error === 'slots_full'
-        ) {
-          setSlotsFullDialog({
-            detail: (payload as { detail: SlotsFullDetail }).detail,
-            pendingNlPrompt: opts?.nl_prompt ?? '',
-          })
-          return
-        }
-      }
       setError(err instanceof Error ? err.message : String(err))
     }
-  }, [refreshStatus, selectedSampleId, videoType])
+  }, [clearDraft, selectedSampleId, setDraft, videoType])
+
+  /**
+   * 保存当前草稿到资产库版本槽。
+   * - 槽未满 → 直接 POST /save 创建新槽
+   * - 槽满 → 后端返 409 slots_full,前端弹 SlotsFullDialog 让用户挑覆盖目标
+   */
+  const saveDraft = useCallback(
+    async (replace_slot?: string) => {
+      if (!selectedSampleId || !draftManifest) return
+      setError(null)
+      setBusy(true)
+      try {
+        const res = await api.post<VersionMutationResponse>(
+          `/sample/${selectedSampleId}/manifest/save`,
+          { manifest: draftManifest, replace_slot: replace_slot ?? null },
+        )
+        applyMutation(res)
+        // 拉新写槽的 manifest 进缓存,然后清掉草稿
+        const newSlot = res.active_slot ?? res.versions[res.versions.length - 1]?.slot_id ?? null
+        if (newSlot) {
+          setManifestCache((prev) => ({
+            ...prev,
+            [newSlot]: draftManifest,
+          }))
+          setViewSlot(newSlot)
+        }
+        clearDraft(selectedSampleId)
+        setSlotsFullDialog(null)
+      } catch (err) {
+        if (err instanceof ApiError && err.status === 409) {
+          const payload = err.payload
+          if (
+            payload &&
+            typeof payload === 'object' &&
+            'detail' in payload &&
+            (payload as { detail?: { error?: string } }).detail?.error === 'slots_full'
+          ) {
+            setSlotsFullDialog({
+              detail: (payload as { detail: SlotsFullDetail }).detail,
+              pendingNlPrompt: '',
+            })
+            return
+          }
+        }
+        setError(err instanceof Error ? err.message : '保存失败')
+      } finally {
+        setBusy(false)
+      }
+    },
+    // applyMutation 在下方定义,引用 hook 顺序不影响,但要同步
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [clearDraft, draftManifest, selectedSampleId],
+  )
 
   useEffect(() => {
     return () => {
       sseRef.current?.close()
     }
   }, [])
+
+  // stage-15: 浏览器关闭/刷新时,若存在草稿弹原生确认框(zustand 在内存里,刷新即丢)
+  useEffect(() => {
+    if (!hasDraft) return
+    const onBeforeUnload = (e: BeforeUnloadEvent) => {
+      e.preventDefault()
+      e.returnValue = ''
+    }
+    window.addEventListener('beforeunload', onBeforeUnload)
+    return () => window.removeEventListener('beforeunload', onBeforeUnload)
+  }, [hasDraft])
 
   useEffect(() => {
     if (!selectedSampleId) {
@@ -273,17 +424,7 @@ export default function DecomposePage() {
     void refreshStatus(selectedSampleId)
   }, [selectedSampleId, refreshStatus])
 
-  // 系统样例自动开跑：只在选样例后 status 显示无任何版本时触发一次
-  const autoRunFiredRef = useRef<string | null>(null)
-  useEffect(() => {
-    if (!isSystemSample || !selectedSampleId) return
-    if (autoRunFiredRef.current === selectedSampleId) return
-    if (running) return
-    if (versions.length > 0) return
-    autoRunFiredRef.current = selectedSampleId
-    void run()
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isSystemSample, selectedSampleId, versions.length, running])
+  // stage-15: 不再自动跑拆解。用户必须主动点「开始拆解」。系统样例也走草稿流程。
 
   // mount：拉一次 decompose 步骤快照——同步 sample_id 到 session
   useEffect(() => {
@@ -404,18 +545,18 @@ export default function DecomposePage() {
     await run({ nl_prompt: text })
   }, [nlPrompt, run])
 
-  const resumeRegenerateWithReplace = useCallback(async (slot: string) => {
-    const dialog = slotsFullDialog
-    if (!dialog) return
-    setSlotsFullDialog(null)
-    await run({ nl_prompt: dialog.pendingNlPrompt, replace_slot: slot })
-    // 此处不能直接 setViewSlot(slot)——slot_id 是稳定的，run 完会 setViewSlot 到 new slot
-    // 但 manifest_store.create_version with replace_slot 会复用同一个 slot_id（见 manifest_store），所以效果是一致的
-  }, [run, slotsFullDialog])
+  // stage-15: 槽满弹窗的「挑要覆盖的槽」入口——保存流程触发(不再是拆解流程)
+  const resumeSaveWithReplace = useCallback(
+    async (slot: string) => {
+      setSlotsFullDialog(null)
+      await saveDraft(slot)
+    },
+    [saveDraft],
+  )
 
   const handleNext = useCallback(async () => {
     if (!currentProjectId || !selectedSampleId) {
-      navigate('/compose')
+      navigate('/workshop')
       return
     }
     try {
@@ -424,7 +565,7 @@ export default function DecomposePage() {
       setError(err instanceof Error ? err.message : '保存步骤失败')
       return
     }
-    navigate('/compose')
+    navigate('/workshop')
   }, [currentProjectId, navigate, selectedSampleId])
 
   const hasAnyVersion = versions.length > 0
@@ -432,15 +573,15 @@ export default function DecomposePage() {
 
   return (
     <PageShell
-      title="视频拆解"
-      subtitle="对一个样例视频做结构拆解，结果按版本槽存到资产库（最多 2 个版本可对比）。支持手动编辑、自然语言提示重新拆解。"
+      title="样例拆解"
+      subtitle="把一支爆款视频拆成结构，看清它怎么开场、怎么推进、怎么收尾。最多保留 2 个版本，可以并排对比。"
     >
       {/* ====== 来源块 ====== */}
       <div className="mb-6 rounded-lg border border-border bg-card p-4">
         {isSystemSample && selectedSampleId && (
           <div className="space-y-2">
             <div className="flex items-center justify-between text-xs text-muted-foreground">
-              <span className="font-semibold text-foreground">来源 · 系统样例（已锁定类型）</span>
+              <span className="font-semibold text-foreground">来源 · 官方样例（类型已锁定）</span>
               <Link to="/library" className="text-primary underline-offset-4 hover:underline">
                 换一个样例 →
               </Link>
@@ -458,7 +599,7 @@ export default function DecomposePage() {
         {isUserSample && selectedSampleId && (
           <div className="space-y-3">
             <div className="flex items-center justify-between text-xs text-muted-foreground">
-              <span className="font-semibold text-foreground">来源 · 用户上传</span>
+              <span className="font-semibold text-foreground">来源 · 你上传的视频</span>
               <button
                 onClick={() => {
                   selectSamples([])
@@ -488,35 +629,88 @@ export default function DecomposePage() {
 
         {!selectedSampleId && (
           <div className="space-y-4">
-            <p className="text-xs text-muted-foreground">
-              选个起点：去资产库挑一段内置爆款样例，或者上传一段自己的视频开始拆解。
-            </p>
-            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-              <Link
-                to="/library"
-                className="flex flex-col items-start gap-1 rounded-lg border border-border bg-background p-4 transition-colors hover:border-primary hover:bg-primary/5"
-              >
-                <span className="text-sm font-semibold">从资产库挑样例</span>
-                <span className="text-[11px] text-muted-foreground">
-                  内置 3 类爆款样例（营销 / 剪辑 / Motion Graph），点选即拆解。
-                </span>
-              </Link>
+            <div className="flex items-center justify-between gap-3">
+              <p className="text-xs text-muted-foreground">
+                从内置样例库挑一支爆款开始拆，或者上传自己的视频。
+              </p>
               <button
                 onClick={() => fileInputRef.current?.click()}
                 disabled={uploading}
                 className={cn(
-                  'flex flex-col items-start gap-1 rounded-lg border border-dashed border-border bg-background p-4 text-left transition-colors hover:border-primary hover:bg-primary/5',
+                  'shrink-0 rounded-md border border-dashed border-border bg-background px-3 py-1.5 text-xs hover:border-primary hover:bg-primary/5',
                   uploading && 'cursor-not-allowed opacity-60',
                 )}
               >
-                <span className="text-sm font-semibold">
-                  {uploading ? '上传中…' : '上传自己的视频'}
-                </span>
-                <span className="text-[11px] text-muted-foreground">
-                  mp4 / mov / webm，≤ 3 分钟、单文件 ≤ 200MB；上传后选类型再拆。
-                </span>
+                {uploading ? '上传中…' : '上传自己的视频'}
               </button>
             </div>
+
+            {/* video_type chip 过滤栏 */}
+            <div className="flex flex-wrap items-center gap-1.5">
+              <span className="text-[11px] text-muted-foreground">按种类筛选：</span>
+              {(['all', ...VIDEO_TYPE_OPTIONS] as const).map((chip) => (
+                <button
+                  key={chip}
+                  onClick={() => setPickerChip(chip)}
+                  className={cn(
+                    'rounded-full border px-2.5 py-1 text-[11px] font-medium transition-colors',
+                    pickerChip === chip
+                      ? 'border-primary bg-primary text-primary-foreground'
+                      : 'border-border bg-card text-muted-foreground hover:bg-secondary',
+                  )}
+                >
+                  {chip === 'all' ? '全部' : VIDEO_TYPE_LABEL[chip]}
+                </button>
+              ))}
+              {currentProject?.video_type && (
+                <span className="ml-2 text-[11px] text-muted-foreground">
+                  · 项目预选「{VIDEO_TYPE_LABEL[currentProject.video_type]}」
+                </span>
+              )}
+            </div>
+
+            {/* 系统样例网格 */}
+            {libraryLoading && (
+              <p className="text-xs text-muted-foreground">加载样例库…</p>
+            )}
+            {libraryError && (
+              <p className="text-xs text-destructive">{libraryError}</p>
+            )}
+            {!libraryLoading && !libraryError && filteredSamples.length === 0 && (
+              <p className="rounded-md border border-dashed border-border bg-background/50 px-4 py-6 text-center text-xs text-muted-foreground">
+                该种类下暂无系统样例。试试切到其它 chip，或直接上传自己的视频。
+              </p>
+            )}
+            {filteredSamples.length > 0 && (
+              <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4">
+                {filteredSamples.map((item) => (
+                  <button
+                    key={item.id}
+                    onClick={() => void handlePickSystemSample(item)}
+                    className="group flex flex-col overflow-hidden rounded-lg border border-border bg-background text-left transition-all hover:-translate-y-0.5 hover:border-primary hover:shadow-md"
+                  >
+                    <div
+                      className="aspect-video w-full bg-gradient-to-br from-secondary to-muted"
+                      style={{
+                        backgroundImage: item.cover_url ? `url(${item.cover_url})` : undefined,
+                        backgroundSize: 'cover',
+                        backgroundPosition: 'center',
+                      }}
+                    />
+                    <div className="space-y-1 p-2.5">
+                      <div className="line-clamp-1 text-xs font-semibold">{item.title}</div>
+                      <div className="flex items-center gap-1.5 text-[10px] text-muted-foreground">
+                        <span className="rounded-full bg-primary/10 px-1.5 py-0.5 font-medium text-primary">
+                          {VIDEO_TYPE_LABEL[item.video_type]}
+                        </span>
+                        <span>{item.duration_seconds.toFixed(0)}s · {item.shot_count} 镜头</span>
+                      </div>
+                    </div>
+                  </button>
+                ))}
+              </div>
+            )}
+
             <input
               ref={fileInputRef}
               type="file"
@@ -530,28 +724,51 @@ export default function DecomposePage() {
 
       {/* ====== 操作栏 ====== */}
       <div className="mb-4 flex flex-wrap items-center gap-3">
-        {!hasAnyVersion && (
+        {selectedSampleId && !isEditing && (
           <button
-            onClick={() => void run()}
-            disabled={running || busy || !selectedSampleId}
+            onClick={() => {
+              if (hasAnyVersion || hasDraft) openRegenerate()
+              else void run()
+            }}
+            disabled={running || busy}
             className={cn(
               'rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground transition-opacity',
-              (running || busy || !selectedSampleId) && 'cursor-not-allowed opacity-60',
+              (running || busy) && 'cursor-not-allowed opacity-60',
             )}
           >
-            开始拆解
+            {hasAnyVersion || hasDraft ? '重新拆解' : '开始拆解'}
           </button>
         )}
 
-        {hasAnyVersion && !isEditing && (
+        {/* stage-15: 草稿存在 → 显式保存 / 丢弃入口 */}
+        {hasDraft && !isEditing && (
           <>
             <button
-              onClick={openRegenerate}
+              onClick={() => void saveDraft()}
               disabled={running || busy}
-              className="rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground disabled:opacity-60"
+              className="rounded-md border border-emerald-400/60 bg-emerald-500 px-4 py-2 text-sm font-medium text-white hover:bg-emerald-400 disabled:opacity-60"
+              title="把当前草稿写入资产库"
             >
-              重新拆解
+              {busy ? '保存中…' : '保存到资产库'}
             </button>
+            <button
+              onClick={() => {
+                if (!selectedSampleId) return
+                if (window.confirm('丢弃当前草稿？此版本将不会保留。')) {
+                  clearDraft(selectedSampleId)
+                  setViewSlot(null)
+                }
+              }}
+              disabled={running || busy}
+              className="rounded-md border border-border px-3 py-2 text-xs text-muted-foreground hover:bg-destructive/10 hover:text-destructive disabled:opacity-60"
+            >
+              丢弃草稿
+            </button>
+          </>
+        )}
+
+        {hasAnyVersion && !isEditing && !isViewingDraft && (
+          <>
             <button
               onClick={startEdit}
               disabled={running || busy || compareMode}
@@ -603,15 +820,20 @@ export default function DecomposePage() {
         {hasAnyVersion && !isEditing && (
           <span className="text-xs text-muted-foreground">
             版本 {versions.length}/2 · 当前 {activeSlot ? versions.find((v) => v.slot_id === activeSlot)?.label ?? '—' : '—'}
+            {hasDraft && (
+              <span className="ml-2 rounded-full bg-amber-500/15 px-2 py-0.5 text-[10px] font-semibold text-amber-700 dark:text-amber-300">
+                有未保存草稿
+              </span>
+            )}
           </span>
         )}
 
-        {hasAnyVersion && !isEditing && !compareMode && (
+        {hasAnyVersion && !isEditing && !compareMode && !hasDraft && (
           <button
             onClick={() => void handleNext()}
             className="ml-auto rounded-md border border-border bg-card px-4 py-2 text-sm font-medium hover:bg-secondary"
           >
-            下一步 · 上传素材 →
+            下一步 · 去视频工坊 →
           </button>
         )}
 
@@ -621,19 +843,27 @@ export default function DecomposePage() {
       </div>
 
       {/* ====== 版本 tabs ====== */}
-      {hasAnyVersion && !isEditing && (
+      {(hasAnyVersion || hasDraft) && !isEditing && (
         <VersionTabs
           versions={versions}
           activeSlot={activeSlot}
           viewSlot={effectiveViewSlot}
           compareMode={compareMode}
           canCompare={canCompare}
+          hasDraft={hasDraft}
           onPick={(slot) => {
             setCompareMode(false)
             setViewSlot(slot)
           }}
           onToggleCompare={() => setCompareMode((v) => !v)}
         />
+      )}
+
+      {isViewingDraft && (
+        <div className="mb-3 flex flex-wrap items-center gap-2 rounded-md border border-amber-400/40 bg-amber-50/50 px-3 py-2 text-xs text-amber-800 dark:bg-amber-950/30 dark:text-amber-200">
+          <span className="rounded-full bg-amber-500/20 px-2 py-0.5 text-[10px] font-semibold">未保存</span>
+          <span>当前结果只在浏览器里;关掉页面或换样例就会丢失。点「保存到资产库」入版本。</span>
+        </div>
       )}
 
       {(running || progress.step !== 'idle') && (
@@ -672,7 +902,7 @@ export default function DecomposePage() {
         <SlotsFullDialog
           detail={slotsFullDialog.detail}
           versions={versions}
-          onPick={(slot) => void resumeRegenerateWithReplace(slot)}
+          onPick={(slot) => void resumeSaveWithReplace(slot)}
           onCancel={() => setSlotsFullDialog(null)}
         />
       )}
@@ -687,6 +917,7 @@ function VersionTabs({
   viewSlot,
   compareMode,
   canCompare,
+  hasDraft,
   onPick,
   onToggleCompare,
 }: {
@@ -695,6 +926,7 @@ function VersionTabs({
   viewSlot: string | null
   compareMode: boolean
   canCompare: boolean
+  hasDraft: boolean
   onPick: (slot: string) => void
   onToggleCompare: () => void
 }) {
@@ -726,6 +958,29 @@ function VersionTabs({
           )}
         </button>
       ))}
+      {hasDraft && (
+        <button
+          onClick={() => onPick(DRAFT_SLOT)}
+          className={cn(
+            'inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 font-medium transition-colors',
+            !compareMode && viewSlot === DRAFT_SLOT
+              ? 'bg-amber-500 text-white'
+              : 'text-amber-700 hover:bg-amber-100 dark:text-amber-300 dark:hover:bg-amber-900/40',
+          )}
+        >
+          草稿
+          <span
+            className={cn(
+              'rounded-full px-1.5 py-0.5 text-[9px] font-semibold',
+              !compareMode && viewSlot === DRAFT_SLOT
+                ? 'bg-white/30 text-white'
+                : 'bg-amber-500/20 text-amber-800 dark:text-amber-200',
+            )}
+          >
+            未保存
+          </span>
+        </button>
+      )}
       {canCompare && (
         <button
           onClick={onToggleCompare}
@@ -812,8 +1067,8 @@ function RegenerateDialog({
       >
         <h3 className="text-base font-semibold">重新拆解</h3>
         <p className="mt-1 text-xs text-muted-foreground">
-          可选：写一段自然语言提示（如『更看重开场』『压短结尾』『多关注产品特写』），
-          LLM 视频画像和段落切分会参考它。留空也可以——直接重跑一次默认流水线。
+          可选：用一两句话告诉 AI 你想强调什么（比如「更看重开场」「压短结尾」「多关注产品特写」），
+          它会照着这个偏好重新切段、写视频画像。留空也行——直接按默认重新跑一次。
         </p>
         <textarea
           value={nlPrompt}
@@ -875,9 +1130,9 @@ function SlotsFullDialog({
         className="w-full max-w-lg rounded-lg border border-border bg-card p-5 shadow-xl"
         onClick={(e) => e.stopPropagation()}
       >
-        <h3 className="text-base font-semibold">版本槽已满</h3>
+        <h3 className="text-base font-semibold">版本已满</h3>
         <p className="mt-1 text-xs text-muted-foreground">
-          每个样例最多保留 {detail.max_versions} 个版本，请选一个版本替换：
+          每个样例最多保留 {detail.max_versions} 个版本，请选一个覆盖：
         </p>
         <ul className="mt-3 space-y-2">
           {list.map((v) => (
@@ -931,7 +1186,7 @@ function VideoTypePicker({
     <div className="space-y-2">
       <div className="flex items-center justify-between text-xs text-muted-foreground">
         <span className="font-semibold text-foreground">视频类型</span>
-        <span>决定段落 prompt（marketing / editing / motion_graph）</span>
+        <span>决定段落怎么写（营销 / 剪辑 / 动画）</span>
       </div>
       <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
         {VIDEO_TYPE_OPTIONS.map((vt) => (
@@ -984,11 +1239,15 @@ function ProgressPanel({ step, percent, note }: { step: string; percent: number;
 }
 
 function ManifestView({ manifest, compact = false }: { manifest: SampleManifest; compact?: boolean }) {
+  const moodCurve = manifest.rhythm.mood_curve ?? []
   const rhythmData = manifest.rhythm.times.map((t, i) => ({
     t,
-    cut: manifest.rhythm.cut_density[i] ?? 0,
+    mood: moodCurve[i] ?? 0,
     bgm: manifest.rhythm.bgm_energy[i] ?? 0,
   }))
+  const fitScore = manifest.rhythm.bgm_fit_score
+  const fitNote = manifest.rhythm.bgm_fit_note ?? ''
+  const hasMood = moodCurve.length > 0
 
   return (
     <div className="space-y-6">
@@ -1025,7 +1284,23 @@ function ManifestView({ manifest, compact = false }: { manifest: SampleManifest;
 
       <div className={cn('grid grid-cols-1 gap-6', !compact && 'lg:grid-cols-2')}>
         <div className="rounded-lg border border-border bg-card p-4">
-          <h2 className="mb-3 text-sm font-semibold">节奏曲线</h2>
+          <div className="mb-3 flex items-center justify-between">
+            <h2 className="text-sm font-semibold">情绪走势 · BGM 契合度</h2>
+            {fitScore != null && (
+              <span
+                className={cn(
+                  'rounded-full px-2 py-0.5 text-[11px] font-medium',
+                  fitScore >= 0.65
+                    ? 'bg-emerald-500/15 text-emerald-700 dark:text-emerald-300'
+                    : fitScore >= 0.45
+                      ? 'bg-amber-500/15 text-amber-700 dark:text-amber-300'
+                      : 'bg-rose-500/15 text-rose-700 dark:text-rose-300',
+                )}
+              >
+                契合度 {Math.round(fitScore * 100)}%
+              </span>
+            )}
+          </div>
           <div className="h-56 w-full">
             <ResponsiveContainer width="100%" height="100%">
               <LineChart data={rhythmData} margin={{ top: 8, right: 12, bottom: 8, left: 0 }}>
@@ -1035,14 +1310,40 @@ function ManifestView({ manifest, compact = false }: { manifest: SampleManifest;
                   tickFormatter={(v: number) => `${v.toFixed(1)}s`}
                   tick={{ fontSize: 10, fill: 'hsl(240 4% 46%)' }}
                 />
-                <YAxis tick={{ fontSize: 10, fill: 'hsl(240 4% 46%)' }} />
+                <YAxis
+                  domain={[0, 1]}
+                  tickFormatter={(v: number) => `${Math.round(v * 100)}%`}
+                  tick={{ fontSize: 10, fill: 'hsl(240 4% 46%)' }}
+                />
                 <Tooltip
-                  formatter={(value) => (typeof value === 'number' ? value.toFixed(2) : String(value ?? ''))}
+                  formatter={(value, name) => {
+                    if (typeof value !== 'number') return String(value ?? '')
+                    return [`${Math.round(value * 100)}%`, name === 'mood' ? '情绪走势' : 'BGM 能量']
+                  }}
                   labelFormatter={(label) => (typeof label === 'number' ? `t=${label.toFixed(2)}s` : String(label))}
                   contentStyle={{ fontSize: 12 }}
                 />
-                <Line type="monotone" dataKey="cut" name="切镜密度" stroke="hsl(262 83% 58%)" dot={false} strokeWidth={2} />
-                <Line type="monotone" dataKey="bgm" name="BGM 能量" stroke="hsl(38 92% 50%)" dot={false} strokeWidth={2} />
+                {hasMood && (
+                  <Line
+                    type="monotone"
+                    dataKey="mood"
+                    name="mood"
+                    stroke="hsl(217 91% 60%)"
+                    dot={false}
+                    strokeWidth={2.5}
+                    isAnimationActive={false}
+                  />
+                )}
+                <Line
+                  type="monotone"
+                  dataKey="bgm"
+                  name="bgm"
+                  stroke="hsl(240 5% 65%)"
+                  dot={false}
+                  strokeWidth={1.5}
+                  strokeOpacity={0.6}
+                  isAnimationActive={false}
+                />
                 {manifest.climax_position != null && (
                   <ReferenceLine
                     x={manifest.climax_position}
@@ -1054,18 +1355,34 @@ function ManifestView({ manifest, compact = false }: { manifest: SampleManifest;
               </LineChart>
             </ResponsiveContainer>
           </div>
-          {manifest.rhythm.tempo_bpm != null && (
-            <p className="mt-2 text-xs text-muted-foreground">
-              BPM ≈ {manifest.rhythm.tempo_bpm.toFixed(0)}
-              {manifest.climax_position != null && (
-                <span className="ml-3 text-destructive">· 高潮约在 {manifest.climax_position.toFixed(1)}s</span>
-              )}
+          <div className="mt-2 flex flex-wrap items-center gap-3 text-[11px] text-muted-foreground">
+            <span className="inline-flex items-center gap-1">
+              <span className="inline-block h-0.5 w-4 bg-blue-500" /> 情绪走势（按段落结构低频平滑）
+            </span>
+            <span className="inline-flex items-center gap-1">
+              <span className="inline-block h-0.5 w-4 bg-slate-400/70" /> BGM 能量（参考）
+            </span>
+          </div>
+          {fitNote && (
+            <p className="mt-2 rounded-md bg-secondary/40 px-2 py-1.5 text-xs leading-relaxed text-muted-foreground">
+              {fitNote}
             </p>
+          )}
+          {manifest.audio_understanding && (
+            <div className="mt-3 border-t border-border/60 pt-3">
+              <BgmAnalysisCard
+                analysis={manifest.audio_understanding}
+                leftTitle="音轨理解"
+                leftSubtitle="AI 听完整段音轨的解读"
+                fitHint="AI 判断音轨能量与视频题材的契合度（0-100%）"
+                variant="sample"
+              />
+            </div>
           )}
         </div>
 
         <div className="rounded-lg border border-border bg-card p-4">
-          <h2 className="mb-3 text-sm font-semibold">画面包装画像</h2>
+          <h2 className="mb-3 text-sm font-semibold">画面包装</h2>
           <dl className="space-y-2 text-sm">
             <Row label="字幕样式" value={manifest.packaging.subtitle_style} />
             <Row label="标题条" value={manifest.packaging.has_title_bar ? '有' : '无'} />
@@ -1168,7 +1485,7 @@ function UnderstandingCard({ u }: { u: VideoUnderstanding }) {
   return (
     <div className="rounded-lg border border-border bg-card p-4">
       <div className="mb-2 flex items-center justify-between">
-        <h2 className="text-sm font-semibold">LLM 视频画像</h2>
+        <h2 className="text-sm font-semibold">视频画像</h2>
         <span className="text-[11px] text-muted-foreground">建议切 {u.suggested_segments} 段</span>
       </div>
       <div className="flex flex-wrap gap-2 text-xs">
@@ -1207,7 +1524,7 @@ function ManifestEditor({
   return (
     <div className="space-y-6">
       <div className="rounded-lg border border-amber-400/40 bg-amber-50/40 p-4 text-xs text-amber-700 dark:bg-amber-950/30 dark:text-amber-300">
-        编辑模式 · 改动只会写入当前查看的版本槽（就地编辑），不开新版本。点「保存编辑」提交，「取消编辑」放弃。
+        编辑模式 · 改动会直接覆盖当前查看的版本，不会新开一个版本。点「保存编辑」提交，「取消编辑」放弃。
       </div>
 
       <div className="grid grid-cols-1 gap-3 rounded-lg border border-border bg-card p-4 md:grid-cols-2">

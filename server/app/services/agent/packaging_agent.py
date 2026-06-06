@@ -29,16 +29,24 @@ from typing import Any, Optional
 from ..llm_client import LLMError, get_llm_client
 from ..plans import plan_store
 from ...schemas import (
+    CoverCandidate,
     CoverDesign,
     PackagingItem,
     PackagingPreferences,
     PackagingPreset,
     PackagingRecommendation,
+    PackagingRecommendationV2,
+    PackagingVariant,
     Plan,
     Scene,
     SceneTransition,
+    StickerCandidate,
+    SubtitleStyleCandidate,
+    TitleBarCandidate,
+    TransitionCandidateBundle,
     TransitionStyle,
     TransitionSuggestion,
+    all_role_names,
 )
 
 log = logging.getLogger("seecript.agent.packaging")
@@ -48,7 +56,7 @@ _ALLOWED_STYLES: tuple[TransitionStyle, ...] = (
     "hard_cut", "dissolve", "slide", "zoom", "whip", "wipe",
 )
 _ALLOWED_LAYOUTS = ("center", "left", "split", "stacked")
-_ALLOWED_ROLES = ("opening", "development", "climax", "closing")
+_ALLOWED_ROLES = tuple(all_role_names()) + ("development", "opening", "climax", "closing")
 _HEX_RE = re.compile(r"^#[0-9a-fA-F]{6}$")
 
 # 规则兜底：role 对 → 转场风格。LLM 失败时按这张表给。
@@ -262,7 +270,7 @@ def _coerce_transition(
     dur = max(0.1, min(prefs.max_transition_duration, dur))
     from_sec = str(raw.get("from_section", "")).strip()
     to_sec = str(raw.get("to_section", "")).strip()
-    if from_sec not in _ALLOWED_ROLES or to_sec not in _ALLOWED_ROLES:
+    if not from_sec or not to_sec or len(from_sec) > 30 or len(to_sec) > 30:
         return None
     reason = str(raw.get("reason", "") or "")[:60]
     return TransitionSuggestion(
@@ -398,18 +406,64 @@ async def recommend_packaging(
             aligned.append(tr)
     transitions = aligned
 
-    rec = PackagingRecommendation(
-        plan_id=plan.plan_id,
+    aggressive_variant = PackagingVariant(
+        version_id="aggressive",
+        version_label="强冲击版",
         transitions=transitions,
         cover=cover,
+    )
+    elegant_variant = _derive_elegant_variant(aggressive_variant, plan, prefs)
+
+    rec = PackagingRecommendation(
+        plan_id=plan.plan_id,
+        versions=[aggressive_variant, elegant_variant],
         notes=notes,
     )
 
     if apply:
         _write_to_plan(plan, rec, prefs)
-        notes.append(f"已落地：transitions={len(transitions)}，cover=1")
+        notes.append(f"已落地：transitions={len(transitions)}，cover=1（采用 {aggressive_variant.version_id} 版）")
 
     return rec
+
+
+def _derive_elegant_variant(
+    aggressive: PackagingVariant,
+    plan: Plan,
+    prefs: PackagingPreferences,
+) -> PackagingVariant:
+    """从 aggressive 派生 elegant：转场柔化 + 封面文案温和 + 调色降饱和。
+
+    设计取舍：本期只跑一次 LLM。强冲击版完全由 LLM 输出；
+    高级感版按规则从强冲击版推导（用更柔的 dissolve/wipe、把封面 layout 改 center、
+    palette 朝低饱和倾斜）。LLM 算力扩成 2 倍代价不划算，规则推导足够拉出区分度。
+    """
+    softer = {"hard_cut": "dissolve", "whip": "dissolve", "zoom": "wipe", "slide": "wipe"}
+    elegant_trs: list[TransitionSuggestion] = []
+    for tr in aggressive.transitions:
+        new_style = softer.get(tr.style, tr.style)
+        if new_style not in prefs.allowed_transition_styles:
+            new_style = "dissolve" if "dissolve" in prefs.allowed_transition_styles else tr.style
+        elegant_trs.append(tr.model_copy(update={
+            "item_id": tr.item_id.replace("pkg-tr-", "pkg-tr-eleg-"),
+            "style": new_style,  # type: ignore[arg-type]
+            "duration": min(tr.duration * 1.5, prefs.max_transition_duration),
+            "reason": f"高级感版：柔化为 {new_style}",
+        }))
+
+    elegant_cover: Optional[CoverDesign] = None
+    if aggressive.cover is not None:
+        elegant_cover = aggressive.cover.model_copy(update={
+            "item_id": "pkg-cover-eleg",
+            "layout": "center",
+            "style_note": "高级感版：留白居中 + 低饱和",
+        })
+    return PackagingVariant(
+        version_id="elegant",
+        version_label="高级感版",
+        transitions=elegant_trs,
+        cover=elegant_cover,
+    )
 
 
 def _write_to_plan(
@@ -417,16 +471,19 @@ def _write_to_plan(
     rec: PackagingRecommendation,
     prefs: PackagingPreferences,
 ) -> None:
-    """把建议转成主轨 Scene.transition_in + 包装轨 cover PackagingItem。
+    """把建议（取 versions[0] 即 aggressive 版）转成主轨 Scene.transition_in + 包装轨 cover。
 
-    - 转场不再走 packaging_track（kind='transition' 是历史包装项，已废弃；
-      真转场需要 ffmpeg xfade 修改主轨相邻段时长，concat demuxer 做不出来）。
-    - 落点：每条 TransitionSuggestion 找到 start≈at_seconds 的 to_scene，把
-      SceneTransition(style, duration) 写到 to_scene.transition_in。
-    - 幂等：写入前先清掉所有 main_track scene 的 transition_in，再按本次建议刷一遍。
-    - cover 仍写 packaging_track（透明 PNG overlay，不占主轨时长，OK）。
-    - cover.style 同时携带 prefs.subtitle_*：burn_packaging_track 用它决定字幕渲染参数。
+    Stage-16 起 rec.versions 是多版本列表；落 plan 时永远采用 versions[0]，
+    其余 variant 仅在 PackagingPanel UI 上预览，前端切换不会立刻 mutate plan
+    （需要前端发新一次 PATCH 切版本——本期暂不支持）。
     """
+    if not rec.versions:
+        log.warning("[packaging] rec.versions 空，跳过落地")
+        return
+    primary = rec.versions[0]
+    transitions = primary.transitions
+    cover = primary.cover
+
     # 包装轨：保留 subtitle/title_bar/sticker，丢弃旧 transition / cover（cover 一会重写）
     keep = [it for it in plan.packaging_track if it.kind not in ("transition", "cover")]
 
@@ -438,15 +495,14 @@ def _write_to_plan(
     scenes_by_start = sorted(plan.main_track, key=lambda s: s.start)
 
     transition_count = 0
-    for tr in rec.transitions:
+    for tr in transitions:
         if tr.at_seconds <= 0 or tr.at_seconds >= plan.duration_seconds:
             continue
-        # 在 ±0.5s 容差内找最匹配 to_scene；找不到则跳过（不再回落到包装轨 transition）
         target = None
         best_delta = 0.6
         for sc in scenes_by_start:
             if sc is plan.main_track[0]:
-                continue  # sc-0 没有上一段
+                continue
             delta = abs(sc.start - tr.at_seconds)
             if delta <= best_delta:
                 best_delta = delta
@@ -457,7 +513,6 @@ def _write_to_plan(
         target.transition_in = SceneTransition(style=tr.style, duration=tr.duration)
         transition_count += 1
 
-    # 把 prefs 的字幕样式钉到所有现存 subtitle PackagingItem 上（burn 用）
     for it in keep:
         if it.kind == "subtitle":
             it.style = {
@@ -469,24 +524,663 @@ def _write_to_plan(
             }
 
     new_items: list[PackagingItem] = []
-    if rec.cover is not None:
+    if cover is not None:
         first_dur = plan.main_track[0].duration if plan.main_track else plan.duration_seconds
         cover_end = max(0.6, min(prefs.cover_duration, first_dur))
         new_items.append(PackagingItem(
-            item_id=rec.cover.item_id or "pkg-cover",
+            item_id=cover.item_id or "pkg-cover",
             kind="cover",
             start=0.0,
             end=cover_end,
-            text=rec.cover.title,
+            text=cover.title,
             style={
-                "subtitle": rec.cover.subtitle if prefs.cover_with_subtitle else None,
-                "palette": rec.cover.palette,
-                "layout": rec.cover.layout,
-                "style_note": rec.cover.style_note,
+                "subtitle": cover.subtitle if prefs.cover_with_subtitle else None,
+                "palette": cover.palette,
+                "layout": cover.layout,
+                "style_note": cover.style_note,
             },
         ))
 
     plan.packaging_track = keep + new_items
     plan_store.replace(plan)
-    log.info("[packaging] plan=%s wrote %d scene.transition_in + cover=%s",
-             plan.plan_id, transition_count, rec.cover is not None)
+    log.info("[packaging] plan=%s wrote %d scene.transition_in + cover=%s (variant=%s)",
+             plan.plan_id, transition_count, cover is not None, primary.version_id)
+
+
+# =========================================================================
+# V2 —— 5 维度独立多候选推荐
+# =========================================================================
+
+_STICKER_POSITIONS = ("bottom-center", "top-right", "bottom-right", "middle")
+_TITLE_BAR_POSITIONS = ("top", "middle")
+_TITLE_BAR_FONT_SIZES = ("small", "medium", "large")
+_SUBTITLE_FONT_SIZES = ("small", "medium", "large")
+_SUBTITLE_POSITIONS = ("top", "middle", "bottom")
+_SUBTITLE_BACKGROUNDS = ("none", "shadow", "gradient")
+
+
+def _build_v2_system_prompt(prefs: PackagingPreferences) -> str:
+    allowed = ", ".join(prefs.allowed_transition_styles)
+    max_dur = prefs.max_transition_duration
+    return (
+        "你是短视频包装设计师。读完主轨分镜（每段含 scene_id / role / 起止 / 口播）后，"
+        "为这条片子同时给出 5 类候选包装，每类 2-4 个供创作者挑选。\n"
+        "返回 JSON（严格用这些字段名，不要 markdown 包裹）：\n"
+        "{\n"
+        "  \"subtitle_styles\": [  // 2-3 个字幕样式备选\n"
+        "    {\"candidate_id\": str, \"label\": str(≤20字), "
+        "\"font_size\": one of [small,medium,large], "
+        "\"position\": one of [top,middle,bottom], "
+        "\"background\": one of [none,shadow,gradient], "
+        "\"bilingual\": bool, \"rationale\": str(≤30字)}\n"
+        "  ],\n"
+        "  \"title_bars\": [  // 2-4 个标题条/卖点卡片，每条挂到具体 scene_id，时长 1.0-1.8s\n"
+        "    {\"candidate_id\": str, \"text\": str(≤16字), \"target_scene_id\": str, "
+        "\"start\": number, \"end\": number, "
+        "\"font_size\": one of [small,medium,large], "
+        "\"color\": hex, \"background_color\": hex, "
+        "\"position\": one of [top,middle], \"rationale\": str(≤30字)}\n"
+        "  ],\n"
+        "  \"stickers\": [  // 2-4 个 CTA/强调短语，closing 必给 1 条；时长 0.6-1.2s\n"
+        "    {\"candidate_id\": str, \"text\": str(≤8字), \"target_scene_id\": str, "
+        "\"start\": number, \"end\": number, "
+        "\"color\": hex, \"background_color\": hex, "
+        "\"position\": one of [bottom-center,top-right,bottom-right,middle], "
+        "\"rationale\": str(≤30字)}\n"
+        "  ],\n"
+        "  \"transition_bundles\": [  // 主轨每个相邻 section 切换点 1 个 bundle，每 bundle 2-3 个 option\n"
+        "    {\"candidate_id\": str, \"at_seconds\": number, "
+        "\"from_section\": str, \"to_section\": str, "
+        f"\"options\": [{{\"style\": one of [{allowed}], "
+        f"\"duration\": number(0.1-{max_dur:.2f}), \"reason\": str(≤20字)}}], "
+        "\"rationale\": str(≤40字)}\n"
+        "  ],\n"
+        "  \"covers\": [  // 2-3 个不同调性封面方案\n"
+        "    {\"candidate_id\": str, \"title\": str(≤12字), \"subtitle\": str(≤18字 可空), "
+        "\"palette\": [hex,hex,hex], "
+        "\"layout\": one of [center,left,split,stacked], "
+        "\"style_note\": str(≤30字), \"rationale\": str(≤30字)}\n"
+        "  ]\n"
+        "}\n"
+        f"转场风格只能取 [{allowed}]，duration 必须 ≤ {max_dur:.2f}s。\n"
+        "title_bars/stickers 的 start/end 必须落在所选 scene 的时间窗内。\n"
+        "candidate_id 用短串（≤16 字符，仅 ascii）便于前端引用。"
+    )
+
+
+def _build_v2_user_prompt(plan: Plan) -> str:
+    scene_lines = []
+    for sc in plan.main_track:
+        scene_lines.append(
+            f"  - scene_id={sc.scene_id} role={sc.section} "
+            f"{sc.start:.1f}-{sc.start + sc.duration:.1f}s · "
+            f"{(sc.narration or '(无口播)')[:40]}"
+        )
+    brief = plan.brief or "(创作者未提供主题文本)"
+    goal = plan.video_goal or "(创作者未提供 video_goal)"
+    return (
+        f"创作者主题：{brief}\n"
+        f"video_goal：{goal}\n"
+        f"plan_id：{plan.plan_id}\n"
+        f"总时长：{plan.duration_seconds:.1f} 秒\n"
+        f"主轨分镜：\n" + "\n".join(scene_lines)
+    )
+
+
+def _valid_hex(s: Any, fallback: str) -> str:
+    if isinstance(s, str) and _HEX_RE.match(s.strip()):
+        return s.strip().upper()
+    return fallback
+
+
+def _coerce_subtitle_style(raw: Any, idx: int) -> Optional[SubtitleStyleCandidate]:
+    if not isinstance(raw, dict):
+        return None
+    fs = str(raw.get("font_size", "medium")).lower()
+    if fs not in _SUBTITLE_FONT_SIZES:
+        fs = "medium"
+    pos = str(raw.get("position", "bottom")).lower()
+    if pos not in _SUBTITLE_POSITIONS:
+        pos = "bottom"
+    bg = str(raw.get("background", "shadow")).lower()
+    if bg not in _SUBTITLE_BACKGROUNDS:
+        bg = "shadow"
+    return SubtitleStyleCandidate(
+        candidate_id=f"sub-{idx:02d}",
+        label=str(raw.get("label") or f"字幕方案 {idx + 1}")[:40],
+        font_size=fs,  # type: ignore[arg-type]
+        position=pos,  # type: ignore[arg-type]
+        background=bg,  # type: ignore[arg-type]
+        bilingual=bool(raw.get("bilingual", False)),
+        rationale=str(raw.get("rationale", "") or "结构匀称、可读性高")[:60],
+    )
+
+
+def _coerce_title_bar(
+    raw: Any, idx: int, plan: Plan,
+) -> Optional[TitleBarCandidate]:
+    if not isinstance(raw, dict):
+        return None
+    text = str(raw.get("text", "")).strip()[:20]
+    if not text:
+        return None
+    target_scene_id = str(raw.get("target_scene_id", "")).strip()
+    scene = next((s for s in plan.main_track if s.scene_id == target_scene_id), None)
+    if scene is None:
+        return None
+    try:
+        start = float(raw.get("start", scene.start))
+        end = float(raw.get("end", scene.start + min(1.5, scene.duration)))
+    except (TypeError, ValueError):
+        start, end = scene.start, scene.start + min(1.5, scene.duration)
+    start = max(scene.start, start)
+    end = min(scene.start + scene.duration, max(start + 0.4, end))
+    if end <= start:
+        return None
+    fs = str(raw.get("font_size", "medium")).lower()
+    if fs not in _TITLE_BAR_FONT_SIZES:
+        fs = "medium"
+    pos = str(raw.get("position", "top")).lower()
+    if pos not in _TITLE_BAR_POSITIONS:
+        pos = "top"
+    return TitleBarCandidate(
+        candidate_id=f"tb-{idx:02d}",
+        text=text,
+        target_scene_id=target_scene_id,
+        start=start,
+        end=end,
+        font_size=fs,  # type: ignore[arg-type]
+        color=_valid_hex(raw.get("color"), "#FFFFFF"),
+        background_color=_valid_hex(raw.get("background_color"), "#14181F"),
+        position=pos,  # type: ignore[arg-type]
+        rationale=str(raw.get("rationale", "") or "结构强提示")[:60],
+    )
+
+
+def _coerce_sticker(
+    raw: Any, idx: int, plan: Plan,
+) -> Optional[StickerCandidate]:
+    if not isinstance(raw, dict):
+        return None
+    text = str(raw.get("text", "")).strip()[:10]
+    if not text:
+        return None
+    target_scene_id = str(raw.get("target_scene_id", "")).strip()
+    scene = next((s for s in plan.main_track if s.scene_id == target_scene_id), None)
+    if scene is None:
+        return None
+    try:
+        start = float(raw.get("start", scene.start + max(0.0, scene.duration - 1.0)))
+        end = float(raw.get("end", scene.start + scene.duration))
+    except (TypeError, ValueError):
+        start = scene.start
+        end = scene.start + min(0.8, scene.duration)
+    start = max(scene.start, start)
+    end = min(scene.start + scene.duration, max(start + 0.3, end))
+    if end <= start:
+        return None
+    pos = str(raw.get("position", "bottom-center"))
+    if pos not in _STICKER_POSITIONS:
+        pos = "bottom-center"
+    return StickerCandidate(
+        candidate_id=f"st-{idx:02d}",
+        text=text,
+        target_scene_id=target_scene_id,
+        start=start,
+        end=end,
+        color=_valid_hex(raw.get("color"), "#FFE600"),
+        background_color=_valid_hex(raw.get("background_color"), "#000000"),
+        position=pos,  # type: ignore[arg-type]
+        rationale=str(raw.get("rationale", "") or "强化 CTA")[:60],
+    )
+
+
+def _coerce_transition_bundle(
+    raw: Any, idx: int, prefs: PackagingPreferences,
+) -> Optional[TransitionCandidateBundle]:
+    if not isinstance(raw, dict):
+        return None
+    try:
+        at_s = float(raw.get("at_seconds", 0.0))
+    except (TypeError, ValueError):
+        return None
+    from_sec = str(raw.get("from_section", "")).strip()
+    to_sec = str(raw.get("to_section", "")).strip()
+    if not from_sec or not to_sec:
+        return None
+    raw_options = raw.get("options") or []
+    if not isinstance(raw_options, list):
+        return None
+    options: list[TransitionSuggestion] = []
+    for opt_idx, opt in enumerate(raw_options[:3]):
+        if not isinstance(opt, dict):
+            continue
+        style = str(opt.get("style", "")).strip()
+        if style not in prefs.allowed_transition_styles:
+            continue
+        try:
+            dur = float(opt.get("duration", 0.4))
+        except (TypeError, ValueError):
+            dur = 0.4
+        dur = max(0.1, min(prefs.max_transition_duration, dur))
+        options.append(TransitionSuggestion(
+            item_id=f"pkg-tr-{idx:02d}-{opt_idx}",
+            at_seconds=at_s,
+            from_section=from_sec,  # type: ignore[arg-type]
+            to_section=to_sec,  # type: ignore[arg-type]
+            style=style,  # type: ignore[arg-type]
+            duration=dur,
+            reason=str(opt.get("reason", "") or f"{from_sec}→{to_sec}")[:60],
+        ))
+    if not options:
+        primary = prefs.allowed_transition_styles[0]
+        options.append(TransitionSuggestion(
+            item_id=f"pkg-tr-{idx:02d}-0",
+            at_seconds=at_s,
+            from_section=from_sec,  # type: ignore[arg-type]
+            to_section=to_sec,  # type: ignore[arg-type]
+            style=primary,  # type: ignore[arg-type]
+            duration=min(0.4, prefs.max_transition_duration),
+            reason=f"兜底 {from_sec}→{to_sec}",
+        ))
+    return TransitionCandidateBundle(
+        candidate_id=f"tb-tr-{idx:02d}",
+        at_seconds=at_s,
+        from_section=from_sec,
+        to_section=to_sec,
+        options=options,
+        rationale=str(raw.get("rationale", "") or f"{from_sec}→{to_sec} 切换")[:80],
+    )
+
+
+def _coerce_cover_candidate(
+    raw: Any, idx: int, plan: Plan,
+) -> Optional[CoverCandidate]:
+    if not isinstance(raw, dict):
+        return None
+    title = str(raw.get("title", "")).strip()[:12]
+    if not title:
+        return None
+    subtitle_raw = raw.get("subtitle")
+    subtitle = str(subtitle_raw).strip()[:18] if isinstance(subtitle_raw, str) and subtitle_raw.strip() else None
+    palette_raw = raw.get("palette") or []
+    palette: list[str] = []
+    if isinstance(palette_raw, list):
+        for c in palette_raw[:3]:
+            if isinstance(c, str) and _HEX_RE.match(c.strip()):
+                palette.append(c.strip().upper())
+    if not palette:
+        palette = ["#FFE600", "#1F2937", "#FFFFFF"]
+    layout = str(raw.get("layout", "center"))
+    if layout not in _ALLOWED_LAYOUTS:
+        layout = "center"
+    return CoverCandidate(
+        candidate_id=f"cv-{idx:02d}",
+        title=title,
+        subtitle=subtitle,
+        palette=palette,
+        layout=layout,  # type: ignore[arg-type]
+        style_note=str(raw.get("style_note", "") or "")[:60],
+        rationale=str(raw.get("rationale", "") or "")[:60],
+    )
+
+
+def _rule_based_v2_candidates(plan: Plan, prefs: PackagingPreferences) -> dict[str, list]:
+    """所有 LLM 失败时的规则兜底：每个维度给 2 个简单候选。"""
+    subs = [
+        SubtitleStyleCandidate(
+            candidate_id="sub-00", label="底部中字｜阴影底",
+            font_size="medium", position="bottom", background="shadow",
+            bilingual=False, rationale="可读性高、占用画面少",
+        ),
+        SubtitleStyleCandidate(
+            candidate_id="sub-01", label="底部大字｜渐变底",
+            font_size="large", position="bottom", background="gradient",
+            bilingual=False, rationale="信息密度高时拉满字号",
+        ),
+    ]
+    title_bars: list[TitleBarCandidate] = []
+    if plan.main_track:
+        first = plan.main_track[0]
+        title_bars.append(TitleBarCandidate(
+            candidate_id="tb-00",
+            text=(plan.brief or first.section or "开场标题")[:16],
+            target_scene_id=first.scene_id,
+            start=first.start,
+            end=first.start + min(1.5, first.duration),
+            font_size="large", color="#FFFFFF", background_color="#14181F",
+            position="top", rationale="开场点题",
+        ))
+    stickers: list[StickerCandidate] = []
+    if plan.main_track:
+        last = plan.main_track[-1]
+        cta_text = (plan.settings.cta or "点这里").strip()[:8] or "点这里"
+        stickers.append(StickerCandidate(
+            candidate_id="st-00",
+            text=cta_text,
+            target_scene_id=last.scene_id,
+            start=last.start + max(0.0, last.duration - 1.0),
+            end=last.start + last.duration,
+            color="#FFE600", background_color="#000000",
+            position="bottom-center",
+            rationale="收尾 CTA",
+        ))
+    bundles: list[TransitionCandidateBundle] = []
+    pairs = _section_pairs(plan.main_track)
+    primary = prefs.allowed_transition_styles[0]
+    for idx, (a, b) in enumerate(pairs):
+        rule_pick: TransitionStyle = _RULE_TRANSITION.get((a.section, b.section), primary)
+        if rule_pick not in prefs.allowed_transition_styles:
+            rule_pick = primary
+        opts = [TransitionSuggestion(
+            item_id=f"pkg-tr-{idx:02d}-0",
+            at_seconds=float(b.start),
+            from_section=a.section,
+            to_section=b.section,
+            style=rule_pick,
+            duration=min(0.4, prefs.max_transition_duration),
+            reason=f"规则推荐 {rule_pick}",
+        )]
+        if len(prefs.allowed_transition_styles) >= 2:
+            alt = prefs.allowed_transition_styles[1]
+            if alt != rule_pick:
+                opts.append(TransitionSuggestion(
+                    item_id=f"pkg-tr-{idx:02d}-1",
+                    at_seconds=float(b.start),
+                    from_section=a.section,
+                    to_section=b.section,
+                    style=alt,
+                    duration=min(0.4, prefs.max_transition_duration),
+                    reason=f"备选 {alt}",
+                ))
+        bundles.append(TransitionCandidateBundle(
+            candidate_id=f"tb-tr-{idx:02d}",
+            at_seconds=float(b.start),
+            from_section=a.section,
+            to_section=b.section,
+            options=opts,
+            rationale=f"{a.section}→{b.section} 切换",
+        ))
+    covers = [
+        CoverCandidate(
+            candidate_id="cv-00",
+            title=(plan.brief or plan.video_goal or "短视频封面").strip()[:12] or "短视频封面",
+            subtitle=None,
+            palette=["#FFE600", "#1F2937", "#FFFFFF"],
+            layout="center",
+            style_note="黑底黄字大标题居中",
+            rationale="高对比、视线焦点",
+        ),
+        CoverCandidate(
+            candidate_id="cv-01",
+            title=(plan.video_goal or plan.brief or "今天聊点干货").strip()[:12] or "今天聊点干货",
+            subtitle="3 秒抓住你",
+            palette=["#FFFFFF", "#0EA5E9", "#FACC15"],
+            layout="split",
+            style_note="撞色分屏，干净专业",
+            rationale="信息流风、不浮躁",
+        ),
+    ]
+    return {
+        "subtitle_styles": subs,
+        "title_bars": title_bars,
+        "stickers": stickers,
+        "transition_bundles": bundles,
+        "covers": covers,
+    }
+
+
+async def recommend_packaging_v2(
+    plan: Plan,
+    *,
+    preferences: Optional[PackagingPreferences] = None,
+) -> PackagingRecommendationV2:
+    """LLM 一次性出 5 维度独立候选。失败时按规则兜底。不 mutate plan。
+
+    路由端在调用前已合并 prefs 并 expand_preset。
+    """
+    raw_prefs = preferences or plan.settings.packaging_prefs
+    prefs = expand_preset(raw_prefs)
+
+    notes: list[str] = []
+    system_prompt = _build_v2_system_prompt(prefs)
+    user_prompt = _build_v2_user_prompt(plan)
+
+    data: Any = None
+    try:
+        llm = get_llm_client()
+        data = await llm.complete_json(
+            system_prompt, user_prompt, temperature=prefs.llm_temperature,
+        )
+    except LLMError as exc:
+        log.warning("[packaging-v2] LLM failed: %s; using rule fallback", exc)
+        notes.append(f"LLM 失败，规则兜底：{exc}")
+    except Exception as exc:  # noqa: BLE001
+        log.warning("[packaging-v2] LLM unexpected: %s; using rule fallback", exc)
+        notes.append(f"LLM 异常，规则兜底：{exc}")
+
+    subtitle_styles: list[SubtitleStyleCandidate] = []
+    title_bars: list[TitleBarCandidate] = []
+    stickers: list[StickerCandidate] = []
+    transition_bundles: list[TransitionCandidateBundle] = []
+    covers: list[CoverCandidate] = []
+
+    if isinstance(data, dict):
+        for idx, raw in enumerate((data.get("subtitle_styles") or [])[:4]):
+            c = _coerce_subtitle_style(raw, idx)
+            if c is not None:
+                subtitle_styles.append(c)
+        for idx, raw in enumerate((data.get("title_bars") or [])[:6]):
+            c = _coerce_title_bar(raw, idx, plan)
+            if c is not None:
+                title_bars.append(c)
+        for idx, raw in enumerate((data.get("stickers") or [])[:6]):
+            c = _coerce_sticker(raw, idx, plan)
+            if c is not None:
+                stickers.append(c)
+        for idx, raw in enumerate((data.get("transition_bundles") or [])[:8]):
+            c = _coerce_transition_bundle(raw, idx, prefs)
+            if c is not None:
+                transition_bundles.append(c)
+        for idx, raw in enumerate((data.get("covers") or [])[:4]):
+            c = _coerce_cover_candidate(raw, idx, plan)
+            if c is not None:
+                covers.append(c)
+
+    fallback = _rule_based_v2_candidates(plan, prefs)
+    if not subtitle_styles:
+        subtitle_styles = fallback["subtitle_styles"]
+        notes.append("subtitle_styles 走规则兜底")
+    if not title_bars:
+        title_bars = fallback["title_bars"]
+        notes.append("title_bars 走规则兜底")
+    if not stickers:
+        stickers = fallback["stickers"]
+        notes.append("stickers 走规则兜底")
+    if not transition_bundles:
+        transition_bundles = fallback["transition_bundles"]
+        notes.append("transition_bundles 走规则兜底")
+    if not covers:
+        covers = fallback["covers"]
+        notes.append("covers 走规则兜底")
+
+    # 对齐 transition 时间到真实段落切换点（防止 LLM 凭空写 at_seconds）
+    real_pairs_by_kind: dict[tuple[str, str], float] = {
+        (a.section, b.section): float(b.start) for a, b in _section_pairs(plan.main_track)
+    }
+    aligned_bundles: list[TransitionCandidateBundle] = []
+    for bundle in transition_bundles:
+        anchor = real_pairs_by_kind.get((bundle.from_section, bundle.to_section))
+        if anchor is not None and abs(bundle.at_seconds - anchor) > 0.5:
+            new_opts = [opt.model_copy(update={"at_seconds": anchor}) for opt in bundle.options]
+            aligned_bundles.append(bundle.model_copy(update={"at_seconds": anchor, "options": new_opts}))
+        else:
+            aligned_bundles.append(bundle)
+    transition_bundles = aligned_bundles
+
+    return PackagingRecommendationV2(
+        plan_id=plan.plan_id,
+        subtitle_styles=subtitle_styles,
+        title_bars=title_bars,
+        stickers=stickers,
+        transition_bundles=transition_bundles,
+        covers=covers,
+        notes=notes,
+    )
+
+
+def apply_selection_to_plan(
+    plan: Plan,
+    selection: "PackagingSelectionLike",
+) -> Plan:
+    """把用户挑选的候选写到 plan.packaging_track + Scene.transition_in。
+
+    selection 是 PackagingSelection（局部 import 避免循环依赖）。
+    无状态：所有候选都来自 selection.recommendation 自带的快照。
+    """
+    from ...schemas import PackagingSelection  # local import
+
+    sel: PackagingSelection = selection  # type: ignore[assignment]
+    rec = sel.recommendation
+    sub_lookup = {c.candidate_id: c for c in rec.subtitle_styles}
+    tb_lookup = {c.candidate_id: c for c in rec.title_bars}
+    st_lookup = {c.candidate_id: c for c in rec.stickers}
+    cv_lookup = {c.candidate_id: c for c in rec.covers}
+    bundle_lookup = {c.candidate_id: c for c in rec.transition_bundles}
+
+    # 1. 清主轨 transition_in
+    for sc in plan.main_track:
+        sc.transition_in = None
+
+    # 2. 应用转场选择
+    scenes_by_start = sorted(plan.main_track, key=lambda s: s.start)
+    for bundle_id, picked_style in sel.transition_selections.items():
+        bundle = bundle_lookup.get(bundle_id)
+        if bundle is None:
+            continue
+        opt = next((o for o in bundle.options if o.style == picked_style), None)
+        if opt is None:
+            continue
+        target = None
+        best_delta = 0.6
+        for sc in scenes_by_start:
+            if sc is plan.main_track[0]:
+                continue
+            delta = abs(sc.start - opt.at_seconds)
+            if delta <= best_delta:
+                best_delta = delta
+                target = sc
+        if target is None:
+            continue
+        target.transition_in = SceneTransition(style=opt.style, duration=opt.duration)
+
+    # 3. 重建 packaging_track（保留口播字幕：start 时根据选中的 subtitle_style 重新生成 style）
+    sub_style = sub_lookup.get(sel.subtitle_style_id) if sel.subtitle_style_id else None
+    new_packaging: list[PackagingItem] = []
+
+    # 3a. 字幕：每条 scene narration 一条 subtitle，沿用选中样式（无选则继承 prefs）。
+    #     由 subtitle_enabled 单独控制（与 TTS 解耦：可以只上字幕不口播，反之亦然）。
+    #     scene.text_card_spec 非空的段跳过——字卡画面本身已经显示主副标，再叠字幕会重复打架。
+    prefs_eff = expand_preset(plan.settings.packaging_prefs)
+    if plan.settings.subtitle_enabled:
+        for idx, sc in enumerate(plan.main_track):
+            if sc.text_card_spec is not None:
+                continue
+            sub_text = (sc.narration or "").strip()
+            if not sub_text:
+                continue
+            if sub_style is not None:
+                style_dict = {
+                    "font_size": sub_style.font_size,
+                    "position": sub_style.position,
+                    "background": sub_style.background,
+                    "bilingual": sub_style.bilingual,
+                }
+            else:
+                style_dict = {
+                    "font_size": prefs_eff.subtitle_font_size,
+                    "position": prefs_eff.subtitle_position,
+                    "background": prefs_eff.subtitle_background,
+                    "bilingual": prefs_eff.subtitle_bilingual,
+                }
+            new_packaging.append(PackagingItem(
+                item_id=f"pkg-sub-{idx}",
+                kind="subtitle",
+                start=sc.start,
+                end=sc.start + sc.duration,
+                text=sub_text,
+                style=style_dict,
+            ))
+
+    # 3b. 标题条
+    for tb_id in sel.title_bar_ids:
+        c = tb_lookup.get(tb_id)
+        if c is None:
+            continue
+        new_packaging.append(PackagingItem(
+            item_id=f"pkg-tb-{c.candidate_id}",
+            kind="title_bar",
+            start=c.start,
+            end=c.end,
+            text=c.text,
+            style={
+                "font_size": c.font_size,
+                "color": c.color,
+                "background_color": c.background_color,
+                "position": c.position,
+            },
+        ))
+
+    # 3c. 贴纸
+    for st_id in sel.sticker_ids:
+        c = st_lookup.get(st_id)
+        if c is None:
+            continue
+        new_packaging.append(PackagingItem(
+            item_id=f"pkg-st-{c.candidate_id}",
+            kind="sticker",
+            start=c.start,
+            end=c.end,
+            text=c.text,
+            style={
+                "color": c.color,
+                "background_color": c.background_color,
+                "position": c.position,
+            },
+        ))
+
+    # 3d. 封面
+    cover_c = cv_lookup.get(sel.cover_id) if sel.cover_id else None
+    if cover_c is not None and plan.main_track:
+        first_dur = plan.main_track[0].duration
+        cover_end = max(0.6, min(prefs_eff.cover_duration, first_dur))
+        new_packaging.append(PackagingItem(
+            item_id=f"pkg-cv-{cover_c.candidate_id}",
+            kind="cover",
+            start=0.0,
+            end=cover_end,
+            text=cover_c.title,
+            style={
+                "subtitle": cover_c.subtitle if prefs_eff.cover_with_subtitle else None,
+                "palette": cover_c.palette,
+                "layout": cover_c.layout,
+                "style_note": cover_c.style_note,
+            },
+        ))
+
+    plan.packaging_track = new_packaging
+    plan_store.replace(plan)
+    log.info(
+        "[packaging-v2] plan=%s applied: subs=%d, title_bars=%d, stickers=%d, transitions=%d, cover=%s",
+        plan.plan_id,
+        sum(1 for it in new_packaging if it.kind == "subtitle"),
+        len(sel.title_bar_ids),
+        len(sel.sticker_ids),
+        sum(1 for sc in plan.main_track if sc.transition_in),
+        sel.cover_id or "none",
+    )
+    return plan
+
+
+# typing forward-ref helper
+PackagingSelectionLike = Any

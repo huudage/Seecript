@@ -75,7 +75,7 @@ class PlanStore:
                 continue
             for f in plans_dir.glob("*.json"):
                 try:
-                    plan = Plan.model_validate_json(f.read_text(encoding="utf-8"))
+                    plan = self._load_plan_file(f)
                 except Exception as exc:  # noqa: BLE001
                     log.warning("[plans] skip broken plan %s: %s", f, exc)
                     continue
@@ -95,6 +95,36 @@ class PlanStore:
         if migrated_transitions > 0:
             log.info("[plans] migrated %d transitions in %d plans (packaging→Scene.transition_in)",
                      migrated_transitions, migrated_plans)
+
+    @staticmethod
+    def _load_plan_file(f: Path) -> Plan:
+        """读 plan.json 并兜底升级老字段（stage-15）。
+
+        老 plan 落盘时含 `sample_ids: list[str]` 或更早的 `sample_id: str`；
+        新 schema 必填 `reference_versions`。按当前 active slot 反查；找不到 active 则跳过该 sid。
+        """
+        raw = json.loads(f.read_text(encoding="utf-8"))
+        if isinstance(raw, dict) and not raw.get("reference_versions"):
+            legacy_ids: list[str] = []
+            sids = raw.get("sample_ids")
+            if isinstance(sids, list) and sids:
+                legacy_ids = [s for s in sids if isinstance(s, str)]
+            else:
+                sid_one = raw.get("sample_id")
+                if isinstance(sid_one, str) and sid_one:
+                    legacy_ids = [sid_one]
+            if legacy_ids:
+                from ..library import manifest_store
+                refs: list[dict] = []
+                for sid in legacy_ids:
+                    active = manifest_store.get_active_slot(sid)
+                    if active:
+                        refs.append({"sample_id": sid, "slot_id": active})
+                raw["reference_versions"] = refs
+                raw["_legacy_sample_ids"] = legacy_ids
+                raw.pop("sample_ids", None)
+                raw.pop("sample_id", None)
+        return Plan.model_validate(raw)
 
     @staticmethod
     def _migrate_legacy_transitions(plan: Plan) -> int:
@@ -142,8 +172,10 @@ class PlanStore:
                 _atomic_write_json(path, plan.model_dump())
             except Exception as exc:  # noqa: BLE001
                 log.error("[plans] persist %s failed: %s", plan.plan_id, exc)
-        log.info("[plan] stored plan_id=%s samples=%s scenes=%d project=%s",
-                 plan.plan_id, plan.sample_ids, len(plan.main_track), plan.project_id or _LEGACY_OWNER)
+        log.info("[plan] stored plan_id=%s refs=%s scenes=%d project=%s",
+                 plan.plan_id,
+                 [(rv.sample_id, rv.slot_id) for rv in plan.reference_versions],
+                 len(plan.main_track), plan.project_id or _LEGACY_OWNER)
 
     def get(self, plan_id: str) -> Optional[Plan]:
         with self._lock:

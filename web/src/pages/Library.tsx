@@ -2,19 +2,17 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 
 import { api, ApiError } from '@/api/client'
-import { commitStep } from '@/api/steps'
-import { NewProjectDialog } from '@/components/home/NewProjectDialog'
 import { PageShell } from '@/components/layout/PageShell'
 import { AssetLibraryView } from '@/components/library/AssetLibraryView'
-import { useProjectsStore } from '@/stores/projects'
 import { useSessionStore } from '@/stores/session'
 import type { LibraryItem, VideoType } from '@/types/schemas'
-import { VIDEO_TYPE_LABEL } from '@/lib/sections'
+import { VIDEO_TYPE_LABEL, VIDEO_TYPE_HINT } from '@/lib/sections'
 import { cn } from '@/lib/utils'
 import { readVideoDuration, VIDEO_UPLOAD_MAX_DURATION_SECONDS } from '@/lib/video'
 
 type Section = 'samples' | 'assets'
 type Tab = 'system' | 'user'
+type VideoTypeFilter = 'all' | VideoType
 
 // 系统样例库上传响应:POST /api/library/system/upload(落到 server/samples/<sys-hex>/)
 interface LibrarySystemUploadResponse {
@@ -39,15 +37,13 @@ export default function LibraryPage() {
   const [items, setItems] = useState<LibraryItem[] | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [tab, setTab] = useState<Tab>('system')
+  const [videoTypeFilter, setVideoTypeFilter] = useState<VideoTypeFilter>('all')
   const [previewItem, setPreviewItem] = useState<LibraryItem | null>(null)
-  // 新建项目弹窗：从素材库挑样例时也支持直接新建项目
-  const [newProjectSampleId, setNewProjectSampleId] = useState<string | null>(null)
   // 上传:reloadTick 自增触发列表重拉(上传成功后立即看到新样例)
   const [reloadTick, setReloadTick] = useState(0)
   const [uploading, setUploading] = useState(false)
   const selectSamples = useSessionStore((s) => s.selectSamples)
   const selectedSampleIds = useSessionStore((s) => s.selectedSampleIds)
-  const currentProjectId = useProjectsStore((s) => s.currentProjectId)
   const navigate = useNavigate()
 
   // 一次性拉合并列表（不带 ?source=）；前端按 source 字段切 tab，省一次请求。
@@ -72,42 +68,32 @@ export default function LibraryPage() {
     return { system: sys, user: usr }
   }, [items])
 
+  // 按当前 tab（system/user）算每种 video_type 的数量，用于分类按钮上的徽标。
+  const videoTypeCounts = useMemo(() => {
+    const base: Record<VideoTypeFilter, number> = { all: 0, marketing: 0, editing: 0, motion_graph: 0 }
+    if (!items) return base
+    for (const it of items) {
+      if (it.source !== tab) continue
+      base.all += 1
+      base[it.video_type] = (base[it.video_type] ?? 0) + 1
+    }
+    return base
+  }, [items, tab])
+
   const visible = useMemo(
-    () => items?.filter((i) => i.source === tab) ?? null,
-    [items, tab],
+    () =>
+      items
+        ?.filter((i) => i.source === tab)
+        .filter((i) => videoTypeFilter === 'all' || i.video_type === videoTypeFilter) ?? null,
+    [items, tab, videoTypeFilter],
   )
 
-  const handlePick = async (item: LibraryItem) => {
+  // stage-15:卡片点击只引导到 Decompose 页(查看 / 编辑该样例的拆解版本)。
+  // 资产库与 Compose 链路彻底解耦——结构参考由 Compose 顶部 ReferencePicker 单独挑。
+  // selectSamples 仅用于在 Decompose 页知道"现在在拆/看哪条",不再 commit library step。
+  const handlePick = (item: LibraryItem) => {
     selectSamples([item.id], [item.title], item.video_type, item.source)
-    // 未拆解（version_count=0）→ 跳 Decompose 引导用户先拆解；别让 Compose 拿到半成品
-    if (item.version_count === 0) {
-      if (currentProjectId) {
-        try {
-          await commitStep(currentProjectId, 'library', { sample_ids: [item.id] })
-        } catch (err) {
-          setError(err instanceof Error ? err.message : '保存步骤失败')
-          return
-        }
-      }
-      navigate('/decompose')
-      if (!currentProjectId) {
-        setNewProjectSampleId(item.id)
-      }
-      return
-    }
-    // 已拆解（≥1 个版本槽）：沿用原有 Compose 跳转链
-    if (currentProjectId) {
-      try {
-        await commitStep(currentProjectId, 'library', { sample_ids: [item.id] })
-      } catch (err) {
-        setError(err instanceof Error ? err.message : '保存步骤失败')
-        return
-      }
-      navigate('/decompose')
-      return
-    }
-    // 无项目：弹「新建项目」让用户起名（创建后由 NewProjectDialog 内部 commit library）
-    setNewProjectSampleId(item.id)
+    navigate(`/decompose?sample=${encodeURIComponent(item.id)}`)
   }
 
   // 上传到 system / user 样例库:两条 endpoint 都是 multipart,字段一致(file/video_type/title),
@@ -118,7 +104,7 @@ export default function LibraryPage() {
     setError(null)
     const duration = await readVideoDuration(file)
     if (duration != null && duration > VIDEO_UPLOAD_MAX_DURATION_SECONDS) {
-      setError(`视频时长 ${duration.toFixed(1)}s 超过 3 分钟上限,请改用更短的素材`)
+      setError(`视频时长 ${duration.toFixed(1)} 秒超过了 3 分钟上限，请换一个更短的视频`)
       return
     }
     setUploading(true)
@@ -144,7 +130,7 @@ export default function LibraryPage() {
   return (
     <PageShell
       title="资产库"
-      subtitle="样例视频 + 拆解结果（最多 2 版本可对比） + 你的常用素材：BGM、参考图、参考视频。"
+      subtitle="爆款样例和你常用的素材都在这里。点样例进「样例拆解」可以拆出它的结构。"
     >
       <div className="mb-5 inline-flex items-center gap-1 rounded-lg border border-border bg-card p-1 text-sm">
         {(['samples', 'assets'] as const).map((s) => (
@@ -158,7 +144,7 @@ export default function LibraryPage() {
                 : 'text-muted-foreground hover:bg-secondary hover:text-foreground',
             )}
           >
-            {s === 'samples' ? '样例视频' : '我的素材'}
+            {s === 'samples' ? '爆款样例' : '我的素材'}
           </button>
         ))}
       </div>
@@ -185,12 +171,42 @@ export default function LibraryPage() {
                     : 'text-muted-foreground hover:bg-secondary hover:text-foreground',
                 )}
               >
-                {t === 'system' ? '系统样例库' : '我的样例库'}
+                {t === 'system' ? '官方样例' : '我上传的'}
                 <span className="ml-1 text-[10px] opacity-70">
                   {t === 'system' ? counts.system : counts.user}
                 </span>
               </button>
             ))}
+          </div>
+
+          {/* 视频类型分类筛选——backend LibraryItem.video_type 长存（marketing/editing/motion_graph），
+              前端按 system/user tab 内再做二次过滤。这里把分类暴露出来，否则用户只看到一种贴在
+              卡片角的小徽标，永远找不到"只看 Vlog 样例"。 */}
+          <div className="mb-4 flex flex-wrap items-center gap-2">
+            <span className="text-[11px] font-medium text-muted-foreground">视频类型</span>
+            <div className="inline-flex flex-wrap items-center gap-1 rounded-lg border border-border bg-card p-1 text-xs">
+              {(['all', 'marketing', 'editing', 'motion_graph'] as const).map((f) => {
+                const label = f === 'all' ? '全部' : VIDEO_TYPE_LABEL[f]
+                const active = videoTypeFilter === f
+                const count = videoTypeCounts[f]
+                return (
+                  <button
+                    key={f}
+                    onClick={() => setVideoTypeFilter(f)}
+                    title={f === 'all' ? '不过滤视频类型' : VIDEO_TYPE_HINT[f]}
+                    className={cn(
+                      'rounded-md px-2.5 py-1 transition-colors',
+                      active
+                        ? 'bg-primary text-primary-foreground'
+                        : 'text-muted-foreground hover:bg-secondary hover:text-foreground',
+                    )}
+                  >
+                    {label}
+                    <span className="ml-1 text-[10px] opacity-70">{count}</span>
+                  </button>
+                )
+              })}
+            </div>
           </div>
 
       {items === null && !error && (
@@ -287,16 +303,6 @@ export default function LibraryPage() {
       )}
         </>
       )}
-
-      {newProjectSampleId && (
-        <NewProjectDialog
-          onClose={() => setNewProjectSampleId(null)}
-          onCreated={() => {
-            setNewProjectSampleId(null)
-            navigate('/decompose')
-          }}
-        />
-      )}
     </PageShell>
   )
 }
@@ -356,14 +362,14 @@ function ManifestStatusBadge({ versionCount }: { versionCount: number }) {
     return (
       <span className="inline-flex items-center gap-1.5 rounded-full border border-border bg-muted px-2 py-0.5 text-[10px] font-medium text-muted-foreground">
         <span className="h-1.5 w-1.5 rounded-full bg-muted-foreground/60" />
-        未拆解
+        还没拆解
       </span>
     )
   }
   return (
     <span className="inline-flex items-center gap-1.5 rounded-full border border-emerald-400/40 bg-emerald-400/10 px-2 py-0.5 text-[10px] font-medium text-emerald-600 dark:text-emerald-300">
       <span className="h-1.5 w-1.5 rounded-full bg-emerald-500" />
-      已拆解 · {versionCount} 版本
+      已拆解 · {versionCount} 个版本
     </span>
   )
 }
@@ -396,11 +402,11 @@ function UploadSampleCard({
     if (file) onPick(file)
   }
 
-  const tabLabel = tab === 'system' ? '系统样例库' : '我的样例库'
+  const tabLabel = tab === 'system' ? '官方样例' : '我上传的样例'
   const tabDesc =
     tab === 'system'
-      ? '所有用户可见的公共爆款样例;上传后落到 server/samples/'
-      : '只对当前 session 可见;上传后落到 var/uploads/decompose/'
+      ? '所有用户都能看到的公开样例'
+      : '只有当前账号能看到的私人样例'
 
   return (
     <div
@@ -448,7 +454,7 @@ function UploadSampleCard({
         {tabDesc}
       </p>
       <p className="text-[11px] text-muted-foreground">
-        mp4 / mov / webm,≤ 3 分钟、单文件 ≤ 200MB
+        mp4 / mov / webm，单个文件 ≤ 200MB、≤ 3 分钟
       </p>
       <input
         ref={inputRef}

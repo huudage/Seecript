@@ -28,7 +28,7 @@ from __future__ import annotations
 
 from typing import Any, Literal, Optional
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, computed_field, model_validator
 
 # =========================================================================
 # Common
@@ -37,8 +37,17 @@ from pydantic import BaseModel, Field, model_validator
 GapStatus = Literal["ok", "warn", "miss"]
 """槽位匹配状态：✅ 完全命中 / ⚠️ 勉强命中 / ❌ 缺口需补全"""
 
-FillAction = Literal["rerank", "copy", "aigc"]
-"""缺口补全动作：结构重排 / 文案补全 / Seedance T2V 短片生成"""
+FillAction = Literal["rerank", "copy", "aigc", "aigc_image"]
+"""缺口补全动作：
+- rerank      结构重排（从素材库挑一个最匹配的）
+- copy        字卡画面（LLM 写文案 + 设计字卡）
+- aigc        Seedance T2V 短片生成（动态画面）
+- aigc_image  Seedream 文生图（静态画面，按 scene.duration 定格成 mp4）
+
+aigc_image 与 aigc 共享同一套准备链（参考图分析 → 提示词生成 → 用户调参），
+只在最后一步把 Seedance 视频生成换成 Seedream 静图——成本与等待显著低于视频，
+适合"展示型镜头不需要运动"的场景（人物/产品/场景静态特写）。
+"""
 
 Variant = Literal["A", "B"]
 """AB 双版本渲染标识"""
@@ -55,16 +64,111 @@ VideoType = Literal["marketing", "editing", "motion_graph"]
 """
 
 
-SectionRole = Literal["opening", "development", "climax", "closing"]
-"""段落角色——任何视频都适用的抽象骨架。
+SectionRole = str
+"""段落角色——stage-16 起改为 free-string,支持 5 种结构模式 17 个角色名。
 
-- opening      开场段：吸引注意、奠定基调（hook / 标题 / 氛围铺垫 都映射到这里）
-- development  发展段：内容铺陈、信息展开（可以多段；body / build / 中段都映射到这里）
-- climax       高潮段：情绪/视觉/冲突顶点（climax / drop / 卖点对比都映射到这里）
-- closing      收尾段：余韵 / 行动引导 / 落版（cta / outro / closing 都映射到这里）
-
-约束：一个 manifest 必须恰好 1 个 opening + 1 个 closing，最多 1 个 climax，其余皆 development。
+历史 4 角色（dramatic 模式）仍是 SectionRole 的合法值,新模式按 STRUCTURAL_PATTERNS 扩展。
+合法性由 helper `allowed_roles_for(pattern)` 在 LLM 节点输出时按模式校验。
 """
+
+
+StructuralPattern = Literal["dramatic", "stepwise", "listicle", "atmospheric", "info_dense", "vlog"]
+"""视频结构模式——6 选 1,决定下游使用哪套角色体系。
+
+- dramatic      戏剧四段式：起承转合(opening/development/climax/closing)
+- stepwise      线性步骤式：教程/操作流程(intro/step_N/recap)
+- listicle      并列盘点式：榜单/N 个理由(hook/item_N/closer)
+- atmospheric   氛围推进式：Vlog/纪录(establish/flow/peak/resolve)
+- info_dense    信息密集快切式：信息可视化(title_card/info_block/payoff)
+- vlog          日常 Vlog 无高潮型：开场/日常×N/收尾(intro_scene/daily_N/wrap_up)
+                没有强情绪峰值,允许 LLM 在「没有明显高潮」时落到这套结构,避免硬塞 climax。
+"""
+
+
+Tempo = Literal["slow", "medium", "fast", "peak", "deceleration"]
+"""节奏标签——对单镜头/单段落的节奏感分类。"""
+
+
+# ---- 5 种结构模式的角色分类表 -------------------------------------------------
+# 每种模式按 4 类组织角色:opening 类(开场)/main 类(主体)/peak 类(峰值,可空)/closing 类(收尾)
+# `step_*` / `item_*` 是通配符,匹配 step_1, step_2, ... 这种动态后缀。
+STRUCTURAL_PATTERNS: dict[str, dict[str, list[str]]] = {
+    "dramatic":    {"opening": ["opening"],     "main": ["development"], "peak": ["climax"], "closing": ["closing"]},
+    "stepwise":    {"opening": ["intro"],       "main": ["step_*"],      "peak": [],         "closing": ["recap"]},
+    "listicle":    {"opening": ["hook"],        "main": ["item_*"],      "peak": [],         "closing": ["closer"]},
+    "atmospheric": {"opening": ["establish"],   "main": ["flow"],        "peak": ["peak"],   "closing": ["resolve"]},
+    "info_dense":  {"opening": ["title_card"],  "main": ["info_block"],  "peak": [],         "closing": ["payoff"]},
+    "vlog":        {"opening": ["intro_scene"], "main": ["daily_*"],     "peak": [],         "closing": ["wrap_up"]},
+}
+
+
+def _role_match(role: str, slot_specs: list[str]) -> bool:
+    """把 role 字符串和 slot 规格列表(可能含 `step_*` 通配符)做匹配。"""
+    role_l = (role or "").lower().strip()
+    for spec in slot_specs:
+        if spec.endswith("_*"):
+            prefix = spec[:-1]  # 'step_'
+            if role_l.startswith(prefix):
+                rest = role_l[len(prefix):]
+                if rest.isdigit() or rest == "":
+                    return True
+        elif role_l == spec.lower():
+            return True
+    return False
+
+
+def role_is_opening(role: str, pattern: str) -> bool:
+    """role 是否属于 pattern 的开场类。"""
+    p = STRUCTURAL_PATTERNS.get(pattern, STRUCTURAL_PATTERNS["dramatic"])
+    return _role_match(role, p["opening"])
+
+
+def role_is_closing(role: str, pattern: str) -> bool:
+    p = STRUCTURAL_PATTERNS.get(pattern, STRUCTURAL_PATTERNS["dramatic"])
+    return _role_match(role, p["closing"])
+
+
+def role_is_peak(role: str, pattern: str) -> bool:
+    p = STRUCTURAL_PATTERNS.get(pattern, STRUCTURAL_PATTERNS["dramatic"])
+    return _role_match(role, p["peak"])
+
+
+def role_is_main(role: str, pattern: str) -> bool:
+    p = STRUCTURAL_PATTERNS.get(pattern, STRUCTURAL_PATTERNS["dramatic"])
+    return _role_match(role, p["main"])
+
+
+def allowed_roles_for(pattern: str, *, max_dynamic: int = 8) -> list[str]:
+    """枚举 pattern 下所有合法 role 名(`step_*` 展开为 step_1..step_max_dynamic)。"""
+    p = STRUCTURAL_PATTERNS.get(pattern, STRUCTURAL_PATTERNS["dramatic"])
+    out: list[str] = []
+    for klass in ("opening", "main", "peak", "closing"):
+        for spec in p[klass]:
+            if spec.endswith("_*"):
+                prefix = spec[:-2]  # 'step'
+                out.extend([f"{prefix}_{i}" for i in range(1, max_dynamic + 1)])
+            else:
+                out.append(spec)
+    return out
+
+
+def all_role_names() -> list[str]:
+    """所有 5 种模式下的全部静态 role 名(不含 step_N/item_N 动态序号),供 LLM blocklist 用。"""
+    seen: set[str] = set()
+    out: list[str] = []
+    for p in STRUCTURAL_PATTERNS.values():
+        for klass in ("opening", "main", "peak", "closing"):
+            for spec in p[klass]:
+                if spec.endswith("_*"):
+                    base = spec[:-2]  # 'step' / 'item'
+                    if base not in seen:
+                        seen.add(base)
+                        out.append(base)
+                else:
+                    if spec not in seen:
+                        seen.add(spec)
+                        out.append(spec)
+    return out
 
 
 # ---- 旧 SectionKind → 新 SectionRole 的迁移映射 -------------------------------
@@ -125,6 +229,50 @@ class SampleVersionInfo(BaseModel):
     is_active: bool = Field(..., description="是否当前 active 槽（Compose / Library 用的就是它）")
 
 
+class ReferenceVersion(BaseModel):
+    """Compose 选用的「拆解版本」唯一指针：(sample_id, slot_id)。
+
+    stage-15 起 Plan/Project 不再按 sample_id 默认拿 active 槽，而是显式按
+    (sample_id, slot_id) pair 加载具体版本，让用户能拿同一样例的 v1/v2 做对比迁移。
+    """
+
+    sample_id: str = Field(..., description="所属样例 id")
+    slot_id: str = Field(..., description="该样例下的 slot id（8 hex）")
+
+
+class ReferenceListItem(BaseModel):
+    """`GET /api/references` 列表项：拍平所有 sample × 所有槽。
+
+    供 Compose 顶部 ReferencePicker 选 1-2 个版本作为结构参考用。
+    """
+
+    sample_id: str
+    sample_title: str
+    slot_id: str
+    label: str = Field(..., description="该 sample 下的展示标签 v1/v2")
+    video_type: VideoType
+    scene: str
+    duration_seconds: float
+    shot_count: int
+    cover_url: str
+    source: "LibrarySource" = Field(default="system")
+    updated_at: float
+    is_active: bool
+
+
+class ManifestSaveRequest(BaseModel):
+    """`POST /api/sample/{id}/manifest/save` body：把前端草稿（zustand 内存里的 SampleManifest）
+    落到资产库的版本槽。槽未满时 create_version；槽满 + replace_slot 时覆盖；槽满 + 无 replace_slot
+    返 409 让前端弹「保存覆盖对话框」让用户挑要替换的 v1/v2。
+    """
+
+    manifest: "SampleManifest" = Field(..., description="完整的拆解结果（前端编辑后的版本）")
+    replace_slot: Optional[str] = Field(
+        default=None,
+        description="槽满时显式指定要覆盖的 slot_id；槽未满时必须为空（路由层预校验）。",
+    )
+
+
 class LibraryItem(BaseModel):
     """`GET /api/library` 列表项。"""
 
@@ -179,12 +327,30 @@ class Utterance(BaseModel):
 
 
 class RhythmCurve(BaseModel):
-    """节奏曲线 = 镜头切换频次 + BGM 能量。前端拿来画双线图。"""
+    """节奏 / 情绪走势曲线——前端拿来画"BGM 与视频结构契合度"图。
+
+    R1 改版（2026-06）：
+    - mood_curve / bgm_fit_score / bgm_fit_note 是主用字段;前端只画 mood_curve + bgm_energy 两条平滑线
+      + 一个契合度评分文案,不再展示 cut_density / tempo_bpm。
+    - cut_density / tempo_bpm 保留为兼容字段(老 manifest 可能携带,前端忽略);新数据写空列表 / None。
+    """
 
     times: list[float] = Field(..., description="采样时间点（秒）")
-    cut_density: list[float] = Field(..., description="单位时间镜头切换密度")
-    bgm_energy: list[float] = Field(..., description="librosa RMS 能量曲线，归一到 [0,1]")
-    tempo_bpm: Optional[float] = None
+    bgm_energy: list[float] = Field(default_factory=list, description="librosa RMS 能量曲线,归一到 [0,1]")
+    cut_density: list[float] = Field(default_factory=list, description="[已弃用] 单位时间镜头切换密度——保留兼容,前端不再读")
+    tempo_bpm: Optional[float] = Field(default=None, description="[已弃用] 整体 BPM——保留兼容,前端不再读")
+    mood_curve: list[float] = Field(
+        default_factory=list,
+        description="情绪走势 0..1。主体平稳,峰值段抬升,收尾下降——按段落结构低频平滑,不跟节拍跳动",
+    )
+    bgm_fit_score: Optional[float] = Field(
+        default=None,
+        description="BGM 能量与 mood_curve 的相关度 0..1;接近 1 说明 BGM 节奏与视频结构同步",
+    )
+    bgm_fit_note: Optional[str] = Field(
+        default=None,
+        description="一句话说明 BGM 是否服务于视频结构（命中 / 错位 / 平稳 / 过度起伏 等）",
+    )
 
 
 class Section(BaseModel):
@@ -227,12 +393,36 @@ class VideoUnderstanding(BaseModel):
     decompose pipeline 的关键转折：以前直接按 video_type 三选一塞 prompt 给 LLM 让它切段，
     现在多走一步——先让 LLM 看完整片说"这是个什么样的视频"，再用这份画像驱动切段。
     这样艺术展宣传片不会被强切成 hook/body/cta，而是按它自己的叙事弧线切。
+
+    Stage-16 起加 structural_pattern (5 选 1) 决定整片角色体系；tempo 给段落节奏锚定；
+    estimated_segments 改名（原 suggested_segments，2-8 段，listicle 模式上限放宽到 8）。
     """
 
     archetype: str = Field(..., max_length=40, description="视频原型，如『艺术展宣传』『带货种草』『城市 Vlog』")
     narrative_summary: str = Field(..., max_length=200, description="一段话讲清整支视频在说什么、怎么说")
-    suggested_segments: int = Field(..., ge=3, le=6, description="LLM 建议切几段（3-6）")
+    structural_pattern: StructuralPattern = Field(
+        default="dramatic",
+        description="结构模式：dramatic 戏剧弧 / stepwise 步骤 / listicle 盘点 / atmospheric 氛围 / info_dense 信息密集",
+    )
+    tempo: Optional[Tempo] = Field(
+        default=None,
+        description="整体节奏：slow/medium/fast/peak/deceleration；可选，仅对 dramatic/info_dense 强相关",
+    )
+    estimated_segments: int = Field(..., ge=2, le=8, description="LLM 估计切几段（2-8，listicle 上限到 8）")
     tone: str = Field(default="", max_length=30, description="基调描述：『冷静克制』『高燃热血』『诙谐自嘲』等")
+
+    @model_validator(mode="before")
+    @classmethod
+    def _migrate_suggested_segments(cls, data: Any) -> Any:
+        """旧 manifest 用 `suggested_segments`——映射成 `estimated_segments`。
+
+        新字段范围放宽到 2-8（旧字段 3-6），夹在新范围内即可，不丢数据。
+        """
+        if not isinstance(data, dict):
+            return data
+        if "estimated_segments" not in data and "suggested_segments" in data:
+            data["estimated_segments"] = data.pop("suggested_segments")
+        return data
 
 
 class PackagingProfile(BaseModel):
@@ -270,6 +460,15 @@ class SampleManifest(BaseModel):
         default=None,
         description="高潮时间点（秒）。优先取 role=climax 段中点；无 climax 时回落 BGM 能量峰值。前端节奏图叠 ReferenceLine。",
     )
+    audio_understanding: Optional["BGMAnalysis"] = Field(
+        default=None,
+        description=(
+            "LLM 多模态音频理解结果。decompose 跑完后异步算一遍：抽样例视频音轨到 samples/{sid}/audio.mp3，"
+            "送 doubao-seed multimodal input_audio，输出 energy_shape / climaxes / calm_segments / overall_advice。"
+            "复用 BGMAnalysis schema（theme_fit_* 当作『音频能量与视频题材的契合度』解读）。"
+            "失败 / 未配 ARK / 老缓存 → None，前端兜底显示 librosa 的 BPM + 单点 peak。"
+        ),
+    )
 
 
 # =========================================================================
@@ -292,6 +491,15 @@ class DecomposeRequest(BaseModel):
     replace_slot: Optional[str] = Field(
         default=None,
         description="版本槽已满时要覆盖的 slot_id；槽未满时必须为空。后端在路由层预校验。",
+    )
+    persist: bool = Field(
+        default=False,
+        description=(
+            "是否在流水线跑完后直接落到版本槽。"
+            "stage-15 起默认 False（草稿态，前端拿 SSE done 里的 manifest 自己存 zustand），"
+            "用户点「保存到资产库」时再走 POST /sample/{id}/manifest/save 入库。"
+            "True 走老行为（直接 create_version），仅供需要无人值守自动入库的内部场景使用。"
+        ),
     )
 
 
@@ -402,12 +610,7 @@ class GapDetectRequest(BaseModel):
     )
     session_id: Optional[str] = Field(
         default=None,
-        description="兼容老前端：留作 project_id 的别名；为空走 mock 素材。",
-    )
-    allow_mock: bool = Field(
-        default=True,
-        description="True：session 为空时回退到内置 mock 素材（默认，方便 demo）；"
-                    "False：纯文本流程，缺素材时所有 gap 都标 miss，引导用户走 copy/aigc 补全。",
+        description="兼容老前端：留作 project_id 的别名。",
     )
 
 
@@ -438,6 +641,163 @@ class AigcPromptRequest(BaseModel):
 class AigcPromptResponse(BaseModel):
     gap_id: str
     prompt: str = Field(..., description="LLM 转写出的完备 T2V prompt")
+    thinking: list[str] = Field(
+        default_factory=list,
+        description="Agent 思考链——2-4 条短句，用于前端可视化『LLM 是怎么从段落上下文推到 prompt 的』",
+    )
+
+
+# --- AIGC 图片参考工作流（D2）：spec → seedream → tail-frame --------------
+
+class ImageSpec(BaseModel):
+    """一张"建议参考图"的元数据。AI 先看段落语境拍板需要几张图。"""
+
+    slot_id: str = Field(..., description="同 gap 内唯一，前端按此 key 收集 imageSlots")
+    caption: str = Field(..., max_length=80, description="人类语言描述（『展厅入口仰拍』）")
+    prompt: str = Field(..., max_length=300, description="若用户选 Seedream 生成，默认 prompt")
+    ratio: str = Field(default="16:9", description="豆包 Seedream 支持 16:9/9:16/1:1/4:3/3:4")
+
+
+class AigcImageSpecRequest(BaseModel):
+    """`POST /api/gap/aigc-image-spec` —— 让 LLM 判断本段需要几张参考图。"""
+
+    gap_id: str
+    hint: Optional[str] = Field(default=None, max_length=200)
+
+
+class AigcImageSpecResponse(BaseModel):
+    gap_id: str
+    specs: list[ImageSpec] = Field(default_factory=list)
+    thinking: list[str] = Field(
+        default_factory=list,
+        description="Agent 思考链——2-4 条短句，讲清 LLM 怎么判断本段需要哪几张参考图",
+    )
+
+
+class AigcSeedreamRequest(BaseModel):
+    """`POST /api/gap/aigc-seedream` —— 调豆包 Seedream 出 1 张图。"""
+
+    prompt: str = Field(..., min_length=2, max_length=1500)
+    ratio: str = Field(default="16:9")
+    n: int = Field(default=1, ge=1, le=4)
+
+
+class SeedreamImage(BaseModel):
+    url: str
+    width: int
+    height: int
+
+
+class AigcSeedreamResponse(BaseModel):
+    images: list[SeedreamImage] = Field(default_factory=list)
+
+
+class AigcTailFrameRequest(BaseModel):
+    """`POST /api/gap/aigc-tail-frame` —— 抽前一段视频的尾帧。"""
+
+    plan_id: str
+    scene_id: str = Field(..., description="本段 scene_id，会回查前一段 main_track")
+
+
+class AigcTailFrameResponse(BaseModel):
+    frame_data_url: str = Field(..., description="data:image/jpeg;base64,... 直接送 Seedance")
+
+
+# --- Copy = Text Card Agent（stage-19）：字卡画面策划 ------------------------
+
+EmotionalHook = Literal["anxiety", "wow", "anticipation", "twist", "resonance"]
+
+TextCardFontFamily = Literal["bold_sans", "serif_classic", "handwriting", "tech_mono"]
+"""字体族——pipeline 映射到 var/fonts/*.ttf。
+- bold_sans       粗黑：信息密度高、宣告感强（默认）
+- serif_classic   衬线：故事感、调性内敛
+- handwriting     手写：温度、共鸣
+- tech_mono       科技等宽：数据 / 反差 / 极客感
+"""
+
+TextCardLayout = Literal["center", "top", "bottom", "split_top_bottom"]
+"""字卡布局——主标 / 副标 在画面上的位置编排。"""
+
+TextCardBgMode = Literal["solid", "gradient", "image_blur", "dark_overlay"]
+"""背景模式：纯色 / 渐变 / 模糊接上一段尾帧 / 暗罩。"""
+
+TextCardAnimation = Literal["fade_in", "typewriter", "bounce_word", "zoom_pop"]
+"""动画：淡入 / 打字机 / 词反弹 / 放大弹出。"""
+
+
+class TextCardSpec(BaseModel):
+    """字卡画面规格——驱动 ffmpeg 渲染纯文字短片；前端面板逐项可调，
+    pipeline._render_text_card 按字段映射到 drawtext + bg + fade。"""
+
+    main_text: str = Field(default="", max_length=24, description="主标语（≤24 字大字）")
+    sub_text: str = Field(default="", max_length=40, description="副标语（≤40 字，可空）")
+    font_family: TextCardFontFamily = Field(default="bold_sans")
+    layout: TextCardLayout = Field(default="center")
+    bg_mode: TextCardBgMode = Field(default="solid")
+    bg_color: str = Field(default="#0F172A", pattern=r"^#[0-9A-Fa-f]{6}$", description="背景色 hex")
+    text_color: str = Field(default="#FFFFFF", pattern=r"^#[0-9A-Fa-f]{6}$", description="主文字色 hex")
+    accent_color: str = Field(default="#22D3EE", pattern=r"^#[0-9A-Fa-f]{6}$", description="副标 / 装饰色 hex")
+    animation: TextCardAnimation = Field(default="fade_in")
+    emoji_decor: list[str] = Field(default_factory=list, max_length=3, description="装饰 emoji，最多 3 个")
+    duration_seconds: float = Field(default=4.0, ge=1.5, le=15.0, description="字卡时长")
+
+
+class CopyOutline(BaseModel):
+    """字卡画面大纲——给前端调参面板填默认值，再随 fill 请求回传 LLM 强化生成。
+
+    stage-19 起 copy 动作不再生成口播一句话，而是生成"字卡画面"——
+    所以 outline 字段也从『一句文案』变成『一份字卡推荐 spec』。
+    保留 core_message/emotional_hook/forced_keywords 字段作为字卡策划锚点。
+    """
+
+    main_text: str = Field(
+        default="",
+        max_length=24,
+        description="LLM 推荐的主标语（≤24 字）",
+    )
+    sub_text: str = Field(
+        default="",
+        max_length=40,
+        description="LLM 推荐的副标语（≤40 字，可空）",
+    )
+    core_message: str = Field(
+        default="",
+        max_length=80,
+        description="本段最该说的核心信息（≤20 字最佳，最大 80 字）；策划字卡时作为锚点",
+    )
+    emotional_hook: EmotionalHook = Field(
+        default="resonance",
+        description="情绪钩子：焦虑/惊艳/期待/反转/共鸣 五选一 —— 影响推荐配色与字体",
+    )
+    must_include_keywords: list[str] = Field(
+        default_factory=list,
+        description="从 compose_settings.keywords 中本段最该承载的 1-2 个，会落进 main_text/sub_text",
+    )
+    recommended_spec: TextCardSpec = Field(
+        default_factory=TextCardSpec,
+        description="LLM 推荐的字卡 spec —— 字体 / 布局 / 配色 / 动画 / emoji；用户在前端可改",
+    )
+    tone_lean: str = Field(
+        default="",
+        max_length=40,
+        description="在全局 tone 基础上的微调（『开场加紧 / 收尾放缓』）",
+    )
+
+
+class CopyOutlineRequest(BaseModel):
+    """`POST /api/gap/copy-outline` —— 让 LLM 先给文案写作大纲，再让用户调参后下单生成。"""
+
+    gap_id: str
+    hint: Optional[str] = Field(default=None, max_length=200)
+
+
+class CopyOutlineResponse(BaseModel):
+    gap_id: str
+    outline: CopyOutline
+    thinking: list[str] = Field(
+        default_factory=list,
+        description="Agent 思考链——2-4 条短句，给前端可视化 LLM 是怎么定下大纲的",
+    )
 
 
 class GapFillAllRequest(BaseModel):
@@ -458,6 +818,23 @@ class GapFillAllRequest(BaseModel):
         max_length=200,
         description="可选自定义 prompt 模板（仅 aigc），{requirement} 占位会被替换为 gap.requirement。",
     )
+    skip_gap_ids: list[str] = Field(
+        default_factory=list,
+        description=(
+            "前端已采纳/已完成的 gap_id 列表——后端在批量补全时跳过这些。"
+            "因为 gap_store 的 status 不会随 fill 落地（fills 主要走前端 zustand），"
+            "如果不传，已有字卡历史的镜头会被重新生成。"
+        ),
+    )
+    existing_text_cards: list[TextCardSpec] = Field(
+        default_factory=list,
+        description=(
+            "前端已采纳的字卡 spec 列表——作为风格样板透传给每个 batch fill。"
+            "之所以由前端传：fill-all 调用时 plan_store 中的 plan_id 往往是『旧版』"
+            "（runAnalyze 尚未跑完会签发新 plan_id），后端从 plan.main_track 取 text_card_spec 会拉到空。"
+            "由前端直接传 fills 里已 ok 的 TextCardSpec 数组，绕过 plan 时序竞态。"
+        ),
+    )
 
 
 class GapFillAllResponse(BaseModel):
@@ -470,11 +847,70 @@ class GapFillAllResponse(BaseModel):
     stopped_reason: Optional[str] = None
 
 
+AnimationType = Literal["ken-burns", "parallax", "storyboard", "keyframe_morph", "static"]
+"""单图 / 多图动效类型，与 remotion/src/AnimatedImage.tsx 镜像。"""
+
+MotionDirection = Literal["in", "out", "pan-left", "pan-right", "pan-up", "pan-down"]
+
+
+class AnimationSpec(BaseModel):
+    """AI 生图动效规格——绑定在 FillResult.animation_spec / Scene.animation_spec。
+
+    pipeline 渲染时优先看 engine：
+    - 'remotion'：调 remotion_renderer 渲带动效 mp4（成本：node 渲 1s ≈ 1s CPU）
+    - 'ffmpeg' / None：回落到 ffmpeg image_to_video 静帧（最快兜底）
+
+    单图（image_urls 长度 = 1）：animation_type 推荐 'ken-burns' / 'parallax' / 'static'。
+    多图（image_urls 长度 > 1）：推荐 'storyboard' / 'keyframe_morph'。
+
+    与 Seedream multi-image 协同：n_shots > 1 时 plan.py 把 section 切成 N 子 Scene，
+    每个子 Scene 持有一张图；Scene.animation_spec.image_urls 长度恒为 1（单图动效）。
+    若用户选 keyframe_morph，则不切子 Scene，整个 section 作单 Scene，image_urls=[N urls]。
+    """
+
+    engine: Literal["remotion", "ffmpeg"] = Field(
+        default="ffmpeg",
+        description="渲染引擎：remotion 带动效 / ffmpeg 静帧。",
+    )
+    animation_type: AnimationType = Field(
+        default="ken-burns",
+        description="动效类型；单图选 ken-burns/parallax/static，多图选 storyboard/keyframe_morph。",
+    )
+    motion_direction: MotionDirection = Field(
+        default="in",
+        description="ken-burns 时缩放/平移方向；其它类型忽略。",
+    )
+    intensity: float = Field(
+        default=0.3, ge=0.0, le=1.0,
+        description="动效强度 0~1；0.3 温和、0.7 夸张。",
+    )
+    transition: Literal["cross-fade", "cut", "slide-left"] = Field(
+        default="cross-fade",
+        description="多图转场类型；单图忽略。",
+    )
+    transition_duration: float = Field(
+        default=0.4, ge=0.0, le=2.0,
+        description="多图转场时长（秒）。",
+    )
+    image_urls: list[str] = Field(
+        default_factory=list,
+        description="keyframe_morph 等多图动效用：保留 N 张图 URL 在同一 Scene 上，"
+                    "由 remotion 渲染器一次性消费。单图动效不必填，pipeline 会从 Scene.aigc_image_url 取。",
+    )
+
+
 class FillResult(BaseModel):
     gap_id: str
     action: FillAction
     new_material_id: Optional[str] = Field(default=None, description="aigc 最后一段 task_id 或 rerank 选中的素材")
-    narration: Optional[str] = Field(default=None, description="copy 动作的补全文案")
+    narration: Optional[str] = Field(
+        default=None,
+        description="copy 动作字卡 main_text + sub_text 拼接（驱动可选 TTS）；stage-19 起非主输出",
+    )
+    text_card_spec: Optional["TextCardSpec"] = Field(
+        default=None,
+        description="copy 动作主输出：字卡画面 spec —— pipeline._render_text_card 按它真渲染 mp4",
+    )
     voiceover_url: Optional[str] = Field(
         default=None,
         description="copy 动作（且 voiceover_enabled=True）自动合成的 TTS 音频 URL；"
@@ -489,6 +925,24 @@ class FillResult(BaseModel):
         description="aigc 链式生成产出的 N 段 CDN URL（按时序）。单段为 1 元素，>12s 走链式 N 段。",
     )
     cover_url: Optional[str] = Field(default=None, description="aigc 第一段封面 URL（前端预览缩略图）")
+    aigc_image_url: Optional[str] = Field(
+        default=None,
+        description="aigc_image 动作产出：Seedream 文生图本地化路径（/aigc-images/<filename>）。"
+                    "rebuild plan 时回填到对应 Scene.aigc_image_url。",
+    )
+    aigc_image_urls: list[str] = Field(
+        default_factory=list,
+        description="aigc_image 多镜头模式产出的 N 张图（同源 /aigc-images/...）。"
+                    "n_shots > 1 时由 Seedream sequential 故事板生成，视觉一致；"
+                    "plan.py 会把这段 AdaptedSection 展开成 N 个等长子 Scene，"
+                    "每个子 Scene 取列表中一张图。单图模式留空，由 aigc_image_url 兜底。",
+    )
+    animation_spec: Optional["AnimationSpec"] = Field(
+        default=None,
+        description="aigc_image 动作时附带的 Remotion 动效 spec。"
+                    "plan 重建时回填到对应 Scene.animation_spec，pipeline 渲染时用 remotion_renderer "
+                    "渲成带动效的 mp4 而非 ffmpeg 静帧。None / engine=ffmpeg 时回落静帧。",
+    )
     chunks_count: int = Field(default=0, description="aigc chunks 数量；0 表示非 aigc 或失败")
     chunk_task_ids: list[str] = Field(
         default_factory=list,
@@ -538,6 +992,15 @@ class AdaptedSection(BaseModel):
         le=30.0,
         description="LLM 决定的本段目标时长（秒），驱动 Scene.duration 与 AIGC 链式分段。",
     )
+    adaptation_note: str = Field(
+        default="",
+        max_length=60,
+        description="改编说明：LLM 用一句话说本段相对样例如何变（如『压缩 20%，强化卖点』），≤60 字",
+    )
+    tempo: Optional[Tempo] = Field(
+        default=None,
+        description="本段节奏：slow/medium/fast/peak/deceleration；可选，仅 dramatic/info_dense 强用",
+    )
 
 
 TransitionStyle = Literal["hard_cut", "dissolve", "slide", "zoom", "whip", "wipe"]
@@ -560,8 +1023,8 @@ class Scene(BaseModel):
 
     scene_id: str
     section: SectionRole = Field(..., description="本场所属段落角色（opening/development/climax/closing）")
-    source: Literal["sample", "user_material", "aigc_t2v", "text_card"]
-    source_ref: str = Field(..., description="样例镜头 id / material_id / Seedance 任务返回的 media_id / text_card 的标识")
+    source: Literal["sample", "user_material", "aigc_t2v", "aigc_image", "text_card"]
+    source_ref: str = Field(..., description="样例镜头 id / material_id / Seedance/Seedream 任务返回的 media_id / text_card 的标识")
     start: float = Field(..., description="时间线上的起点（秒）")
     duration: float
     in_point: float = Field(default=0.0, description="源素材内的入点（秒）")
@@ -575,6 +1038,20 @@ class Scene(BaseModel):
     aigc_video_urls: list[str] = Field(
         default_factory=list,
         description="source=aigc_t2v 时 Seedance 返回的 N 段 CDN URL；render pipeline 下载后 ffmpeg concat。",
+    )
+    aigc_image_url: Optional[str] = Field(
+        default=None,
+        description="source=aigc_image 时 Seedream 文生图本地化后的 URL（/aigc-images/<filename>）；"
+                    "render pipeline 下载后 ffmpeg loop 成 scene.duration 长度的 mp4（静帧 + 静音）。",
+    )
+    animation_spec: Optional["AnimationSpec"] = Field(
+        default=None,
+        description="source=aigc_image 时的 Remotion 动效 spec；None / engine=ffmpeg 时走静帧回落。"
+                    "由 fill_gap 阶段（FillResult.animation_spec）写入；plan rebuild 回填到 Scene。",
+    )
+    text_card_spec: Optional["TextCardSpec"] = Field(
+        default=None,
+        description="source=text_card 且来自 copy fill 时的字卡渲染 spec；为 None 时 _render_text_card 用默认 spec。",
     )
     transition_in: Optional[SceneTransition] = Field(
         default=None,
@@ -745,6 +1222,14 @@ TargetPlatform = Literal["douyin", "wechat", "xiaohongshu", "bilibili"]
 """
 
 
+AspectRatio = Literal["9:16", "16:9", "1:1"]
+"""画面比例 —— v2 起独立于 target_platform。
+
+允许"B 站发竖屏"或"抖音发方版"等组合。aspect.py:aspect_for_settings 优先取此字段，
+缺失时回落到 platform→ratio 老映射，老 plan 完全兼容。
+"""
+
+
 ToneStyle = Literal["tight_hype", "calm_narrative", "casual_daily", "professional_cool"]
 """整体调性 —— 影响 LLM 段落 prompt 倾向。
 
@@ -877,6 +1362,11 @@ class ComposeSettings(BaseModel):
         default="douyin",
         description="目标平台。决定画幅 + 节奏 + 字幕风格。",
     )
+    aspect_ratio: AspectRatio = Field(
+        default="9:16",
+        description="画面比例（v2 显式字段，独立于 target_platform）。"
+                    "允许 B 站发竖屏、抖音发方版等组合；缺省走 9:16。",
+    )
     tone: ToneStyle = Field(
         default="tight_hype",
         description="整体调性。影响 LLM 段落结构与口播倾向。",
@@ -891,10 +1381,17 @@ class ComposeSettings(BaseModel):
         max_length=5,
         description="必须出现的关键词（最多 5 个）。每段 narration 至少出现 1 个。",
     )
+    subtitle_enabled: bool = Field(
+        default=False,
+        description="是否生成 / 烧入字幕（独立于 TTS）。默认 False=纯画面无字幕；"
+                    "用户在 step2 字幕轨上点开关后才把 scene.narration 作为字幕渲染。"
+                    "`scene.text_card_spec is not None` 的段落始终跳过字幕（字卡画面已自带可读文字）。",
+    )
     voiceover_enabled: bool = Field(
-        default=True,
-        description="是否需要口播。True=plan/build 自动生成逐句字幕 + copy fill 自动合成 TTS；"
-                    "False=纯 BGM 视频,跳过字幕轨与 TTS（但保留 narration 文本作 LLM 上下文）。",
+        default=False,
+        description="是否做 TTS 口播合成（step3）。默认 False=纯 BGM 视频，不调 TTS；"
+                    "True 时对每段 scene.narration 做 ARK TTS 合成并混入主轨。"
+                    "字幕显隐由 subtitle_enabled 决定，与 TTS 解耦——可以只口播不上字幕，也可以只上字幕不口播。",
     )
     tts_voice: TTSVoice = Field(
         default="zh_female_qingxin",
@@ -911,12 +1408,40 @@ class Plan(BaseModel):
     """`POST /api/plan/build` 产物 / 后续渲染与编辑的核心数据结构。"""
 
     plan_id: str
-    sample_ids: list[str] = Field(
+    reference_versions: list[ReferenceVersion] = Field(
         ...,
         min_length=1,
         max_length=2,
-        description="本 plan 改编自哪些参考样例（1-2 个）。多样例时 plan_agent 把段落结构合并为对等参考池。",
+        description=(
+            "本 plan 改编自哪些拆解版本（1-2 个 (sample_id, slot_id) pair）。"
+            "stage-15 起按 slot 粒度选取，可同 sample 双槽对比；"
+            "多版本时 plan_agent 把段落结构合并为对等参考池。"
+        ),
     )
+
+    @computed_field
+    @property
+    def sample_ids(self) -> list[str]:
+        """stage-15 兼容层：拍平 reference_versions 给老代码用。
+        作为 computed_field 也会序列化到 JSON，供老前端兜底；新前端忽略即可。"""
+        return [rv.sample_id for rv in self.reference_versions]
+
+    @model_validator(mode="before")
+    @classmethod
+    def _migrate_legacy_sample_ids(cls, data: Any) -> Any:
+        """老 plan 持久化里只有 `sample_ids: list[str]`：填占位 slot_id='legacy'。"""
+        if not isinstance(data, dict):
+            return data
+        if data.get("reference_versions"):
+            return data
+        sids = data.get("sample_ids")
+        if isinstance(sids, list) and sids:
+            data["reference_versions"] = [
+                {"sample_id": sid, "slot_id": "legacy"}
+                for sid in sids if isinstance(sid, str)
+            ]
+            data.pop("sample_ids", None)
+        return data
     project_id: Optional[str] = Field(
         default=None,
         description="所属项目 ID；新建 plan 时由 /plan/build 写入。老 plan 为 None（落 __legacy 项目，后续可手动归并）。",
@@ -946,14 +1471,42 @@ class Plan(BaseModel):
         default_factory=ComposeSettings,
         description="创作设置回写。供 render/edit/packaging 复用。",
     )
+    initial_snapshot: Optional["PlanSnapshot"] = Field(
+        default=None,
+        description=(
+            "Plan 在 /plan/build 首次生成时的蒸馏快照（PlanSnapshot：adapted_sections 摘要 + main_track 关键列）。"
+            "render commit 时与当前 plan 做 diff 落 Trace A，用于 profile 蒸馏。"
+            "后续 PATCH（scene 编辑、gap fill 重建）不修改本字段，确保 v0/v1 对比基准稳定。"
+        ),
+    )
+    kb_rules_applied: int = Field(
+        default=0,
+        ge=0,
+        description=(
+            "本次 plan/build 注入的个性知识库规则总数（top-10 最近完成项目 + 用户额外启用项目）。"
+            "前端 Compose 生成完成 modal 上 \"已应用 N 条 / 去管理\" 徽标读这个数。"
+        ),
+    )
+
+
+# Forward import for Plan.initial_snapshot —— 放在 Plan 后避免循环（profile.schemas 不引 app.schemas）
+from .services.profile.schemas import PlanSnapshot  # noqa: E402
+
+Plan.model_rebuild()
+SampleManifest.model_rebuild()
+FillResult.model_rebuild()
+Scene.model_rebuild()
 
 
 class PlanBuildRequest(BaseModel):
-    sample_ids: list[str] = Field(
+    reference_versions: list[ReferenceVersion] = Field(
         ...,
         min_length=1,
         max_length=2,
-        description="参考样例 id 列表（1-2 个）。多选时两份段落结构会被合并成对等参考池喂给 plan_agent。",
+        description=(
+            "结构参考版本列表（1-2 个 (sample_id, slot_id) pair）。"
+            "多选时两份段落结构会被合并成对等参考池喂给 plan_agent.adapt_structure。"
+        ),
     )
     project_id: str = Field(..., description="所属项目 ID（前端 currentProjectId）；后端按它路由素材/资产/落盘")
     session_id: Optional[str] = Field(
@@ -985,7 +1538,51 @@ class PlanBuildRequest(BaseModel):
         max_length=6,
         description="用户素材库中的参考素材 id 列表，喂给 plan_agent.adapt_structure 多模态 prompt",
     )
+    reuse_sections: list[AdaptedSection] = Field(
+        default_factory=list,
+        description=(
+            "增量重建：传入上一版 plan.adapted_sections，跳过 LLM 段落改编直接复用。"
+            "用于『刚刚 fill 完一个 gap → 立刻重跑 plan/build 应用 fill』场景——"
+            "用户只是补完缺口，没改 brief/refs/settings，不应让 LLM 把 5 段抖成 4 段。"
+            "为空 → 走完整 adapt_structure。"
+        ),
+    )
     variant: Variant = "A"
+
+    @property
+    def sample_ids(self) -> list[str]:
+        """stage-15 兼容层：拍平 reference_versions。"""
+        return [rv.sample_id for rv in self.reference_versions]
+
+    @model_validator(mode="before")
+    @classmethod
+    def _migrate_legacy_sample_ids(cls, data: Any) -> Any:
+        """老前端 / 老测试还在传 `sample_ids: list[str]` —— 按 active slot 反查。"""
+        if not isinstance(data, dict):
+            return data
+        if data.get("reference_versions"):
+            return data
+        sids = data.get("sample_ids")
+        if isinstance(sids, list) and sids:
+            try:
+                from .services.library import manifest_store
+            except Exception:  # noqa: BLE001
+                manifest_store = None
+            refs: list[dict] = []
+            for sid in sids:
+                if not isinstance(sid, str):
+                    continue
+                slot_id = None
+                if manifest_store is not None:
+                    try:
+                        slot_id = manifest_store.get_active_slot(sid)
+                    except Exception:  # noqa: BLE001
+                        slot_id = None
+                refs.append({"sample_id": sid, "slot_id": slot_id or "legacy"})
+            if refs:
+                data["reference_versions"] = refs
+                data.pop("sample_ids", None)
+        return data
 
 
 # =========================================================================
@@ -1031,20 +1628,69 @@ class CoverDesign(BaseModel):
     style_note: str = Field(..., description="LLM 给出的一句话风格说明，比如『大字号 + 黑底白字 + 黄色高亮』")
 
 
-class PackagingRecommendation(BaseModel):
-    """`POST /api/packaging/recommend` 产物，回写到 PlanStore 的 packaging_track。"""
+class PackagingVariant(BaseModel):
+    """单个包装版本（aggressive/elegant）的 transitions + cover 组合。
 
-    plan_id: str
+    Stage-16 起 packaging_agent 一次给两份方案：
+    - `aggressive`：电商/带货风，高对比+强转场+大字
+    - `elegant`：氛围/Vlog 风，柔切+留白+小字
+
+    前端在 PackagingPanel 顶部 Tab 切换；落 plan 时默认 `versions[0]`（aggressive）。
+    """
+
+    version_id: Literal["aggressive", "elegant"] = Field(
+        ..., description="版本 id：aggressive 强冲击 / elegant 高级感"
+    )
+    version_label: str = Field(
+        ..., max_length=20, description="给前端 Tab 显示的中文标签，如『强冲击版』『高级感版』"
+    )
     transitions: list[TransitionSuggestion] = Field(default_factory=list)
     cover: Optional[CoverDesign] = None
+
+
+class PackagingRecommendation(BaseModel):
+    """`POST /api/packaging/recommend` 产物，回写到 PlanStore 的 packaging_track。
+
+    Stage-16 起改为多版本结构：`versions: list[PackagingVariant]`（默认 2 个：aggressive + elegant）。
+    旧 manifest/缓存里的顶层 `transitions/cover` 会被 before-validator 自动包装成单个 aggressive variant。
+    """
+
+    plan_id: str
+    versions: list[PackagingVariant] = Field(
+        default_factory=list,
+        description="多版本包装方案，至少 1 个；前端 Tab 切换；落 plan 取 versions[0]",
+    )
     notes: list[str] = Field(default_factory=list, description="agent 调试日志（mock/失败原因等）")
+
+    @model_validator(mode="before")
+    @classmethod
+    def _migrate_legacy_top_level(cls, data: Any) -> Any:
+        """旧格式：`{plan_id, transitions, cover, notes}`——包成单 variant。
+
+        触发条件：data 里有顶层 transitions 或 cover 但没有 versions。包装为
+        `versions=[{version_id: "aggressive", version_label: "强冲击版", ...}]`。
+        """
+        if not isinstance(data, dict):
+            return data
+        if "versions" not in data and ("transitions" in data or "cover" in data):
+            transitions = data.pop("transitions", []) or []
+            cover = data.pop("cover", None)
+            data["versions"] = [
+                {
+                    "version_id": "aggressive",
+                    "version_label": "强冲击版",
+                    "transitions": transitions,
+                    "cover": cover,
+                }
+            ]
+        return data
 
 
 class PackagingRecommendRequest(BaseModel):
     plan_id: str
     apply: bool = Field(
-        default=True,
-        description="True：落地为 PackagingItem 写回 plan.packaging_track；False：只返回建议不改 plan。",
+        default=False,
+        description="V2 起 /recommend 不再 mutate plan（无视此字段），用户挑完后调 /packaging/apply 落盘；保留字段仅为旧客户端兼容。",
     )
     preferences: Optional[PackagingPreferences] = Field(
         default=None,
@@ -1052,6 +1698,165 @@ class PackagingRecommendRequest(BaseModel):
                     "None 时直接复用 plan.settings.packaging_prefs；非空时与之合并（请求体优先），"
                     "结果回写到 plan.settings.packaging_prefs 持久化。",
     )
+
+
+# =========================================================================
+# Module 5b V2 — 5 维度独立多候选包装推荐
+# =========================================================================
+
+_StickerPosition = Literal["bottom-center", "top-right", "bottom-right", "middle"]
+_TitleBarPosition = Literal["top", "middle"]
+_TitleBarFontSize = Literal["small", "medium", "large"]
+
+
+class SubtitleStyleCandidate(BaseModel):
+    """字幕样式候选（一次推荐给 2-3 个）。"""
+
+    candidate_id: str
+    label: str = Field(..., max_length=40, description="给用户看的一句话风格名，如『底部大字｜阴影底｜对话感』")
+    font_size: SubtitleFontSize
+    position: SubtitlePosition
+    background: SubtitleBackground
+    bilingual: bool = False
+    rationale: str = Field(..., max_length=60, description="为什么这套适合本片，≤30 字")
+
+
+class TitleBarCandidate(BaseModel):
+    """标题条 / 卖点卡片候选，每条挂在某个 scene 区间。"""
+
+    candidate_id: str
+    text: str = Field(..., max_length=20)
+    target_scene_id: str
+    start: float = Field(..., ge=0.0)
+    end: float = Field(..., gt=0.0)
+    font_size: _TitleBarFontSize = "medium"
+    color: str = Field(default="#FFFFFF", description="字色 hex")
+    background_color: str = Field(default="#14181F", description="底色 hex")
+    position: _TitleBarPosition = "top"
+    rationale: str = Field(..., max_length=60)
+
+
+class StickerCandidate(BaseModel):
+    """贴纸 / 强调元素候选。CTA 短语为主。"""
+
+    candidate_id: str
+    text: str = Field(..., max_length=10)
+    target_scene_id: str
+    start: float = Field(..., ge=0.0)
+    end: float = Field(..., gt=0.0)
+    color: str = Field(default="#FFE600", description="字色 hex")
+    background_color: str = Field(default="#000000", description="底色 hex")
+    position: _StickerPosition = "bottom-center"
+    rationale: str = Field(..., max_length=60)
+
+
+class TransitionCandidateBundle(BaseModel):
+    """单个段落切换点的多候选（用户在 bundle 内三选一）。"""
+
+    candidate_id: str
+    at_seconds: float
+    from_section: str
+    to_section: str
+    options: list[TransitionSuggestion] = Field(default_factory=list, min_length=1)
+    rationale: str = Field(default="", max_length=80)
+
+
+class CoverCandidate(BaseModel):
+    """封面方案候选（一次给 2-3 个不同调性）。"""
+
+    candidate_id: str
+    title: str = Field(..., max_length=12)
+    subtitle: Optional[str] = Field(default=None, max_length=20)
+    palette: list[str] = Field(default_factory=list)
+    layout: Literal["center", "left", "split", "stacked"] = "center"
+    style_note: str = Field(default="", max_length=60)
+    rationale: str = Field(default="", max_length=60)
+
+
+class PackagingRecommendationV2(BaseModel):
+    """V2 推荐响应：5 维度独立多候选，前端用户挑选后调 /packaging/apply 落盘。"""
+
+    plan_id: str
+    subtitle_styles: list[SubtitleStyleCandidate] = Field(default_factory=list)
+    title_bars: list[TitleBarCandidate] = Field(default_factory=list)
+    stickers: list[StickerCandidate] = Field(default_factory=list)
+    transition_bundles: list[TransitionCandidateBundle] = Field(default_factory=list)
+    covers: list[CoverCandidate] = Field(default_factory=list)
+    notes: list[str] = Field(default_factory=list)
+
+
+class PackagingSelection(BaseModel):
+    """用户在 PackagingPanel 挑完后提交的复合载荷。
+
+    前端把完整 recommendation 带回来（服务端无状态），避免再保存一份。
+    """
+
+    plan_id: str
+    subtitle_style_id: Optional[str] = None
+    title_bar_ids: list[str] = Field(default_factory=list)
+    sticker_ids: list[str] = Field(default_factory=list)
+    transition_selections: dict[str, str] = Field(
+        default_factory=dict,
+        description="bundle_id → 用户选中的 TransitionStyle",
+    )
+    cover_id: Optional[str] = None
+    recommendation: PackagingRecommendationV2
+
+
+# ---- F2 · 单组件 picker 增量接口 ---------------------------------------
+# F2 把"包装方案 = 5 维度全量提交"的交互改成"用户按钮添加单个组件"——
+# /packaging/items/draft 给一个 kind 的 AI 推荐草稿，前端进 staging slot 后用户可改；
+# /packaging/items/place 把改好的 PackagingItem 单独 append 进 plan.packaging_track；
+# /packaging/items/{plan_id}/{item_id} (DELETE) 删除单条。
+# 字幕仍由 PackagingPanel V2 + subtitle_enabled 开关管，本组接口只动 title_bar/sticker/cover。
+
+class PackagingItemDraftRequest(BaseModel):
+    plan_id: str
+    kind: Literal["title_bar", "sticker", "cover"]
+
+
+class PackagingItemDraftResponse(BaseModel):
+    """draft 不写 plan，仅返回一个候选转换好的 PackagingItem，前端放进 staging slot 让用户编辑。"""
+
+    item: PackagingItem
+    rationale: str = Field(default="", description="LLM 推荐理由，用户决定要不要落进轨")
+
+
+class PackagingItemPlaceRequest(BaseModel):
+    """把 staging slot 里编辑好的 PackagingItem 落到 plan.packaging_track。"""
+
+    plan_id: str
+    item: PackagingItem
+
+
+# =========================================================================
+# Module 5c — Plan 命名快照（用户主动保存的版本点；与 editStore 撤销栈互补）
+# =========================================================================
+# 撤销栈是 RAM 短期 history；本组接口持久化到磁盘，配合后续账号系统按 user_id 鉴权可见性。
+
+class PlanSnapshotMeta(BaseModel):
+    snapshot_id: str
+    name: str
+    plan_id: str
+    project_id: Optional[str] = None
+    user_id: Optional[str] = None
+    ts: float
+
+
+class PlanSnapshotCreateRequest(BaseModel):
+    name: str = Field(default="", description="用户起的名字；空字符串则后端按时间补一个『未命名 HH:MM』")
+
+
+class PlanSnapshotEntry(BaseModel):
+    """完整快照——含 plan 体，仅在 GET 单条 / restore 时返回。"""
+
+    snapshot_id: str
+    name: str
+    plan_id: str
+    project_id: Optional[str] = None
+    user_id: Optional[str] = None
+    ts: float
+    plan: Plan
 
 
 # =========================================================================
@@ -1089,6 +1894,67 @@ class EditApplyRequest(BaseModel):
     )
     instruction: str = Field(..., min_length=1, max_length=1000, description="自然语言改片指令")
     marks: list[EditMark] = Field(default_factory=list, description="选中区间；空表示对整段生效")
+
+
+# ---- Compose 自然语言编辑（⌘K command bar / R6） ----------------------------
+
+ComposeEditStep = Literal["step2", "step3"]
+"""Compose 自然语言编辑作用域：
+- step2 = 拆解-改编态，**只改内容轨**：文案 / 段时长 / 删段 / 重排
+- step3 = 包装-渲染态，**禁内容轨**，其余全开：字卡 / 包装项 / BGM 偏移与音量 / compose 设置
+"""
+
+
+class ComposeEditDiff(BaseModel):
+    """⌘K 编辑产出的单条 diff，前端预览用。"""
+
+    op: str = Field(..., description="操作名，如 update_narration / delete_section / update_compose_setting")
+    target_id: Optional[str] = Field(default=None, description="目标 id（section_id / scene_id / item_id），全局设置为空")
+    before: Any = Field(default=None, description="改前值（JSON-able）")
+    after: Any = Field(default=None, description="改后值")
+    summary: str = Field(..., max_length=120, description="一句话人话描述")
+    args: dict[str, Any] = Field(
+        default_factory=dict,
+        description="dry-run 落定的 mutator 参数；apply 时原样回放，跳过 LLM 二次推理避免不一致。",
+    )
+
+
+class ComposeEditRequest(BaseModel):
+    plan_id: str
+    step: ComposeEditStep = Field(..., description="step2 / step3 决定可用工具集")
+    instruction: str = Field(..., min_length=1, max_length=500)
+    apply: bool = Field(
+        default=False,
+        description="False=只算 diff 不落盘（预览），True=真改 plan 并落 plan_store",
+    )
+    confirmed_ops: Optional[list[dict[str, Any]]] = Field(
+        default=None,
+        description=(
+            "apply=True 时前端回传 dry-run 拿到的 {op, args} 列表，后端原样回放跳过 LLM；"
+            "保证 apply 落地的 diff 一定 = 用户看到并确认的 diff。"
+            "None 时退回旧路径（让 LLM 重跑）。"
+        ),
+    )
+
+
+class ComposeEditResponse(BaseModel):
+    plan_id: str = Field(..., description="apply=True 时为新 plan id；apply=False 时为原 plan id")
+    diffs: list[ComposeEditDiff] = Field(default_factory=list)
+    applied: bool = Field(..., description="是否已落盘到 plan_store")
+    plan: Optional["Plan"] = Field(default=None, description="apply=True 时返回新 plan")
+    note: Optional[str] = Field(default=None, description="兜底说明（LLM 没识别出动作 / 越界等）")
+
+
+class ComposeEditDismissRequest(BaseModel):
+    """用户在 ⌘K 对话编辑里 dry-run 后撤回的指令——profile 蒸馏视为负信号。"""
+
+    plan_id: str
+    step: ComposeEditStep
+    instruction: str = Field(..., min_length=1, max_length=500)
+    dismissed_ops: list[dict[str, Any]] = Field(
+        default_factory=list,
+        description="被撤回的 {op, args} 列表（前端 diff.args 原样回传）。",
+    )
 
 
 # =========================================================================
@@ -1191,6 +2057,20 @@ class AssetListResponse(BaseModel):
     total: int
 
 
+class AssetSaveFromUrlRequest(BaseModel):
+    """POST /api/asset/save-from-url —— 把外部图片 URL（如 Seedream CDN）落盘进资产库。
+
+    Seedream 返回的 url 是临时 CDN（1h-7d 有效），用户可点『保存到素材库』触发本接口
+    永久落盘到 `var/assets/<project_id>/reference_image/`。
+    """
+
+    project_id: str = Field(..., description="所属项目 ID")
+    url: str = Field(..., min_length=8, description="外部图片 URL（http/https）")
+    kind: AssetKind = Field(default="reference_image")
+    title: Optional[str] = Field(default=None, max_length=120)
+    tags: Optional[list[str]] = Field(default=None, max_length=12)
+
+
 # =========================================================================
 # Module · 项目 (Project) —— 用户工作流容器
 # =========================================================================
@@ -1221,8 +2101,8 @@ class StepSnapshot(BaseModel):
     """『下一步』提交时落盘的单步产物快照。
 
     payload 内容随 step 而异：
-    - library:   {"sample_ids": list[str]}（1-2 个）
-    - decompose: {"sample_ids": list[str]}（manifest 走样例共享区，不重存）
+    - library:   {"references": list[{"sample_id": str, "slot_id": str}]}（1-2 个）
+    - decompose: {"references": list[{"sample_id": str, "slot_id": str}]}（manifest 已落资产库的版本槽，不重存）
     - compose:   {"plan_id": str, "fill_ids": list[str]}
     - render:    {"job_id": str}
     """
@@ -1246,11 +2126,20 @@ class Project(BaseModel):
 
     project_id: str = Field(..., description="UUID hex[:12]")
     name: str = Field(..., max_length=80, description="用户可见名称")
-    sample_ids: list[str] = Field(
-        ...,
-        min_length=1,
+    video_type: Optional[VideoType] = Field(
+        default=None,
+        description=(
+            "视频种类（marketing/editing/motion_graph）—— 新建项目时由用户选；"
+            "样例选择推迟到 Decompose 页时，前端按此过滤系统样例。"
+        ),
+    )
+    reference_versions: list[ReferenceVersion] = Field(
+        default_factory=list,
         max_length=2,
-        description="基于哪些样例（1-2 个，共享、跨项目复用）。多样例时 plan_agent 会把段落结构合并参考。",
+        description=(
+            "项目锚定的结构参考版本（最多 2 个 (sample_id, slot_id) pair，跨项目共享）。"
+            "新建时可为空（样例在 Decompose 页选定后回填）；多选时 plan_agent 会合并参考。"
+        ),
     )
     brief: Optional[str] = Field(default=None, description="主题/卖点回写（Compose 用户输入）")
     video_goal: Optional[str] = Field(default=None, description="视频目的回写")
@@ -1263,21 +2152,77 @@ class Project(BaseModel):
     created_at: float
     updated_at: float
 
+    @computed_field
+    @property
+    def sample_ids(self) -> list[str]:
+        """stage-15 兼容层：老测试 / 老代码访问 `project.sample_ids` —— 拍平 reference_versions。
+        作为 computed_field 也会序列化到 JSON，供老前端兜底；新前端忽略即可。"""
+        return [rv.sample_id for rv in self.reference_versions]
+
 
 class ProjectCreateRequest(BaseModel):
     name: str = Field(..., max_length=80)
-    sample_ids: list[str] = Field(
-        ...,
-        min_length=1,
-        max_length=2,
-        description="新建项目锚定的参考样例 id 列表（1-2 个）。",
+    video_type: Optional[VideoType] = Field(
+        default=None,
+        description="视频种类（建项目时即定，可改）；空表示老前端兼容。",
     )
+    reference_versions: list[ReferenceVersion] = Field(
+        default_factory=list,
+        max_length=2,
+        description="新建项目锚定的结构参考版本列表（0-2 个 (sample_id, slot_id) pair）；为空时项目处于「未挑样例」状态。",
+    )
+
+    @property
+    def sample_ids(self) -> list[str]:
+        """stage-15 兼容层：老测试访问 `req.sample_ids`。"""
+        return [rv.sample_id for rv in self.reference_versions]
+
+    @model_validator(mode="before")
+    @classmethod
+    def _migrate_legacy_sample_ids(cls, data: Any) -> Any:
+        """stage-15 兼容层：老前端 / 老测试还在传 `sample_ids: list[str]`。
+        转换成 reference_versions：按当时 active slot 反查；找不到则用占位 'legacy'。
+        """
+        if not isinstance(data, dict):
+            return data
+        if data.get("reference_versions"):
+            return data
+        sids = data.get("sample_ids")
+        if isinstance(sids, list) and sids:
+            try:
+                from .services.library import manifest_store
+            except Exception:  # noqa: BLE001
+                manifest_store = None
+            refs: list[dict] = []
+            for sid in sids:
+                if not isinstance(sid, str):
+                    continue
+                slot_id = None
+                if manifest_store is not None:
+                    try:
+                        slot_id = manifest_store.get_active_slot(sid)
+                    except Exception:  # noqa: BLE001
+                        slot_id = None
+                refs.append({"sample_id": sid, "slot_id": slot_id or "legacy"})
+            if refs:
+                data["reference_versions"] = refs
+                data.pop("sample_ids", None)
+        return data
 
 
 class ProjectUpdateRequest(BaseModel):
     """PATCH /api/project/{id}：所有字段可选，None 表示不动。"""
 
     name: Optional[str] = Field(default=None, max_length=80)
+    video_type: Optional[VideoType] = None
+    reference_versions: Optional[list[ReferenceVersion]] = Field(
+        default=None,
+        max_length=2,
+        description=(
+            "Decompose 页选定/切换样例时回写；显式传 [] 表示清空（回到「未选样例」态）。"
+            "None 表示不动。"
+        ),
+    )
     brief: Optional[str] = Field(default=None, max_length=500)
     video_goal: Optional[str] = Field(default=None, max_length=500)
     settings: Optional[ComposeSettings] = None
@@ -1290,3 +2235,7 @@ class ProjectUpdateRequest(BaseModel):
 
 class ProjectListResponse(BaseModel):
     items: list[Project]
+
+
+# Compose 编辑响应里嵌了 Plan（forward-ref），需要在 Plan 之后再 rebuild
+ComposeEditResponse.model_rebuild()

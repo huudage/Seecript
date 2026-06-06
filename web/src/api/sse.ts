@@ -25,17 +25,23 @@ export function createSSE<TDone = unknown, TProgress = unknown>(
   handlers: SSEHandlers<TDone, TProgress>,
 ): SSEHandle {
   const source = new EventSource(`/api${path}`)
+  // 状态机:onDone 或 onError 触发后,后续 'error'(浏览器关连接时也会发)直接吞掉,
+  // 否则会把"任务成功完成"的 UI 立刻覆盖成"SSE connection closed"假报错。
+  let settled = false
 
   source.addEventListener('progress', (ev) => {
+    if (settled) return
     try {
       const data = JSON.parse((ev as MessageEvent).data)
       handlers.onProgress?.(data)
     } catch {
-      /* 服务端不该发非 JSON，但兜底防崩 */
+      /* 服务端不该发非 JSON,但兜底防崩 */
     }
   })
 
   source.addEventListener('done', (ev) => {
+    if (settled) return
+    settled = true
     try {
       const data = JSON.parse((ev as MessageEvent).data) as TDone
       handlers.onDone?.(data)
@@ -47,6 +53,12 @@ export function createSSE<TDone = unknown, TProgress = unknown>(
   })
 
   source.addEventListener('error', (ev) => {
+    if (settled) {
+      // done 已经收尾,本次 error 是浏览器对关连接的回声,忽略不报。
+      source.close()
+      return
+    }
+    settled = true
     let detail = 'SSE connection closed'
     try {
       const data = JSON.parse((ev as MessageEvent).data ?? '{}')
@@ -59,6 +71,9 @@ export function createSSE<TDone = unknown, TProgress = unknown>(
   })
 
   return {
-    close: () => source.close(),
+    close: () => {
+      settled = true
+      source.close()
+    },
   }
 }

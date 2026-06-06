@@ -9,12 +9,12 @@ Endpoints（prefix=/api）：
 让渲染 pipeline 在 voice_mix 步骤能拾到。
 
 时间对齐策略（synthesize-all 与 synthesize 都生效）：
-1. 先按 speed=1.0 合成，读 wav 头算实际秒数
-2. 若 actual > scene.duration：speed_ratio = min(1.15, actual / scene.duration)，
-   按该 speed_ratio 重新合成一次——保证最终长度尽量贴 scene.duration 但音质不崩
-3. 若 actual ≤ scene.duration：直接用，多余尾部由 ffmpeg 渲染时静音填充
-4. 若 actual / scene.duration > 1.15：合成后仍超出，渲染端会截尾，
-   note 字段标记 truncated=True 让前端在字幕轨提示用户缩文案
+1. 始终先按 speed=1.0 合成，读 wav 头算实际秒数（TTS 自带 speed_ratio 会爆音，禁用）
+2. 若 |actual - target| / target 在保音质区间 [0.75, 1.30]：用 ffmpeg `atempo` 滤镜
+   做保音高时长重整，对齐到 scene.duration
+3. 若超出保音质区间：忠于口播稿按 1.0x 自然时长返回，不强对齐——
+   note 字段标记 truncated=True 让前端在字幕轨提示"音频长于 scene.duration，可能跨段"
+   （由渲染端处理：amix duration=first 默认按视频长度截，不会撕裂下一段开头）
 """
 from __future__ import annotations
 
@@ -51,7 +51,7 @@ class VoiceSynthesizeResponse(BaseModel):
     voiceover_url: str
     backend: str
     chars: int
-    truncated: bool = False  # True 表示文案过长，即使加速到 1.15 仍超 scene.duration，渲染端会截尾
+    truncated: bool = False  # True 表示 atempo 区间外回退到 1.0x，音频自然时长 > scene.duration（不再截尾）
 
 
 class VoiceSynthesizeAllRequest(BaseModel):

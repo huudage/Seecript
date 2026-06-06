@@ -22,7 +22,7 @@ import logging
 import time
 from abc import ABC, abstractmethod
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Sequence
+from typing import Any, AsyncIterator, Dict, List, Optional, Sequence
 
 import httpx
 
@@ -57,6 +57,24 @@ class LLMClient(ABC):
         temperature: Optional[float] = None,
         max_tokens: Optional[int] = None,
     ) -> str: ...
+
+    async def stream_complete(
+        self,
+        system: str,
+        user: str,
+        *,
+        temperature: Optional[float] = None,
+        max_tokens: Optional[int] = None,
+    ) -> AsyncIterator[str]:
+        """逐 token 流式 yield 文本。
+        默认实现:fallback 到 complete() 整段一次性 yield,保证所有 provider 至少能用。
+        真流式由子类 override(MockLLMClient 切片模拟,_OpenAICompatLLMClient 走 SSE)。
+        """
+        text = await self.complete(
+            system, user, temperature=temperature, max_tokens=max_tokens,
+        )
+        if text:
+            yield text
 
     async def complete_json(
         self,
@@ -223,9 +241,18 @@ class MockLLMClient(LLMClient):
         await asyncio.sleep(0.3)
         if "edit_tool_calls" in system:
             return _MOCK_EDIT_TOOLS_JSON
+        # 意图澄清助手:走 _build_mock_clarify_text,根据 IS_FINAL 决定是否带 QUESTION
+        if "短视频脚本意图澄清助手" in system:
+            return _build_mock_clarify_text(user)
         # aigc_prompt_agent 转写：指纹 t2v_prompt（在 adapted_sections 之前免冲突，因 system 都长）
         if "t2v_prompt" in system:
             return _build_mock_t2v_prompt_json(user)
+        # aigc_prompt_agent 参考图策展：image_spec 指纹（在 t2v_prompt 之后，因为 image-spec 不含 t2v_prompt）
+        if "参考图策展人 Agent" in system:
+            return _build_mock_image_spec_json(user)
+        # copy_outline_agent 文案大纲：指纹 copy_outline（在 adapted_sections 之前免冲突）
+        if "copy_outline" in system:
+            return _build_mock_copy_outline_json(user)
         # plan_agent 结构改编：指纹 adapted_sections + content_description（在 shot_roles 之前避免误匹配）
         if "adapted_sections" in system and "content_description" in system:
             return _build_mock_adapted_sections_json(user)
@@ -238,9 +265,32 @@ class MockLLMClient(LLMClient):
             return _MOCK_GAP_FILL_JSON
         if "frame_tags" in system:
             return _MOCK_FRAME_TAGS_JSON
+        # 包装 V2 指纹：5 维度候选（subtitle_styles + transition_bundles）
+        if "subtitle_styles" in system and "transition_bundles" in system:
+            return _build_mock_packaging_v2_json(user)
         if "transitions" in system and "palette" in system:
             return _MOCK_PACKAGING_JSON
         return '{"detail": "mock fallback"}'
+
+    async def stream_complete(
+        self,
+        system: str,
+        user: str,
+        *,
+        temperature: Optional[float] = None,
+        max_tokens: Optional[int] = None,
+    ) -> AsyncIterator[str]:
+        """Mock 流式:把 complete() 的整段输出按 ~24 字切片 yield,模拟打字机。
+        意图澄清场景能让前端看到 ===DRAFT=== 段流出来,跟真链路体感一致。
+        """
+        import asyncio
+        text = await self.complete(
+            system, user, temperature=temperature, max_tokens=max_tokens,
+        )
+        chunk = 24
+        for i in range(0, len(text), chunk):
+            await asyncio.sleep(0.02)
+            yield text[i : i + chunk]
 
     async def complete_with_tools(
         self,
@@ -293,6 +343,10 @@ class MockLLMClient(LLMClient):
             return _MOCK_FRAME_TAGS_JSON
         if "t2v_prompt" in system:
             return _build_mock_t2v_prompt_json(user_text)
+        if "参考图策展人 Agent" in system:
+            return _build_mock_image_spec_json(user_text)
+        if "copy_outline" in system:
+            return _build_mock_copy_outline_json(user_text)
         if "adapted_sections" in system and "content_description" in system:
             return _build_mock_adapted_sections_json(user_text)
         if "archetype" in system and "narrative_summary" in system:
@@ -391,6 +445,70 @@ class _OpenAICompatLLMClient(LLMClient):
         if not isinstance(content, str) or not content.strip():
             raise LLMError(f"{self.name} empty content", code="LLM_BAD_RESPONSE")
         return content
+
+    async def stream_complete(
+        self,
+        system: str,
+        user: str,
+        *,
+        temperature: Optional[float] = None,
+        max_tokens: Optional[int] = None,
+    ) -> AsyncIterator[str]:
+        """OpenAI 兼容 /chat/completions stream=True SSE:逐 token yield delta.content。
+        服务端规范:每行 `data: {...}` 内含 choices[0].delta.content。`data: [DONE]` 收流。
+        网络/超时/解析失败统一抛 LLMError,与 _chat 错误码风格一致。
+        """
+        url = f"{self._base_url}/chat/completions"
+        headers = {
+            "Authorization": f"Bearer {self._api_key}",
+            "Content-Type": "application/json",
+            "Accept": "text/event-stream",
+        }
+        payload: Dict[str, Any] = {
+            "model": self._model,
+            "messages": [
+                {"role": "system", "content": system},
+                {"role": "user", "content": user},
+            ],
+            "temperature": self._default_temperature if temperature is None else temperature,
+            "max_tokens": self._default_max_tokens if max_tokens is None else max_tokens,
+            "stream": True,
+        }
+        started = time.perf_counter()
+        try:
+            async with httpx.AsyncClient(timeout=self._timeout) as client:
+                async with client.stream("POST", url, headers=headers, json=payload) as resp:
+                    if resp.status_code != HTTP_OK:
+                        snippet = (await resp.aread()).decode("utf-8", errors="replace")[:300]
+                        raise LLMError(
+                            f"{self.name} HTTP {resp.status_code}: {snippet}",
+                            code=f"LLM_HTTP_{resp.status_code}",
+                            upstream_status=resp.status_code,
+                        )
+                    async for line in resp.aiter_lines():
+                        if not line:
+                            continue
+                        if not line.startswith("data:"):
+                            continue
+                        body = line[5:].strip()
+                        if body == "[DONE]":
+                            break
+                        try:
+                            chunk = json.loads(body)
+                        except ValueError:
+                            continue
+                        choices = chunk.get("choices") or []
+                        if not choices:
+                            continue
+                        delta = (choices[0].get("delta") or {}).get("content")
+                        if isinstance(delta, str) and delta:
+                            yield delta
+        except httpx.TimeoutException as e:
+            raise LLMError(f"{self.name} stream timeout after {self._timeout}s", code="LLM_TIMEOUT") from e
+        except httpx.HTTPError as e:
+            raise LLMError(f"{self.name} stream network error: {e}", code="LLM_NETWORK") from e
+        elapsed_ms = int((time.perf_counter() - started) * 1000)
+        log.info("%s stream ok | model=%s | %dms", self.name, self._model, elapsed_ms)
 
     async def complete_with_tools(
         self,
@@ -546,75 +664,141 @@ _MOCK_UNDERSTANDING_JSON = """
 """
 
 def _build_mock_shot_roles_json(user_text: str) -> str:
-    """动态生成 shot_roles mock：从 user payload 解析镜头数，按位置分配 role。
+    """动态生成 shot_roles mock：从 user payload 解析镜头数与 structural_pattern，按位置分配 role。
 
-    解析规则：user_text 中形如 "0: 0.0-3.0s" 的行代表一个镜头。
-    分配策略：第一个=opening，最后一个=closing，≥4 个时 60% 位置=climax，其余=development。
+    pattern 检测：扫 user_text 里的 'structural_pattern: <name>' 或类似字串。默认 dramatic。
+    分配策略（按 pattern 分支）：
+    - dramatic    : 首=opening, 末=closing, 60% 位置=climax（n≥4）, 其余=development
+    - stepwise    : 首=intro, 末=recap, 中间 step_1, step_2, ...
+    - listicle    : 首=hook, 末=closer, 中间 item_1, item_2, ...
+    - atmospheric : 首=establish, 末=resolve, 60%=peak（n≥4）, 其余=flow
+    - info_dense  : 首=title_card, 末=payoff, 中间 info_block
     """
     import re
     import json
     shot_lines = re.findall(r"^(\d+):\s*[\d.]+", user_text, re.MULTILINE)
     n = len(shot_lines)
     if n == 0:
-        n = max(1, len([img for img in [] if img]))
-        n = max(n, 2)
+        n = 2
+
+    pat = "dramatic"
+    m = re.search(r"structural[_\s]?pattern[：:\s]*([a-z_]+)", user_text, re.IGNORECASE)
+    if m and m.group(1).lower() in ("dramatic", "stepwise", "listicle", "atmospheric", "info_dense"):
+        pat = m.group(1).lower()
 
     roles: list[dict] = []
-    climax_idx = int(n * 0.6) if n >= 4 else None
-    if climax_idx is not None and (climax_idx <= 0 or climax_idx >= n - 1):
-        climax_idx = None
+    has_peak = pat in ("dramatic", "atmospheric")
+    peak_idx = int(n * 0.6) if has_peak and n >= 4 else None
+    if peak_idx is not None and (peak_idx <= 0 or peak_idx >= n - 1):
+        peak_idx = None
 
+    main_counter = 0
     for i in range(n):
         if i == 0:
-            role, theme = "opening", "开场铺垫"
+            role, theme = {
+                "dramatic":    ("opening",    "开场铺垫"),
+                "stepwise":    ("intro",      "引入"),
+                "listicle":    ("hook",       "钩子"),
+                "atmospheric": ("establish",  "起势"),
+                "info_dense":  ("title_card", "标题卡"),
+            }[pat]
         elif i == n - 1:
-            role, theme = "closing", "余韵收尾"
-        elif i == climax_idx:
-            role, theme = "climax", "情绪高潮"
+            role, theme = {
+                "dramatic":    ("closing", "余韵收尾"),
+                "stepwise":    ("recap",   "总结"),
+                "listicle":    ("closer",  "收尾"),
+                "atmospheric": ("resolve", "余韵"),
+                "info_dense":  ("payoff",  "落版"),
+            }[pat]
+        elif i == peak_idx:
+            role, theme = ("climax", "情绪高潮") if pat == "dramatic" else ("peak", "顶点")
         else:
-            role, theme = "development", f"主体铺陈{i}"
+            main_counter += 1
+            if pat == "dramatic":
+                role, theme = "development", f"主体铺陈{main_counter}"
+            elif pat == "stepwise":
+                role, theme = f"step_{main_counter}", f"步骤 {main_counter}"
+            elif pat == "listicle":
+                role, theme = f"item_{main_counter}", f"第 {main_counter} 项"
+            elif pat == "atmospheric":
+                role, theme = "flow", f"流转{main_counter}"
+            else:  # info_dense
+                role, theme = "info_block", f"信息块{main_counter}"
         roles.append({"shot_index": i, "role": role, "theme": theme})
 
-    return json.dumps({"shot_roles": roles}, ensure_ascii=False)
+    return json.dumps({"shot_roles": roles, "tempo": "medium"}, ensure_ascii=False)
 
 
 def _build_mock_adapted_sections_json(user_text: str) -> str:
     """动态生成 adapted_sections mock：从 user payload 解析 '原样例共 N 段' 拿到 N，
-    按位置分配 role，每段写一句占位 content_description。
-
-    分配策略：
-    - i=0       → opening
-    - i=n-1     → closing
-    - i=int(n*0.6) → climax（仅 n≥4 时；且不与首末重叠）
-    - 其余      → development
-    source_section_indices 落 [min(i, n-1)]，让 plan_agent 的 _materialize 能找到镜头。
+    解析 structural_pattern，按位置分配 role + adaptation_note + tempo，每段一句占位 content_description。
     """
     import re
     import json
     m = re.search(r"原样例共\s*(\d+)\s*段", user_text)
     n_src = int(m.group(1)) if m else 4
-    n = max(3, min(7, n_src))
 
-    # 解析目标总时长（plan_agent 用户 payload 含 '目标总时长：30s'）
+    pat = "dramatic"
+    mp = re.search(r"本次结构模式[：:\s]*([a-z_]+)", user_text)
+    if not mp:
+        mp = re.search(r"structural[_\s]?pattern[：:\s]*([a-z_]+)", user_text, re.IGNORECASE)
+    if mp and mp.group(1).lower() in ("dramatic", "stepwise", "listicle", "atmospheric", "info_dense"):
+        pat = mp.group(1).lower()
+
+    seg_min, seg_max = (2, 8) if pat == "listicle" else (3, 7)
+    n = max(seg_min, min(seg_max, n_src))
+
     m_dur = re.search(r"目标总时长[：:]\s*(\d+(?:\.\d+)?)\s*s", user_text)
     target_total = float(m_dur.group(1)) if m_dur else 30.0
 
-    climax_idx = int(n * 0.6) if n >= 4 else None
-    if climax_idx is not None and (climax_idx <= 0 or climax_idx >= n - 1):
-        climax_idx = None
+    has_peak = pat in ("dramatic", "atmospheric")
+    peak_idx = int(n * 0.6) if has_peak and n >= 4 else None
+    if peak_idx is not None and (peak_idx <= 0 or peak_idx >= n - 1):
+        peak_idx = None
 
-    # role 默认权重，再按 target_total 缩放
-    role_weight = {"opening": 4.0, "development": 6.0, "climax": 7.0, "closing": 4.0}
     roles_seq: list[tuple[str, str]] = []
+    main_counter = 0
     for i in range(n):
         if i == 0:
-            roles_seq.append(("opening", "开场钩子"))
+            roles_seq.append({
+                "dramatic":    ("opening",    "开场钩子"),
+                "stepwise":    ("intro",      "引入"),
+                "listicle":    ("hook",       "钩子"),
+                "atmospheric": ("establish",  "起势"),
+                "info_dense":  ("title_card", "标题卡"),
+            }[pat])
         elif i == n - 1:
-            roles_seq.append(("closing", "行动引导"))
-        elif i == climax_idx:
-            roles_seq.append(("climax", "卖点高潮"))
+            roles_seq.append({
+                "dramatic":    ("closing", "行动引导"),
+                "stepwise":    ("recap",   "总结"),
+                "listicle":    ("closer",  "收尾"),
+                "atmospheric": ("resolve", "余韵"),
+                "info_dense":  ("payoff",  "落版"),
+            }[pat])
+        elif i == peak_idx:
+            roles_seq.append(("climax", "卖点高潮") if pat == "dramatic" else ("peak", "顶点"))
         else:
-            roles_seq.append(("development", f"主体铺陈{i}"))
+            main_counter += 1
+            if pat == "dramatic":
+                roles_seq.append(("development", f"主体铺陈{main_counter}"))
+            elif pat == "stepwise":
+                roles_seq.append((f"step_{main_counter}", f"步骤 {main_counter}"))
+            elif pat == "listicle":
+                roles_seq.append((f"item_{main_counter}", f"第 {main_counter} 项"))
+            elif pat == "atmospheric":
+                roles_seq.append(("flow", f"流转{main_counter}"))
+            else:
+                roles_seq.append(("info_block", f"信息块{main_counter}"))
+
+    role_weight: dict[str, float] = {}
+    for role, _ in roles_seq:
+        if role in ("opening", "intro", "hook", "establish", "title_card",
+                    "closing", "recap", "closer", "resolve", "payoff"):
+            role_weight[role] = 4.0
+        elif role in ("climax", "peak"):
+            role_weight[role] = 7.0
+        else:
+            role_weight[role] = 6.0
 
     weight_sum = sum(role_weight[r] for r, _ in roles_seq) or 1.0
     scale = target_total / weight_sum
@@ -629,10 +813,56 @@ def _build_mock_adapted_sections_json(user_text: str) -> str:
                 f"[mock] {theme}：紧扣用户主题给一句口播，搭配一组主体画面，"
                 f"承接上下段叙事节奏。"
             ),
+            "adaptation_note": "[mock] 沿用样例骨架，按目标时长重排节奏",
+            "tempo": "fast" if role in ("climax", "peak", "hook", "title_card") else "medium",
             "source_section_indices": [min(i, max(0, n_src - 1))],
             "duration_seconds": dur,
         })
     return json.dumps({"adapted_sections": secs}, ensure_ascii=False)
+
+
+def _build_mock_clarify_text(user_text: str) -> str:
+    """意图澄清 mock:按 user payload 里的 ROUND 与 IS_FINAL 字段动态生成 ===DRAFT===/===QUESTION===。
+
+    - 非最终轮:首段思考流(给前端 thinking 区) + DRAFT + 一个具体追问。
+    - 最终轮(IS_FINAL=true):只输出思考流 + DRAFT,QUESTION 段写 NULL。
+    所有路径加 [mock] 前缀,方便联调时辨识。
+    """
+    import re
+    m_round = re.search(r"ROUND:\s*(\d+)\s*/\s*(\d+)", user_text)
+    round_no = int(m_round.group(1)) if m_round else 1
+    is_final = "IS_FINAL: true" in user_text or "IS_FINAL:true" in user_text
+
+    m_brief = re.search(r"INITIAL_BRIEF:\s*(.+)", user_text)
+    brief = m_brief.group(1).strip()[:60] if m_brief else "用户主题"
+
+    thinking = (
+        f"[mock] 第 {round_no} 轮思考:用户给的核心信息聚焦在「{brief}」附近。"
+        f"目标受众、行动号召这两个维度还略模糊,先把现有信息按主流短视频脚本骨架重写,"
+        f"并在最不确定的位置发问。\n"
+    )
+    draft = (
+        f"主题:{brief}\n"
+        f"卖点:[mock] 强反差画面 + 一句金句,前 3 秒锁住注意力\n"
+        f"受众:[mock] 18-30 岁年轻用户,通勤刷屏场景\n"
+        f"目的:[mock] 种草引导关注或点击购物车\n"
+        f"平台:[mock] 抖音 / 小红书竖屏 9:16\n"
+        f"语气:[mock] 真诚不油腻、轻松带点节奏\n"
+        f"CTA:[mock] 「点关注 + 主页拿同款」"
+    )
+    if is_final:
+        question = "NULL"
+    else:
+        questions = [
+            "[mock] 这条视频是想直接带货下单、还是先做认知种草?用一句话告诉我。",
+            "[mock] 主要给哪类用户看?(年龄段或场景任选一个即可)",
+            "[mock] 视频结尾你最希望观众做的一件事是什么?",
+        ]
+        question = questions[(round_no - 1) % len(questions)]
+
+    return (
+        f"{thinking}===DRAFT===\n{draft}\n===QUESTION===\n{question}"
+    )
 
 
 _MOCK_GAP_FILL_JSON = """
@@ -672,6 +902,8 @@ _MOCK_EDIT_TOOLS_JSON = """
 def _build_mock_t2v_prompt_json(user_text: str) -> str:
     """aigc_prompt_agent 的 mock：从 user payload 抽『段落主题』『内容说明』『视频整体主题』
     拼出一句要素齐备的 Seedance 中文 prompt。所有路径都加 [mock] 前缀，方便排查。
+
+    输出含 `thinking` 2-3 条，前端 agent 化面板用来展示『思考过程』。
     """
     import json
     import re
@@ -690,7 +922,103 @@ def _build_mock_t2v_prompt_json(user_text: str) -> str:
         f"[mock] {theme}：{content_short}。中景跟随镜头，自然光与冷暖对比，"
         f"电影感色调，节奏与情绪贴合主题{brief_clip}。"
     )
-    return json.dumps({"prompt": prompt}, ensure_ascii=False)
+    thinking = [
+        f"[mock] 主体：从段落主题『{theme[:12]}』提取核心",
+        "[mock] 镜头：中景跟随 + 自然光，匹配段落叙事节奏",
+        "[mock] 风格：电影感色调 + 冷暖对比，强化情绪",
+    ]
+    return json.dumps({"prompt": prompt, "thinking": thinking}, ensure_ascii=False)
+
+
+def _build_mock_image_spec_json(user_text: str) -> str:
+    """aigc_prompt_agent.generate_image_specs 的 mock：根据段落上下文产 2 张参考图建议 + 思考链。
+
+    主题短 → 1 张；主题长 → 2 张。所有路径都加 [mock] 前缀。
+    """
+    import json
+    import re
+
+    def _find(label: str) -> str:
+        m = re.search(rf"{label}[：:]\s*(.+)", user_text)
+        return m.group(1).strip() if m else ""
+
+    theme = _find("段落主题") or "段落画面"
+    content = _find("段落内容说明") or _find("原始槽位需求") or "本段画面"
+    ratio = _find("画幅默认") or "16:9"
+    content_short = content[:40] + ("…" if len(content) > 40 else "")
+
+    specs = [
+        {
+            "slot_id": "img-1",
+            "caption": f"[mock] {theme[:20]} · 主场景",
+            "prompt": (
+                f"[mock] {theme}：{content_short}。中景固定机位，自然光带轻微逆光，"
+                f"电影感暖金调，氛围庄重。"
+            ),
+            "ratio": ratio,
+        },
+        {
+            "slot_id": "img-2",
+            "caption": f"[mock] {theme[:20]} · 特写补镜",
+            "prompt": (
+                f"[mock] {theme} 主体细节特写，浅景深，35mm 胶片质感，"
+                f"低饱和冷调，氛围克制。"
+            ),
+            "ratio": ratio,
+        },
+    ]
+    thinking = [
+        f"[mock] 识别核心主体：『{theme[:14]}』",
+        "[mock] 单段配 2 张：主场景 + 特写互补",
+        "[mock] 主场景中景定调，特写补主体细节",
+    ]
+    return json.dumps({"specs": specs, "thinking": thinking}, ensure_ascii=False)
+
+
+def _build_mock_copy_outline_json(user_text: str) -> str:
+    """copy_outline_agent 的 mock：从 user payload 抽『段落主题』『内容说明』『关键词』
+    拼出一份字卡画面 spec + 思考链。所有路径都加 [mock] 前缀。
+    """
+    import re
+    m_theme = re.search(r"段落主题：(.+)", user_text)
+    theme = m_theme.group(1).strip() if m_theme else "段落"
+    m_keywords = re.search(r"全局关键词：(.+)", user_text)
+    keywords_raw = m_keywords.group(1).strip() if m_keywords else ""
+    keywords = [k.strip("[]『』 ") for k in re.split(r"[,，、]", keywords_raw) if k.strip("[]『』 ")][:2]
+    m_dur = re.search(r"段落时长：约\s*([0-9.]+)", user_text)
+    duration = float(m_dur.group(1)) if m_dur else 4.0
+
+    main_text = f"[mock] {theme[:14]}"
+    sub_text = (keywords[0] if keywords else "看这一幕").strip()[:30]
+
+    outline = {
+        "main_text": main_text[:24],
+        "sub_text": sub_text,
+        "core_message": f"[mock] {theme[:18]} 的关键时刻",
+        "emotional_hook": "wow",
+        "must_include_keywords": keywords,
+        "recommended_spec": {
+            "font_family": "tech_mono",
+            "layout": "split_top_bottom" if sub_text else "center",
+            "bg_mode": "solid",
+            "bg_color": "#0B1220",
+            "text_color": "#FACC15",
+            "accent_color": "#38BDF8",
+            "animation": "zoom_pop",
+            "emoji_decor": ["✨"],
+            "duration_seconds": max(1.5, min(15.0, duration)),
+        },
+        "tone_lean": "[mock] 与全局调性一致，节奏微紧",
+    }
+    thinking = [
+        f"[mock] 提取核心信息：『{theme[:14]}』",
+        "[mock] 选择情绪钩子：惊艳（突出反差）",
+        "[mock] 字体 tech_mono + 暗底亮黄主标 + 电光蓝副标",
+        "[mock] 动画 zoom_pop（开场冲击）",
+    ]
+    if keywords:
+        thinking.append(f"[mock] 强制关键词：{'、'.join(keywords)}")
+    return json.dumps({"outline": outline, "thinking": thinking}, ensure_ascii=False)
 
 
 # packaging_agent 走 complete_json 拿转场 + 封面。系统中独有的指纹是 "from_section" / "palette"。
@@ -714,3 +1042,149 @@ _MOCK_PACKAGING_JSON = """
   }
 }
 """
+
+
+def _build_mock_packaging_v2_json(user: str) -> str:
+    """packaging_agent V2 的 mock：从 user prompt 抽前两/最后一个 scene_id，
+    产出 5 维度候选 JSON（subtitle_styles / title_bars / stickers /
+    transition_bundles / covers）。candidate_id 与 schema 约束一致。
+    """
+    import json
+    import re
+
+    scene_ids = re.findall(r"scene_id=([\w\-]+)", user)
+    if not scene_ids:
+        scene_ids = ["sc-1", "sc-2", "sc-3"]
+    first_id = scene_ids[0]
+    mid_id = scene_ids[1] if len(scene_ids) > 1 else scene_ids[0]
+    last_id = scene_ids[-1]
+    # 从 user prompt 抽段落主题作 title
+    brief_m = re.search(r"创作者主题：(.+)", user)
+    brief = brief_m.group(1).strip()[:12] if brief_m else "爆款标题"
+
+    payload = {
+        "subtitle_styles": [
+            {
+                "candidate_id": "sub-01",
+                "label": "[mock] 底部中字｜阴影底",
+                "font_size": "medium",
+                "position": "bottom",
+                "background": "shadow",
+                "bilingual": False,
+                "rationale": "[mock] 可读性高、占用画面少",
+            },
+            {
+                "candidate_id": "sub-02",
+                "label": "[mock] 底部大字｜渐变底",
+                "font_size": "large",
+                "position": "bottom",
+                "background": "gradient",
+                "bilingual": False,
+                "rationale": "[mock] 信息密度高时拉满字号",
+            },
+            {
+                "candidate_id": "sub-03",
+                "label": "[mock] 中字无底",
+                "font_size": "medium",
+                "position": "bottom",
+                "background": "none",
+                "bilingual": False,
+                "rationale": "[mock] 极简风、纯净画面",
+            },
+        ],
+        "title_bars": [
+            {
+                "candidate_id": "tb-01",
+                "text": f"[mock] {brief}",
+                "target_scene_id": first_id,
+                "start": 0.2,
+                "end": 1.6,
+                "font_size": "large",
+                "color": "#FFFFFF",
+                "background_color": "#14181F",
+                "position": "top",
+                "rationale": "[mock] 开场点题",
+            },
+            {
+                "candidate_id": "tb-02",
+                "text": "[mock] 重点来了",
+                "target_scene_id": mid_id,
+                "start": 0.0,
+                "end": 1.2,
+                "font_size": "medium",
+                "color": "#0F172A",
+                "background_color": "#FACC15",
+                "position": "top",
+                "rationale": "[mock] 中段强调",
+            },
+        ],
+        "stickers": [
+            {
+                "candidate_id": "st-01",
+                "text": "[mock]点这",
+                "target_scene_id": last_id,
+                "start": 0.0,
+                "end": 0.9,
+                "color": "#000000",
+                "background_color": "#FFE600",
+                "position": "bottom-center",
+                "rationale": "[mock] 收尾 CTA",
+            },
+            {
+                "candidate_id": "st-02",
+                "text": "[mock]关注",
+                "target_scene_id": last_id,
+                "start": 0.0,
+                "end": 0.8,
+                "color": "#FFFFFF",
+                "background_color": "#DB2777",
+                "position": "top-right",
+                "rationale": "[mock] 备选关注",
+            },
+        ],
+        "transition_bundles": [
+            {
+                "candidate_id": "tr-01",
+                "at_seconds": 0.0,
+                "from_section": "opening",
+                "to_section": "development",
+                "options": [
+                    {"style": "whip", "duration": 0.4, "reason": "[mock] 甩切冲击"},
+                    {"style": "zoom", "duration": 0.4, "reason": "[mock] 推拉过渡"},
+                ],
+                "rationale": "[mock] 开场→发展 转场组",
+            },
+            {
+                "candidate_id": "tr-02",
+                "at_seconds": 0.0,
+                "from_section": "development",
+                "to_section": "closing",
+                "options": [
+                    {"style": "zoom", "duration": 0.5, "reason": "[mock] 推拉收尾"},
+                    {"style": "fade", "duration": 0.4, "reason": "[mock] 渐隐收尾"},
+                ],
+                "rationale": "[mock] 发展→结尾 转场组",
+            },
+        ],
+        "covers": [
+            {
+                "candidate_id": "cv-01",
+                "title": f"[mock]{brief}",
+                "subtitle": "3 秒抓住你",
+                "palette": ["#FFE600", "#1F2937", "#FFFFFF"],
+                "layout": "center",
+                "style_note": "[mock] 黑底黄字居中",
+                "rationale": "[mock] 强冲击对比色",
+            },
+            {
+                "candidate_id": "cv-02",
+                "title": f"[mock]{brief}",
+                "subtitle": "看完就懂",
+                "palette": ["#0EA5E9", "#0F172A", "#F8FAFC"],
+                "layout": "left",
+                "style_note": "[mock] 蓝白冷调",
+                "rationale": "[mock] 信息流稳重风",
+            },
+        ],
+    }
+    return json.dumps(payload, ensure_ascii=False)

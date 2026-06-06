@@ -6,57 +6,30 @@ import HomePage from '@/pages/Home'
 import LibraryPage from '@/pages/Library'
 import DecomposePage from '@/pages/Decompose'
 import ComposePage from '@/pages/Compose'
-import MigratePage from '@/pages/Migrate'
-import { StepIndicator } from '@/components/nav/StepIndicator'
+import KnowledgePage from '@/pages/Knowledge'
 import { useProjectsStore } from '@/stores/projects'
-import type { ProjectStepState, StepName, StepStatus } from '@/types/schemas'
 
 /**
- * 顶部导航 = 项目工作流的 3 步状态机指示器。
+ * 顶栏 = 4 模块平铺导航。
  *
- * 渲染（'render'）不在前端 STEP_ORDER 里——后端仍把 render 作为 step_states 的一项
- * 跟踪（编辑锁、status==rendered 标记都依赖它），但 UI 上不再单独成页：渲染流水线
- * 内联在 compose 长页底部，结果视频在同页展示。
+ * - 首页：项目列表
+ * - 资产库：收藏的爆款样例 + 上传素材
+ * - 样例拆解：把样例拆出结构
+ * - 视频工坊：写主题 → 配素材 → 对照结构 → 出片（吸收原 Compose + Migrate）
  *
- * 步骤可达规则（canEnterStep）：
- * - `saved` / `dirty` → 可点（回看 / 编辑——已有产物，回去改不会丢）
- * - 当前 `current_step` → 可点（正在做的那一步）
- * - `current_step` 之后的第一步 → 可点（线性推进；UX 上当成"下一步在哪"提示）
- * - 其它 `pending` → 禁点（防止用户跳过中间步骤导致产物对不上）
+ * 旧路由 /compose、/migrate 全部重定向到 /workshop。
+ * 项目工作流的 step_states 仍由后端跟踪,但不再决定导航可见性 —— 用户自己点。
  */
-const STEP_ORDER: StepName[] = ['library', 'decompose', 'compose']
-const ROUTE_OF: Record<StepName, string> = {
-  library: '/library',
-  decompose: '/decompose',
-  compose: '/compose',
-  render: '/compose', // render 不再独立成页；保留映射避免类型缺项
-}
-const LABEL_OF: Record<StepName, string> = {
-  library: '选样例',
-  decompose: '样例拆解',
-  compose: '新素材 / 缺口 / 渲染',
-  render: '渲染', // 不出现在导航里；仅类型完整
-}
+const NAV_ITEMS: { to: string; label: string; requireProject: boolean }[] = [
+  { to: '/', label: '首页', requireProject: false },
+  { to: '/library', label: '资产库', requireProject: false },
+  { to: '/decompose', label: '样例拆解', requireProject: true },
+  { to: '/workshop', label: '视频工坊', requireProject: true },
+  { to: '/knowledge', label: '个性知识库', requireProject: false },
+]
 
-function canEnterStep(
-  step: StepName,
-  states: ProjectStepState | undefined,
-  current: StepName | undefined,
-): boolean {
-  if (!states || !current) return false
-  const status: StepStatus = states[step]
-  if (status === 'saved' || status === 'dirty') return true
-  if (step === current) return true
-  const currentIdx = STEP_ORDER.indexOf(current)
-  const stepIdx = STEP_ORDER.indexOf(step)
-  // 当前步之后的第一步（且未开始）允许点进，让用户正向推进
-  if (stepIdx === currentIdx + 1 && status === 'pending') return true
-  return false
-}
-
-// 需要 currentProjectId 才能访问的 path —— 没有项目时回首页。
-// 素材库不强制（用户可以浏览样例后再决定建项目）。
-const PROJECT_REQUIRED_PATHS = new Set<string>(['/decompose', '/compose', '/migrate'])
+// 需要先选项目才能进的 path。
+const PROJECT_REQUIRED_PATHS = new Set<string>(['/decompose', '/workshop'])
 
 function ProjectGuard({ children }: { children: React.ReactNode }) {
   const location = useLocation()
@@ -69,7 +42,6 @@ function ProjectGuard({ children }: { children: React.ReactNode }) {
 
 export default function App() {
   const refreshProjects = useProjectsStore((s) => s.refresh)
-  // 应用启动时拉一次项目列表，让 nav 顶栏 + 首页都能直接拿到
   useEffect(() => {
     void refreshProjects()
   }, [refreshProjects])
@@ -79,9 +51,9 @@ export default function App() {
       <header className="border-b border-border bg-card">
         <div className="mx-auto flex max-w-screen-2xl items-center gap-6 px-6 py-3">
           <span className="font-semibold tracking-tight">
-            Seecript<span className="text-muted-foreground"> · 爆款结构迁移引擎</span>
+            Seecript<span className="text-muted-foreground"> · 短视频结构借鉴助手</span>
           </span>
-          <WorkflowNav />
+          <MainNav />
           <CurrentProjectBadge />
         </div>
       </header>
@@ -99,100 +71,54 @@ export default function App() {
             }
           />
           <Route
-            path="/compose"
+            path="/workshop"
             element={
               <ProjectGuard>
                 <ComposePage />
               </ProjectGuard>
             }
           />
-          <Route
-            path="/migrate"
-            element={
-              <ProjectGuard>
-                <MigratePage />
-              </ProjectGuard>
-            }
-          />
-          {/* /render 路由已并入 /compose；旧链接重定向 */}
-          <Route path="/render" element={<Navigate to="/compose" replace />} />
+          <Route path="/knowledge" element={<KnowledgePage />} />
+          {/* 旧路由全部重定向到 /workshop */}
+          <Route path="/compose" element={<Navigate to="/workshop" replace />} />
+          <Route path="/migrate" element={<Navigate to="/workshop?tab=migrate" replace />} />
+          <Route path="/render" element={<Navigate to="/workshop" replace />} />
         </Routes>
       </main>
     </div>
   )
 }
 
-function WorkflowNav() {
+function MainNav() {
   const currentProjectId = useProjectsStore((s) => s.currentProjectId)
-  const project = useProjectsStore((s) =>
-    s.currentProjectId ? s.projects.find((p) => p.project_id === s.currentProjectId) : null,
-  )
-  const stepStates = project?.step_states
-  const currentStep = project?.current_step
 
   return (
     <nav className="flex items-center gap-1 text-sm">
-      {/* 首页始终可点 */}
-      <NavLink
-        to="/"
-        end
-        className={({ isActive }) =>
-          cn(
-            'rounded-md px-3 py-1.5 transition-colors',
-            isActive
-              ? 'bg-accent text-accent-foreground'
-              : 'text-muted-foreground hover:bg-secondary hover:text-foreground',
-          )
-        }
-      >
-        首页
-      </NavLink>
-      {STEP_ORDER.map((step) => {
-        const status: StepStatus = stepStates?.[step] ?? 'pending'
-        // 没项目时只允许进 library（用户先浏览样例）
-        const enabled = currentProjectId
-          ? canEnterStep(step, stepStates, currentStep)
-          : step === 'library'
+      {NAV_ITEMS.map((item) => {
+        const disabled = item.requireProject && !currentProjectId
         return (
           <NavLink
-            key={step}
-            to={ROUTE_OF[step]}
+            key={item.to}
+            to={item.to}
+            end={item.to === '/'}
             onClick={(e) => {
-              if (!enabled) e.preventDefault()
+              if (disabled) e.preventDefault()
             }}
             className={({ isActive }) =>
               cn(
-                'flex items-center gap-2 rounded-md px-3 py-1.5 transition-colors',
+                'rounded-md px-3 py-1.5 transition-colors',
                 isActive
                   ? 'bg-accent text-accent-foreground'
                   : 'text-muted-foreground hover:bg-secondary hover:text-foreground',
-                !enabled && 'cursor-not-allowed opacity-40 hover:bg-transparent hover:text-muted-foreground',
+                disabled && 'cursor-not-allowed opacity-40 hover:bg-transparent hover:text-muted-foreground',
               )
             }
+            title={disabled ? '先在首页选一个项目再进来' : undefined}
           >
-            <StepIndicator status={status} />
-            <span>{LABEL_OF[step]}</span>
+            {item.label}
           </NavLink>
         )
       })}
-      {/* Migrate 是 view-only，不在步骤序列里，独立放最后 */}
-      <NavLink
-        to="/migrate"
-        className={({ isActive }) =>
-          cn(
-            'rounded-md px-3 py-1.5 transition-colors',
-            isActive
-              ? 'bg-accent text-accent-foreground'
-              : 'text-muted-foreground hover:bg-secondary hover:text-foreground',
-            !currentProjectId && 'cursor-not-allowed opacity-40 hover:bg-transparent hover:text-muted-foreground',
-          )
-        }
-        onClick={(e) => {
-          if (!currentProjectId) e.preventDefault()
-        }}
-      >
-        迁移映射
-      </NavLink>
     </nav>
   )
 }
@@ -205,7 +131,7 @@ function CurrentProjectBadge() {
   return (
     <span
       className="ml-auto truncate rounded-md border border-border bg-background px-2 py-1 text-xs text-muted-foreground"
-      title={`当前项目 · ${proj.name}（${proj.project_id}）`}
+      title={`当前项目 · ${proj.name}`}
     >
       {proj.name}
     </span>
