@@ -100,7 +100,9 @@ export default function LibraryPage() {
   // 仅落地路径与 sample_id 前缀不同。上传成功 → 刷新列表,新卡片立即出现在对应 tab。
   // 拆解仍走 Decompose 页:上传完不自动触发拆解,因为拆解会用配额(LLM/Seedance),
   // 用户应该有机会先确认上传内容再决定是否拆解。
-  const handleUploadFile = async (target: Tab, file: File) => {
+  // video_type: 用上传卡片内的 select 显式选择(默认跟随当前筛选 chip;'all' 时回退 marketing),
+  // 否则会出现"在 Vlog 筛选下上传却被归入营销"的脏数据。
+  const handleUploadFile = async (target: Tab, file: File, videoType: VideoType) => {
     setError(null)
     const duration = await readVideoDuration(file)
     if (duration != null && duration > VIDEO_UPLOAD_MAX_DURATION_SECONDS) {
@@ -111,14 +113,16 @@ export default function LibraryPage() {
     try {
       const fd = new FormData()
       fd.append('file', file)
-      // video_type 上传时不让用户选;Decompose 页面有 radio 让用户改。默认 marketing。
-      fd.append('video_type', 'marketing')
+      fd.append('video_type', videoType)
       if (target === 'system') {
         await api.post<LibrarySystemUploadResponse>('/library/system/upload', fd)
       } else {
         await api.post<DecomposeUploadResponse>('/decompose/upload', fd)
       }
       setTab(target)
+      // 上传成功后把筛选切到刚选的类型,新卡片立即可见(不然停在 'all' 也行,但
+      // 用户多半希望看到自己刚上传的那张)
+      setVideoTypeFilter(videoType)
       setReloadTick((t) => t + 1)
     } catch (err) {
       setError(err instanceof Error ? err.message : '上传失败')
@@ -227,7 +231,8 @@ export default function LibraryPage() {
           <UploadSampleCard
             tab={tab}
             uploading={uploading}
-            onPick={(file) => void handleUploadFile(tab, file)}
+            defaultVideoType={videoTypeFilter === 'all' ? 'marketing' : videoTypeFilter}
+            onPick={(file, videoType) => void handleUploadFile(tab, file, videoType)}
           />
           {visible.map((item) => (
             <div
@@ -378,17 +383,29 @@ function ManifestStatusBadge({ versionCount }: { versionCount: number }) {
 //   - system: 上传后落到 server/samples/<sys-hex>/(所有用户共享)
 //   - user:   上传后落到 server/var/uploads/decompose/<user-hex>/(当前 session 私有)
 // UI 风格刻意做得和样例卡同高(h-64 相当),保持 grid 视觉对齐。
+// defaultVideoType: 由父级传入(跟随当前筛选 chip),用户可在 select 内显式改。
 function UploadSampleCard({
   tab,
   uploading,
+  defaultVideoType,
   onPick,
 }: {
   tab: Tab
   uploading: boolean
-  onPick: (file: File) => void
+  defaultVideoType: VideoType
+  onPick: (file: File, videoType: VideoType) => void
 }) {
   const inputRef = useRef<HTMLInputElement | null>(null)
   const [dragOver, setDragOver] = useState(false)
+  const [videoType, setVideoType] = useState<VideoType>(defaultVideoType)
+  // 父级筛选 chip 切换时同步 select(用户大概率想"跟着筛选走"),
+  // 但不用 useEffect 强制覆盖——已手动改过的状态不该被父级一刷又拉回。
+  // 这里用 ref 跟踪上一次默认值变化即可。
+  const lastDefaultRef = useRef(defaultVideoType)
+  if (lastDefaultRef.current !== defaultVideoType) {
+    lastDefaultRef.current = defaultVideoType
+    setVideoType(defaultVideoType)
+  }
 
   const triggerPick = () => {
     if (!uploading) inputRef.current?.click()
@@ -399,7 +416,7 @@ function UploadSampleCard({
     setDragOver(false)
     if (uploading) return
     const file = e.dataTransfer.files?.[0]
-    if (file) onPick(file)
+    if (file) onPick(file, videoType)
   }
 
   const tabLabel = tab === 'system' ? '官方样例' : '我上传的样例'
@@ -453,6 +470,24 @@ function UploadSampleCard({
       <p className="px-2 text-[11px] leading-relaxed text-muted-foreground">
         {tabDesc}
       </p>
+      {/* 视频类型选择——上传时显式定类,避免被默认归入营销分类导致筛选错位 */}
+      <label
+        className="mt-1 flex items-center gap-1.5 text-[11px] text-muted-foreground"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <span>视频类型</span>
+        <select
+          value={videoType}
+          disabled={uploading}
+          onChange={(e) => setVideoType(e.target.value as VideoType)}
+          onClick={(e) => e.stopPropagation()}
+          className="rounded-md border border-border bg-background px-2 py-0.5 text-[11px] text-foreground focus:outline-none focus:ring-1 focus:ring-primary/40"
+        >
+          <option value="marketing">{VIDEO_TYPE_LABEL.marketing}</option>
+          <option value="editing">{VIDEO_TYPE_LABEL.editing}</option>
+          <option value="motion_graph">{VIDEO_TYPE_LABEL.motion_graph}</option>
+        </select>
+      </label>
       <p className="text-[11px] text-muted-foreground">
         mp4 / mov / webm，单个文件 ≤ 200MB、≤ 3 分钟
       </p>
@@ -463,7 +498,7 @@ function UploadSampleCard({
         accept="video/mp4,video/quicktime,video/webm"
         onChange={(e) => {
           const file = e.target.files?.[0]
-          if (file) onPick(file)
+          if (file) onPick(file, videoType)
           e.target.value = ''
         }}
       />

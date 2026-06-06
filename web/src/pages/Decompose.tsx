@@ -235,6 +235,9 @@ export default function DecomposePage() {
       try {
         const fd = new FormData()
         fd.append('file', file)
+        // 显式传 video_type:不传后端默认 marketing,会把所有上传归到营销分类。
+        // 用 session.videoType(就是当前 Decompose 页面顶部 chip 的值)。
+        fd.append('video_type', videoType)
         const resp = await api.post<DecomposeUploadResponse>('/decompose/upload', fd)
         selectSamples([resp.sample_id], [resp.filename], videoType, 'user')
         setUploadedFile({ filename: resp.filename, size_bytes: resp.size_bytes })
