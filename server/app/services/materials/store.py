@@ -117,6 +117,32 @@ class MaterialStore:
                 self._persist(session_id)
             return removed
 
+    def get(self, session_id: str, material_id: str) -> Optional[Material]:
+        with self._lock:
+            for m in self._by_session.get(session_id, []):
+                if m.material_id == material_id:
+                    return m
+            return None
+
+    def update(self, session_id: str, material_id: str, **fields) -> Optional[Material]:
+        """原地更新一条素材的指定字段（部分字段补丁式合并），并落盘。
+
+        用于视频预处理：preprocess 后写回 preprocess_status / shots / duration_seconds 等。
+        未知字段忽略；未命中 material_id 时返回 None。
+        """
+        with self._lock:
+            items = self._by_session.get(session_id) or []
+            for i, m in enumerate(items):
+                if m.material_id != material_id:
+                    continue
+                data = m.model_dump()
+                data.update({k: v for k, v in fields.items() if v is not None})
+                updated = Material.model_validate(data)
+                items[i] = updated
+                self._persist(session_id)
+                return updated
+            return None
+
 
 class GapStore:
     def __init__(self) -> None:

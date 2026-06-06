@@ -256,6 +256,26 @@ export interface DecomposeSubmitResponse {
 // Module 3 — Material
 // =========================================================================
 
+/** 视频镜头切片：与 server schemas.py::MaterialShot 镜像。*/
+export interface MaterialShot {
+  index: number
+  start: number
+  end: number
+  duration: number
+  thumbnail_url?: string | null
+  caption?: string | null
+  /** 0~1；越大动作越剧烈。决定能否当 hook/climax。 */
+  action_density: number
+  recommended_role?: SectionRole | null
+}
+
+export type MaterialPreprocessStatus =
+  | 'pending'
+  | 'running'
+  | 'ready'
+  | 'failed'
+  | 'skipped'
+
 export interface Material {
   material_id: MaterialId
   filename: string
@@ -270,6 +290,12 @@ export interface Material {
   highlight_score: number
   highlight_reason?: string | null
   sort_order: number
+  /** 视频预处理状态。skipped = 非视频 / 关闭；pending = 入队；running = 切片+VLM 中；ready/failed 终态。 */
+  preprocess_status?: MaterialPreprocessStatus
+  /** failed 时一句话原因，前端 hover 显示。 */
+  preprocess_error?: string | null
+  /** PySceneDetect 切片产物；空数组 = 未预处理或失败回退。 */
+  shots?: MaterialShot[]
 }
 
 export interface MaterialUploadResponse {
@@ -509,6 +535,8 @@ export interface Scene {
   aigc_image_url?: string | null
   /** source=text_card 时的字卡规格；其他 source 为 null/undefined。 */
   text_card_spec?: TextCardSpec | null
+  /** source=aigc_image 时 Remotion AnimatedImage 渲染规格；预览侧用来跑动效。 */
+  animation_spec?: AnimationSpec | null
   /** 与上一段衔接方式；sc-0 永远忽略此字段。None / hard_cut 走 concat demuxer，其他走 xfade。 */
   transition_in?: SceneTransition | null
 }
@@ -517,6 +545,20 @@ export interface SceneTransition {
   style: TransitionStyle
   /** 转场持续秒数（0.1–1.5），与上一段尾部 overlap 长度。 */
   duration: number
+}
+
+/** 与后端 schemas.py::AnimationSpec / remotion/src/AnimatedImage.tsx 镜像；改字段时务必同步三处。 */
+export type AnimationType = 'ken-burns' | 'parallax' | 'storyboard' | 'keyframe_morph' | 'static'
+export type AnimationMotionDirection = 'in' | 'out' | 'pan-left' | 'pan-right' | 'pan-up' | 'pan-down'
+export type AnimationTransition = 'cross-fade' | 'cut' | 'slide-left'
+export interface AnimationSpec {
+  engine: 'remotion' | 'ffmpeg'
+  animation_type: AnimationType
+  motion_direction: AnimationMotionDirection
+  intensity: number
+  transition: AnimationTransition
+  transition_duration: number
+  image_urls: string[]
 }
 
 export interface PackagingItem {

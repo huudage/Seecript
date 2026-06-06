@@ -511,6 +511,36 @@ class DecomposeSubmitResponse(BaseModel):
 # Module 3 — 新素材上传 (Material)
 # =========================================================================
 
+
+class MaterialShot(BaseModel):
+    """视频素材切片：PySceneDetect 检测出的镜头边界 + 多模态 LLM 描述 + 角色推荐。
+
+    用于 plan/build 阶段智能选片：从一段长视频里挑出对每个 section role 最匹配的镜头，
+    而不是简单按 scene.duration 顺位 trim 前 N 秒。
+    """
+
+    index: int = Field(description="本镜头在素材里的序号，从 0 开始。")
+    start: float = Field(ge=0.0, description="镜头起点（秒）。")
+    end: float = Field(gt=0.0, description="镜头终点（秒）；end > start。")
+    duration: float = Field(gt=0.0, description="镜头时长 = end - start。")
+    thumbnail_url: Optional[str] = Field(
+        default=None,
+        description="代表帧（中间帧）的 URL，前端 hover 预览。/uploads/<sid>/shots/<material_id>-<i>.jpg",
+    )
+    caption: Optional[str] = Field(
+        default=None,
+        description="多模态 LLM 给的一句话画面描述。",
+    )
+    action_density: float = Field(
+        default=0.0, ge=0.0, le=1.0,
+        description="动作密度 0~1：1=全屏运动/快切，0=完全静态。决定能否当 hook/climax。",
+    )
+    recommended_role: Optional[SectionRole] = Field(
+        default=None,
+        description="LLM 推荐这个镜头适合放进哪个 role 段（opening/development/climax/closing）。",
+    )
+
+
 class Material(BaseModel):
     """用户上传的素材分析结果（含 多模态 LLM 标签 + 段落推荐 + 高光评分）。"""
 
@@ -544,6 +574,22 @@ class Material(BaseModel):
     sort_order: int = Field(
         default=0,
         description="前端拖拽排序产物，plan/build 时按它排 selected_materials；越小越靠前。",
+    )
+    # ---- 视频预处理（Stage 20）：MaterialShot 切片 + 进度状态 ----
+    preprocess_status: Literal["pending", "running", "ready", "failed", "skipped"] = Field(
+        default="skipped",
+        description=(
+            "视频预处理阶段：pending=入队、running=切片+VLM 分析中、ready=完成可被 _pick 用、"
+            "failed=失败但素材仍可用（fallback truncate）、skipped=非视频或未启用预处理。"
+        ),
+    )
+    preprocess_error: Optional[str] = Field(
+        default=None,
+        description="failed 时一句话原因；前端进度条 hover 提示。",
+    )
+    shots: list[MaterialShot] = Field(
+        default_factory=list,
+        description="PySceneDetect 切片产物；空列表 = 未预处理或失败回退。",
     )
 
     @model_validator(mode="before")

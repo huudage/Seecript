@@ -25,6 +25,7 @@ from ..config import get_settings
 from ..schemas import Material, MaterialUploadResponse, SectionRole, VideoType, all_role_names
 from ..services.llm_client import LLMError, get_llm_client
 from ..services.materials import material_store
+from ..services.materials.preprocess import dispatch as dispatch_preprocess
 from ..services.video.ffmpeg import FFmpegError, extract_frame, ffmpeg_available
 
 log = logging.getLogger("seecript.material")
@@ -216,6 +217,7 @@ async def _build_material(
         highlight_score=highlight_score,
         highlight_reason=highlight_reason,
         sort_order=sort_order,
+        preprocess_status="pending" if media_type == "video" else "skipped",
     )
 
 
@@ -244,7 +246,35 @@ async def upload_material(
     ]
     materials = await asyncio.gather(*tasks)
     material_store.put(sid, list(materials))
+
+    # 视频素材入队预处理（PySceneDetect + VLM caption）；非视频跳过。
+    # 不 await——预处理是后台任务，几十秒到几分钟，前端走 GET /api/material/{id}/preprocess 轮询。
+    for m in materials:
+        if m.media_type == "video":
+            local = target_dir / f"{m.material_id}_{m.filename}"
+            try:
+                dispatch_preprocess(sid, m.material_id, local)
+            except Exception as exc:  # noqa: BLE001
+                log.warning("[material] dispatch preprocess failed material=%s: %s",
+                            m.material_id, exc)
+
     return MaterialUploadResponse(session_id=sid, materials=list(materials))
+
+
+@router.get("/material/{material_id}/preprocess", response_model=Material)
+async def get_material_preprocess(material_id: str, project_id: str) -> Material:
+    """前端轮询视频预处理进度（preprocess_status / shots）。
+
+    project_id 必填——MaterialStore 按 project 分区，跨 project 不允许查询。
+    返回 200 + 完整 Material；status 字段是 pending / running / ready / failed / skipped。
+    """
+    sid = project_id.strip()
+    if not sid:
+        raise HTTPException(status_code=400, detail="project_id 必填")
+    m = material_store.get(sid, material_id)
+    if m is None:
+        raise HTTPException(status_code=404, detail=f"material {material_id} not found in project {sid}")
+    return m
 
 
 @router.get("/material", response_model=list[Material])

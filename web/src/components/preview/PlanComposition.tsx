@@ -1,8 +1,8 @@
-import { AbsoluteFill, Audio, Img, Sequence, Video } from 'remotion'
+import { AbsoluteFill, Audio, Img, interpolate, Sequence, useCurrentFrame, useVideoConfig, Video } from 'remotion'
 
 import { SECTION_HEX, SECTION_LABEL } from '@/lib/sections'
 import { resolveSceneMedia } from '@/lib/scene_url'
-import type { BGMConfig, Material, PackagingItem, Plan, Scene, TextCardSpec } from '@/types/schemas'
+import type { AnimationSpec, BGMConfig, Material, PackagingItem, Plan, Scene, TextCardSpec } from '@/types/schemas'
 
 import { Cover, type CoverStyle } from './packaging/Cover'
 import { StickerOverlay } from './packaging/StickerOverlay'
@@ -165,8 +165,21 @@ const SceneClip: React.FC<{ scene: Scene; materials: Material[]; fps: number }> 
   }
   if (media.kind === 'image') {
     // aigc_image：Seedream 静帧；后端 /aigc-images/<file> 同源，直接给浏览器拉。
-    // 后续若 scene.animation_spec.engine === 'remotion'，那是渲染管线的事——
-    // 预览画面这里只做静帧呈现，避免引 Remotion AnimatedImage 的 zod props 复杂度。
+    // animation_spec.engine === 'remotion' 时，预览侧也跑动效——与 pipeline 真渲染（remotion CLI）对齐，
+    // 避免「浏览器看到定格、最终视频出 ken-burns」的体验割裂。
+    const spec = scene.animation_spec ?? null
+    if (spec && spec.engine === 'remotion') {
+      // 单图：scene.aigc_image_url 是兜底；多图：从 spec.image_urls 取
+      const urls = (spec.image_urls && spec.image_urls.length > 0)
+        ? spec.image_urls
+        : [media.url]
+      return (
+        <AbsoluteFill style={{ backgroundColor: '#000' }}>
+          <AnimatedImageScene spec={spec} urls={urls} />
+          {voiceover && <Audio src={voiceover} />}
+        </AbsoluteFill>
+      )
+    }
     return (
       <AbsoluteFill style={{ backgroundColor: '#000' }}>
         <Img
@@ -359,4 +372,228 @@ const BgmAudio: React.FC<{ bgm: BGMConfig; fps: number }> = ({ bgm, fps }) => {
 function clamp01(n: number): number {
   if (Number.isNaN(n)) return 0.6
   return Math.max(0, Math.min(1, n))
+}
+
+/**
+ * 预览端 AnimatedImage：与 remotion/src/AnimatedImage.tsx 同算法（ken-burns / parallax / storyboard /
+ * keyframe_morph / static），独立内联避免跨 bundle 引用。两边的行为必须保持一致——
+ * 真渲染调 remotion CLI 用 remotion/src 的版本；预览端在 @remotion/player 里跑这份。
+ */
+const AnimatedImageScene: React.FC<{ spec: AnimationSpec; urls: string[] }> = ({ spec, urls }) => {
+  const { fps, durationInFrames } = useVideoConfig()
+  // 真正的 totalFrames 取自 video config（Sequence 已按 scene.duration 给定）
+  const duration = durationInFrames
+  const transitionFrames = Math.max(1, Math.round((spec.transition_duration || 0.4) * fps))
+
+  if (urls.length === 0) {
+    return (
+      <AbsoluteFill
+        style={{
+          background: '#111',
+          color: '#777',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+        }}
+      >
+        <span style={{ fontFamily: 'sans-serif', fontSize: 32 }}>缺图 · 渲染兜底</span>
+      </AbsoluteFill>
+    )
+  }
+
+  if (urls.length === 1) {
+    const src = urls[0]
+    switch (spec.animation_type) {
+      case 'parallax':
+        return <ParallaxLayer src={src} durationFrames={duration} intensity={spec.intensity} />
+      case 'static':
+        return (
+          <Img src={src} style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+        )
+      case 'ken-burns':
+      default:
+        return (
+          <KenBurnsLayer
+            src={src}
+            durationFrames={duration}
+            direction={spec.motion_direction}
+            intensity={spec.intensity}
+          />
+        )
+    }
+  }
+
+  // 多图
+  switch (spec.animation_type) {
+    case 'keyframe_morph':
+      return <KeyframeMorphLayer imageUrls={urls} totalFrames={duration} />
+    case 'storyboard':
+    default:
+      return (
+        <StoryboardLayer
+          imageUrls={urls}
+          totalFrames={duration}
+          transitionFrames={transitionFrames}
+          fade={spec.transition === 'cross-fade'}
+        />
+      )
+  }
+}
+
+const KenBurnsLayer: React.FC<{
+  src: string
+  durationFrames: number
+  direction: AnimationSpec['motion_direction']
+  intensity: number
+}> = ({ src, durationFrames, direction, intensity }) => {
+  const frame = useCurrentFrame()
+  const t = interpolate(frame, [0, durationFrames], [0, 1], { extrapolateRight: 'clamp' })
+  const zoomRange = 0.15 + intensity * 0.5
+  const panRange = (0.03 + intensity * 0.12) * 100
+  let scale = 1
+  let translateX = 0
+  let translateY = 0
+  switch (direction) {
+    case 'in':
+      scale = 1 + t * zoomRange
+      break
+    case 'out':
+      scale = 1 + zoomRange - t * zoomRange
+      break
+    case 'pan-left':
+      scale = 1 + zoomRange * 0.3
+      translateX = -t * panRange
+      break
+    case 'pan-right':
+      scale = 1 + zoomRange * 0.3
+      translateX = t * panRange
+      break
+    case 'pan-up':
+      scale = 1 + zoomRange * 0.3
+      translateY = -t * panRange
+      break
+    case 'pan-down':
+      scale = 1 + zoomRange * 0.3
+      translateY = t * panRange
+      break
+  }
+  return (
+    <AbsoluteFill
+      style={{
+        transform: `translate(${translateX}%, ${translateY}%) scale(${scale})`,
+        transformOrigin: 'center center',
+      }}
+    >
+      <Img src={src} style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+    </AbsoluteFill>
+  )
+}
+
+const ParallaxLayer: React.FC<{ src: string; durationFrames: number; intensity: number }> = ({
+  src,
+  durationFrames,
+  intensity,
+}) => {
+  const frame = useCurrentFrame()
+  const t = interpolate(frame, [0, durationFrames], [-1, 1], {
+    extrapolateLeft: 'clamp',
+    extrapolateRight: 'clamp',
+  })
+  const backShift = t * intensity * 8
+  const foreShift = t * intensity * 16
+  return (
+    <AbsoluteFill>
+      <AbsoluteFill style={{ transform: `translateX(${backShift}%) scale(1.15)` }}>
+        <Img
+          src={src}
+          style={{
+            width: '100%',
+            height: '100%',
+            objectFit: 'cover',
+            filter: 'blur(8px) brightness(0.85)',
+          }}
+        />
+      </AbsoluteFill>
+      <AbsoluteFill style={{ transform: `translateX(${foreShift}%) scale(1.05)` }}>
+        <Img src={src} style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+      </AbsoluteFill>
+    </AbsoluteFill>
+  )
+}
+
+const StoryboardLayer: React.FC<{
+  imageUrls: string[]
+  totalFrames: number
+  transitionFrames: number
+  fade: boolean
+}> = ({ imageUrls, totalFrames, transitionFrames, fade }) => {
+  const perShot = totalFrames / imageUrls.length
+  return (
+    <AbsoluteFill>
+      {imageUrls.map((url, i) => {
+        const from = Math.round(i * perShot)
+        const duration = Math.round(perShot)
+        return (
+          <Sequence
+            key={`${url}-${i}`}
+            from={from}
+            durationInFrames={duration + transitionFrames}
+            layout="none"
+          >
+            <FadeShot src={url} duration={duration + transitionFrames} fadeFrames={fade ? transitionFrames : 0} />
+          </Sequence>
+        )
+      })}
+    </AbsoluteFill>
+  )
+}
+
+const FadeShot: React.FC<{ src: string; duration: number; fadeFrames: number }> = ({
+  src,
+  duration,
+  fadeFrames,
+}) => {
+  const frame = useCurrentFrame()
+  let opacity = 1
+  if (fadeFrames > 0) {
+    if (frame < fadeFrames) {
+      opacity = interpolate(frame, [0, fadeFrames], [0, 1])
+    } else if (frame > duration - fadeFrames) {
+      opacity = interpolate(frame, [duration - fadeFrames, duration], [1, 0])
+    }
+  }
+  const zoom = interpolate(frame, [0, duration], [1, 1.08], { extrapolateRight: 'clamp' })
+  return (
+    <AbsoluteFill style={{ opacity, transform: `scale(${zoom})` }}>
+      <Img src={src} style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+    </AbsoluteFill>
+  )
+}
+
+const KeyframeMorphLayer: React.FC<{ imageUrls: string[]; totalFrames: number }> = ({
+  imageUrls,
+  totalFrames,
+}) => {
+  const frame = useCurrentFrame()
+  const n = imageUrls.length
+  return (
+    <AbsoluteFill>
+      {imageUrls.map((url, i) => {
+        const center = ((i + 0.5) * totalFrames) / n
+        const halfWindow = totalFrames / n
+        const opacity = interpolate(
+          frame,
+          [center - halfWindow, center - halfWindow * 0.3, center + halfWindow * 0.3, center + halfWindow],
+          [0, 1, 1, 0],
+          { extrapolateLeft: 'clamp', extrapolateRight: 'clamp' },
+        )
+        const zoom = interpolate(frame, [0, totalFrames], [1, 1.12], { extrapolateRight: 'clamp' })
+        return (
+          <AbsoluteFill key={`${url}-${i}`} style={{ opacity, transform: `scale(${zoom})` }}>
+            <Img src={url} style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+          </AbsoluteFill>
+        )
+      })}
+    </AbsoluteFill>
+  )
 }

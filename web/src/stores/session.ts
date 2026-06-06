@@ -64,6 +64,8 @@ interface SessionState {
   removeMaterial: (materialId: string) => void
   /** 拖拽完成后传新的 material_id 顺序，store 内更新每条的 sort_order。 */
   reorderMaterials: (orderedIds: string[]) => void
+  /** 单条 material 字段补丁（视频预处理轮询专用）。 */
+  updateMaterial: (materialId: string, patch: Partial<Material>) => void
   setBrief: (brief: string) => void
   setVideoGoal: (videoGoal: string) => void
   setSettings: (patch: Partial<ComposeSettings>) => void
@@ -136,6 +138,12 @@ export const useSessionStore = create<SessionState>((set) => ({
         .map((m, i) => ({ ...m, sort_order: i }))
       return { materials: next }
     }),
+  updateMaterial: (materialId, patch) =>
+    set((state) => ({
+      materials: state.materials.map((m) =>
+        m.material_id === materialId ? { ...m, ...patch } : m,
+      ),
+    })),
   setBrief: (brief) => set({ brief }),
   setVideoGoal: (videoGoal) => set({ videoGoal }),
   setSettings: (patch) =>

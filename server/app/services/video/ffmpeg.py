@@ -957,6 +957,84 @@ def color_clip(
     return out
 
 
+def change_speed(
+    src: str | Path,
+    dst: str | Path,
+    *,
+    target_duration: float,
+    sample_rate: int = 44100,
+) -> Path:
+    """变速到 target_duration（保持总时长一致；视频用 setpts，音频用 atempo）。
+
+    用于 user_material 段落实际时长 ≠ scene.duration 时，做轻量节奏拉伸/压缩——
+    避免简单 trim 切掉关键动作，或 freeze 让画面发愣。
+
+    - ratio = target / actual：
+        - ratio > 1（target 比原始长）→ 放慢，setpts=PTS*ratio，atempo=1/ratio
+        - ratio < 1（target 比原始短）→ 加快，setpts=PTS*ratio，atempo=1/ratio
+    - atempo 单次只能 [0.5, 2.0]，超出范围连续叠加 atempo 滤镜（如 0.4 = 0.5*0.8）
+    - 极端比例（>4× 或 <0.25×）画面会糊或抖；调用方先做范围保护
+    """
+    if not ffmpeg_available():
+        raise FFmpegError("ffmpeg not found in PATH")
+    src_p = Path(src)
+    if not src_p.exists():
+        raise FileNotFoundError(src_p)
+    out = Path(dst)
+    out.parent.mkdir(parents=True, exist_ok=True)
+
+    info = probe(src_p)
+    actual = float(info.duration_seconds or 0.0)
+    if actual <= 0.05:
+        raise FFmpegError(f"change_speed: src duration too small ({actual}s)")
+    target = float(target_duration)
+    if target <= 0.05:
+        raise FFmpegError(f"change_speed: target_duration too small ({target}s)")
+
+    ratio = target / actual          # 视频 setpts 倍率：>1 慢，<1 快
+    atempo_inv = 1.0 / ratio         # 音频反向：>1 快，<1 慢
+
+    # atempo 单次范围 [0.5, 2.0]，叠加多次直到把 atempo_inv 拆完
+    atempo_chain: list[float] = []
+    remaining = atempo_inv
+    if remaining <= 0:
+        atempo_chain.append(1.0)
+    else:
+        while remaining > 2.0:
+            atempo_chain.append(2.0)
+            remaining /= 2.0
+        while remaining < 0.5:
+            atempo_chain.append(0.5)
+            remaining /= 0.5
+        atempo_chain.append(remaining)
+    af = ",".join(f"atempo={v:.4f}" for v in atempo_chain)
+
+    cmd = [
+        "ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
+        "-i", str(src_p),
+        "-vf", f"setpts={ratio:.4f}*PTS",
+    ]
+    if info.has_audio:
+        cmd += ["-af", af]
+    else:
+        cmd += [
+            "-f", "lavfi", "-t", f"{target:.3f}",
+            "-i", f"anullsrc=channel_layout=stereo:sample_rate={sample_rate}",
+            "-shortest",
+        ]
+    cmd += [
+        "-t", f"{target:.3f}",
+        "-c:v", "libx264", "-preset", "veryfast", "-crf", "22",
+        "-c:a", "aac", "-b:a", "128k",
+        "-pix_fmt", "yuv420p",
+        str(out),
+    ]
+    proc = subprocess.run(cmd, capture_output=True, text=True, check=False)
+    if proc.returncode != 0:
+        raise FFmpegError(f"change_speed failed: {proc.stderr.strip()}")
+    return out
+
+
 def extend_freeze_tail(
     src: str | Path,
     dst: str | Path,

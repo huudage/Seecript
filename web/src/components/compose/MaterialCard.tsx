@@ -65,6 +65,45 @@ export function MaterialCard({
           </span>
         )}
 
+        {/* 视频预处理状态 chip：左下角；ready 时不显示（避免遮挡） */}
+        {material.media_type === 'video'
+          && material.preprocess_status
+          && material.preprocess_status !== 'ready'
+          && material.preprocess_status !== 'skipped' && (
+          <span
+            className={cn(
+              'absolute bottom-7 left-1 rounded px-1.5 py-0.5 text-[10px] font-medium',
+              material.preprocess_status === 'failed'
+                ? 'bg-red-500/80 text-white'
+                : 'bg-black/60 text-white',
+            )}
+            title={
+              material.preprocess_status === 'failed'
+                ? (material.preprocess_error ?? '预处理失败')
+                : material.preprocess_status === 'running'
+                  ? 'AI 正在切片 + 镜头打标，约需 30-90s'
+                  : material.preprocess_status === 'pending'
+                    ? '等待 AI 切片排队'
+                    : ''
+            }
+          >
+            {material.preprocess_status === 'pending' && '⏳ 排队中'}
+            {material.preprocess_status === 'running' && '⚙️ AI 切片中…'}
+            {material.preprocess_status === 'failed' && '⚠ 预处理失败'}
+          </span>
+        )}
+        {material.media_type === 'video'
+          && material.preprocess_status === 'ready'
+          && material.shots
+          && material.shots.length > 0 && (
+          <span
+            className="absolute bottom-7 left-1 rounded bg-emerald-500/80 px-1.5 py-0.5 text-[10px] font-medium text-white"
+            title={`AI 已切出 ${material.shots.length} 个镜头`}
+          >
+            ✓ {material.shots.length} 镜头
+          </span>
+        )}
+
         {/* 推荐段落色条 */}
         {material.recommended_section && (
           <span

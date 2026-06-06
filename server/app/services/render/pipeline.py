@@ -176,11 +176,29 @@ async def _resolve_aigc_scene(scene: Scene, segments_dir: Path, idx: int) -> Pat
         return locals_[0]
 
 
-async def _maybe_extend_freeze(src: Path, scene: Scene, segments_dir: Path, idx: int) -> Path:
-    """L4: 若 AIGC 视频实际时长 < scene.duration - 0.3s，用 tpad 冻结尾帧补足。
+async def _align_to_scene_duration(
+    src: Path,
+    scene: Scene,
+    segments_dir: Path,
+    idx: int,
+    *,
+    label: str = "scene",
+    allow_speed_change: bool = True,
+) -> Path:
+    """统一对齐策略：把任意视频片段对齐到 scene.duration。
 
-    阈值 0.3s 留给抖动余量，避免因为 ffprobe 浮点误差白白多过一次 ffmpeg。
-    失败时返回原片，让上层 trim 走兜底（截短优于报错）。
+    分支（Δ = target - actual）：
+      |Δ| < 0.3                    → 误差内，原片直通
+      Δ ≥ 0.3 且 actual < target/1.5 → 加长 ≥ 1.5×：变速 setpts/atempo（保留所有内容）
+      Δ ≥ 0.3                     → 轻度短缺：tpad 冻结尾帧补足
+      Δ ≤ -0.3 且 target < actual/1.5 → 减短 ≤ 0.667×：变速加快（让画面紧凑）
+      Δ ≤ -0.3                    → 轻度过长：head trim 截到 target
+
+    allow_speed_change=False 时退回纯 freeze/trim（不变速）——
+    AIGC 视频时长偏差通常 < 1s，强行变速反而失真，调用方关掉这条；
+    user_material 偏差大、可控，开启变速。
+
+    任意分支失败均返回原片，让 concat 自动按短的来——demo 不阻塞。
     """
     target = float(scene.duration or 0.0)
     if target <= 0.5 or not ffmpeg_svc.ffmpeg_available():
@@ -188,24 +206,81 @@ async def _maybe_extend_freeze(src: Path, scene: Scene, segments_dir: Path, idx:
     try:
         info = await asyncio.to_thread(ffmpeg_svc.probe, src)
     except (ffmpeg_svc.FFmpegError, FileNotFoundError) as exc:
-        log.warning("[render] probe failed for freeze-extend scene=%d: %s", idx, exc)
+        log.warning("[render] probe failed for align scene=%d: %s", idx, exc)
         return src
     actual = float(info.duration_seconds or 0.0)
-    if actual >= target - 0.3:
+    if actual <= 0.05:
         return src
-    dst = segments_dir / f"aigc-extend-{idx:02d}.mp4"
+    delta = target - actual
+    if abs(delta) < 0.3:
+        return src
+
+    # ---- 加长分支 ----
+    if delta > 0:
+        # 短缺过多 → 变速放慢（保留全部内容）；否则 tpad 冻结尾帧
+        if allow_speed_change and actual < target / 1.5 and target / actual <= 4.0:
+            dst = segments_dir / f"{label}-slow-{idx:02d}.mp4"
+            try:
+                await asyncio.to_thread(
+                    ffmpeg_svc.change_speed, src, dst, target_duration=target,
+                )
+                log.info(
+                    "[render] %s %d slowmo %.2fs → %.2fs (×%.2f)",
+                    label, idx, actual, target, target / actual,
+                )
+                return dst
+            except ffmpeg_svc.FFmpegError as exc:
+                log.warning("[render] slowmo scene=%d failed (fallback freeze): %s", idx, exc)
+        dst = segments_dir / f"{label}-extend-{idx:02d}.mp4"
+        try:
+            await asyncio.to_thread(
+                ffmpeg_svc.extend_freeze_tail, src, dst, target_duration=target,
+            )
+            log.info(
+                "[render] %s %d freeze-extend %.2fs → %.2fs (Δ=%.2fs)",
+                label, idx, actual, target, delta,
+            )
+            return dst
+        except ffmpeg_svc.FFmpegError as exc:
+            log.warning("[render] freeze-extend scene=%d failed: %s", idx, exc)
+            return src
+
+    # ---- 截短分支（delta < 0）----
+    if allow_speed_change and target < actual / 1.5 and actual / target <= 4.0:
+        dst = segments_dir / f"{label}-fast-{idx:02d}.mp4"
+        try:
+            await asyncio.to_thread(
+                ffmpeg_svc.change_speed, src, dst, target_duration=target,
+            )
+            log.info(
+                "[render] %s %d speedup %.2fs → %.2fs (×%.2f)",
+                label, idx, actual, target, actual / target,
+            )
+            return dst
+        except ffmpeg_svc.FFmpegError as exc:
+            log.warning("[render] speedup scene=%d failed (fallback trim): %s", idx, exc)
+    dst = segments_dir / f"{label}-trim-{idx:02d}.mp4"
     try:
         await asyncio.to_thread(
-            ffmpeg_svc.extend_freeze_tail, src, dst, target_duration=target,
+            ffmpeg_svc.trim, src, dst,
+            start=0.0, duration=target, reencode=True,
         )
         log.info(
-            "[render] scene %d freeze-extend %.2fs → %.2fs (Δ=%.2fs)",
-            idx, actual, target, target - actual,
+            "[render] %s %d head-trim %.2fs → %.2fs",
+            label, idx, actual, target,
         )
         return dst
     except ffmpeg_svc.FFmpegError as exc:
-        log.warning("[render] freeze-extend scene=%d failed: %s", idx, exc)
+        log.warning("[render] head-trim scene=%d failed: %s", idx, exc)
         return src
+
+
+async def _maybe_extend_freeze(src: Path, scene: Scene, segments_dir: Path, idx: int) -> Path:
+    """AIGC 段落：仅做 freeze 补尾 / 轻度 trim（不变速，避免 Seedance 美感被破坏）。"""
+    return await _align_to_scene_duration(
+        src, scene, segments_dir, idx,
+        label="aigc", allow_speed_change=False,
+    )
 
 
 async def _resolve_aigc_image_scene(
@@ -230,12 +305,19 @@ async def _resolve_aigc_image_scene(
 
     settings = get_settings()
     images_dir = settings.log_dir.parent / "var" / "aigc_images"
+    uploads_dir = _uploads_root()
 
     local_path: Path | None = None
     if src_url.startswith("/aigc-images/"):
         local_path = images_dir / src_url[len("/aigc-images/"):]
         if not local_path.exists():
             log.warning("[render] aigc_image scene %d 本地缺失 %s", idx, local_path)
+            local_path = None
+    elif src_url.startswith("/uploads/"):
+        # user_material kind=image 走 aigc_image 路径时，src 是 /uploads/<sid>/<file>
+        local_path = uploads_dir / src_url[len("/uploads/"):]
+        if not local_path.exists():
+            log.warning("[render] aigc_image (uploads) scene %d 本地缺失 %s", idx, local_path)
             local_path = None
     elif src_url.startswith("http"):
         # 兜底：URL 没落盘成功；现下载到 aigc_cache 临时目录
@@ -282,6 +364,10 @@ async def _resolve_aigc_image_scene(
                 u = u.strip()
                 if u.startswith("/aigc-images/"):
                     candidate = images_dir / u[len("/aigc-images/"):]
+                    if candidate.exists():
+                        image_paths.append(candidate)
+                elif u.startswith("/uploads/"):
+                    candidate = uploads_dir / u[len("/uploads/"):]
                     if candidate.exists():
                         image_paths.append(candidate)
                 elif u.startswith("http"):
@@ -503,7 +589,13 @@ async def run_pipeline(job_id: str, plan: Plan) -> RenderResult:
             seg_dst = segments_dir / f"scene-{i:02d}.mp4"
             trimmed = _trim_segment(src, sc, seg_dst, canvas_w, canvas_h)
         if trimmed is not None:
-            inputs.append(trimmed)
+            # 切片完成后再做一次时长对齐：素材实际时长不一定等于 scene.duration
+            # （out_point 缺失 / 浮点误差 / 镜头切片选段比 scene 短）。允许变速。
+            aligned = await _align_to_scene_duration(
+                trimmed, sc, segments_dir, i,
+                label="user", allow_speed_change=True,
+            )
+            inputs.append(aligned)
             continue
         # 解析失败或切片失败：落文字卡
         reason = "素材未解析" if src is None else "切片失败"

@@ -10,6 +10,7 @@ import { SortableContext, rectSortingStrategy, useSortable } from '@dnd-kit/sort
 import { CSS } from '@dnd-kit/utilities'
 
 import { MaterialCard } from './MaterialCard'
+import { useMaterialPreprocessPolling } from '@/hooks/useMaterialPreprocessPolling'
 import type { Material } from '@/types/schemas'
 
 /**
@@ -29,6 +30,9 @@ export function MaterialGrid({
 }) {
   // 8px 阈值——避免误触把点击当拖拽
   const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 8 } }))
+
+  // 启动视频预处理轮询（pending/running 的 material 每 3s 拉一次，自动停止）
+  useMaterialPreprocessPolling()
 
   const handleDragEnd = (e: DragEndEvent) => {
     const { active, over } = e

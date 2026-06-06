@@ -23,6 +23,8 @@ from ..schemas import (
     BGMConfig,
     ComposeSettings,
     FillResult,
+    Material,
+    MaterialShot,
     PackagingItem,
     Plan,
     PlanBuildRequest,
@@ -40,7 +42,7 @@ from ..schemas import (
 from ..services.agent.plan_agent import adapt_structure
 from ..services.assets import asset_store
 from ..services.library import manifest_store
-from ..services.materials import gap_store
+from ..services.materials import gap_store, material_store
 from ..services.plans import plan_snapshot_store, plan_store
 from ..services.projects import project_store
 from ..services.video.bgm_analysis import analyze_bgm_with_llm
@@ -123,6 +125,57 @@ def _fill_section_lookup(fills: list[FillResult]) -> dict[str, FillResult]:
     log.info("[plan] fill_by_section 路由：%d fills → %d sections（%s）",
              len(fills), len(out), list(out.keys()))
     return out
+
+
+# 不同段落 role 偏好的镜头特性：
+#   - hook / climax / opening 类：偏好高 action_density（强冲击）
+#   - closing / outro 类：偏好低 action_density（收束）
+#   - development / problem 等：中性，按时长接近度选
+# 系数仅作排序权重，不需要严格归一化。
+_ROLE_ACTION_PREFERENCE: dict[str, float] = {
+    "hook": 0.85,
+    "opening": 0.75,
+    "climax": 0.85,
+    "transition_break": 0.7,
+    "cta": 0.6,
+    "closing": 0.25,
+    "outro": 0.2,
+    "ending": 0.2,
+    "callback": 0.4,
+    "summary": 0.3,
+    "development": 0.5,
+    "problem": 0.55,
+    "twist": 0.8,
+    "demonstration": 0.6,
+    "tension": 0.75,
+    "reveal": 0.85,
+}
+
+
+def _pick_shot_for_section(material: Material, sec: AdaptedSection) -> MaterialShot | None:
+    """从 material.shots 里挑一个最适合该 section 的镜头。
+
+    为什么：之前 user_material 只取前 N 秒（in_point=0），开场静止画面会被塞进
+    climax 段。预处理把视频切成镜头并打 (caption / action_density / recommended_role)
+    后，这里按 role 优先 + action_density 偏好 + 时长接近度 三级排序。
+
+    返回 None 时（shots 空 / 全无效）调用方应回落到老的 truncate 行为。
+    """
+    if not material.shots:
+        return None
+    target_role = (sec.role or "").strip().lower()
+    target_dur = max(0.5, float(sec.duration_seconds or 4.0))
+    pref_action = _ROLE_ACTION_PREFERENCE.get(target_role, 0.5)
+
+    def _score(sh: MaterialShot) -> float:
+        # 越小越好
+        role_match = 0.0 if (sh.recommended_role or "").lower() == target_role else 1.0
+        action_gap = abs((sh.action_density or 0.5) - pref_action)
+        dur_gap = abs(sh.duration - target_dur) / max(target_dur, 0.5)
+        # role 是硬性优先；action 与 dur 是软性，权重 1:0.7
+        return role_match * 10.0 + action_gap + 0.7 * dur_gap
+
+    return min(material.shots, key=_score)
 
 
 def _build_bgm_config(bgm_asset_id: Optional[str]) -> BGMConfig:
@@ -396,10 +449,30 @@ async def build_plan(req: PlanBuildRequest) -> Plan:
         out_point: float | None = None
         actual_duration = target_duration
         if source == "user_material":
-            # user_material 也要切片（不切 ffmpeg 会把整段长视频塞进 4s scene 槽）
+            # 默认：取前 target_duration 秒。若该 material 有预处理 shots，
+            # 走 _pick_shot_for_section 选最配的一段（role / action_density / 时长）。
             in_point = 0.0
             actual_duration = target_duration
             out_point = actual_duration
+            if effective_project_id:
+                mat = material_store.get(effective_project_id, source_ref)
+                if mat is not None and mat.shots:
+                    chosen = _pick_shot_for_section(mat, sec)
+                    if chosen is not None:
+                        # 镜头本身长度可能不够目标时长——取镜头起点为 in_point，
+                        # 终点取 min(镜头终点, in_point + target_duration)，
+                        # 短了由 render pipeline 的 _align_to_scene_duration（slowmo/freeze）补齐。
+                        in_point = float(chosen.start)
+                        shot_end = float(chosen.end)
+                        cut_end = min(shot_end, in_point + target_duration)
+                        out_point = cut_end
+                        actual_duration = target_duration  # 保持 timeline 槽位长度不变
+                        log.info(
+                            "[plan] sec=%s role=%s 选中 shot#%d (%.2fs-%.2fs role=%s ad=%.2f)",
+                            sec.section_id, sec.role, chosen.index,
+                            chosen.start, chosen.end,
+                            chosen.recommended_role, chosen.action_density,
+                        )
         # text_card / aigc_t2v / aigc_image：无 in/out 概念，actual_duration = target_duration
 
         # 不再用 content_description 自动种 narration——那会让用户在第 2 步看到"全段已有文案"，
