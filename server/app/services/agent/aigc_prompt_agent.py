@@ -75,6 +75,7 @@ async def generate_aigc_prompt(
 
     brief = (plan.brief or "").strip() if plan else ""
     goal = (plan.video_goal or "").strip() if plan else ""
+    settings = plan.settings if plan else None
 
     user_lines: list[str] = [
         f"段落角色：{role}",
@@ -87,6 +88,23 @@ async def generate_aigc_prompt(
         user_lines.append(f"视频整体主题：{brief}")
     if goal:
         user_lines.append(f"视频要求与目的：{goal}")
+    frame = getattr(settings, "frame_design", None) if settings else None
+    if frame is not None:
+        fd_parts: list[str] = []
+        if frame.preset and frame.preset != "custom":
+            fd_parts.append(f"预设={frame.preset}")
+        if frame.motion_density and frame.motion_density != "balanced":
+            fd_parts.append(f"动效密度={frame.motion_density}")
+        if frame.palette:
+            fd_parts.append(f"色板={'/'.join(frame.palette[:3])}")
+        if frame.grain_overlay:
+            fd_parts.append("胶片颗粒")
+        if frame.vignette:
+            fd_parts.append("暗角")
+        if frame.notes:
+            fd_parts.append(f"备注={frame.notes}")
+        if fd_parts:
+            user_lines.append("frame.md 设计系统：" + " | ".join(fd_parts) + "（画面色调/质感/构图需贴合）")
     if hint:
         user_lines.append(f"创作者额外提示：{hint}")
     user_lines.append("请输出一句完备的 t2v_prompt，覆盖主体/景别/机位/光线/质感/情绪。")
@@ -207,6 +225,7 @@ async def generate_image_specs(
 
     brief = (plan.brief or "").strip() if plan else ""
     goal = (plan.video_goal or "").strip() if plan else ""
+    settings = plan.settings if plan else None
 
     user_lines: list[str] = [
         f"段落角色：{role}",
@@ -220,6 +239,19 @@ async def generate_image_specs(
         user_lines.append(f"视频整体主题：{brief}")
     if goal:
         user_lines.append(f"视频要求与目的：{goal}")
+    frame = getattr(settings, "frame_design", None) if settings else None
+    if frame is not None:
+        fd_parts: list[str] = []
+        if frame.preset and frame.preset != "custom":
+            fd_parts.append(f"预设={frame.preset}")
+        if frame.palette:
+            fd_parts.append(f"色板={'/'.join(frame.palette[:3])}")
+        if frame.grain_overlay:
+            fd_parts.append("胶片颗粒")
+        if frame.notes:
+            fd_parts.append(f"备注={frame.notes}")
+        if fd_parts:
+            user_lines.append("frame.md 设计系统：" + " | ".join(fd_parts) + "（参考图色调与质感需贴合）")
     if hint:
         user_lines.append(f"创作者额外提示：{hint}")
     user_lines.append("请输出 1-3 张参考图的 specs JSON。")

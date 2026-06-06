@@ -1,7 +1,8 @@
 import { useState, type ChangeEvent, type KeyboardEvent } from 'react'
 
 import { cn } from '@/lib/utils'
-import type { AspectRatio, ComposeSettings, TargetPlatform, ToneStyle } from '@/types/schemas'
+import type { AspectRatio, ComposeSettings, FrameDesignSystem, TargetPlatform, ToneStyle } from '@/types/schemas'
+import { FrameDesignPicker } from './FrameDesignPicker'
 
 /**
  * Compose 页"高级设置"折叠面板：目标时长 / 平台 / 画面比例 / 调性 / CTA / 关键词。
@@ -245,6 +246,14 @@ export function ComposeSettingsPanel({
               )}
             </div>
           </div>
+
+          {/* frame.md 设计系统 —— 全片视觉统一 */}
+          <FrameDesignPicker
+            value={value.frame_design}
+            onChange={(patch: Partial<FrameDesignSystem>) =>
+              onChange({ frame_design: { ...value.frame_design, ...patch } })
+            }
+          />
         </div>
       )}
     </div>

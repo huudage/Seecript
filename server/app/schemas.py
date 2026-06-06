@@ -1391,6 +1391,89 @@ class PackagingPreferences(BaseModel):
     )
 
 
+FrameDesignPreset = Literal[
+    "custom",
+    "biennale-yellow",
+    "blockframe",
+    "blue-professional",
+    "bold-poster",
+    "broadside",
+    "capsule",
+    "cartesian",
+    "cobalt-grid",
+    "coral",
+    "creative-mode",
+]
+"""frame.md 设计系统预设（参考 HyperFrames frame.md 模板）。
+
+custom 表示完全由用户/LLM 在 FrameDesignSystem 字段里逐项填写；
+其他值是预定义模板，packaging_agent 会按 preset 套对应 palette/typography/motion。
+"""
+
+
+MotionDensity = Literal["minimal", "balanced", "kinetic"]
+"""画面动效密度：minimal=克制（适合品牌片）/ balanced=适中 / kinetic=高密度（适合社媒）。"""
+
+
+class FrameDesignSystem(BaseModel):
+    """frame.md —— 为相机重写的设计系统 token。
+
+    HyperFrames 提出 frame.md 概念：把品牌 design.md 翻译成视频可消费的 token
+    集合（atoms 神圣 / composition 自由 / numbers 来自脚本）。Seecript 用它
+    统一全片包装风格——packaging/copy/aigc agent 都从这里读色板/字号/动效密度，
+    避免 4 段视频视觉割裂。
+
+    所有字段都可选；preset != custom 时空字段由 packaging_agent 按 preset 展开。
+    """
+
+    preset: FrameDesignPreset = Field(
+        default="custom",
+        description="设计系统预设。非 custom 时空字段会由 agent 按预设填充。",
+    )
+    palette: list[str] = Field(
+        default_factory=list,
+        max_length=6,
+        description="主色板，HEX 字符串（最多 6 色）。第一色 = primary，第二 = accent，余下 = supporting。",
+    )
+    background_color: str = Field(
+        default="",
+        max_length=8,
+        description="主背景色 HEX，例如 #03071e。空字符串=自动取 palette 反色。",
+    )
+    typography_display: str = Field(
+        default="",
+        max_length=40,
+        description="标题字体族（display），例如 'Bebas Neue'。空=按 preset 默认。",
+    )
+    typography_body: str = Field(
+        default="",
+        max_length=40,
+        description="正文字体族（body），例如 'Lato'。空=按 preset 默认。",
+    )
+    typography_mono: str = Field(
+        default="",
+        max_length=40,
+        description="等宽字体（用于代码/数字），例如 'JetBrains Mono'。空=按 preset 默认。",
+    )
+    motion_density: MotionDensity = Field(
+        default="balanced",
+        description="动效密度。kinetic=高密度（推荐用于抖音/Reels）；minimal=克制（品牌/产品片）。",
+    )
+    grain_overlay: bool = Field(
+        default=False,
+        description="是否叠加颗粒/噪点纹理（参考 HyperFrames grain-overlay 组件）。",
+    )
+    vignette: bool = Field(
+        default=False,
+        description="是否叠加暗角（参考 HyperFrames vignette 组件）。",
+    )
+    notes: str = Field(
+        default="",
+        max_length=200,
+        description="额外风格备注，自由文本。例：'阳光调，避免冷蓝'。",
+    )
+
+
 class ComposeSettings(BaseModel):
     """Compose 页用户配置 —— 与 brief/video_goal 一起驱动结构改编。
 
@@ -1447,6 +1530,11 @@ class ComposeSettings(BaseModel):
         default_factory=PackagingPreferences,
         description="包装阶段用户配置（转场白名单/字幕样式/封面策略/LLM 温度）。"
                     "Compose 创建时落默认值，PackagingPanel 调推荐时可经请求体覆盖并回写。",
+    )
+    frame_design: FrameDesignSystem = Field(
+        default_factory=FrameDesignSystem,
+        description="frame.md 设计系统 token（色板/字体/动效密度），全片包装统一。"
+                    "preset=custom 时按字段值；非 custom 时由 packaging_agent 按预设展开缺省字段。",
     )
 
 
@@ -1646,6 +1734,13 @@ class TransitionSuggestion(BaseModel):
     to_section: SectionRole
     style: TransitionStyle
     duration: float = Field(default=0.4, ge=0.1, le=1.5, description="转场持续秒数")
+    catalog_block: Optional[str] = Field(
+        default=None,
+        max_length=64,
+        description="HyperFrames catalog block 名（参考 services/catalog/data/catalog.json），"
+                    "例如 'flash-through-white' / 'whip-pan' / 'cinematic-zoom'。"
+                    "当前阶段仅作为风格标签传递给前端 picker 与渲染端 hint，不替换 ffmpeg xfade 滤镜实现。",
+    )
     reason: str = Field(..., description="LLM 给出此选择的一句话依据")
 
     @model_validator(mode="before")
@@ -1671,6 +1766,13 @@ class CoverDesign(BaseModel):
         description="主色 + 强调色 hex（2-3 个），如 ['#FFE600', '#1F2937']",
     )
     layout: Literal["center", "left", "split", "stacked"] = "center"
+    catalog_block: Optional[str] = Field(
+        default=None,
+        max_length=64,
+        description="HyperFrames catalog block 名（cover 类，例如 'logo-outro' / 'app-showcase' / "
+                    "'blue-sweater-intro-video'）。当前阶段作为风格标签传给前端 picker 与渲染端 hint，"
+                    "不替换 Remotion 封面渲染实现。",
+    )
     style_note: str = Field(..., description="LLM 给出的一句话风格说明，比如『大字号 + 黑底白字 + 黄色高亮』")
 
 
@@ -1815,6 +1917,7 @@ class CoverCandidate(BaseModel):
     subtitle: Optional[str] = Field(default=None, max_length=20)
     palette: list[str] = Field(default_factory=list)
     layout: Literal["center", "left", "split", "stacked"] = "center"
+    catalog_block: Optional[str] = Field(default=None, max_length=64)
     style_note: str = Field(default="", max_length=60)
     rationale: str = Field(default="", max_length=60)
 

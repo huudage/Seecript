@@ -4,6 +4,7 @@ import { api } from '@/api/client'
 import { SECTION_BG, SECTION_SHORT } from '@/lib/sections'
 import { TRANSITION_LABEL, TRANSITION_TONE } from '@/lib/transitions'
 import { cn } from '@/lib/utils'
+import { CatalogPicker } from './CatalogPicker'
 import {
   DEFAULT_PACKAGING_PREFERENCES,
   type CoverCandidate,
@@ -53,6 +54,44 @@ export function PackagingPanel({
   const [stIds, setStIds] = useState<Set<string>>(new Set())
   const [trSel, setTrSel] = useState<Record<string, TransitionStyle>>({})
   const [coverId, setCoverId] = useState<string | null>(null)
+
+  // catalog picker state：picker 当前打开的目标
+  const [pickerTarget, setPickerTarget] = useState<
+    | { kind: 'transition'; bundleId: string; style: TransitionStyle }
+    | { kind: 'cover'; coverId: string }
+    | null
+  >(null)
+
+  const applyTransitionCatalog = (bundleId: string, style: TransitionStyle, name: string | null) => {
+    setRec((prev) => {
+      if (!prev) return prev
+      return {
+        ...prev,
+        transition_bundles: prev.transition_bundles.map((b) =>
+          b.candidate_id !== bundleId
+            ? b
+            : {
+                ...b,
+                options: b.options.map((opt) =>
+                  opt.style === style ? { ...opt, catalog_block: name } : opt,
+                ),
+              },
+        ),
+      }
+    })
+  }
+
+  const applyCoverCatalog = (coverId: string, name: string | null) => {
+    setRec((prev) => {
+      if (!prev) return prev
+      return {
+        ...prev,
+        covers: prev.covers.map((c) =>
+          c.candidate_id !== coverId ? c : { ...c, catalog_block: name },
+        ),
+      }
+    })
+  }
 
   // rec 变更时初始化默认选择（首个候选）
   useEffect(() => {
@@ -264,6 +303,9 @@ export function PackagingPanel({
                       return next
                     })
                   }}
+                  onPickCatalog={(style) =>
+                    setPickerTarget({ kind: 'transition', bundleId: b.candidate_id, style })
+                  }
                 />
               ))}
               {rec.transition_bundles.length === 0 && (
@@ -280,6 +322,9 @@ export function PackagingPanel({
                   c={c}
                   selected={coverId === c.candidate_id}
                   onPick={() => setCoverId(c.candidate_id)}
+                  onPickCatalog={() =>
+                    setPickerTarget({ kind: 'cover', coverId: c.candidate_id })
+                  }
                 />
               ))}
             </div>
@@ -299,6 +344,28 @@ export function PackagingPanel({
         <p className="rounded-md border border-dashed border-border bg-background/30 px-3 py-2 text-[11px] text-muted-foreground">
           点右上角「智能推荐」：AI 会按你当前的镜头顺序和主题，一次给 5 类候选。
         </p>
+      )}
+
+      {pickerTarget && rec && (
+        <CatalogPicker
+          open
+          category={pickerTarget.kind === 'transition' ? 'transition' : 'cover'}
+          current={
+            pickerTarget.kind === 'transition'
+              ? rec.transition_bundles
+                  .find((b) => b.candidate_id === pickerTarget.bundleId)
+                  ?.options.find((o) => o.style === pickerTarget.style)?.catalog_block ?? null
+              : rec.covers.find((c) => c.candidate_id === pickerTarget.coverId)?.catalog_block ?? null
+          }
+          onPick={(name) => {
+            if (pickerTarget.kind === 'transition') {
+              applyTransitionCatalog(pickerTarget.bundleId, pickerTarget.style, name)
+            } else {
+              applyCoverCatalog(pickerTarget.coverId, name)
+            }
+          }}
+          onClose={() => setPickerTarget(null)}
+        />
       )}
     </section>
   )
@@ -525,11 +592,14 @@ function TransitionBundleRow({
   b,
   picked,
   onPick,
+  onPickCatalog,
 }: {
   b: TransitionCandidateBundle
   picked: TransitionStyle | null
   onPick: (style: TransitionStyle | null) => void
+  onPickCatalog: (style: TransitionStyle) => void
 }) {
+  const pickedOption = picked ? b.options.find((o) => o.style === picked) ?? null : null
   return (
     <div className="flex flex-wrap items-center gap-2 rounded-md border border-border bg-background/30 px-2.5 py-1.5">
       <span className="font-mono text-[10px] text-muted-foreground">
@@ -569,10 +639,21 @@ function TransitionBundleRow({
               title={opt.reason}
             >
               {TRANSITION_LABEL[opt.style]} · {opt.duration.toFixed(1)}s
+              {opt.catalog_block && <span className="ml-1 opacity-80">·{opt.catalog_block}</span>}
             </button>
           )
         })}
       </div>
+      {pickedOption && (
+        <button
+          type="button"
+          onClick={() => onPickCatalog(pickedOption.style)}
+          className="rounded border border-dashed border-border px-1.5 py-0.5 text-[10px] text-muted-foreground hover:border-primary hover:text-foreground"
+          title="从 HyperFrames catalog 挑一个风格 hint"
+        >
+          {pickedOption.catalog_block ? `风格：${pickedOption.catalog_block}` : '+ 选风格'}
+        </button>
+      )}
       {b.rationale && (
         <span className="min-w-0 flex-1 truncate text-[10px] text-muted-foreground" title={b.rationale}>
           {b.rationale}
@@ -586,10 +667,12 @@ function CoverCard({
   c,
   selected,
   onPick,
+  onPickCatalog,
 }: {
   c: CoverCandidate
   selected: boolean
   onPick: () => void
+  onPickCatalog: () => void
 }) {
   const bg = c.palette[1] ?? '#1F2937'
   const accent = c.palette[0] ?? '#FFE600'
@@ -658,6 +741,25 @@ function CoverCard({
             style={{ backgroundColor: p }}
           />
         ))}
+        <span
+          role="button"
+          tabIndex={0}
+          onClick={(e) => {
+            e.stopPropagation()
+            onPickCatalog()
+          }}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter' || e.key === ' ') {
+              e.preventDefault()
+              e.stopPropagation()
+              onPickCatalog()
+            }
+          }}
+          className="ml-auto cursor-pointer rounded border border-dashed border-border px-1.5 py-0.5 text-[10px] text-muted-foreground hover:border-primary hover:text-foreground"
+          title="从 HyperFrames catalog 挑一个封面风格 hint"
+        >
+          {c.catalog_block ? `风格：${c.catalog_block}` : '+ 选风格'}
+        </span>
       </div>
       <p className="text-[10px] text-muted-foreground">{c.rationale}</p>
     </button>

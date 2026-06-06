@@ -1,0 +1,1766 @@
+{
+  "source": "heygen-com/hyperframes",
+  "version": "snapshot-2026-06-07",
+  "license": "Apache-2.0",
+  "items": [
+    {
+      "name": "app-showcase",
+      "title": "App Showcase",
+      "description": "Fitness app product showcase with three floating smartphone screens",
+      "tags": [
+        "showcase",
+        "app",
+        "3d"
+      ],
+      "kind": "block",
+      "category": "cover",
+      "duration": 5.5,
+      "preview_video": "https://static.heygen.ai/hyperframes-oss/docs/images/catalog/blocks/app-showcase.mp4",
+      "preview_poster": "https://static.heygen.ai/hyperframes-oss/docs/images/catalog/blocks/app-showcase.png"
+    },
+    {
+      "name": "apple-money-count",
+      "title": "Apple Money Count",
+      "description": "Apple-style finance counter that counts from $0 to $10,000, flashes green, and bursts money icons with sound.",
+      "tags": [
+        "showcase",
+        "finance",
+        "kinetic",
+        "youtube",
+        "sfx"
+      ],
+      "kind": "block",
+      "category": "cover",
+      "duration": 5,
+      "preview_video": "https://static.heygen.ai/hyperframes-oss/docs/images/catalog/blocks/apple-money-count.mp4",
+      "preview_poster": "https://static.heygen.ai/hyperframes-oss/docs/images/catalog/blocks/apple-money-count.png"
+    },
+    {
+      "name": "blue-sweater-intro-video",
+      "title": "Blue Sweater Intro Video",
+      "description": "Warm AI creator intro sequence that resolves into an X follow card for @_blue_sweater_.",
+      "tags": [
+        "showcase",
+        "ai",
+        "creator",
+        "sfx"
+      ],
+      "kind": "block",
+      "category": "cover",
+      "duration": 12,
+      "preview_video": "https://static.heygen.ai/hyperframes-oss/docs/images/catalog/blocks/blue-sweater-intro-video.mp4",
+      "preview_poster": "https://static.heygen.ai/hyperframes-oss/docs/images/catalog/blocks/blue-sweater-intro-video.png"
+    },
+    {
+      "name": "chromatic-radial-split",
+      "title": "Chromatic Radial Split",
+      "description": "Shader transition with chromatic aberration radial split",
+      "tags": [
+        "transition",
+        "shader"
+      ],
+      "kind": "block",
+      "category": "transition",
+      "duration": 4,
+      "preview_video": "https://static.heygen.ai/hyperframes-oss/docs/images/catalog/blocks/chromatic-radial-split.mp4",
+      "preview_poster": "https://static.heygen.ai/hyperframes-oss/docs/images/catalog/blocks/chromatic-radial-split.png"
+    },
+    {
+      "name": "cinematic-zoom",
+      "title": "Cinematic Zoom",
+      "description": "Shader transition with dramatic zoom blur",
+      "tags": [
+        "transition",
+        "shader"
+      ],
+      "kind": "block",
+      "category": "transition",
+      "duration": 4,
+      "preview_video": "https://static.heygen.ai/hyperframes-oss/docs/images/catalog/blocks/cinematic-zoom.mp4",
+      "preview_poster": "https://static.heygen.ai/hyperframes-oss/docs/images/catalog/blocks/cinematic-zoom.png"
+    },
+    {
+      "name": "code-snippet-apple-terminal-basic",
+      "title": "Code Snippet - Apple Terminal Basic",
+      "description": "Apple Terminal Basic profile: white background, black text, per-character typing animation of a shell session.",
+      "tags": [
+        "code",
+        "developer",
+        "showcase",
+        "terminal",
+        "apple",
+        "apple-terminal"
+      ],
+      "kind": "block",
+      "category": "cover",
+      "duration": 12,
+      "preview_video": "https://static.heygen.ai/hyperframes-oss/docs/images/catalog/blocks/code-snippet-apple-terminal-basic.mp4",
+      "preview_poster": "https://static.heygen.ai/hyperframes-oss/docs/images/catalog/blocks/code-snippet-apple-terminal-basic.png"
+    },
+    {
+      "name": "code-snippet-apple-terminal-clear-dark",
+      "title": "Code Snippet - Apple Terminal Clear Dark",
+      "description": "Apple Terminal Clear Dark profile: semi-transparent dark background, per-character typing animation of a shell session.",
+      "tags": [
+        "code",
+        "developer",
+        "showcase",
+        "terminal",
+        "apple",
+        "apple-terminal"
+      ],
+      "kind": "block",
+      "category": "cover",
+      "duration": 12,
+      "preview_video": "https://static.heygen.ai/hyperframes-oss/docs/images/catalog/blocks/code-snippet-apple-terminal-clear-dark.mp4",
+      "preview_poster": "https://static.heygen.ai/hyperframes-oss/docs/images/catalog/blocks/code-snippet-apple-terminal-clear-dark.png"
+    },
+    {
+      "name": "code-snippet-apple-terminal-clear-light",
+      "title": "Code Snippet - Apple Terminal Clear Light",
+      "description": "Apple Terminal Clear Light profile: semi-transparent light background, per-character typing animation of a shell session.",
+      "tags": [
+        "code",
+        "developer",
+        "showcase",
+        "terminal",
+        "apple",
+        "apple-terminal"
+      ],
+      "kind": "block",
+      "category": "cover",
+      "duration": 12,
+      "preview_video": "https://static.heygen.ai/hyperframes-oss/docs/images/catalog/blocks/code-snippet-apple-terminal-clear-light.mp4",
+      "preview_poster": "https://static.heygen.ai/hyperframes-oss/docs/images/catalog/blocks/code-snippet-apple-terminal-clear-light.png"
+    },
+    {
+      "name": "code-snippet-apple-terminal-grass",
+      "title": "Code Snippet - Apple Terminal Grass",
+      "description": "Apple Terminal Grass profile: black background with green text, per-character typing animation of a shell session.",
+      "tags": [
+        "code",
+        "developer",
+        "showcase",
+        "terminal",
+        "apple",
+        "apple-terminal"
+      ],
+      "kind": "block",
+      "category": "cover",
+      "duration": 12,
+      "preview_video": "https://static.heygen.ai/hyperframes-oss/docs/images/catalog/blocks/code-snippet-apple-terminal-grass.mp4",
+      "preview_poster": "https://static.heygen.ai/hyperframes-oss/docs/images/catalog/blocks/code-snippet-apple-terminal-grass.png"
+    },
+    {
+      "name": "code-snippet-apple-terminal-homebrew",
+      "title": "Code Snippet - Apple Terminal Homebrew",
+      "description": "Apple Terminal Homebrew profile: black background with bright green text and lime cursor, per-character typing animation of a shell session.",
+      "tags": [
+        "code",
+        "developer",
+        "showcase",
+        "terminal",
+        "apple",
+        "apple-terminal"
+      ],
+      "kind": "block",
+      "category": "cover",
+      "duration": 12,
+      "preview_video": "https://static.heygen.ai/hyperframes-oss/docs/images/catalog/blocks/code-snippet-apple-terminal-homebrew.mp4",
+      "preview_poster": "https://static.heygen.ai/hyperframes-oss/docs/images/catalog/blocks/code-snippet-apple-terminal-homebrew.png"
+    },
+    {
+      "name": "code-snippet-apple-terminal-man-page",
+      "title": "Code Snippet - Apple Terminal Man Page",
+      "description": "Apple Terminal Man Page profile: pale yellow background with black text, per-character typing animation of a shell session.",
+      "tags": [
+        "code",
+        "developer",
+        "showcase",
+        "terminal",
+        "apple",
+        "apple-terminal"
+      ],
+      "kind": "block",
+      "category": "cover",
+      "duration": 12,
+      "preview_video": "https://static.heygen.ai/hyperframes-oss/docs/images/catalog/blocks/code-snippet-apple-terminal-man-page.mp4",
+      "preview_poster": "https://static.heygen.ai/hyperframes-oss/docs/images/catalog/blocks/code-snippet-apple-terminal-man-page.png"
+    },
+    {
+      "name": "code-snippet-apple-terminal-novel",
+      "title": "Code Snippet - Apple Terminal Novel",
+      "description": "Apple Terminal Novel profile: warm parchment background with dark brown text, per-character typing animation of a shell session.",
+      "tags": [
+        "code",
+        "developer",
+        "showcase",
+        "terminal",
+        "apple",
+        "apple-terminal"
+      ],
+      "kind": "block",
+      "category": "cover",
+      "duration": 12,
+      "preview_video": "https://static.heygen.ai/hyperframes-oss/docs/images/catalog/blocks/code-snippet-apple-terminal-novel.mp4",
+      "preview_poster": "https://static.heygen.ai/hyperframes-oss/docs/images/catalog/blocks/code-snippet-apple-terminal-novel.png"
+    },
+    {
+      "name": "code-snippet-apple-terminal-ocean",
+      "title": "Code Snippet - Apple Terminal Ocean",
+      "description": "Apple Terminal Ocean profile: deep blue background with white text, per-character typing animation of a shell session.",
+      "tags": [
+        "code",
+        "developer",
+        "showcase",
+        "terminal",
+        "apple",
+        "apple-terminal"
+      ],
+      "kind": "block",
+      "category": "cover",
+      "duration": 12,
+      "preview_video": "https://static.heygen.ai/hyperframes-oss/docs/images/catalog/blocks/code-snippet-apple-terminal-ocean.mp4",
+      "preview_poster": "https://static.heygen.ai/hyperframes-oss/docs/images/catalog/blocks/code-snippet-apple-terminal-ocean.png"
+    },
+    {
+      "name": "code-snippet-apple-terminal-pro",
+      "title": "Code Snippet - Apple Terminal Pro",
+      "description": "Apple Terminal Pro profile: black background with grey text and lime green cursor, per-character typing animation of a shell session.",
+      "tags": [
+        "code",
+        "developer",
+        "showcase",
+        "terminal",
+        "apple",
+        "apple-terminal"
+      ],
+      "kind": "block",
+      "category": "cover",
+      "duration": 12,
+      "preview_video": "https://static.heygen.ai/hyperframes-oss/docs/images/catalog/blocks/code-snippet-apple-terminal-pro.mp4",
+      "preview_poster": "https://static.heygen.ai/hyperframes-oss/docs/images/catalog/blocks/code-snippet-apple-terminal-pro.png"
+    },
+    {
+      "name": "code-snippet-apple-terminal-red-sands",
+      "title": "Code Snippet - Apple Terminal Red Sands",
+      "description": "Apple Terminal Red Sands profile: deep red background with sandy text, per-character typing animation of a shell session.",
+      "tags": [
+        "code",
+        "developer",
+        "showcase",
+        "terminal",
+        "apple",
+        "apple-terminal"
+      ],
+      "kind": "block",
+      "category": "cover",
+      "duration": 12,
+      "preview_video": "https://static.heygen.ai/hyperframes-oss/docs/images/catalog/blocks/code-snippet-apple-terminal-red-sands.mp4",
+      "preview_poster": "https://static.heygen.ai/hyperframes-oss/docs/images/catalog/blocks/code-snippet-apple-terminal-red-sands.png"
+    },
+    {
+      "name": "code-snippet-apple-terminal-silver-aerogel",
+      "title": "Code Snippet - Apple Terminal Silver Aerogel",
+      "description": "Apple Terminal Silver Aerogel profile: dark grey background with white text, per-character typing animation of a shell session.",
+      "tags": [
+        "code",
+        "developer",
+        "showcase",
+        "terminal",
+        "apple",
+        "apple-terminal"
+      ],
+      "kind": "block",
+      "category": "cover",
+      "duration": 12,
+      "preview_video": "https://static.heygen.ai/hyperframes-oss/docs/images/catalog/blocks/code-snippet-apple-terminal-silver-aerogel.mp4",
+      "preview_poster": "https://static.heygen.ai/hyperframes-oss/docs/images/catalog/blocks/code-snippet-apple-terminal-silver-aerogel.png"
+    },
+    {
+      "name": "code-snippet-apple-terminal-solid-colors",
+      "title": "Code Snippet - Apple Terminal Solid Colors",
+      "description": "Apple Terminal Solid Colors profile: deep purple background with white text, per-character typing animation of a shell session.",
+      "tags": [
+        "code",
+        "developer",
+        "showcase",
+        "terminal",
+        "apple",
+        "apple-terminal"
+      ],
+      "kind": "block",
+      "category": "cover",
+      "duration": 12,
+      "preview_video": "https://static.heygen.ai/hyperframes-oss/docs/images/catalog/blocks/code-snippet-apple-terminal-solid-colors.mp4",
+      "preview_poster": "https://static.heygen.ai/hyperframes-oss/docs/images/catalog/blocks/code-snippet-apple-terminal-solid-colors.png"
+    },
+    {
+      "name": "code-snippet-dark-2026",
+      "title": "Code Snippet - Dark 2026",
+      "description": "VS Code workbench with per-character typing animation in the Dark 2026 theme. Full editor chrome with activity bar, sidebar, tabs, terminal, and status bar.",
+      "tags": [
+        "code",
+        "developer",
+        "showcase",
+        "vscode"
+      ],
+      "kind": "block",
+      "category": "cover",
+      "duration": 11,
+      "preview_video": null,
+      "preview_poster": null
+    },
+    {
+      "name": "code-snippet-dark-modern",
+      "title": "Code Snippet - Dark Modern",
+      "description": "VS Code workbench with per-character typing animation in the Dark Modern theme. Full editor chrome with activity bar, sidebar, tabs, terminal, and status bar.",
+      "tags": [
+        "code",
+        "developer",
+        "showcase",
+        "vscode"
+      ],
+      "kind": "block",
+      "category": "cover",
+      "duration": 11,
+      "preview_video": null,
+      "preview_poster": null
+    },
+    {
+      "name": "code-snippet-dark-plus",
+      "title": "Code Snippet - Dark+",
+      "description": "VS Code workbench with per-character typing animation in the Dark+ theme. Full editor chrome with activity bar, sidebar, tabs, terminal, and status bar.",
+      "tags": [
+        "code",
+        "developer",
+        "showcase",
+        "vscode"
+      ],
+      "kind": "block",
+      "category": "cover",
+      "duration": 11,
+      "preview_video": null,
+      "preview_poster": null
+    },
+    {
+      "name": "code-snippet-high-contrast",
+      "title": "Code Snippet - High Contrast",
+      "description": "VS Code workbench with per-character typing animation in the High Contrast theme. Full editor chrome with activity bar, sidebar, tabs, terminal, and status bar.",
+      "tags": [
+        "code",
+        "developer",
+        "showcase",
+        "vscode"
+      ],
+      "kind": "block",
+      "category": "cover",
+      "duration": 11,
+      "preview_video": null,
+      "preview_poster": null
+    },
+    {
+      "name": "code-snippet-high-contrast-light",
+      "title": "Code Snippet - High Contrast Light",
+      "description": "VS Code workbench with per-character typing animation in the High Contrast Light theme. Full editor chrome with activity bar, sidebar, tabs, terminal, and status bar.",
+      "tags": [
+        "code",
+        "developer",
+        "showcase",
+        "vscode"
+      ],
+      "kind": "block",
+      "category": "cover",
+      "duration": 11,
+      "preview_video": null,
+      "preview_poster": null
+    },
+    {
+      "name": "code-snippet-light-2026",
+      "title": "Code Snippet - Light 2026",
+      "description": "VS Code workbench with per-character typing animation in the Light 2026 theme. Full editor chrome with activity bar, sidebar, tabs, terminal, and status bar.",
+      "tags": [
+        "code",
+        "developer",
+        "showcase",
+        "vscode"
+      ],
+      "kind": "block",
+      "category": "cover",
+      "duration": 11,
+      "preview_video": null,
+      "preview_poster": null
+    },
+    {
+      "name": "code-snippet-light-modern",
+      "title": "Code Snippet - Light Modern",
+      "description": "VS Code workbench with per-character typing animation in the Light Modern theme. Full editor chrome with activity bar, sidebar, tabs, terminal, and status bar.",
+      "tags": [
+        "code",
+        "developer",
+        "showcase",
+        "vscode"
+      ],
+      "kind": "block",
+      "category": "cover",
+      "duration": 11,
+      "preview_video": null,
+      "preview_poster": null
+    },
+    {
+      "name": "code-snippet-light-plus",
+      "title": "Code Snippet - Light+",
+      "description": "VS Code workbench with per-character typing animation in the Light+ theme. Full editor chrome with activity bar, sidebar, tabs, terminal, and status bar.",
+      "tags": [
+        "code",
+        "developer",
+        "showcase",
+        "vscode"
+      ],
+      "kind": "block",
+      "category": "cover",
+      "duration": 11,
+      "preview_video": null,
+      "preview_poster": null
+    },
+    {
+      "name": "code-snippet-monokai",
+      "title": "Code Snippet - Monokai",
+      "description": "VS Code workbench with per-character typing animation in the Monokai theme. Full editor chrome with activity bar, sidebar, tabs, terminal, and status bar.",
+      "tags": [
+        "code",
+        "developer",
+        "showcase",
+        "vscode"
+      ],
+      "kind": "block",
+      "category": "cover",
+      "duration": 11,
+      "preview_video": null,
+      "preview_poster": null
+    },
+    {
+      "name": "code-snippet-solarized-light",
+      "title": "Code Snippet - Solarized Light",
+      "description": "VS Code workbench with per-character typing animation in the Solarized Light theme. Full editor chrome with activity bar, sidebar, tabs, terminal, and status bar.",
+      "tags": [
+        "code",
+        "developer",
+        "showcase",
+        "vscode"
+      ],
+      "kind": "block",
+      "category": "cover",
+      "duration": 11,
+      "preview_video": null,
+      "preview_poster": null
+    },
+    {
+      "name": "code-snippet-visual-studio-dark",
+      "title": "Code Snippet - Visual Studio Dark",
+      "description": "VS Code workbench with per-character typing animation in the Visual Studio Dark theme. Full editor chrome with activity bar, sidebar, tabs, terminal, and status bar.",
+      "tags": [
+        "code",
+        "developer",
+        "showcase",
+        "vscode"
+      ],
+      "kind": "block",
+      "category": "cover",
+      "duration": 11,
+      "preview_video": null,
+      "preview_poster": null
+    },
+    {
+      "name": "code-snippet-visual-studio-light",
+      "title": "Code Snippet - Visual Studio Light",
+      "description": "VS Code workbench with per-character typing animation in the Visual Studio Light theme. Full editor chrome with activity bar, sidebar, tabs, terminal, and status bar.",
+      "tags": [
+        "code",
+        "developer",
+        "showcase",
+        "vscode"
+      ],
+      "kind": "block",
+      "category": "cover",
+      "duration": 11,
+      "preview_video": null,
+      "preview_poster": null
+    },
+    {
+      "name": "cross-warp-morph",
+      "title": "Cross Warp Morph",
+      "description": "Shader transition with cross-warped morphing",
+      "tags": [
+        "transition",
+        "shader"
+      ],
+      "kind": "block",
+      "category": "transition",
+      "duration": 4,
+      "preview_video": "https://static.heygen.ai/hyperframes-oss/docs/images/catalog/blocks/cross-warp-morph.mp4",
+      "preview_poster": "https://static.heygen.ai/hyperframes-oss/docs/images/catalog/blocks/cross-warp-morph.png"
+    },
+    {
+      "name": "data-chart",
+      "title": "Data Chart",
+      "description": "Animated bar + line chart with staggered reveal, NYT-style typography, and value labels",
+      "tags": [
+        "data",
+        "chart",
+        "statistics"
+      ],
+      "kind": "block",
+      "category": "data-viz",
+      "duration": 15,
+      "preview_video": "https://static.heygen.ai/hyperframes-oss/docs/images/catalog/blocks/data-chart.mp4",
+      "preview_poster": "https://static.heygen.ai/hyperframes-oss/docs/images/catalog/blocks/data-chart.png"
+    },
+    {
+      "name": "domain-warp-dissolve",
+      "title": "Domain Warp Dissolve",
+      "description": "Shader transition with fractal noise domain warping",
+      "tags": [
+        "transition",
+        "shader"
+      ],
+      "kind": "block",
+      "category": "transition",
+      "duration": 4,
+      "preview_video": "https://static.heygen.ai/hyperframes-oss/docs/images/catalog/blocks/domain-warp-dissolve.mp4",
+      "preview_poster": "https://static.heygen.ai/hyperframes-oss/docs/images/catalog/blocks/domain-warp-dissolve.png"
+    },
+    {
+      "name": "flash-through-white",
+      "title": "Flash Through White",
+      "description": "Shader transition with white flash crossfade",
+      "tags": [
+        "transition",
+        "shader"
+      ],
+      "kind": "block",
+      "category": "transition",
+      "duration": 4,
+      "preview_video": "https://static.heygen.ai/hyperframes-oss/docs/images/catalog/blocks/flash-through-white.mp4",
+      "preview_poster": "https://static.heygen.ai/hyperframes-oss/docs/images/catalog/blocks/flash-through-white.png"
+    },
+    {
+      "name": "flowchart",
+      "title": "Flowchart",
+      "description": "Animated decision tree with SVG connectors, sticky-note nodes, cursor interaction, and typing correction",
+      "tags": [
+        "diagram",
+        "flowchart",
+        "interactive"
+      ],
+      "kind": "block",
+      "category": "data-viz",
+      "duration": 12,
+      "preview_video": "https://static.heygen.ai/hyperframes-oss/docs/images/catalog/blocks/flowchart.mp4",
+      "preview_poster": "https://static.heygen.ai/hyperframes-oss/docs/images/catalog/blocks/flowchart.png"
+    },
+    {
+      "name": "flowchart-vertical",
+      "title": "Flowchart Vertical",
+      "description": "Portrait animated decision tree with SVG connectors, sticky-note nodes, cursor interaction, and typing correction",
+      "tags": [
+        "diagram",
+        "flowchart",
+        "interactive",
+        "portrait"
+      ],
+      "kind": "block",
+      "category": "data-viz",
+      "duration": 12,
+      "preview_video": "https://static.heygen.ai/hyperframes-oss/docs/images/catalog/blocks/flowchart-vertical.mp4",
+      "preview_poster": "https://static.heygen.ai/hyperframes-oss/docs/images/catalog/blocks/flowchart-vertical.png"
+    },
+    {
+      "name": "glitch",
+      "title": "Glitch",
+      "description": "Shader transition with digital glitch artifacts",
+      "tags": [
+        "transition",
+        "shader"
+      ],
+      "kind": "block",
+      "category": "transition",
+      "duration": 4,
+      "preview_video": "https://static.heygen.ai/hyperframes-oss/docs/images/catalog/blocks/glitch.mp4",
+      "preview_poster": "https://static.heygen.ai/hyperframes-oss/docs/images/catalog/blocks/glitch.png"
+    },
+    {
+      "name": "gravitational-lens",
+      "title": "Gravitational Lens",
+      "description": "Shader transition with gravitational lensing distortion",
+      "tags": [
+        "transition",
+        "shader"
+      ],
+      "kind": "block",
+      "category": "transition",
+      "duration": 4,
+      "preview_video": "https://static.heygen.ai/hyperframes-oss/docs/images/catalog/blocks/gravitational-lens.mp4",
+      "preview_poster": "https://static.heygen.ai/hyperframes-oss/docs/images/catalog/blocks/gravitational-lens.png"
+    },
+    {
+      "name": "instagram-follow",
+      "title": "Instagram Follow",
+      "description": "Animated Instagram follow overlay with profile card and follow button",
+      "tags": [
+        "social",
+        "overlay",
+        "instagram"
+      ],
+      "kind": "block",
+      "category": "overlay",
+      "duration": 4.5,
+      "preview_video": "https://static.heygen.ai/hyperframes-oss/docs/images/catalog/blocks/instagram-follow.mp4",
+      "preview_poster": "https://static.heygen.ai/hyperframes-oss/docs/images/catalog/blocks/instagram-follow.png"
+    },
+    {
+      "name": "ios26-liquid-glass",
+      "title": "iOS 26 Liquid Glass Home Screen",
+      "description": "3D iPhone with a normal iOS 26 home screen, liquid glass app icons, shader wallpaper, dock, and fluid glass notifications that drop from the status area onto a GLTF device model.",
+      "tags": [
+        "liquid-glass-html-in-canvas",
+        "webgpu",
+        "3d",
+        "iphone",
+        "ios26",
+        "notifications",
+        "gltf",
+        "html-in-canvas"
+      ],
+      "kind": "block",
+      "category": "other",
+      "duration": 15,
+      "preview_video": "https://static.heygen.ai/hyperframes-oss/docs/images/catalog/blocks/ios26-liquid-glass.mp4",
+      "preview_poster": "https://static.heygen.ai/hyperframes-oss/docs/images/catalog/blocks/ios26-liquid-glass.png"
+    },
+    {
+      "name": "light-leak",
+      "title": "Light Leak",
+      "description": "Shader transition with cinematic light leak overlay",
+      "tags": [
+        "transition",
+        "shader"
+      ],
+      "kind": "block",
+      "category": "transition",
+      "duration": 4,
+      "preview_video": "https://static.heygen.ai/hyperframes-oss/docs/images/catalog/blocks/light-leak.mp4",
+      "preview_poster": "https://static.heygen.ai/hyperframes-oss/docs/images/catalog/blocks/light-leak.png"
+    },
+    {
+      "name": "liquid-glass-context-menu",
+      "title": "Liquid Glass Context Menu",
+      "description": "Frosted glass context menu panel drifting over an aurora shader background",
+      "tags": [
+        "html-in-canvas",
+        "liquid-glass-html-in-canvas",
+        "webgpu"
+      ],
+      "kind": "block",
+      "category": "other",
+      "duration": 8,
+      "preview_video": "https://static.heygen.ai/hyperframes-oss/docs/images/catalog/blocks/liquid-glass-context-menu.mp4",
+      "preview_poster": "https://static.heygen.ai/hyperframes-oss/docs/images/catalog/blocks/liquid-glass-context-menu.png"
+    },
+    {
+      "name": "liquid-glass-media-controls",
+      "title": "Liquid Glass Media Controls",
+      "description": "Frosted glass media control panels spreading over an aurora shader background",
+      "tags": [
+        "html-in-canvas",
+        "liquid-glass-html-in-canvas",
+        "webgpu"
+      ],
+      "kind": "block",
+      "category": "other",
+      "duration": 8,
+      "preview_video": "https://static.heygen.ai/hyperframes-oss/docs/images/catalog/blocks/liquid-glass-media-controls.mp4",
+      "preview_poster": "https://static.heygen.ai/hyperframes-oss/docs/images/catalog/blocks/liquid-glass-media-controls.png"
+    },
+    {
+      "name": "liquid-glass-notification",
+      "title": "Liquid Glass Notification",
+      "description": "Frosted glass notification cards floating over an aurora shader background",
+      "tags": [
+        "html-in-canvas",
+        "liquid-glass-html-in-canvas",
+        "webgpu"
+      ],
+      "kind": "block",
+      "category": "overlay",
+      "duration": 8,
+      "preview_video": "https://static.heygen.ai/hyperframes-oss/docs/images/catalog/blocks/liquid-glass-notification.mp4",
+      "preview_poster": "https://static.heygen.ai/hyperframes-oss/docs/images/catalog/blocks/liquid-glass-notification.png"
+    },
+    {
+      "name": "liquid-glass-widgets",
+      "title": "Liquid Glass Widgets",
+      "description": "Frosted glass stat cards, showcase panel and pill chips over an aurora shader background",
+      "tags": [
+        "html-in-canvas",
+        "liquid-glass-html-in-canvas",
+        "webgpu"
+      ],
+      "kind": "block",
+      "category": "other",
+      "duration": 8,
+      "preview_video": "https://static.heygen.ai/hyperframes-oss/docs/images/catalog/blocks/liquid-glass-widgets.mp4",
+      "preview_poster": "https://static.heygen.ai/hyperframes-oss/docs/images/catalog/blocks/liquid-glass-widgets.png"
+    },
+    {
+      "name": "logo-outro",
+      "title": "Logo Outro",
+      "description": "Cinematic logo reveal with piece-by-piece assembly, glow bloom, tagline fade-in, and URL pill",
+      "tags": [
+        "branding",
+        "outro",
+        "logo"
+      ],
+      "kind": "block",
+      "category": "cover",
+      "duration": 6,
+      "preview_video": "https://static.heygen.ai/hyperframes-oss/docs/images/catalog/blocks/logo-outro.mp4",
+      "preview_poster": "https://static.heygen.ai/hyperframes-oss/docs/images/catalog/blocks/logo-outro.png"
+    },
+    {
+      "name": "macos-notification",
+      "title": "macOS Notification",
+      "description": "Animated macOS-style notification banner with app icon and message",
+      "tags": [
+        "social",
+        "overlay",
+        "notification"
+      ],
+      "kind": "block",
+      "category": "overlay",
+      "duration": 5,
+      "preview_video": "https://static.heygen.ai/hyperframes-oss/docs/images/catalog/blocks/macos-notification.mp4",
+      "preview_poster": "https://static.heygen.ai/hyperframes-oss/docs/images/catalog/blocks/macos-notification.png"
+    },
+    {
+      "name": "macos-tahoe-liquid-glass",
+      "title": "macOS Tahoe Liquid Glass Desktop",
+      "description": "3D MacBook with a macOS Tahoe-style desktop, glass menu bar, Finder window, dock, and cinematic device camera move.",
+      "tags": [
+        "html-in-canvas",
+        "3d",
+        "macos",
+        "tahoe",
+        "gltf"
+      ],
+      "kind": "block",
+      "category": "other",
+      "duration": 15,
+      "preview_video": "https://static.heygen.ai/hyperframes-oss/docs/images/catalog/blocks/macos-tahoe-liquid-glass.mp4",
+      "preview_poster": "https://static.heygen.ai/hyperframes-oss/docs/images/catalog/blocks/macos-tahoe-liquid-glass.png"
+    },
+    {
+      "name": "north-korea-locked-down",
+      "title": "North Korea Locked Down",
+      "description": "Realistic map zoom into North Korea with a red scribble circle, locked-down pop-up label, and reddish editorial wash.",
+      "tags": [
+        "showcase",
+        "map",
+        "annotation",
+        "youtube",
+        "kinetic"
+      ],
+      "kind": "block",
+      "category": "cover",
+      "duration": 7,
+      "preview_video": "https://static.heygen.ai/hyperframes-oss/docs/images/catalog/blocks/north-korea-locked-down.mp4",
+      "preview_poster": "https://static.heygen.ai/hyperframes-oss/docs/images/catalog/blocks/north-korea-locked-down.png"
+    },
+    {
+      "name": "nyc-paris-flight",
+      "title": "NYC Paris Flight",
+      "description": "Apple-style realistic map animation with a plane flying from New York to Paris, marker circle, landing pop, and sound effects.",
+      "tags": [
+        "showcase",
+        "travel",
+        "map",
+        "youtube",
+        "sfx"
+      ],
+      "kind": "block",
+      "category": "cover",
+      "duration": 6,
+      "preview_video": "https://static.heygen.ai/hyperframes-oss/docs/images/catalog/blocks/nyc-paris-flight.mp4",
+      "preview_poster": "https://static.heygen.ai/hyperframes-oss/docs/images/catalog/blocks/nyc-paris-flight.png"
+    },
+    {
+      "name": "reddit-post",
+      "title": "Reddit Post Card",
+      "description": "Animated Reddit post card overlay with upvotes and comments",
+      "tags": [
+        "social",
+        "overlay",
+        "reddit"
+      ],
+      "kind": "block",
+      "category": "overlay",
+      "duration": 5,
+      "preview_video": "https://static.heygen.ai/hyperframes-oss/docs/images/catalog/blocks/reddit-post.mp4",
+      "preview_poster": "https://static.heygen.ai/hyperframes-oss/docs/images/catalog/blocks/reddit-post.png"
+    },
+    {
+      "name": "ridged-burn",
+      "title": "Ridged Burn",
+      "description": "Shader transition with ridged turbulence burn effect",
+      "tags": [
+        "transition",
+        "shader"
+      ],
+      "kind": "block",
+      "category": "transition",
+      "duration": 4,
+      "preview_video": "https://static.heygen.ai/hyperframes-oss/docs/images/catalog/blocks/ridged-burn.mp4",
+      "preview_poster": "https://static.heygen.ai/hyperframes-oss/docs/images/catalog/blocks/ridged-burn.png"
+    },
+    {
+      "name": "ripple-waves",
+      "title": "Ripple Waves",
+      "description": "Shader transition with concentric ripple wave distortion",
+      "tags": [
+        "transition",
+        "shader"
+      ],
+      "kind": "block",
+      "category": "transition",
+      "duration": 4,
+      "preview_video": "https://static.heygen.ai/hyperframes-oss/docs/images/catalog/blocks/ripple-waves.mp4",
+      "preview_poster": "https://static.heygen.ai/hyperframes-oss/docs/images/catalog/blocks/ripple-waves.png"
+    },
+    {
+      "name": "sdf-iris",
+      "title": "SDF Iris",
+      "description": "Shader transition with signed distance field iris reveal",
+      "tags": [
+        "transition",
+        "shader"
+      ],
+      "kind": "block",
+      "category": "transition",
+      "duration": 4,
+      "preview_video": "https://static.heygen.ai/hyperframes-oss/docs/images/catalog/blocks/sdf-iris.mp4",
+      "preview_poster": "https://static.heygen.ai/hyperframes-oss/docs/images/catalog/blocks/sdf-iris.png"
+    },
+    {
+      "name": "spain-map",
+      "title": "Spain Map",
+      "description": "Animated Spain choropleth by autonomous community with staggered reveals and gradient legend — D3 conic conformal projection",
+      "tags": [
+        "data",
+        "map",
+        "geography",
+        "spain",
+        "europe",
+        "choropleth"
+      ],
+      "kind": "block",
+      "category": "data-viz",
+      "duration": 12,
+      "preview_video": "https://static.heygen.ai/hyperframes-oss/docs/images/catalog/blocks/spain-map.mp4",
+      "preview_poster": "https://static.heygen.ai/hyperframes-oss/docs/images/catalog/blocks/spain-map.png"
+    },
+    {
+      "name": "spotify-card",
+      "title": "Spotify Now Playing",
+      "description": "Animated Spotify now-playing card with album art and progress bar",
+      "tags": [
+        "social",
+        "overlay",
+        "spotify"
+      ],
+      "kind": "block",
+      "category": "overlay",
+      "duration": 5,
+      "preview_video": "https://static.heygen.ai/hyperframes-oss/docs/images/catalog/blocks/spotify-card.mp4",
+      "preview_poster": "https://static.heygen.ai/hyperframes-oss/docs/images/catalog/blocks/spotify-card.png"
+    },
+    {
+      "name": "swirl-vortex",
+      "title": "Swirl Vortex",
+      "description": "Shader transition with swirling vortex distortion",
+      "tags": [
+        "transition",
+        "shader"
+      ],
+      "kind": "block",
+      "category": "transition",
+      "duration": 4,
+      "preview_video": "https://static.heygen.ai/hyperframes-oss/docs/images/catalog/blocks/swirl-vortex.mp4",
+      "preview_poster": "https://static.heygen.ai/hyperframes-oss/docs/images/catalog/blocks/swirl-vortex.png"
+    },
+    {
+      "name": "thermal-distortion",
+      "title": "Thermal Distortion",
+      "description": "Shader transition with heat haze thermal distortion",
+      "tags": [
+        "transition",
+        "shader"
+      ],
+      "kind": "block",
+      "category": "transition",
+      "duration": 4,
+      "preview_video": "https://static.heygen.ai/hyperframes-oss/docs/images/catalog/blocks/thermal-distortion.mp4",
+      "preview_poster": "https://static.heygen.ai/hyperframes-oss/docs/images/catalog/blocks/thermal-distortion.png"
+    },
+    {
+      "name": "tiktok-follow",
+      "title": "TikTok Follow",
+      "description": "Animated TikTok follow overlay with profile card and follow button",
+      "tags": [
+        "social",
+        "overlay",
+        "tiktok"
+      ],
+      "kind": "block",
+      "category": "overlay",
+      "duration": 4.5,
+      "preview_video": "https://static.heygen.ai/hyperframes-oss/docs/images/catalog/blocks/tiktok-follow.mp4",
+      "preview_poster": "https://static.heygen.ai/hyperframes-oss/docs/images/catalog/blocks/tiktok-follow.png"
+    },
+    {
+      "name": "transitions-3d",
+      "title": "3D Transitions",
+      "description": "Showcase of 3D perspective flip and rotate transitions",
+      "tags": [
+        "transition",
+        "showcase"
+      ],
+      "kind": "block",
+      "category": "transition",
+      "duration": 11,
+      "preview_video": "https://static.heygen.ai/hyperframes-oss/docs/images/catalog/blocks/transitions-3d.mp4",
+      "preview_poster": "https://static.heygen.ai/hyperframes-oss/docs/images/catalog/blocks/transitions-3d.png"
+    },
+    {
+      "name": "transitions-blur",
+      "title": "Blur Transitions",
+      "description": "Showcase of blur-based transitions between scenes",
+      "tags": [
+        "transition",
+        "showcase"
+      ],
+      "kind": "block",
+      "category": "transition",
+      "duration": 20,
+      "preview_video": "https://static.heygen.ai/hyperframes-oss/docs/images/catalog/blocks/transitions-blur.mp4",
+      "preview_poster": "https://static.heygen.ai/hyperframes-oss/docs/images/catalog/blocks/transitions-blur.png"
+    },
+    {
+      "name": "transitions-cover",
+      "title": "Cover Transitions",
+      "description": "Showcase of cover/uncover slide transitions",
+      "tags": [
+        "transition",
+        "showcase"
+      ],
+      "kind": "block",
+      "category": "transition",
+      "duration": 21,
+      "preview_video": "https://static.heygen.ai/hyperframes-oss/docs/images/catalog/blocks/transitions-cover.mp4",
+      "preview_poster": "https://static.heygen.ai/hyperframes-oss/docs/images/catalog/blocks/transitions-cover.png"
+    },
+    {
+      "name": "transitions-destruction",
+      "title": "Destruction Transitions",
+      "description": "Showcase of destructive break-apart transitions",
+      "tags": [
+        "transition",
+        "showcase"
+      ],
+      "kind": "block",
+      "category": "transition",
+      "duration": 14,
+      "preview_video": "https://static.heygen.ai/hyperframes-oss/docs/images/catalog/blocks/transitions-destruction.mp4",
+      "preview_poster": "https://static.heygen.ai/hyperframes-oss/docs/images/catalog/blocks/transitions-destruction.png"
+    },
+    {
+      "name": "transitions-dissolve",
+      "title": "Dissolve Transitions",
+      "description": "Showcase of dissolve and fade transitions",
+      "tags": [
+        "transition",
+        "showcase"
+      ],
+      "kind": "block",
+      "category": "transition",
+      "duration": 24,
+      "preview_video": "https://static.heygen.ai/hyperframes-oss/docs/images/catalog/blocks/transitions-dissolve.mp4",
+      "preview_poster": "https://static.heygen.ai/hyperframes-oss/docs/images/catalog/blocks/transitions-dissolve.png"
+    },
+    {
+      "name": "transitions-distortion",
+      "title": "Distortion Transitions",
+      "description": "Showcase of warp and distortion transitions",
+      "tags": [
+        "transition",
+        "showcase"
+      ],
+      "kind": "block",
+      "category": "transition",
+      "duration": 21,
+      "preview_video": "https://static.heygen.ai/hyperframes-oss/docs/images/catalog/blocks/transitions-distortion.mp4",
+      "preview_poster": "https://static.heygen.ai/hyperframes-oss/docs/images/catalog/blocks/transitions-distortion.png"
+    },
+    {
+      "name": "transitions-grid",
+      "title": "Grid Transitions",
+      "description": "Showcase of grid-based tile transitions",
+      "tags": [
+        "transition",
+        "showcase"
+      ],
+      "kind": "block",
+      "category": "transition",
+      "duration": 11,
+      "preview_video": "https://static.heygen.ai/hyperframes-oss/docs/images/catalog/blocks/transitions-grid.mp4",
+      "preview_poster": "https://static.heygen.ai/hyperframes-oss/docs/images/catalog/blocks/transitions-grid.png"
+    },
+    {
+      "name": "transitions-light",
+      "title": "Light Transitions",
+      "description": "Showcase of light-based glow and flash transitions",
+      "tags": [
+        "transition",
+        "showcase"
+      ],
+      "kind": "block",
+      "category": "transition",
+      "duration": 21,
+      "preview_video": "https://static.heygen.ai/hyperframes-oss/docs/images/catalog/blocks/transitions-light.mp4",
+      "preview_poster": "https://static.heygen.ai/hyperframes-oss/docs/images/catalog/blocks/transitions-light.png"
+    },
+    {
+      "name": "transitions-mechanical",
+      "title": "Mechanical Transitions",
+      "description": "Showcase of mechanical shutter and iris transitions",
+      "tags": [
+        "transition",
+        "showcase"
+      ],
+      "kind": "block",
+      "category": "transition",
+      "duration": 15,
+      "preview_video": "https://static.heygen.ai/hyperframes-oss/docs/images/catalog/blocks/transitions-mechanical.mp4",
+      "preview_poster": "https://static.heygen.ai/hyperframes-oss/docs/images/catalog/blocks/transitions-mechanical.png"
+    },
+    {
+      "name": "transitions-other",
+      "title": "Other Transitions",
+      "description": "Showcase of miscellaneous creative transitions",
+      "tags": [
+        "transition",
+        "showcase"
+      ],
+      "kind": "block",
+      "category": "transition",
+      "duration": 20,
+      "preview_video": "https://static.heygen.ai/hyperframes-oss/docs/images/catalog/blocks/transitions-other.mp4",
+      "preview_poster": "https://static.heygen.ai/hyperframes-oss/docs/images/catalog/blocks/transitions-other.png"
+    },
+    {
+      "name": "transitions-push",
+      "title": "Push Transitions",
+      "description": "Showcase of push and slide transitions",
+      "tags": [
+        "transition",
+        "showcase"
+      ],
+      "kind": "block",
+      "category": "transition",
+      "duration": 24,
+      "preview_video": "https://static.heygen.ai/hyperframes-oss/docs/images/catalog/blocks/transitions-push.mp4",
+      "preview_poster": "https://static.heygen.ai/hyperframes-oss/docs/images/catalog/blocks/transitions-push.png"
+    },
+    {
+      "name": "transitions-radial",
+      "title": "Radial Transitions",
+      "description": "Showcase of radial wipe and reveal transitions",
+      "tags": [
+        "transition",
+        "showcase"
+      ],
+      "kind": "block",
+      "category": "transition",
+      "duration": 20,
+      "preview_video": "https://static.heygen.ai/hyperframes-oss/docs/images/catalog/blocks/transitions-radial.mp4",
+      "preview_poster": "https://static.heygen.ai/hyperframes-oss/docs/images/catalog/blocks/transitions-radial.png"
+    },
+    {
+      "name": "transitions-scale",
+      "title": "Scale Transitions",
+      "description": "Showcase of scale and zoom transitions",
+      "tags": [
+        "transition",
+        "showcase"
+      ],
+      "kind": "block",
+      "category": "transition",
+      "duration": 15,
+      "preview_video": "https://static.heygen.ai/hyperframes-oss/docs/images/catalog/blocks/transitions-scale.mp4",
+      "preview_poster": "https://static.heygen.ai/hyperframes-oss/docs/images/catalog/blocks/transitions-scale.png"
+    },
+    {
+      "name": "ui-3d-reveal",
+      "title": "3D UI Reveal",
+      "description": "Perspective 3D reveal animation for UI elements",
+      "tags": [
+        "showcase",
+        "3d",
+        "reveal"
+      ],
+      "kind": "block",
+      "category": "cover",
+      "duration": 13,
+      "preview_video": "https://static.heygen.ai/hyperframes-oss/docs/images/catalog/blocks/ui-3d-reveal.mp4",
+      "preview_poster": "https://static.heygen.ai/hyperframes-oss/docs/images/catalog/blocks/ui-3d-reveal.png"
+    },
+    {
+      "name": "us-map",
+      "title": "US Map",
+      "description": "Animated US choropleth map with staggered state reveals, value labels, and gradient legend — pure inline SVG with GSAP",
+      "tags": [
+        "data",
+        "map",
+        "geography",
+        "usa",
+        "choropleth"
+      ],
+      "kind": "block",
+      "category": "data-viz",
+      "duration": 12,
+      "preview_video": "https://static.heygen.ai/hyperframes-oss/docs/images/catalog/blocks/us-map.mp4",
+      "preview_poster": "https://static.heygen.ai/hyperframes-oss/docs/images/catalog/blocks/us-map.png"
+    },
+    {
+      "name": "us-map-bubble",
+      "title": "US Bubble Map",
+      "description": "Animated US bubble map with proportional city markers, value callouts, and connection lines — composable with us-map",
+      "tags": [
+        "data",
+        "map",
+        "geography",
+        "usa",
+        "bubble",
+        "cities"
+      ],
+      "kind": "block",
+      "category": "data-viz",
+      "duration": 12,
+      "preview_video": "https://static.heygen.ai/hyperframes-oss/docs/images/catalog/blocks/us-map-bubble.mp4",
+      "preview_poster": "https://static.heygen.ai/hyperframes-oss/docs/images/catalog/blocks/us-map-bubble.png"
+    },
+    {
+      "name": "us-map-flow",
+      "title": "US Flow Map",
+      "description": "Animated connection arcs between US cities over a base map — composable origin-destination flow visualization",
+      "tags": [
+        "data",
+        "map",
+        "geography",
+        "usa",
+        "flow",
+        "connections",
+        "arcs"
+      ],
+      "kind": "block",
+      "category": "data-viz",
+      "duration": 12,
+      "preview_video": "https://static.heygen.ai/hyperframes-oss/docs/images/catalog/blocks/us-map-flow.mp4",
+      "preview_poster": "https://static.heygen.ai/hyperframes-oss/docs/images/catalog/blocks/us-map-flow.png"
+    },
+    {
+      "name": "us-map-hex",
+      "title": "US Hex Grid Map",
+      "description": "Animated hexagonal tile grid map — each state as an equal-weight hex with data fill and abbreviation label",
+      "tags": [
+        "data",
+        "map",
+        "geography",
+        "usa",
+        "hexgrid",
+        "tilegrid"
+      ],
+      "kind": "block",
+      "category": "data-viz",
+      "duration": 10,
+      "preview_video": "https://static.heygen.ai/hyperframes-oss/docs/images/catalog/blocks/us-map-hex.mp4",
+      "preview_poster": "https://static.heygen.ai/hyperframes-oss/docs/images/catalog/blocks/us-map-hex.png"
+    },
+    {
+      "name": "vfx-iphone-device",
+      "title": "iPhone & MacBook 3D Showcase",
+      "description": "Real GLTF iPhone 15 Pro Max and MacBook Pro models with live HTML-in-Canvas screen content, morphing glass lens, product review camera choreography, and 360° turntable.",
+      "tags": [
+        "html-in-canvas",
+        "3d",
+        "device",
+        "iphone",
+        "macbook",
+        "gltf"
+      ],
+      "kind": "block",
+      "category": "vfx",
+      "duration": 15,
+      "preview_video": "https://static.heygen.ai/hyperframes-oss/docs/images/catalog/blocks/vfx-iphone-device.mp4",
+      "preview_poster": "https://static.heygen.ai/hyperframes-oss/docs/images/catalog/blocks/vfx-iphone-device.png"
+    },
+    {
+      "name": "vfx-liquid-background",
+      "title": "Liquid Background",
+      "description": "Organic liquid simulation with vertex displacement on a subdivided plane. HTML content floats above rippling fluid surface with real-time wave dynamics.",
+      "tags": [
+        "html-in-canvas",
+        "liquid",
+        "webgl",
+        "displacement",
+        "background"
+      ],
+      "kind": "block",
+      "category": "vfx",
+      "duration": 12,
+      "preview_video": "https://static.heygen.ai/hyperframes-oss/docs/images/catalog/blocks/vfx-liquid-background.mp4",
+      "preview_poster": "https://static.heygen.ai/hyperframes-oss/docs/images/catalog/blocks/vfx-liquid-background.png"
+    },
+    {
+      "name": "vfx-liquid-glass",
+      "title": "Liquid Glass",
+      "description": "VFX composition block",
+      "tags": [
+        "html-in-canvas",
+        "webgl"
+      ],
+      "kind": "block",
+      "category": "vfx",
+      "duration": 20,
+      "preview_video": "https://static.heygen.ai/hyperframes-oss/docs/images/catalog/blocks/vfx-liquid-glass.mp4",
+      "preview_poster": "https://static.heygen.ai/hyperframes-oss/docs/images/catalog/blocks/vfx-liquid-glass.png"
+    },
+    {
+      "name": "vfx-magnetic",
+      "title": "Magnetic",
+      "description": "VFX composition block",
+      "tags": [
+        "html-in-canvas",
+        "webgl"
+      ],
+      "kind": "block",
+      "category": "vfx",
+      "duration": 15,
+      "preview_video": "https://static.heygen.ai/hyperframes-oss/docs/images/catalog/blocks/vfx-magnetic.mp4",
+      "preview_poster": "https://static.heygen.ai/hyperframes-oss/docs/images/catalog/blocks/vfx-magnetic.png"
+    },
+    {
+      "name": "vfx-portal",
+      "title": "Portal",
+      "description": "VFX composition block",
+      "tags": [
+        "html-in-canvas",
+        "webgl"
+      ],
+      "kind": "block",
+      "category": "vfx",
+      "duration": 10,
+      "preview_video": "https://static.heygen.ai/hyperframes-oss/docs/images/catalog/blocks/vfx-portal.mp4",
+      "preview_poster": "https://static.heygen.ai/hyperframes-oss/docs/images/catalog/blocks/vfx-portal.png"
+    },
+    {
+      "name": "vfx-shatter",
+      "title": "Shatter",
+      "description": "VFX composition block",
+      "tags": [
+        "html-in-canvas",
+        "webgl"
+      ],
+      "kind": "block",
+      "category": "vfx",
+      "duration": 12,
+      "preview_video": "https://static.heygen.ai/hyperframes-oss/docs/images/catalog/blocks/vfx-shatter.mp4",
+      "preview_poster": "https://static.heygen.ai/hyperframes-oss/docs/images/catalog/blocks/vfx-shatter.png"
+    },
+    {
+      "name": "vfx-text-cursor",
+      "title": "VFX Text Cursor",
+      "description": "Dramatic text reveal with cursor glow, chromatic shadow rays, and directional lighting on a black stage. Canvas-based shader post-processing with spectral color edges.",
+      "tags": [
+        "html-in-canvas",
+        "text",
+        "shader",
+        "cursor",
+        "chromatic"
+      ],
+      "kind": "block",
+      "category": "vfx",
+      "duration": 8,
+      "preview_video": "https://static.heygen.ai/hyperframes-oss/docs/images/catalog/blocks/vfx-text-cursor.mp4",
+      "preview_poster": "https://static.heygen.ai/hyperframes-oss/docs/images/catalog/blocks/vfx-text-cursor.png"
+    },
+    {
+      "name": "vpn-youtube-spot",
+      "title": "VPN YouTube Spot",
+      "description": "Snappy Apple-style YouTube insert showing a phone finding and installing a friendly VPN app with sound effects.",
+      "tags": [
+        "app",
+        "showcase",
+        "youtube",
+        "sfx"
+      ],
+      "kind": "block",
+      "category": "cover",
+      "duration": 7,
+      "preview_video": "https://static.heygen.ai/hyperframes-oss/docs/images/catalog/blocks/vpn-youtube-spot.mp4",
+      "preview_poster": "https://static.heygen.ai/hyperframes-oss/docs/images/catalog/blocks/vpn-youtube-spot.png"
+    },
+    {
+      "name": "whip-pan",
+      "title": "Whip Pan",
+      "description": "Shader transition simulating a fast camera whip pan",
+      "tags": [
+        "transition",
+        "shader"
+      ],
+      "kind": "block",
+      "category": "transition",
+      "duration": 4,
+      "preview_video": "https://static.heygen.ai/hyperframes-oss/docs/images/catalog/blocks/whip-pan.mp4",
+      "preview_poster": "https://static.heygen.ai/hyperframes-oss/docs/images/catalog/blocks/whip-pan.png"
+    },
+    {
+      "name": "world-map",
+      "title": "World Map",
+      "description": "Animated world choropleth with country-by-country reveal, tooltip labels, and rotating globe inset — D3 Natural Earth projection",
+      "tags": [
+        "data",
+        "map",
+        "geography",
+        "world",
+        "choropleth"
+      ],
+      "kind": "block",
+      "category": "data-viz",
+      "duration": 14,
+      "preview_video": "https://static.heygen.ai/hyperframes-oss/docs/images/catalog/blocks/world-map.mp4",
+      "preview_poster": "https://static.heygen.ai/hyperframes-oss/docs/images/catalog/blocks/world-map.png"
+    },
+    {
+      "name": "x-post",
+      "title": "X Post Card",
+      "description": "Animated X/Twitter post card overlay with engagement metrics",
+      "tags": [
+        "social",
+        "overlay",
+        "twitter"
+      ],
+      "kind": "block",
+      "category": "overlay",
+      "duration": 5,
+      "preview_video": "https://static.heygen.ai/hyperframes-oss/docs/images/catalog/blocks/x-post.mp4",
+      "preview_poster": "https://static.heygen.ai/hyperframes-oss/docs/images/catalog/blocks/x-post.png"
+    },
+    {
+      "name": "yt-lower-third",
+      "title": "YouTube Lower Third",
+      "description": "Animated YouTube subscribe lower third with avatar and channel info",
+      "tags": [
+        "social",
+        "overlay",
+        "youtube"
+      ],
+      "kind": "block",
+      "category": "overlay",
+      "duration": 4.5,
+      "preview_video": "https://static.heygen.ai/hyperframes-oss/docs/images/catalog/blocks/yt-lower-third.mp4",
+      "preview_poster": "https://static.heygen.ai/hyperframes-oss/docs/images/catalog/blocks/yt-lower-third.png"
+    },
+    {
+      "name": "caption-blend-difference",
+      "title": "Blend Difference",
+      "description": "Auto-inverting text using mix-blend-mode: difference — flips between white and black per-pixel against the background",
+      "tags": [
+        "text",
+        "effect",
+        "blend-mode",
+        "contrast",
+        "inversion"
+      ],
+      "kind": "component",
+      "category": "caption",
+      "duration": null,
+      "preview_video": null,
+      "preview_poster": null
+    },
+    {
+      "name": "caption-clip-wipe",
+      "title": "Clip Wipe",
+      "description": "Left-to-right clip-path wipe reveal per word",
+      "tags": [
+        "captions",
+        "caption-style",
+        "wipe",
+        "clip-path",
+        "reveal"
+      ],
+      "kind": "component",
+      "category": "caption",
+      "duration": null,
+      "preview_video": "https://static.heygen.ai/hyperframes-oss/registry/components/caption-clip-wipe/preview-v2.mp4",
+      "preview_poster": "https://static.heygen.ai/hyperframes-oss/docs/images/catalog/components/caption-clip-wipe.png"
+    },
+    {
+      "name": "caption-editorial-emphasis",
+      "title": "Editorial Emphasis",
+      "description": "Dual-font system with dramatic size contrast for emphasis words",
+      "tags": [
+        "captions",
+        "caption-style",
+        "editorial",
+        "typography",
+        "emphasis"
+      ],
+      "kind": "component",
+      "category": "caption",
+      "duration": null,
+      "preview_video": "https://static.heygen.ai/hyperframes-oss/registry/components/caption-editorial-emphasis/preview.mp4?v=1779051416",
+      "preview_poster": "https://static.heygen.ai/hyperframes-oss/docs/images/catalog/components/caption-editorial-emphasis.png"
+    },
+    {
+      "name": "caption-emoji-pop",
+      "title": "Emoji Pop",
+      "description": "Emoji integration with stroked text and horizontal squeeze entrance",
+      "tags": [
+        "captions",
+        "caption-style",
+        "emoji",
+        "social"
+      ],
+      "kind": "component",
+      "category": "caption",
+      "duration": null,
+      "preview_video": "https://static.heygen.ai/hyperframes-oss/registry/components/caption-emoji-pop/preview.mp4?v=1779051416",
+      "preview_poster": "https://static.heygen.ai/hyperframes-oss/docs/images/catalog/components/caption-emoji-pop.png"
+    },
+    {
+      "name": "caption-glitch-rgb",
+      "title": "Glitch RGB",
+      "description": "RGB chromatic aberration with CRT scanline overlay",
+      "tags": [
+        "captions",
+        "caption-style",
+        "glitch",
+        "cyber",
+        "tech"
+      ],
+      "kind": "component",
+      "category": "caption",
+      "duration": null,
+      "preview_video": "https://static.heygen.ai/hyperframes-oss/registry/components/caption-glitch-rgb/preview-v2.mp4",
+      "preview_poster": "https://static.heygen.ai/hyperframes-oss/docs/images/catalog/components/caption-glitch-rgb.png"
+    },
+    {
+      "name": "caption-gradient-fill",
+      "title": "Gradient Fill",
+      "description": "Gradient-clipped text with elastic bounce entrance",
+      "tags": [
+        "captions",
+        "caption-style",
+        "gradient",
+        "colorful"
+      ],
+      "kind": "component",
+      "category": "caption",
+      "duration": null,
+      "preview_video": "https://static.heygen.ai/hyperframes-oss/registry/components/caption-gradient-fill/preview-v2.mp4",
+      "preview_poster": "https://static.heygen.ai/hyperframes-oss/docs/images/catalog/components/caption-gradient-fill.png"
+    },
+    {
+      "name": "caption-highlight",
+      "title": "Highlight",
+      "description": "Red background sweep behind each active word, TikTok-style",
+      "tags": [
+        "captions",
+        "caption-style",
+        "highlight",
+        "social",
+        "tiktok"
+      ],
+      "kind": "component",
+      "category": "caption",
+      "duration": null,
+      "preview_video": "https://static.heygen.ai/hyperframes-oss/registry/components/caption-highlight/preview-v2.mp4",
+      "preview_poster": "https://static.heygen.ai/hyperframes-oss/docs/images/catalog/components/caption-highlight.png"
+    },
+    {
+      "name": "caption-kinetic-slam",
+      "title": "Kinetic Slam",
+      "description": "Full-screen single-word display with alternating entrance directions",
+      "tags": [
+        "captions",
+        "caption-style",
+        "kinetic",
+        "typography",
+        "slam"
+      ],
+      "kind": "component",
+      "category": "caption",
+      "duration": null,
+      "preview_video": "https://static.heygen.ai/hyperframes-oss/registry/components/caption-kinetic-slam/preview.mp4?v=1779051416",
+      "preview_poster": "https://static.heygen.ai/hyperframes-oss/docs/images/catalog/components/caption-kinetic-slam.png"
+    },
+    {
+      "name": "caption-matrix-decode",
+      "title": "Matrix Decode",
+      "description": "Character scramble animation before text reveal",
+      "tags": [
+        "captions",
+        "caption-style",
+        "matrix",
+        "scramble",
+        "decode"
+      ],
+      "kind": "component",
+      "category": "caption",
+      "duration": null,
+      "preview_video": "https://static.heygen.ai/hyperframes-oss/registry/components/caption-matrix-decode/preview-v2.mp4",
+      "preview_poster": "https://static.heygen.ai/hyperframes-oss/docs/images/catalog/components/caption-matrix-decode.png"
+    },
+    {
+      "name": "caption-neon-accent",
+      "title": "Neon Accent",
+      "description": "Multi-color neon glow accents with wiggle drift animation",
+      "tags": [
+        "captions",
+        "caption-style",
+        "neon",
+        "glow",
+        "accent"
+      ],
+      "kind": "component",
+      "category": "caption",
+      "duration": null,
+      "preview_video": "https://static.heygen.ai/hyperframes-oss/registry/components/caption-neon-accent/preview.mp4?v=1779051416",
+      "preview_poster": "https://static.heygen.ai/hyperframes-oss/docs/images/catalog/components/caption-neon-accent.png"
+    },
+    {
+      "name": "caption-neon-glow",
+      "title": "Neon Glow",
+      "description": "Cyan and magenta neon glow with keyword accent colors",
+      "tags": [
+        "captions",
+        "caption-style",
+        "neon",
+        "glow",
+        "gaming"
+      ],
+      "kind": "component",
+      "category": "caption",
+      "duration": null,
+      "preview_video": "https://static.heygen.ai/hyperframes-oss/registry/components/caption-neon-glow/preview.mp4?v=1779051416",
+      "preview_poster": "https://static.heygen.ai/hyperframes-oss/docs/images/catalog/components/caption-neon-glow.png"
+    },
+    {
+      "name": "caption-parallax-layers",
+      "title": "Parallax Layers",
+      "description": "Behind-subject 3D text layering with vertical stretch effect",
+      "tags": [
+        "captions",
+        "caption-style",
+        "parallax",
+        "3d",
+        "depth"
+      ],
+      "kind": "component",
+      "category": "caption",
+      "duration": null,
+      "preview_video": "https://static.heygen.ai/hyperframes-oss/registry/components/caption-parallax-layers/preview.mp4?v=1779051692",
+      "preview_poster": "https://static.heygen.ai/hyperframes-oss/docs/images/catalog/components/caption-parallax-layers.png"
+    },
+    {
+      "name": "caption-particle-burst",
+      "title": "Particle Burst",
+      "description": "Keyword words trigger colored particle explosions",
+      "tags": [
+        "captions",
+        "caption-style",
+        "particles",
+        "burst",
+        "effects"
+      ],
+      "kind": "component",
+      "category": "caption",
+      "duration": null,
+      "preview_video": "https://static.heygen.ai/hyperframes-oss/registry/components/caption-particle-burst/preview.mp4?v=1779051416",
+      "preview_poster": "https://static.heygen.ai/hyperframes-oss/docs/images/catalog/components/caption-particle-burst.png"
+    },
+    {
+      "name": "caption-pill-karaoke",
+      "title": "Pill Karaoke",
+      "description": "Pill-shaped container with per-word karaoke color highlight",
+      "tags": [
+        "captions",
+        "caption-style",
+        "karaoke",
+        "pill"
+      ],
+      "kind": "component",
+      "category": "caption",
+      "duration": null,
+      "preview_video": "https://static.heygen.ai/hyperframes-oss/registry/components/caption-pill-karaoke/preview.mp4?v=1779051416",
+      "preview_poster": "https://static.heygen.ai/hyperframes-oss/docs/images/catalog/components/caption-pill-karaoke.png"
+    },
+    {
+      "name": "caption-texture",
+      "title": "Texture",
+      "description": "Flowing texture mask over large uppercase text — ships with 6 textures (lava, marble, metal, wood, concrete, rock), configurable via the texture variable",
+      "tags": [
+        "captions",
+        "caption-style",
+        "texture",
+        "mask"
+      ],
+      "kind": "component",
+      "category": "caption",
+      "duration": null,
+      "preview_video": "https://static.heygen.ai/hyperframes-oss/registry/components/caption-texture-lava/preview.mp4?v=1779051416",
+      "preview_poster": "https://static.heygen.ai/hyperframes-oss/docs/images/catalog/components/caption-texture.png"
+    },
+    {
+      "name": "caption-weight-shift",
+      "title": "Weight Shift",
+      "description": "Elegant font-weight transition between caption lines",
+      "tags": [
+        "captions",
+        "caption-style",
+        "minimal",
+        "typography"
+      ],
+      "kind": "component",
+      "category": "caption",
+      "duration": null,
+      "preview_video": "https://static.heygen.ai/hyperframes-oss/registry/components/caption-weight-shift/preview-v2.mp4",
+      "preview_poster": "https://static.heygen.ai/hyperframes-oss/docs/images/catalog/components/caption-weight-shift.png"
+    },
+    {
+      "name": "grain-overlay",
+      "title": "Grain Overlay",
+      "description": "Animated film grain texture overlay using CSS keyframes — adds warmth and analog character to any composition",
+      "tags": [
+        "texture",
+        "grain",
+        "overlay",
+        "film"
+      ],
+      "kind": "component",
+      "category": "overlay",
+      "duration": null,
+      "preview_video": null,
+      "preview_poster": "https://static.heygen.ai/hyperframes-oss/docs/images/catalog/components/grain-overlay.png"
+    },
+    {
+      "name": "grid-pixelate-wipe",
+      "title": "Grid Pixelate Wipe",
+      "description": "Transition effect where the screen dissolves into a grid of squares that fade out with staggered timing — use between scenes",
+      "tags": [
+        "transition",
+        "wipe",
+        "grid",
+        "pixelate"
+      ],
+      "kind": "component",
+      "category": "transition",
+      "duration": null,
+      "preview_video": null,
+      "preview_poster": "https://static.heygen.ai/hyperframes-oss/docs/images/catalog/components/grid-pixelate-wipe.png"
+    },
+    {
+      "name": "parallax-unzoom",
+      "title": "Parallax Unzoom",
+      "description": "Reveal transition — focus card scales down from full frame as siblings parallax in to form a grid (reverse of parallax-zoom)",
+      "tags": [
+        "transition",
+        "reveal",
+        "unzoom",
+        "parallax",
+        "grid",
+        "hero"
+      ],
+      "kind": "component",
+      "category": "transition",
+      "duration": null,
+      "preview_video": null,
+      "preview_poster": "https://static.heygen.ai/hyperframes-oss/docs/images/catalog/components/parallax-unzoom.png"
+    },
+    {
+      "name": "parallax-zoom",
+      "title": "Parallax Zoom",
+      "description": "Center card scales up to fill the frame while siblings parallax outward — inspired by the eBay Playbook hero transition",
+      "tags": [
+        "transition",
+        "zoom",
+        "parallax",
+        "grid",
+        "hero"
+      ],
+      "kind": "component",
+      "category": "transition",
+      "duration": null,
+      "preview_video": null,
+      "preview_poster": "https://static.heygen.ai/hyperframes-oss/docs/images/catalog/components/parallax-zoom.png"
+    },
+    {
+      "name": "shimmer-sweep",
+      "title": "Shimmer Sweep",
+      "description": "Animated light sweep across text or elements using a CSS gradient mask — ideal for AI accents and premium reveals",
+      "tags": [
+        "text",
+        "shimmer",
+        "highlight",
+        "effect"
+      ],
+      "kind": "component",
+      "category": "other",
+      "duration": null,
+      "preview_video": null,
+      "preview_poster": "https://static.heygen.ai/hyperframes-oss/docs/images/catalog/components/shimmer-sweep.png"
+    },
+    {
+      "name": "texture-mask-text",
+      "title": "Texture Mask Text",
+      "description": "CSS luminance masks that cut holes through letterforms - 66 pre-built texture masks from ambientCG PBR color maps",
+      "tags": [
+        "text",
+        "texture",
+        "mask",
+        "effect"
+      ],
+      "kind": "component",
+      "category": "other",
+      "duration": null,
+      "preview_video": null,
+      "preview_poster": "https://static.heygen.ai/hyperframes-oss/docs/images/catalog/components/texture-mask-text.png"
+    },
+    {
+      "name": "vignette",
+      "title": "Vignette",
+      "description": "Cinematic radial vignette overlay using a pure-CSS gradient — darkens the edges to pull focus toward the center",
+      "tags": [
+        "vignette",
+        "overlay",
+        "cinematic",
+        "effect"
+      ],
+      "kind": "component",
+      "category": "overlay",
+      "duration": null,
+      "preview_video": null,
+      "preview_poster": "https://static.heygen.ai/hyperframes-oss/docs/images/catalog/components/vignette.png"
+    }
+  ]
+}

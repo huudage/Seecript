@@ -24,7 +24,7 @@ from fastapi.staticfiles import StaticFiles
 
 from . import __version__
 from .config import get_settings
-from .routers import asr, asset, clarify, decompose, edit, gap, knowledge, library, material, packaging, plan, project, render, step, voice
+from .routers import asr, asset, catalog, clarify, decompose, edit, gap, knowledge, library, material, packaging, plan, project, render, step, voice
 from .schemas import ErrorResponse, HealthResponse
 
 
@@ -148,6 +148,8 @@ def create_app() -> FastAPI:
     app.include_router(voice.router, prefix="/api", tags=["voice"])
     app.include_router(clarify.router, prefix="/api", tags=["clarify"])
     app.include_router(knowledge.router, prefix="/api", tags=["knowledge"])
+    # catalog 自带 prefix=/api/catalog，不再加 prefix
+    app.include_router(catalog.router)
 
     # ---- Static: 样例素材 ----
     # 把 server/samples/ 暴露成 /samples/...；前端 cover_url / shot 缩略图 / video.mp4

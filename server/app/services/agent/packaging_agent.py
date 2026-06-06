@@ -27,10 +27,12 @@ import re
 from typing import Any, Optional
 
 from ..llm_client import LLMError, get_llm_client
+from ..catalog import names_for_prompt as catalog_names_for_prompt, find_by_name as catalog_find_by_name
 from ..plans import plan_store
 from ...schemas import (
     CoverCandidate,
     CoverDesign,
+    FrameDesignSystem,
     PackagingItem,
     PackagingPreferences,
     PackagingPreset,
@@ -139,7 +141,56 @@ def expand_preset(prefs: PackagingPreferences) -> PackagingPreferences:
     return prefs.model_copy(update=overrides)
 
 
-def _build_system_prompt(prefs: PackagingPreferences) -> str:
+def _frame_design_block(frame: Optional[FrameDesignSystem]) -> str:
+    """把 frame.md 设计 token 转成给 LLM 的一段中文摘要。"""
+    if frame is None:
+        return ""
+    parts: list[str] = []
+    if frame.preset and frame.preset != "custom":
+        parts.append(f"设计预设: {frame.preset}（请贴合该模板风格选色与排版）")
+    if frame.palette:
+        parts.append(f"主色板: {' / '.join(frame.palette)}（封面 palette 优先从中挑）")
+    if frame.background_color:
+        parts.append(f"主背景色: {frame.background_color}")
+    if frame.typography_display:
+        parts.append(f"标题字体: {frame.typography_display}")
+    if frame.typography_body:
+        parts.append(f"正文字体: {frame.typography_body}")
+    if frame.motion_density:
+        density_hint = {
+            "minimal": "克制（建议短转场、淡入淡出为主）",
+            "balanced": "适中（节奏正常，转场可多样）",
+            "kinetic": "高密度（转场强冲击，cover 排版动感）",
+        }.get(frame.motion_density, frame.motion_density)
+        parts.append(f"动效密度: {density_hint}")
+    if frame.grain_overlay:
+        parts.append("叠加颗粒/胶片质感")
+    if frame.vignette:
+        parts.append("叠加暗角")
+    if frame.notes:
+        parts.append(f"额外要求: {frame.notes}")
+    if not parts:
+        return ""
+    return "\nframe.md 设计系统约束（统一全片视觉）:\n  - " + "\n  - ".join(parts)
+
+
+def _catalog_hint_block() -> str:
+    """给 LLM 看的 HyperFrames catalog 选项摘要（精简版，控 token）。"""
+    transitions = catalog_names_for_prompt("transition", max_n=10)
+    covers = catalog_names_for_prompt("cover", max_n=8)
+    if not transitions and not covers:
+        return ""
+    out = ["\nHyperFrames catalog 可选项（你可在 transitions[].catalog_block / cover.catalog_block 字段引用 name 给前端做风格 hint，不强制必填）:"]
+    if transitions:
+        lines = [f"    · {t['name']} — {t.get('description') or t.get('title')}" for t in transitions]
+        out.append("  转场（transition）:\n" + "\n".join(lines))
+    if covers:
+        lines = [f"    · {c['name']} — {c.get('description') or c.get('title')}" for c in covers]
+        out.append("  封面（cover）:\n" + "\n".join(lines))
+    return "\n".join(out)
+
+
+def _build_system_prompt(prefs: PackagingPreferences, frame: Optional[FrameDesignSystem] = None) -> str:
     """根据 prefs 动态拼系统提示，把白名单/max_duration/cover 策略喂给 LLM。"""
     allowed = ", ".join(prefs.allowed_transition_styles)
     max_dur = prefs.max_transition_duration
@@ -156,14 +207,18 @@ def _build_system_prompt(prefs: PackagingPreferences) -> str:
         "请输出两类建议：(a) 相邻段落切换处的转场风格；(b) 一份开场封面方案。\n"
         f"转场只能从这些风格里选：[{allowed}]，duration 必须 ≤ {max_dur:.2f}s。\n"
         f"{cover_hint}。{bilingual_hint}\n"
+        f"{_frame_design_block(frame)}"
+        f"{_catalog_hint_block()}\n"
         "返回 JSON：{"
         "\"transitions\": [{\"at_seconds\": number, \"from_section\": str, \"to_section\": str, "
         "\"style\": one of allowed, "
         f"\"duration\": number (0.1-{max_dur:.2f}), "
+        "\"catalog_block\": str|null (HyperFrames catalog name, 可空), "
         "\"reason\": str (≤30 字)}], "
         "\"cover\": {\"title\": str (≤12 字, 强冲击), \"subtitle\": str (≤18 字, 可空), "
         "\"palette\": [hex 颜色 2-3 个, 主色 + 强调色], "
         "\"layout\": one of [center, left, split, stacked], "
+        "\"catalog_block\": str|null (HyperFrames cover catalog name, 可空), "
         "\"style_note\": str (≤30 字, 字号/色/排版)}"
         "}。\n"
         "from_section/to_section 必须是这 4 个 role 之一：opening / development / climax / closing。\n"
@@ -273,6 +328,13 @@ def _coerce_transition(
     if not from_sec or not to_sec or len(from_sec) > 30 or len(to_sec) > 30:
         return None
     reason = str(raw.get("reason", "") or "")[:60]
+    catalog_block = raw.get("catalog_block")
+    if isinstance(catalog_block, str):
+        catalog_block = catalog_block.strip() or None
+        if catalog_block and catalog_find_by_name(catalog_block) is None:
+            catalog_block = None
+    else:
+        catalog_block = None
     return TransitionSuggestion(
         item_id=f"pkg-tr-{fallback_idx:02d}",
         at_seconds=at_s,
@@ -280,6 +342,7 @@ def _coerce_transition(
         to_section=to_sec,  # type: ignore[arg-type]
         style=style,  # type: ignore[arg-type]
         duration=dur,
+        catalog_block=catalog_block,
         reason=reason or f"{from_sec}→{to_sec}",
     )
 
@@ -313,11 +376,19 @@ def _coerce_cover(
     if not palette:
         palette = ["#FFE600", "#1F2937"]
     style_note = str(raw.get("style_note", "") or "")[:60] or "LLM 未给说明"
+    catalog_block = raw.get("catalog_block")
+    if isinstance(catalog_block, str):
+        catalog_block = catalog_block.strip() or None
+        if catalog_block and catalog_find_by_name(catalog_block) is None:
+            catalog_block = None
+    else:
+        catalog_block = None
     return CoverDesign(
         title=title,
         subtitle=subtitle,
         palette=palette,
         layout=layout,  # type: ignore[arg-type]
+        catalog_block=catalog_block,
         style_note=style_note,
     )
 
@@ -353,12 +424,13 @@ async def recommend_packaging(
     """
     raw_prefs = preferences or plan.settings.packaging_prefs
     prefs = expand_preset(raw_prefs)
+    frame = getattr(plan.settings, "frame_design", None)
 
     notes: list[str] = []
     transitions: list[TransitionSuggestion] = []
     cover: Optional[CoverDesign] = None
 
-    system_prompt = _build_system_prompt(prefs)
+    system_prompt = _build_system_prompt(prefs, frame=frame)
     user = _build_user_prompt(plan)
     try:
         llm = get_llm_client()
@@ -559,12 +631,14 @@ _SUBTITLE_POSITIONS = ("top", "middle", "bottom")
 _SUBTITLE_BACKGROUNDS = ("none", "shadow", "gradient")
 
 
-def _build_v2_system_prompt(prefs: PackagingPreferences) -> str:
+def _build_v2_system_prompt(prefs: PackagingPreferences, frame: Optional[FrameDesignSystem] = None) -> str:
     allowed = ", ".join(prefs.allowed_transition_styles)
     max_dur = prefs.max_transition_duration
     return (
         "你是短视频包装设计师。读完主轨分镜（每段含 scene_id / role / 起止 / 口播）后，"
         "为这条片子同时给出 5 类候选包装，每类 2-4 个供创作者挑选。\n"
+        f"{_frame_design_block(frame)}"
+        f"{_catalog_hint_block()}\n"
         "返回 JSON（严格用这些字段名，不要 markdown 包裹）：\n"
         "{\n"
         "  \"subtitle_styles\": [  // 2-3 个字幕样式备选\n"
@@ -592,13 +666,16 @@ def _build_v2_system_prompt(prefs: PackagingPreferences) -> str:
         "    {\"candidate_id\": str, \"at_seconds\": number, "
         "\"from_section\": str, \"to_section\": str, "
         f"\"options\": [{{\"style\": one of [{allowed}], "
-        f"\"duration\": number(0.1-{max_dur:.2f}), \"reason\": str(≤20字)}}], "
+        f"\"duration\": number(0.1-{max_dur:.2f}), "
+        "\"catalog_block\": str|null, "
+        "\"reason\": str(≤20字)}], "
         "\"rationale\": str(≤40字)}\n"
         "  ],\n"
         "  \"covers\": [  // 2-3 个不同调性封面方案\n"
         "    {\"candidate_id\": str, \"title\": str(≤12字), \"subtitle\": str(≤18字 可空), "
         "\"palette\": [hex,hex,hex], "
         "\"layout\": one of [center,left,split,stacked], "
+        "\"catalog_block\": str|null, "
         "\"style_note\": str(≤30字), \"rationale\": str(≤30字)}\n"
         "  ]\n"
         "}\n"
@@ -763,6 +840,13 @@ def _coerce_transition_bundle(
         except (TypeError, ValueError):
             dur = 0.4
         dur = max(0.1, min(prefs.max_transition_duration, dur))
+        opt_catalog = opt.get("catalog_block")
+        if isinstance(opt_catalog, str):
+            opt_catalog = opt_catalog.strip() or None
+            if opt_catalog and catalog_find_by_name(opt_catalog) is None:
+                opt_catalog = None
+        else:
+            opt_catalog = None
         options.append(TransitionSuggestion(
             item_id=f"pkg-tr-{idx:02d}-{opt_idx}",
             at_seconds=at_s,
@@ -770,6 +854,7 @@ def _coerce_transition_bundle(
             to_section=to_sec,  # type: ignore[arg-type]
             style=style,  # type: ignore[arg-type]
             duration=dur,
+            catalog_block=opt_catalog,
             reason=str(opt.get("reason", "") or f"{from_sec}→{to_sec}")[:60],
         ))
     if not options:
@@ -814,12 +899,20 @@ def _coerce_cover_candidate(
     layout = str(raw.get("layout", "center"))
     if layout not in _ALLOWED_LAYOUTS:
         layout = "center"
+    cv_catalog = raw.get("catalog_block")
+    if isinstance(cv_catalog, str):
+        cv_catalog = cv_catalog.strip() or None
+        if cv_catalog and catalog_find_by_name(cv_catalog) is None:
+            cv_catalog = None
+    else:
+        cv_catalog = None
     return CoverCandidate(
         candidate_id=f"cv-{idx:02d}",
         title=title,
         subtitle=subtitle,
         palette=palette,
         layout=layout,  # type: ignore[arg-type]
+        catalog_block=cv_catalog,
         style_note=str(raw.get("style_note", "") or "")[:60],
         rationale=str(raw.get("rationale", "") or "")[:60],
     )
@@ -941,9 +1034,10 @@ async def recommend_packaging_v2(
     """
     raw_prefs = preferences or plan.settings.packaging_prefs
     prefs = expand_preset(raw_prefs)
+    frame = getattr(plan.settings, "frame_design", None)
 
     notes: list[str] = []
-    system_prompt = _build_v2_system_prompt(prefs)
+    system_prompt = _build_v2_system_prompt(prefs, frame=frame)
     user_prompt = _build_v2_user_prompt(plan)
 
     data: Any = None

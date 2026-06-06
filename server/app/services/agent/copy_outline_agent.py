@@ -175,6 +175,19 @@ async def generate_copy_outline(
     if cta:
         user_lines.append(f"结尾 CTA：{cta}")
     user_lines.append(f"全局关键词：{', '.join(keywords) if keywords else '（无）'}")
+    frame = getattr(settings, "frame_design", None) if settings else None
+    if frame is not None:
+        fd_parts: list[str] = []
+        if frame.preset and frame.preset != "custom":
+            fd_parts.append(f"预设={frame.preset}")
+        if frame.motion_density and frame.motion_density != "balanced":
+            fd_parts.append(f"动效密度={frame.motion_density}")
+        if frame.palette:
+            fd_parts.append(f"色板={'/'.join(frame.palette[:3])}")
+        if frame.notes:
+            fd_parts.append(f"备注={frame.notes}")
+        if fd_parts:
+            user_lines.append("frame.md 设计系统：" + " | ".join(fd_parts) + "（字卡视觉/字号/排版需贴合）")
     if hint:
         user_lines.append(f"创作者额外提示：{hint}")
     user_lines.append("请输出 outline + thinking 的 JSON（含 recommended_spec 完整字段）。")

@@ -703,6 +703,8 @@ export interface ComposeSettings {
   tts_voice: TTSVoice
   /** 包装阶段用户配置（转场白名单/字幕样式/封面策略/LLM 温度）。 */
   packaging_prefs: PackagingPreferences
+  /** frame.md 设计系统 token（色板/字体/动效密度），全片包装统一。 */
+  frame_design: FrameDesignSystem
 }
 
 /** 包装风格预设。custom 表示用户在 UI 上动了任何具体字段。 */
@@ -766,6 +768,63 @@ export const DEFAULT_PACKAGING_PREFERENCES: PackagingPreferences = {
   llm_temperature: 0.7,
 }
 
+/** frame.md 设计系统预设（参考 HyperFrames frame.md 模板）。 */
+export type FrameDesignPreset =
+  | 'custom'
+  | 'biennale-yellow'
+  | 'blockframe'
+  | 'blue-professional'
+  | 'bold-poster'
+  | 'broadside'
+  | 'capsule'
+  | 'cartesian'
+  | 'cobalt-grid'
+  | 'coral'
+  | 'creative-mode'
+
+/** 画面动效密度。 */
+export type MotionDensity = 'minimal' | 'balanced' | 'kinetic'
+
+/**
+ * frame.md —— 为相机重写的设计系统 token。
+ * HyperFrames 提出的"DESIGN.md 视频版"，packaging/copy/aigc agent 都从这里读色板/字号/动效密度，
+ * 避免 4 段视频视觉割裂。preset != custom 时空字段由 agent 按预设填充。
+ */
+export interface FrameDesignSystem {
+  preset: FrameDesignPreset
+  /** 主色板 HEX，最多 6 色。第一色=primary，第二=accent，余下=supporting。 */
+  palette: string[]
+  /** 主背景色 HEX，例如 #03071e。空=按 preset 默认。 */
+  background_color: string
+  /** 标题字体族。 */
+  typography_display: string
+  /** 正文字体族。 */
+  typography_body: string
+  /** 等宽字体（用于代码/数字）。 */
+  typography_mono: string
+  /** 动效密度：kinetic=高密度推荐社媒；minimal=克制品牌片。 */
+  motion_density: MotionDensity
+  /** 颗粒/胶片质感（参考 HyperFrames grain-overlay 组件）。 */
+  grain_overlay: boolean
+  /** 暗角（参考 HyperFrames vignette 组件）。 */
+  vignette: boolean
+  /** 额外风格备注，自由文本。 */
+  notes: string
+}
+
+export const DEFAULT_FRAME_DESIGN: FrameDesignSystem = {
+  preset: 'custom',
+  palette: [],
+  background_color: '',
+  typography_display: '',
+  typography_body: '',
+  typography_mono: '',
+  motion_density: 'balanced',
+  grain_overlay: false,
+  vignette: false,
+  notes: '',
+}
+
 export const DEFAULT_COMPOSE_SETTINGS: ComposeSettings = {
   target_duration_seconds: 30,
   target_platform: 'douyin',
@@ -777,6 +836,7 @@ export const DEFAULT_COMPOSE_SETTINGS: ComposeSettings = {
   voiceover_enabled: false,
   tts_voice: 'zh_female_qingxin',
   packaging_prefs: DEFAULT_PACKAGING_PREFERENCES,
+  frame_design: DEFAULT_FRAME_DESIGN,
 }
 
 export interface Plan {
@@ -934,6 +994,8 @@ export interface TransitionSuggestion {
   to_section: SectionRole
   style: TransitionStyle
   duration: number
+  /** HyperFrames catalog block 名（风格 hint，不替换 ffmpeg xfade）。 */
+  catalog_block?: string | null
   reason: string
 }
 
@@ -943,6 +1005,8 @@ export interface CoverDesign {
   subtitle?: string | null
   palette: string[]
   layout: 'center' | 'left' | 'split' | 'stacked'
+  /** HyperFrames cover catalog block 名（风格 hint）。 */
+  catalog_block?: string | null
   style_note: string
 }
 
@@ -1026,8 +1090,40 @@ export interface CoverCandidate {
   subtitle?: string | null
   palette: string[]
   layout: 'center' | 'left' | 'split' | 'stacked'
+  catalog_block?: string | null
   style_note: string
   rationale: string
+}
+
+/** /api/catalog/blocks 返回的 HyperFrames catalog 单条目。 */
+export type CatalogCategory =
+  | 'transition'
+  | 'caption'
+  | 'vfx'
+  | 'overlay'
+  | 'data-viz'
+  | 'cover'
+  | 'code-snippet'
+  | 'other'
+
+export interface CatalogItem {
+  name: string
+  title?: string | null
+  description: string
+  tags: string[]
+  kind: 'block' | 'component'
+  category: CatalogCategory
+  duration?: number | null
+  preview_video?: string | null
+  preview_poster?: string | null
+}
+
+export interface CatalogListResponse {
+  source: string
+  version: string
+  license: string
+  items: CatalogItem[]
+  total: number
 }
 
 export interface PackagingRecommendationV2 {
