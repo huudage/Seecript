@@ -105,18 +105,27 @@ def _fill_section_lookup(fills: list[FillResult]) -> dict[str, FillResult]:
     1. `fill.section_id` 直接给的 —— v2 后 fill_gap 在所有路径都回填，最权威，不依赖进程内存
     2. `gap_store.get(f.gap_id).section_id` —— 兼容老 fill（无 section_id 字段）+ gap 仍在内存
     3. 都没有 → 丢弃 + warn 日志（提示后端可能重启 / fill 来自旧版本）
+
+    PR-L.3：warn / failed 的 aigc_image / aigc / copy fill（产出空但 action 明确）
+    必须保留进索引——这样 _pick 看到该 section 已有 fill 就走 text_card 兜底，
+    不会让"该段缺生成"的语义变成"该段抢顺位用户素材"导致后面所有段落集体错位。
     """
     out: dict[str, FillResult] = {}
     dropped: list[str] = []
     for f in fills:
-        if not f.new_material_id and not f.video_urls and not f.narration:
-            continue
+        # 只有完全无 action / 无产出 / 无 section_id 的纯垃圾 fill 才丢
         sid = f.section_id
         if not sid:
             gap = gap_store.get(f.gap_id)
             sid = gap.section_id if (gap and gap.section_id) else None
         if sid is None:
             dropped.append(f.gap_id)
+            continue
+        # 空产出但 action 是 aigc_image / aigc / copy → 保留占位（_pick 据此走 text_card）
+        has_output = bool(f.new_material_id or f.video_urls or f.narration
+                          or f.aigc_image_url or f.text_card_spec)
+        has_intent = f.action in ("aigc", "aigc_image", "copy")
+        if not has_output and not has_intent:
             continue
         out.setdefault(sid, f)
     if dropped:
@@ -401,6 +410,27 @@ async def build_plan(req: PlanBuildRequest) -> Plan:
                     [],
                     None,
                 )
+        # PR-L.3：本段已绑定 aigc / aigc_image / copy fill 但产出为空（warn / 任务超时 / Seedream 失败 / LLM 返空）
+        # 关键约束：section ↔ scene 严格 1:1，不允许"该段被抢顺位 user_material 后面段落全部错位"。
+        # 直接给字卡兜底，文案取自 sec.content_description / fill.narration / fill.note。
+        if fill and fill.action in ("aigc", "aigc_image", "copy"):
+            fallback_text = (
+                (fill.narration or "").strip()
+                or (sec.content_description or "").strip()
+                or (fill.note or "").strip()
+                or sec.role
+            )
+            return (
+                "text_card",
+                f"text-card-fill-empty-{sec.section_id}",
+                [],
+                fallback_text or None,
+                None,
+                None,
+                None,
+                [],
+                None,
+            )
         if material_cursor < len(req.selected_materials):
             ref = req.selected_materials[material_cursor]
             material_cursor += 1

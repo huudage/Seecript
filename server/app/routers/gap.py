@@ -445,11 +445,22 @@ async def fill_all(req: GapFillAllRequest) -> GapFillAllResponse:
                 return gap, exc
 
         outcomes = await asyncio.gather(*[_run_one(g) for g in pending])
+        # 严格 1:1：每个 pending gap 必产一个 FillResult（即使是 warn 占位）。
+        # 这样前端 BatchAigcButton + Compose.handleBatchDone 拿到的 resp.fills.length
+        # 永远 === pending.length，重建 plan 时 _fill_section_lookup 才能给每个 section 找到对应 fill，
+        # 不会因为漏 fill 让 _pick 走 user_material 顺位消费导致结构错位 / 段落缺失。
         for gap, outcome in outcomes:
             if isinstance(outcome, Exception):
                 if failed_gap_id is None:
                     failed_gap_id = gap.gap_id
                     stopped_reason = f"生成异常：{outcome}"
+                fills.append(FillResult(
+                    gap_id=gap.gap_id,
+                    action=req.action,
+                    status="warn",
+                    note=f"生成异常：{outcome}"[:200],
+                    section_id=gap.section_id,
+                ))
                 continue
             fills.append(outcome)
             if outcome.status != "ok" and failed_gap_id is None:
