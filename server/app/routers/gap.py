@@ -435,14 +435,21 @@ async def fill_all(req: GapFillAllRequest) -> GapFillAllResponse:
     else:
         # aigc_image / copy：段间独立 → 并行执行（return_exceptions 保证一段挂掉
         # 不会污染 gather 的其他任务；失败的 gap 仍有 fill 占位 / stopped_reason 兜底）
+        # PR-L.4：并发数过高时 Seedream 服务端会偶发掐连接（httpx ReadTimeout / RST），
+        # aigc_image 限制在 2 路并发——既能利用 gather 不让 60s 单点放大成 240s 串行，
+        # 又能避开 Seedream 并发上限导致中间段固定失败。copy 走 LLM 不限。
+        sema_limit = 2 if req.action == "aigc_image" else len(pending)
+        sema = asyncio.Semaphore(max(1, sema_limit))
+
         async def _run_one(gap: Gap) -> tuple[Gap, FillResult | Exception]:
-            try:
-                r = await fill_gap(gap, req.action, _build_params(gap))
-                r = await asyncio.to_thread(_maybe_auto_tts, r)
-                return gap, r
-            except Exception as exc:  # noqa: BLE001
-                log.exception("[gap-fill-all] gap=%s action=%s raised", gap.gap_id, req.action)
-                return gap, exc
+            async with sema:
+                try:
+                    r = await fill_gap(gap, req.action, _build_params(gap))
+                    r = await asyncio.to_thread(_maybe_auto_tts, r)
+                    return gap, r
+                except Exception as exc:  # noqa: BLE001
+                    log.exception("[gap-fill-all] gap=%s action=%s raised", gap.gap_id, req.action)
+                    return gap, exc
 
         outcomes = await asyncio.gather(*[_run_one(g) for g in pending])
         # 严格 1:1：每个 pending gap 必产一个 FillResult（即使是 warn 占位）。

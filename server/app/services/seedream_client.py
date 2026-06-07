@@ -203,11 +203,22 @@ class DoubaoArkSeedreamClient(SeedreamClient):
         # n>1 才传，单图时省略（5.0 单图模式 + n 同时传可能 400）
         if n and n > 1:
             body["n"] = max(1, min(4, n))
-        try:
-            async with httpx.AsyncClient(timeout=self._timeout) as cli:
-                resp = await cli.post(url, headers=self._headers(), json=body)
-        except httpx.HTTPError as exc:
-            raise SeedreamError(f"Seedream HTTP 失败：{exc}", code="SEEDREAM_HTTP") from exc
+        # PR-L.4：豆包 Seedream 在并发 ≥3 时会偶发 ReadTimeout / 服务端 RST（httpx 抛 HTTPError），
+        # 单次失败成本太高（warn fill 直接落到字卡兜底，用户看不到生成结果）。这里加 1 次重试 +
+        # 指数退避，对单点 HTTPError 是几乎免费的修复，对真正的额度/参数错误（HTTP 4xx）不会重试。
+        last_exc: Exception | None = None
+        for attempt in range(2):
+            try:
+                async with httpx.AsyncClient(timeout=self._timeout) as cli:
+                    resp = await cli.post(url, headers=self._headers(), json=body)
+                break
+            except httpx.HTTPError as exc:
+                last_exc = exc
+                if attempt == 0:
+                    log.warning("[seedream] HTTP error attempt 1/2: %s — retrying after 2s", exc)
+                    await asyncio.sleep(2.0)
+                    continue
+                raise SeedreamError(f"Seedream HTTP 失败：{exc}", code="SEEDREAM_HTTP") from exc
 
         if resp.status_code >= 400:
             text = resp.text[:300] if resp.text else ""
@@ -275,11 +286,18 @@ class DoubaoArkSeedreamClient(SeedreamClient):
             "stream": False,
             "watermark": watermark,
         }
-        try:
-            async with httpx.AsyncClient(timeout=self._timeout) as cli:
-                resp = await cli.post(url, headers=self._headers(), json=body)
-        except httpx.HTTPError as exc:
-            raise SeedreamError(f"Seedream HTTP 失败：{exc}", code="SEEDREAM_HTTP") from exc
+        # PR-L.4：同 generate() 的重试策略——并发场景下 sequence 调用同样会偶发 HTTPError。
+        for attempt in range(2):
+            try:
+                async with httpx.AsyncClient(timeout=self._timeout) as cli:
+                    resp = await cli.post(url, headers=self._headers(), json=body)
+                break
+            except httpx.HTTPError as exc:
+                if attempt == 0:
+                    log.warning("[seedream] sequence HTTP error attempt 1/2: %s — retrying after 2s", exc)
+                    await asyncio.sleep(2.0)
+                    continue
+                raise SeedreamError(f"Seedream HTTP 失败：{exc}", code="SEEDREAM_HTTP") from exc
 
         if resp.status_code >= 400:
             text = resp.text[:300] if resp.text else ""
