@@ -282,6 +282,46 @@ export function FillAigcPanel({
     [slotPrompts],
   )
 
+  // -- spec 阶段：一键 Seedream 生成所有未就绪 slot --
+  // 串行调避免同时打 Seedream 撞配额；已就绪 slot（上传 / 已生成）跳过；空 prompt 跳过并标错。
+  const [seedreamAllBusy, setSeedreamAllBusy] = useState(false)
+  const handleSeedreamAllSlots = useCallback(async () => {
+    if (seedreamAllBusy) return
+    const todo = imageSpecs.filter((s) => !imageSlots[s.slot_id])
+    if (todo.length === 0) return
+    setSeedreamAllBusy(true)
+    try {
+      for (const spec of todo) {
+        const slotId = spec.slot_id
+        const promptText = (slotPrompts[slotId] || spec.prompt || '').trim()
+        if (!promptText) {
+          setSlotErr((m) => ({ ...m, [slotId]: '空提示词已跳过' }))
+          continue
+        }
+        setSlotBusy(slotId)
+        setSlotErr((m) => ({ ...m, [slotId]: null }))
+        try {
+          const resp = await api.post<AigcSeedreamResponse>('/gap/aigc-seedream', {
+            prompt: promptText,
+            ratio: spec.ratio,
+            n: 1,
+          })
+          const first = resp.images[0]
+          if (!first) throw new Error('AI 出图未返回图片')
+          setImageSlots((m) => ({ ...m, [slotId]: { url: first.url, source: 'seedream' } }))
+        } catch (e) {
+          setSlotErr((m) => ({
+            ...m,
+            [slotId]: e instanceof Error ? e.message : 'AI 出图失败',
+          }))
+        }
+      }
+    } finally {
+      setSlotBusy(null)
+      setSeedreamAllBusy(false)
+    }
+  }, [imageSlots, imageSpecs, seedreamAllBusy, slotPrompts])
+
   // -- spec 阶段：把 Seedream 临时 CDN 图保存到素材库 --
   const handleSaveSlotToLibrary = useCallback(
     async (spec: ImageSpec) => {
@@ -529,11 +569,13 @@ export function FillAigcPanel({
           slotSaving={slotSaving}
           slotSaveOk={slotSaveOk}
           allReady={allSlotsReady}
+          seedreamAllBusy={seedreamAllBusy}
           onSlotPromptChange={(slotId, value) =>
             setSlotPrompts((m) => ({ ...m, [slotId]: value.slice(0, 300) }))
           }
           onUpload={handleUploadSlot}
           onSeedream={handleSeedreamSlot}
+          onSeedreamAll={handleSeedreamAllSlots}
           onSaveToLibrary={handleSaveSlotToLibrary}
           onClear={handleClearSlot}
           onSkip={() => void handleEnterPromptStage()}
@@ -696,9 +738,11 @@ function SpecStage({
   slotSaving,
   slotSaveOk,
   allReady,
+  seedreamAllBusy,
   onSlotPromptChange,
   onUpload,
   onSeedream,
+  onSeedreamAll,
   onSaveToLibrary,
   onClear,
   onSkip,
@@ -713,14 +757,17 @@ function SpecStage({
   slotSaving: string | null
   slotSaveOk: Record<string, boolean>
   allReady: boolean
+  seedreamAllBusy: boolean
   onSlotPromptChange: (slotId: string, value: string) => void
   onUpload: (slotId: string, file: File) => void
   onSeedream: (spec: ImageSpec) => void
+  onSeedreamAll: () => void
   onSaveToLibrary: (spec: ImageSpec) => void
   onClear: (slotId: string) => void
   onSkip: () => void
   onNext: () => void
 }) {
+  const pendingCount = specs.filter((s) => !slots[s.slot_id]).length
   return (
     <div className="space-y-2">
       {/* 思考链总结：折叠展示，让用户知道 AI 怎么决定的 */}
@@ -747,6 +794,24 @@ function SpecStage({
           跳过参考图 →
         </button>
       </div>
+
+      {/* 一键 Seedream 全部出图：串行调，已就绪 slot 跳过 */}
+      {pendingCount > 0 && (
+        <button
+          type="button"
+          onClick={onSeedreamAll}
+          disabled={seedreamAllBusy}
+          title={`串行调 Seedream 为剩余 ${pendingCount} 张未就绪的参考图出图（已上传 / 已生成的会跳过）`}
+          className={cn(
+            'flex w-full items-center justify-center gap-1 rounded-md border border-primary/60 bg-primary/10 px-2 py-1.5 text-[11px] font-medium text-primary transition-colors hover:bg-primary/20',
+            seedreamAllBusy && 'cursor-not-allowed opacity-60',
+          )}
+        >
+          {seedreamAllBusy
+            ? `🪄 一键出图中…（${pendingCount} 张待生成）`
+            : `🪄 一键 AI 出图全部参考图（${pendingCount} 张）`}
+        </button>
+      )}
 
       <div className="space-y-2">
         {specs.map((spec) => {
