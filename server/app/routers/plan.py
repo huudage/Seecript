@@ -306,6 +306,33 @@ async def build_plan(req: PlanBuildRequest) -> Plan:
              len(adapted), sum(len(m.sections) for m in manifests),
              sum(s.duration_seconds for s in adapted))
 
+    # PR-B：用户素材分镜级匹配。把 selected_materials 里所有 video material 的
+    # MaterialShot 池子拿出来，对每个 AdaptedSection.shots 跑 ShotPlan ↔ MaterialShot
+    # 文本相似度 + role 加权 + 时长接近度匹配，把结果写回 ShotPlan.matched_material_*。
+    # 多镜物化时（plan.py 下方 if n_shots>=2 分支）会优先按这个匹配选材，匹配失败回落
+    # 到 cyclic 策略。
+    try:
+        from ..services.agent.shot_matcher import apply_matches_to_section, match_section_shots
+        material_pool: list[Material] = []
+        if effective_project_id:
+            for mid in req.selected_materials:
+                m = material_store.get(effective_project_id, mid)
+                if m is not None:
+                    material_pool.append(m)
+        if material_pool:
+            adapted = [
+                apply_matches_to_section(sec, match_section_shots(sec, material_pool))
+                for sec in adapted
+            ]
+            n_match = sum(
+                1 for sec in adapted for sh in sec.shots if sh.matched_material_id
+            )
+            log.info("[plan] PR-B shot match: pool=%d matched=%d/%d shots",
+                     len(material_pool), n_match,
+                     sum(len(sec.shots) for sec in adapted))
+    except Exception as exc:  # noqa: BLE001
+        log.warning("[plan] shot_matcher 失败（跳过，不阻塞 plan）：%s", exc)
+
     # 3. 把 fills 按 section_id 索引——这是修复『多段 development 全被路由到第一段』bug 的关键
     fill_by_section = _fill_section_lookup(req.fills)
     material_cursor = 0
@@ -506,13 +533,26 @@ async def build_plan(req: PlanBuildRequest) -> Plan:
                         animation_spec=None,
                     ))
                 elif source == "user_material":
-                    # PR-A 兜底：所有 shot 共用同一 material；在 material.shots 内按 shot_idx 顺序分配
+                    # PR-B：优先按 ShotPlan.matched_material_* 选定的 MaterialShot；
+                    # 没匹配时回落到 PR-A 的 shot_idx % len(mat.shots) cyclic 策略。
                     in_pt = 0.0
                     out_pt: float | None = shot_dur
-                    if effective_project_id:
+                    chosen_mat_id = source_ref
+                    if effective_project_id and shot is not None and shot.matched_material_id:
+                        mat = material_store.get(effective_project_id, shot.matched_material_id)
+                        if mat is not None and mat.shots and shot.matched_material_shot_index is not None:
+                            # 按 matched_material_shot_index 找 MaterialShot，没找到回退到首镜
+                            mshot = next(
+                                (ms for ms in mat.shots if ms.index == shot.matched_material_shot_index),
+                                mat.shots[0],
+                            )
+                            chosen_mat_id = mat.material_id
+                            in_pt = float(mshot.start)
+                            cut_end = min(float(mshot.end), in_pt + shot_dur)
+                            out_pt = cut_end
+                    elif effective_project_id:
                         mat = material_store.get(effective_project_id, source_ref)
                         if mat is not None and mat.shots:
-                            # PR-A 简化：取 material.shots[shot_idx % N_mat]，PR-B 引入 subject 匹配
                             mshot = mat.shots[shot_idx % len(mat.shots)]
                             in_pt = float(mshot.start)
                             cut_end = min(float(mshot.end), in_pt + shot_dur)
@@ -524,7 +564,7 @@ async def build_plan(req: PlanBuildRequest) -> Plan:
                         shot_order=shot_idx,
                         shot_subject=shot_subject,
                         source="user_material",  # type: ignore[arg-type]
-                        source_ref=source_ref,
+                        source_ref=chosen_mat_id,
                         start=timeline_cursor,
                         duration=shot_dur,
                         in_point=in_pt,

@@ -998,9 +998,14 @@ _STOPWORDS = {
 
 
 def _extract_subjects_from_section(section: "AdaptedSection | None") -> list[str]:
-    """从 section.content_description 抽取主体清单。
+    """从 section 抽取主体清单（按优先级）。
+
+    stage-24 起最高优先级是 `section.shots`——plan_agent 已经替我们拆好了
+    分镜 subject，gap_agent 直接消费即可，不必再做 content_description 文本解析。
+    其余兜底路径保留给老 plan / 缺少 shots 的边界。
 
     策略（按命中优先级降序）：
+    0. **stage-24** section.shots 非空 → 直接取 ShotPlan.subject + visual 拼短串
     1. 显式分行项目符号（- / * / • ...）：直接当作主体列表
     2. 段中包含『主体：A、B、C』模式：抽取冒号后的并列项
     3. 全文按逗号/顿号切分，过滤停用词，取前 4 个名词性短语
@@ -1010,6 +1015,17 @@ def _extract_subjects_from_section(section: "AdaptedSection | None") -> list[str
     """
     if section is None:
         return []
+    # stage-24: 优先吃 plan_agent 给的分镜
+    shots = getattr(section, "shots", None) or []
+    if shots:
+        subs: list[str] = []
+        for sh in shots[:4]:  # gap_agent 多图最多 4 张
+            label = (sh.subject or "").strip() or (sh.visual or "").strip()
+            if label:
+                subs.append(label[:30])
+        if subs:
+            return subs
+
     text = (section.content_description or "").strip()
     if not text:
         return []

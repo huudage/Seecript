@@ -110,6 +110,16 @@ async def generate_aigc_prompt(
             user_lines.append("frame.md 设计系统：" + " | ".join(fd_parts) + "（画面色调/质感/构图需贴合）")
     if hint:
         user_lines.append(f"创作者额外提示：{hint}")
+    # stage-24：把 ShotPlan 显式告知 LLM，让它在 T2V prompt 里覆盖每个分镜的主体/画面
+    shots = getattr(section, "shots", None) or [] if section else []
+    if shots:
+        shot_lines = ["本段分镜清单（请把每一镜的画面要素融进同一句 T2V prompt）："]
+        for sh in shots:
+            shot_lines.append(
+                f"  · 分镜 #{sh.order+1}（{sh.duration_seconds:.1f}s）"
+                f" 主体={sh.subject or '—'} | 画面={sh.visual or '—'}"
+            )
+        user_lines.append("\n".join(shot_lines))
     user_lines.append("请输出一句完备的 t2v_prompt，覆盖主体/景别/机位/光线/质感/情绪。")
 
     user = "\n".join(user_lines)
@@ -259,6 +269,18 @@ async def generate_image_specs(
             user_lines.append("frame.md 设计系统：" + " | ".join(fd_parts) + "（参考图色调与质感需贴合）")
     if hint:
         user_lines.append(f"创作者额外提示：{hint}")
+    # stage-24：若 plan_agent 已给出 ShotPlan 拆分，让 image-spec 一镜一图严格对齐
+    shots = getattr(section, "shots", None) or [] if section else []
+    if shots:
+        shot_lines = [
+            f"本段已被拆为 {len(shots)} 个分镜，请按一镜一图输出（specs 数量等于 N，slot_id 与分镜序号对应）："
+        ]
+        for sh in shots:
+            shot_lines.append(
+                f"  · 分镜 #{sh.order+1}（{sh.duration_seconds:.1f}s）"
+                f" 主体={sh.subject or '—'} | 画面={sh.visual or '—'}"
+            )
+        user_lines.append("\n".join(shot_lines))
     user_lines.append("请输出 1-3 张参考图的 specs JSON。")
 
     user = "\n".join(user_lines)
