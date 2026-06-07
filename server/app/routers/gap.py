@@ -322,8 +322,10 @@ async def fill(req: GapFillRequest) -> FillResult:
 async def fill_all(req: GapFillAllRequest) -> GapFillAllResponse:
     """一键补全：把 plan 下所有 status≠ok 的 gap 顺序走 action。
 
-    顺序执行（aigc 链式生成依赖时序，copy 也走串行避免 LLM 配额抖动），遇错即停。
-    action="aigc" 默认；action="copy" 用 gap.requirement 当 prompt_hint。
+    顺序执行（aigc 链式生成依赖时序，copy 也走串行避免 LLM 配额抖动）。
+    - action="aigc"：T2V 链式承接，前一段失败会污染尾帧，遇错即停（保留原语义）。
+    - action="aigc_image" / "copy"：每段独立，best-effort 继续跑剩余 gap，
+      把失败原因写进 stopped_reason 但不中断；调用方收到 fills 后逐个标注成功/失败。
     """
     plan = plan_store.get(req.plan_id)
     if plan is None:
@@ -423,13 +425,18 @@ async def fill_all(req: GapFillAllRequest) -> GapFillAllResponse:
             log.exception("[gap-fill-all] gap=%s action=%s raised", gap.gap_id, req.action)
             failed_gap_id = gap.gap_id
             stopped_reason = f"生成异常：{exc}"
-            break
+            # aigc T2V 链式承接（尾帧续写），前段挂掉后续没法继续；其他 action 段间独立，best-effort
+            if req.action == "aigc":
+                break
+            continue
         result = await asyncio.to_thread(_maybe_auto_tts, result)
         fills.append(result)
         if result.status != "ok":
             failed_gap_id = gap.gap_id
             stopped_reason = f"{gap.gap_id} 失败：{result.note or result.status}"
-            break
+            if req.action == "aigc":
+                break
+            # aigc_image / copy：记录失败但继续跑剩余 gap
 
     return GapFillAllResponse(
         plan_id=req.plan_id,

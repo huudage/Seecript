@@ -5,10 +5,10 @@ import { cn } from '@/lib/utils'
 import type { GapFillAllRequest, GapFillAllResponse } from '@/types/schemas'
 
 /**
- * 一键 AI 画面补全所有缺口（链式视频生成 / Seedream 文生图）。
+ * 一键 AI 视频补全所有缺口（链式视频生成 / Seedream 文生图）。
  *
  * - 后端 /gap/fill-all 顺序执行 + (video) 自动用上一段尾帧作为下一段首帧承接
- * - 遇错即停（不浪费 AI 算力），返回已完成的 fills 让前端逐个回写
+ * - video 链式承接遇错即停；image / copy 段间独立，best-effort 跑完所有 gap
  * - video 单次任务可能 >5 分钟；image 模式 Seedream 同步出图，几十秒级
  */
 export function BatchAigcButton({

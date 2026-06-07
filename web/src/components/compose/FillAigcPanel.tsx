@@ -449,7 +449,7 @@ export function FillAigcPanel({
       const result = await api.post<FillResult>('/gap/fill', body)
       onResult(result)
     } catch (e) {
-      setErr(e instanceof Error ? e.message : mode === 'image' ? 'AI 生图再渲染失败' : 'AI 画面生成失败')
+      setErr(e instanceof Error ? e.message : mode === 'image' ? 'AI 生图再渲染失败' : 'AI 视频生成失败')
     } finally {
       setLoading(false)
     }
@@ -631,7 +631,7 @@ export function FillAigcPanel({
           canRefresh={canRefresh}
           onRefresh={handleRefresh}
           projectId={plan?.project_id || gap.project_id || ''}
-          saveTitle={gap.section || gap.section_id || (mode === 'image' ? 'AI 图片' : 'AI 画面')}
+          saveTitle={gap.section || gap.section_id || (mode === 'image' ? 'AI 图片' : 'AI 视频')}
         />
       )}
     </div>
@@ -1220,7 +1220,7 @@ function FillStatusCard({
           title:
             mode === 'image'
               ? `${saveTitle}-AI 图片`
-              : `${saveTitle}-AI 画面${idx + 1}`,
+              : `${saveTitle}-AI 视频${idx + 1}`,
           tags: ['aigc', saveTitle].filter(Boolean) as string[],
         }
         await api.post<Asset>('/asset/save-from-url', body)

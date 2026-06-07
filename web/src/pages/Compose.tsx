@@ -63,7 +63,7 @@ import type {
 const ACTION_TABS: { value: FillAction; label: string; hint: string }[] = [
   { value: 'rerank', label: '挑素材', hint: '从已上传素材里挑一个最匹配的填进本段画面' },
   { value: 'copy', label: '字卡画面', hint: 'AI 设计一张个性化字卡（字体/版式/颜色/动画）作为本段画面' },
-  { value: 'aigc', label: 'AI 画面', hint: 'AI 视频生成，出 5-8 秒短片作为本段画面' },
+  { value: 'aigc', label: 'AI 视频', hint: 'AI 视频生成，出 5-8 秒短片作为本段画面' },
   { value: 'aigc_image', label: 'AI 生图再渲染', hint: 'AI 生图后用动画引擎重渲染，成本/等待远低于视频；多主体自动拆分成多镜头故事板' },
 ]
 
@@ -271,9 +271,16 @@ export default function ComposePage() {
   }, [plan])
 
   // 步骤 3 解锁 gate：plan 生成完了只解锁 step 2；用户在 step 2 点「进入第 3 步」才置 true。
-  // plan 重生（plan_id 变更）会自动复位 false，避免老解锁状态串到新计划。
+  // plan_id 变更复位规则：
+  //   - plan 整体被清掉（用户回 step1 重选样例 / 重置）→ 复位为锁定
+  //   - plan_id 变了但用户当前正在 step3（批量补缺、step3 中上传素材等触发 /plan/build 重生）
+  //     → 不复位，避免无关的 plan rebuild 把用户从 step3 弹回 step2（这是 PR-K 修复点）。
+  //   - 其他情况（如 step1/2 中的 plan rebuild）→ 复位为锁定，老 step3 解锁状态不要串到新 plan。
   const [step3Unlocked, setStep3Unlocked] = useState(false)
   const lastStep3PlanIdRef = useRef<string | null>(null)
+  // 通过 ref 读取当前 activeStep，避免把 activeStep 加入 useEffect 依赖
+  // 而引发 plan_id 没变也跑这段重置逻辑的副作用
+  const activeStepRef = useRef<1 | 2 | 3>(1)
   useEffect(() => {
     if (!plan) {
       if (lastStep3PlanIdRef.current !== null) {
@@ -283,10 +290,16 @@ export default function ComposePage() {
       return
     }
     if (plan.plan_id !== lastStep3PlanIdRef.current) {
-      setStep3Unlocked(false)
-      lastStep3PlanIdRef.current = plan.plan_id
+      // 用户当前正在 step3 → 这次 plan rebuild 是 step3 内的增量行为（一键补缺 / 上传素材 /
+      // 单段重生 narration 等），保持解锁；只更新 plan_id 跟踪，不复位 step3Unlocked。
+      if (activeStepRef.current === 3 && step3Unlocked) {
+        lastStep3PlanIdRef.current = plan.plan_id
+      } else {
+        setStep3Unlocked(false)
+        lastStep3PlanIdRef.current = plan.plan_id
+      }
     }
-  }, [plan])
+  }, [plan, step3Unlocked])
 
   // step 1 生成完成后的「✓ 内容轨已生成」全屏确认弹窗：
   // analyzing=true 期间显示 spinner；analyzing 结束 + planJustGenerated=true 显示预览 + 双按钮。
@@ -309,6 +322,10 @@ export default function ComposePage() {
     return 1
   })()
   const [activeStep, setActiveStepState] = useState<WorkshopStep>(stepFromUrl)
+  // 持续把 activeStep 同步到 ref，给上面 plan_id 复位逻辑读取（不依赖 useEffect 依赖列表）
+  useEffect(() => {
+    activeStepRef.current = activeStep
+  }, [activeStep])
   const setActiveStep = useCallback(
     (next: WorkshopStep) => {
       setActiveStepState(next)
@@ -648,7 +665,7 @@ export default function ComposePage() {
             f.action === 'copy'
               ? '字卡画面'
               : f.action === 'aigc'
-                ? 'AI 画面'
+                ? 'AI 视频'
                 : f.action === 'aigc_image'
                   ? 'AI 生图再渲染'
                   : '已挑素材'
@@ -1363,7 +1380,7 @@ export default function ComposePage() {
               </div>
               {sortedMaterials.length === 0 && (
                 <p className="rounded-md bg-muted/40 px-2 py-1 text-[11px] text-muted-foreground">
-                  没有素材也能跑：仅凭主题分析 → 所有段落都标为缺素材 → 用「字卡画面 / AI 画面」逐个补齐。
+                  没有素材也能跑：仅凭主题分析 → 所有段落都标为缺素材 → 用「字卡画面 / AI 视频」逐个补齐。
                 </p>
               )}
               <UploadDropzone
@@ -1695,7 +1712,7 @@ export default function ComposePage() {
             {/* 右 · 缺口补全（依赖选中 gap） */}
             <div className="space-y-2">
               <p className="rounded-md border border-primary/30 bg-primary/5 px-2 py-1.5 text-[11px] leading-relaxed text-foreground">
-              💡 这里只关心<strong>画面 + 字幕</strong>——三种方式都是给本段生成画面（挑素材 / 字卡画面 / AI 画面）；字幕轨开关默认关闭，开启后 AI 自动按段落生成可编辑字幕。口播留到第 3 步再切换音色合成。
+              💡 这里只关心<strong>画面 + 字幕</strong>——三种方式都是给本段生成画面（挑素材 / 字卡画面 / AI 视频）；字幕轨开关默认关闭，开启后 AI 自动按段落生成可编辑字幕。口播留到第 3 步再切换音色合成。
               </p>
               {selectedGap ? (
                 <>
@@ -1788,7 +1805,7 @@ export default function ComposePage() {
                 </>
               ) : (
                 <p className="rounded-md border border-dashed border-border bg-background/30 px-3 py-2 text-[11px] text-muted-foreground">
-                  点下方内容轨任意一段——这里出现「挑素材 / 字卡画面 / AI 画面 / AI 生图再渲染」四个画面补全选项。
+                  点下方内容轨任意一段——这里出现「挑素材 / 字卡画面 / AI 视频 / AI 生图再渲染」四个画面补全选项。
                 </p>
               )}
             </div>
