@@ -1,12 +1,15 @@
 /**
- * FrameDesignPicker —— frame.md 设计系统选择器。
+ * FrameDesignPicker —— 「视频风格」选择器（原 frame.md 设计系统）。
  *
  * 灵感来自 HyperFrames 的 frame.md：把品牌设计系统翻译为视频可消费的 token，
  * packaging/copy/aigc agent 都从这里读色板/字体/动效密度，避免分段视觉割裂。
  *
+ * v3 改名：对内 schema 字段仍叫 frame_design / preset / motion_density 保持兼容，
+ * 对外只展示中文名「视频风格 / 色板 / 动效密度 / 颗粒 / 暗角 / 备注」。
+ *
  * 设计：
- * - 顶部一组 preset chips：custom + 9 个 HyperFrames 模板风格名（仅做风格 hint，
- *   不预下载素材）。选 preset 即把名字喂给后端 LLM 当风格基准。
+ * - 顶部一组 preset chips：自由配色 + 10 个 HyperFrames 模板风格中文名（仅做风格 hint，
+ *   不预下载素材）。选 preset 即把后端 Literal 值喂给 LLM 当风格基准。
  * - 折叠的「细调」区暴露 palette / motion_density / 颗粒 / 暗角 / 备注，
  *   让用户能在 preset 上覆写若干字段。
  * - 这是个纯展示组件——没有访问 catalog API，preset 名字硬编码（与后端
@@ -18,17 +21,17 @@ import { cn } from '@/lib/utils'
 import type { FrameDesignPreset, FrameDesignSystem, MotionDensity } from '@/types/schemas'
 
 const PRESET_OPTIONS: { value: FrameDesignPreset; label: string; hint: string }[] = [
-  { value: 'custom', label: 'Custom', hint: '逐项手填' },
-  { value: 'biennale-yellow', label: 'Biennale Yellow', hint: '高对比柠檬黄+纯黑' },
-  { value: 'blockframe', label: 'BlockFrame', hint: '建筑感网格' },
-  { value: 'blue-professional', label: 'Blue Pro', hint: '冷蓝商务克制' },
-  { value: 'bold-poster', label: 'Bold Poster', hint: '海报字+撞色' },
-  { value: 'broadside', label: 'Broadside', hint: '阔幅排版' },
-  { value: 'capsule', label: 'Capsule', hint: '柔和胶囊圆角' },
-  { value: 'cartesian', label: 'Cartesian', hint: '坐标系网格' },
-  { value: 'cobalt-grid', label: 'Cobalt', hint: '钴蓝网格' },
-  { value: 'coral', label: 'Coral', hint: '珊瑚暖色' },
-  { value: 'creative-mode', label: 'Creative', hint: '玩味实验' },
+  { value: 'custom', label: '自由配色', hint: '逐项手填' },
+  { value: 'biennale-yellow', label: '柠檬黄黑', hint: '高对比柠檬黄 + 纯黑' },
+  { value: 'blockframe', label: '建筑网格', hint: '建筑感分块构图' },
+  { value: 'blue-professional', label: '商务冷蓝', hint: '冷蓝克制 · 偏正式' },
+  { value: 'bold-poster', label: '海报撞色', hint: '海报字 + 撞色' },
+  { value: 'broadside', label: '阔幅排版', hint: '横向大气 · 节奏舒展' },
+  { value: 'capsule', label: '胶囊柔和', hint: '柔和胶囊圆角 · 治愈系' },
+  { value: 'cartesian', label: '坐标系网格', hint: '科技感坐标网' },
+  { value: 'cobalt-grid', label: '钴蓝网格', hint: '深钴蓝 + 几何网格' },
+  { value: 'coral', label: '珊瑚暖色', hint: '珊瑚橙 + 暖光' },
+  { value: 'creative-mode', label: '玩味实验', hint: '解构 · 拼贴 · 实验感' },
 ]
 
 const MOTION_OPTIONS: { value: MotionDensity; label: string; hint: string }[] = [
@@ -84,11 +87,11 @@ export function FrameDesignPicker({
   return (
     <div>
       <label className="text-[11px] font-semibold text-muted-foreground">
-        frame.md 设计系统
+        视频风格
         <span className="ml-2 font-normal text-muted-foreground/70">{summary}</span>
       </label>
 
-      {/* preset chips */}
+      {/* 风格 preset chips */}
       <div className="mt-1 flex flex-wrap gap-1.5">
         {PRESET_OPTIONS.map((opt) => (
           <button
@@ -118,7 +121,7 @@ export function FrameDesignPicker({
 
       {open && (
         <div className="mt-2 space-y-3 rounded-md border border-border bg-background/30 p-2">
-          {/* palette */}
+          {/* 主色板 */}
           <div>
             <label className="text-[10px] font-semibold text-muted-foreground">主色板（最多 6 色，HEX）</label>
             <div className="mt-1 flex flex-wrap items-center gap-1.5">
@@ -153,7 +156,7 @@ export function FrameDesignPicker({
             </div>
           </div>
 
-          {/* motion */}
+          {/* 动效密度 */}
           <div>
             <label className="text-[10px] font-semibold text-muted-foreground">动效密度</label>
             <div className="mt-1 grid grid-cols-3 gap-1">
@@ -176,7 +179,7 @@ export function FrameDesignPicker({
             </div>
           </div>
 
-          {/* texture toggles */}
+          {/* 质感开关 */}
           <div className="flex items-center gap-3">
             <label className="flex items-center gap-1 text-[10px] text-muted-foreground">
               <input
@@ -184,7 +187,7 @@ export function FrameDesignPicker({
                 checked={value.grain_overlay}
                 onChange={(e) => onChange({ grain_overlay: e.target.checked })}
               />
-              颗粒/胶片质感
+              颗粒 / 胶片质感
             </label>
             <label className="flex items-center gap-1 text-[10px] text-muted-foreground">
               <input
@@ -196,7 +199,7 @@ export function FrameDesignPicker({
             </label>
           </div>
 
-          {/* notes */}
+          {/* 额外风格备注 */}
           <div>
             <label className="text-[10px] font-semibold text-muted-foreground">额外风格备注（≤ 200 字）</label>
             <textarea

@@ -1,17 +1,20 @@
-import { useState, type ChangeEvent, type KeyboardEvent } from 'react'
+import { useState, type ChangeEvent } from 'react'
 
 import { cn } from '@/lib/utils'
-import type { AspectRatio, ComposeSettings, FrameDesignSystem, MigrationPreference, TargetPlatform, ToneStyle } from '@/types/schemas'
+import type { AspectRatio, ComposeSettings, FrameDesignSystem, MigrationPreference, TargetPlatform } from '@/types/schemas'
 import { FrameDesignPicker } from './FrameDesignPicker'
 
 /**
- * Compose 页"高级设置"折叠面板：目标时长 / 平台 / 画面比例 / 调性 / CTA / 关键词。
+ * Compose 页"高级设置"折叠面板：目标时长 / 平台 / 画面比例 / 视频风格 / 迁移倾向 / 结尾引导。
  *
- * v2 起：『目标平台』决定节奏 + 字幕风格；『画面比例』独立控件，允许 B 站发竖屏等组合。
+ * v3 起：
+ * - 删除「整体调性」（tone）入口——调性表达统一让位给「视频风格」（FrameDesignPicker，
+ *   原 frame.md 设计系统），由 preset + palette + motion_density 这一组 token 表达；
+ *   schema 字段 ComposeSettings.tone 仍保留（默认 tight_hype），后端兼容老 plan。
+ * - 删除「必须出现的关键词」入口——发现实际工程里这字段更多是字卡策划锚点而非用户表达欲望，
+ *   写文案有结尾引导即可；schema 字段 ComposeSettings.keywords 仍保留默认空数组。
  *
- * 注：字幕轨 / 口播轨 已迁移到四轨板——字幕轨默认关，开关在 step2 字幕轨左侧；
- * 口播 TTS 默认关，开关与音色选择在 step3 口播轨左侧（一键合成同位置触发）。
- * 这里只保留全局结构参数。
+ * 注：字幕 / 口播 / TTS 设置在四轨板上，这里只放全局结构参数。
  */
 
 const PLATFORM_OPTIONS: { value: TargetPlatform; label: string; hint: string }[] = [
@@ -25,13 +28,6 @@ const ASPECT_OPTIONS: { value: AspectRatio; label: string; hint: string }[] = [
   { value: '9:16', label: '9:16', hint: '竖屏短视频' },
   { value: '16:9', label: '16:9', hint: '横屏长内容' },
   { value: '1:1', label: '1:1', hint: '方版橱窗' },
-]
-
-const TONE_OPTIONS: { value: ToneStyle; label: string; hint: string }[] = [
-  { value: 'tight_hype', label: '紧凑高燃', hint: '快剪 + 强情绪' },
-  { value: 'calm_narrative', label: '沉稳叙事', hint: '长镜头 + 余韵' },
-  { value: 'casual_daily', label: '轻松日常', hint: '口语化' },
-  { value: 'professional_cool', label: '专业冷静', hint: '高信息密度' },
 ]
 
 const MIGRATION_OPTIONS: { value: MigrationPreference; label: string; hint: string }[] = [
@@ -48,31 +44,6 @@ export function ComposeSettingsPanel({
   onChange: (patch: Partial<ComposeSettings>) => void
 }) {
   const [open, setOpen] = useState(true)
-  const [draftKw, setDraftKw] = useState('')
-
-  const handleAddKeyword = () => {
-    const next = draftKw.trim()
-    if (!next || value.keywords.includes(next)) {
-      setDraftKw('')
-      return
-    }
-    if (value.keywords.length >= 5) {
-      setDraftKw('')
-      return
-    }
-    onChange({ keywords: [...value.keywords, next.slice(0, 12)] })
-    setDraftKw('')
-  }
-
-  const handleKwKey = (e: KeyboardEvent<HTMLInputElement>) => {
-    if (e.key === 'Enter' || e.key === ',') {
-      e.preventDefault()
-      handleAddKeyword()
-    }
-  }
-
-  const removeKeyword = (kw: string) =>
-    onChange({ keywords: value.keywords.filter((k) => k !== kw) })
 
   const handleDur = (e: ChangeEvent<HTMLInputElement>) => {
     const n = Number(e.target.value)
@@ -95,10 +66,7 @@ export function ComposeSettingsPanel({
             {value.target_duration_seconds}s · {PLATFORM_OPTIONS.find((p) => p.value === value.target_platform)?.label}
             {' · '}
             {value.aspect_ratio}
-            {' · '}
-            {TONE_OPTIONS.find((t) => t.value === value.tone)?.label}
             {value.cta ? ` · 结尾「${value.cta}」` : ''}
-            {value.keywords.length > 0 ? ` · ${value.keywords.length} 个关键词` : ''}
           </span>
         </span>
         <span className="text-muted-foreground">{open ? '▾' : '▸'}</span>
@@ -176,30 +144,15 @@ export function ComposeSettingsPanel({
             </div>
           </div>
 
-          {/* 调性 */}
-          <div>
-            <label className="text-[11px] font-semibold text-muted-foreground">整体调性</label>
-            <div className="mt-1 grid grid-cols-2 gap-1.5">
-              {TONE_OPTIONS.map((opt) => (
-                <button
-                  key={opt.value}
-                  type="button"
-                  onClick={() => onChange({ tone: opt.value })}
-                  className={cn(
-                    'rounded-md border px-2 py-1.5 text-left text-xs transition',
-                    value.tone === opt.value
-                      ? 'border-primary bg-primary/10 text-foreground'
-                      : 'border-border bg-background/60 text-muted-foreground hover:border-primary/60',
-                  )}
-                >
-                  <div className="font-semibold">{opt.label}</div>
-                  <div className="text-[10px] text-muted-foreground">{opt.hint}</div>
-                </button>
-              ))}
-            </div>
-          </div>
+          {/* 视频风格（原 frame.md 设计系统）—— 全片视觉统一的真正抓手 */}
+          <FrameDesignPicker
+            value={value.frame_design}
+            onChange={(patch: Partial<FrameDesignSystem>) =>
+              onChange({ frame_design: { ...value.frame_design, ...patch } })
+            }
+          />
 
-          {/* stage-23：结构迁移倾向 —— 决定 plan/copy/aigc agent 的"调性版本" */}
+          {/* 结构迁移倾向 —— 决定 plan/copy/aigc agent 的"调性版本" */}
           <div>
             <label className="text-[11px] font-semibold text-muted-foreground">
               结构迁移倾向
@@ -227,9 +180,7 @@ export function ComposeSettingsPanel({
             </div>
           </div>
 
-          {/* 口播 TTS 已迁移到四轨板的口播 / 字幕轨——开篇不再选音色，由字幕轨一键 TTS 触发。 */}
-
-          {/* CTA */}
+          {/* 结尾引导语 */}
           <div>
             <div className="flex items-center justify-between">
               <label className="text-[11px] font-semibold text-muted-foreground">结尾引导语（最多 20 字）</label>
@@ -243,51 +194,6 @@ export function ComposeSettingsPanel({
               className="mt-1 w-full rounded-md border border-border bg-background/60 px-2 py-1.5 text-sm outline-none focus:border-primary"
             />
           </div>
-
-          {/* 关键词 */}
-          <div>
-            <div className="flex items-center justify-between">
-              <label className="text-[11px] font-semibold text-muted-foreground">必须出现的关键词（最多 5 个）</label>
-              <span className="font-mono text-[10px] text-muted-foreground">{value.keywords.length}/5</span>
-            </div>
-            <div className="mt-1 flex flex-wrap items-center gap-1.5">
-              {value.keywords.map((kw) => (
-                <span
-                  key={kw}
-                  className="inline-flex items-center gap-1 rounded-full border border-primary/30 bg-primary/10 px-2 py-0.5 text-xs text-foreground"
-                >
-                  {kw}
-                  <button
-                    type="button"
-                    onClick={() => removeKeyword(kw)}
-                    className="text-muted-foreground hover:text-destructive"
-                    aria-label={`移除 ${kw}`}
-                  >
-                    ×
-                  </button>
-                </span>
-              ))}
-              {value.keywords.length < 5 && (
-                <input
-                  type="text"
-                  value={draftKw}
-                  onChange={(e) => setDraftKw(e.target.value.slice(0, 12))}
-                  onKeyDown={handleKwKey}
-                  onBlur={handleAddKeyword}
-                  placeholder="回车确认"
-                  className="w-24 rounded-md border border-border bg-background/60 px-2 py-1 text-xs outline-none focus:border-primary"
-                />
-              )}
-            </div>
-          </div>
-
-          {/* frame.md 设计系统 —— 全片视觉统一 */}
-          <FrameDesignPicker
-            value={value.frame_design}
-            onChange={(patch: Partial<FrameDesignSystem>) =>
-              onChange({ frame_design: { ...value.frame_design, ...patch } })
-            }
-          />
         </div>
       )}
     </div>

@@ -52,10 +52,14 @@ export function ClarifyPanel({
   initialBrief,
   onAdopt,
   disabled = false,
+  clarified = false,
 }: {
   initialBrief: string
   onAdopt: (finalBrief: string) => void
   disabled?: boolean
+  /** 父组件回传：用户已经至少完成过一轮澄清（onAdopt 已触发过）。
+   *  控制 banner 文案：未澄清显眼红边强提示，已澄清绿边收敛提示。 */
+  clarified?: boolean
 }) {
   const [open, setOpen] = useState(false)
   const [transcript, setTranscript] = useState<Turn[]>([])
@@ -190,22 +194,41 @@ export function ClarifyPanel({
 
   if (!open) {
     return (
-      <div className="rounded-md border border-dashed border-border bg-muted/20 p-3">
+      <div
+        className={cn(
+          'rounded-md border p-3',
+          clarified
+            ? 'border-emerald-500/40 bg-emerald-50/50 dark:bg-emerald-950/20'
+            : 'border-amber-500/60 bg-amber-50/60 dark:bg-amber-950/30',
+        )}
+      >
         <div className="flex items-center justify-between gap-3">
-          <div className="text-[11px] leading-relaxed text-muted-foreground">
-            想让 AI 把主题打磨得更精准?点「澄清意图」启动 1-3 轮追问,最后给你一段可以直接用的 brief。
+          <div className="text-[11px] leading-relaxed">
+            {clarified ? (
+              <span className="text-emerald-800 dark:text-emerald-300">
+                ✓ 已完成意图澄清。如果想换个方向，可以再做一轮。
+              </span>
+            ) : (
+              <span className="text-amber-900 dark:text-amber-200">
+                <span className="font-semibold">必做：</span>
+                生成内容轨前请先做一轮意图澄清（AI 追问 1-3 个问题，最后给你一段可直接用的 brief）。
+              </span>
+            )}
           </div>
           <button
             type="button"
             onClick={handleStart}
             disabled={disabled || initialBrief.trim().length === 0}
             className={cn(
-              'shrink-0 rounded-md bg-primary px-3 py-1.5 text-xs font-medium text-primary-foreground',
+              'shrink-0 rounded-md px-3 py-1.5 text-xs font-medium',
+              clarified
+                ? 'border border-border bg-card text-foreground hover:bg-secondary'
+                : 'bg-primary text-primary-foreground',
               (disabled || initialBrief.trim().length === 0) && 'cursor-not-allowed opacity-60',
             )}
             title={initialBrief.trim().length === 0 ? '请先写一句主题' : undefined}
           >
-            澄清意图 ✨
+            {clarified ? '重新澄清 ↻' : '开始澄清 ✨'}
           </button>
         </div>
       </div>

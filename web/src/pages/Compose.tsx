@@ -211,6 +211,11 @@ export default function ComposePage() {
   // ?tab=migrate (老链接) → 进 step 2 自动弹出结构对比放大模态；常驻 240px section 始终渲染
   const [structureZoomOpen, setStructureZoomOpen] = useState(() => searchParams.get('tab') === 'migrate')
   const [briefTouched, setBriefTouched] = useState(false)
+  /** PR-F：强制至少一轮意图澄清。
+   *  ClarifyPanel.onAdopt 被触发（无论 N 轮追问还是「跳过追问 1 键定稿」走的也是 handleAdopt）
+   *  就置 true，「生成内容轨」按钮才解禁。state 仅活在当前会话内，刷页面会重置——
+   *  这是有意的：换个 brief 重新跑应该重新走一次澄清。 */
+  const [clarifiedOnce, setClarifiedOnce] = useState(false)
   // 「下一步」三阶段：补缺口 → 生成包装 → 跳渲染
   const [finalizing, setFinalizing] = useState<
     'idle' | 'filling-gaps' | 'packaging' | 'done'
@@ -1276,8 +1281,10 @@ export default function ComposePage() {
               onAdopt={(t) => {
                 setBrief(t)
                 setBriefTouched(false)
+                setClarifiedOnce(true)
               }}
               disabled={analyzing}
+              clarified={clarifiedOnce}
             />
             <ComposeSettingsPanel value={settings} onChange={setSettings} />
           </section>
@@ -1329,14 +1336,26 @@ export default function ComposePage() {
               const built = await runAnalyze()
               if (built) setPlanJustGenerated(true)
             }}
-            disabled={analyzing || brief.trim().length === 0}
-            title={brief.trim().length === 0 ? '请先输入主题/卖点' : undefined}
+            disabled={analyzing || brief.trim().length === 0 || !clarifiedOnce}
+            title={
+              brief.trim().length === 0
+                ? '请先输入主题/卖点'
+                : !clarifiedOnce
+                  ? '请先在上方完成一轮「意图澄清」（点澄清面板的开始澄清按钮）'
+                  : undefined
+            }
             className={cn(
               'flex-1 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground transition-colors',
-              (analyzing || brief.trim().length === 0) && 'cursor-not-allowed opacity-60',
+              (analyzing || brief.trim().length === 0 || !clarifiedOnce) && 'cursor-not-allowed opacity-60',
             )}
           >
-            {analyzing ? '生成内容轨中…' : plan ? '重新生成内容轨' : '生成内容轨'}
+            {analyzing
+              ? '生成内容轨中…'
+              : !clarifiedOnce
+                ? '请先完成意图澄清'
+                : plan
+                  ? '重新生成内容轨'
+                  : '生成内容轨'}
           </button>
           {plan && !analyzing && (
             <button
