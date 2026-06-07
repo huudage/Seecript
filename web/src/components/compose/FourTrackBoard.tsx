@@ -97,6 +97,12 @@ interface Props {
    * - 'full'（默认）：五轨全展开（内容 / 字幕 / 口播 / 包装 / BGM）。
    */
   phase?: 'content-only' | 'full'
+  /**
+   * 内容轨渲染粒度：
+   * - 'shots'（默认）：每个分镜一个独立块（stage-24 行为，step3 实时预览用）。
+   * - 'sections'：每个 AdaptedSection 聚合成一个块（step2 补全场景用，方便以片段为单位选段补缺口）。
+   */
+  contentTrackMode?: 'shots' | 'sections'
   /** Remotion Player 当前秒；驱动轨道上的垂直播放头。 */
   playheadSeconds?: number
   /** 标尺 / 空白区域 / scene block 点击时回调（秒）→ Player seek。 */
@@ -118,24 +124,29 @@ interface Props {
    * 字卡段不依赖 fill（Scene.text_card_spec 已携带规格直接 CSS 复刻）。
    */
   fills?: FillResult[]
-  /**
-   * 内容轨拖拽重排回调——按拖动后的 section_id 顺序给父级。
-   * 字幕轨/口播轨跟随，父级不用单独处理。
-   */
-  onReorderSections?: (sectionIdsInNewOrder: string[]) => void | Promise<void>
   /** 包装轨某 item 拖动到新 start 秒——父级落 plan。 */
   onMovePackagingItem?: (itemId: string, newStartSeconds: number) => void | Promise<void>
   /** 打开"包装方案"侧抽屉——配合 actions 区"打开方案 ⤢"按钮。 */
   onOpenPackagingDrawer?: () => void
 }
 
-const STATUS_COLOR: Record<GapStatus, string> = {
-  ok: 'border-emerald-500/60 ring-emerald-500/40',
-  warn: 'border-amber-500/60 ring-amber-500/40',
-  miss: 'border-border ring-0',
-}
-
 const STATUS_GLYPH: Record<GapStatus, string> = { ok: '✓', warn: '!', miss: '×' }
+
+/**
+ * R3 后段色统一中性，无法区分相邻片段；这里按 AdaptedSection.section_id 顺序循环
+ * 分配一组高饱和外边框色，让"哪几镜属于同一段"在内容轨上一眼可见。仅做视觉分组，
+ * 与缺口状态正交——状态信息已由左侧红条/右上角徽章承担。
+ */
+const SECTION_BORDER_PALETTE = [
+  'border-rose-400',
+  'border-amber-400',
+  'border-emerald-400',
+  'border-sky-400',
+  'border-violet-400',
+  'border-fuchsia-400',
+  'border-orange-400',
+  'border-teal-400',
+]
 
 const PACKAGING_KIND_LABEL: Record<PackagingItem['kind'], string> = {
   subtitle: '字幕',
@@ -278,12 +289,12 @@ export function FourTrackBoard({
   busy = false,
   readOnly = false,
   phase = 'full',
+  contentTrackMode = 'shots',
   playheadSeconds = 0,
   onSeek,
   referenceManifests,
   materials,
   fills,
-  onReorderSections,
   onMovePackagingItem,
   onOpenPackagingDrawer,
 }: Props) {
@@ -328,6 +339,15 @@ export function FourTrackBoard({
     return m
   }, [adapted])
 
+  // section_id → 外边框色（按段顺序循环）；让相邻片段在轨道上一眼区分
+  const sectionBorderById = useMemo(() => {
+    const m = new Map<string, string>()
+    adapted.forEach((sec, i) => {
+      m.set(sec.section_id, SECTION_BORDER_PALETTE[i % SECTION_BORDER_PALETTE.length])
+    })
+    return m
+  }, [adapted])
+
   // 包装轨按 kind 分桶：subtitle 由 subtitle_enabled + 字幕轨直接画，包装轨只展示其它（标题/转场/封面/贴纸）
   const subtitleItems = useMemo(
     () => packaging.filter((it) => it.kind === 'subtitle'),
@@ -362,6 +382,36 @@ export function FourTrackBoard({
     }
     return result
   }, [filledGapIds, gaps, scenes, sectionById])
+
+  // 内容轨按片段聚合：step2 用 contentTrackMode='sections' 时,把每个 AdaptedSection 的
+  // 多个分镜 Scene 合并成一个块,默认以片段为单位展示;补全/选段以 section 为单位更直观。
+  // shots 模式仍按 Scene 逐一渲染（step3 实时预览需要看到每镜的真实时长与转场）。
+  const sectionBlocks = useMemo(() => {
+    type Block = { section: AdaptedSection; firstScene: Scene; scenesInSec: Scene[]; start: number; end: number }
+    if (contentTrackMode !== 'sections') return [] as Block[]
+    const blocks: Block[] = []
+    for (const sec of adapted) {
+      const inSec: Scene[] = []
+      for (const sc of scenes) {
+        const m = /sc-(\d+)/.exec(sc.scene_id)
+        if (m && Number(m[1]) === sec.order) inSec.push(sc)
+      }
+      if (inSec.length === 0) continue
+      const start = Math.min(...inSec.map((s) => s.start))
+      const end = Math.max(...inSec.map((s) => s.start + s.duration))
+      blocks.push({ section: sec, firstScene: inSec[0], scenesInSec: inSec, start, end })
+    }
+    return blocks
+  }, [adapted, scenes, contentTrackMode])
+
+  // section 块的选中态：当前选中的 scene 属于该 section 时整段高亮
+  const selectedSectionId = useMemo(() => {
+    if (contentTrackMode !== 'sections' || !selectedSceneId) return null
+    const m = /sc-(\d+)/.exec(selectedSceneId)
+    if (!m) return null
+    const sec = adapted.find((s) => s.order === Number(m[1]))
+    return sec?.section_id ?? null
+  }, [adapted, contentTrackMode, selectedSceneId])
 
   /* ==================== BGM anchor 拖动 ==================== */
 
@@ -401,51 +451,6 @@ export function FourTrackBoard({
       window.addEventListener('mouseup', onUp)
     },
     [bgm?.track_url, busy, computeAnchorFromClientX, onBgmAnchorChange],
-  )
-
-  /* ==================== 内容轨拖拽重排（HTML5 drag）==================== */
-  // 浮在内容轨上的"拖拽中段落"高亮——把 section_id 暂存到组件 state
-  const [dragSectionId, setDragSectionId] = useState<string | null>(null)
-
-  const handleSceneDragStart = useCallback(
-    (sectionId: string | null) => (e: React.DragEvent) => {
-      if (!onReorderSections || !sectionId || readOnly || busy) return
-      e.dataTransfer.setData('application/x-section-id', sectionId)
-      e.dataTransfer.effectAllowed = 'move'
-      setDragSectionId(sectionId)
-    },
-    [onReorderSections, readOnly, busy],
-  )
-
-  const handleSceneDragOver = useCallback(
-    (e: React.DragEvent) => {
-      if (!onReorderSections) return
-      // dataTransfer.types 在 dragover 期间可读出 key 但取不到值；这里只校验存在
-      if (e.dataTransfer.types.includes('application/x-section-id')) {
-        e.preventDefault()
-        e.dataTransfer.dropEffect = 'move'
-      }
-    },
-    [onReorderSections],
-  )
-
-  const handleSceneDrop = useCallback(
-    (targetSectionId: string | null) => (e: React.DragEvent) => {
-      setDragSectionId(null)
-      if (!onReorderSections || !targetSectionId) return
-      const fromId = e.dataTransfer.getData('application/x-section-id')
-      if (!fromId || fromId === targetSectionId) return
-      e.preventDefault()
-      const ids = adapted.map((s) => s.section_id)
-      const fromIdx = ids.indexOf(fromId)
-      const toIdx = ids.indexOf(targetSectionId)
-      if (fromIdx < 0 || toIdx < 0) return
-      // 简洁语义：单次拖动 = 两段直接交换（避免"插入到后面"的歧义）
-      const next = ids.slice()
-      ;[next[fromIdx], next[toIdx]] = [next[toIdx], next[fromIdx]]
-      void onReorderSections(next)
-    },
-    [adapted, onReorderSections],
   )
 
   /* ==================== 包装轨拖动平移（HTML5 drag）==================== */
@@ -633,9 +638,135 @@ export function FourTrackBoard({
         )
       })}
 
-      {/* ===================== 内容轨（迁移后的方案轨,放在样例轨下方便对照） ===================== */}
-      <TrackRow label="内容轨" hint={`${scenes.length} 段`} thick>
-        {scenes.map((scene) => {
+      {/* ===================== 内容轨（迁移后的方案轨,放在样例轨下方便对照） =====================
+          contentTrackMode='sections'（step2 补全场景）：以 AdaptedSection 为最小块，
+          每块汇总该段所有分镜的起止 + 缩略图（取首镜），方便用户以片段为单位查看缺口；
+          点击块仍走 onSelectScene(firstScene, gap, section)，复用 step2 现有 Fill 面板逻辑。
+          contentTrackMode='shots'（step3 默认）：保留 stage-24 的逐镜渲染，看转场看时长更精准。 */}
+      <TrackRow
+        label="内容轨"
+        hint={
+          contentTrackMode === 'sections'
+            ? `${sectionBlocks.length} 段 · ${scenes.length} 镜`
+            : `${scenes.length} 段`
+        }
+        thick
+      >
+        {contentTrackMode === 'sections' ? sectionBlocks.map((block) => {
+          const { section, firstScene, scenesInSec, start, end } = block
+          const left = pctOf(start, total)
+          const width = pctOf(end - start, total)
+          // 取该段任意一个 gap：优先未补 / 非 ok 的；与 shots 路径保持选择口径一致
+          let gap: Gap | null = null
+          for (const sc of scenesInSec) {
+            const g = sceneToGap.get(sc.scene_id) ?? null
+            if (g && !filledGapIds.has(g.gap_id) && g.status !== 'ok') {
+              gap = g
+              break
+            }
+            if (g && !gap) gap = g
+          }
+          const status: GapStatus | null = gap?.status ?? null
+          const filled = gap && filledGapIds.has(gap.gap_id)
+          const effectiveStatus: GapStatus = filled ? 'ok' : (status ?? 'ok')
+          const selected = section.section_id === selectedSectionId
+
+          // 整段缩略图：跟 shots 模式相同的优先级，但只看首镜（代表画面）。
+          const fillForSection = fillBySectionId.get(section.section_id) ?? null
+          let thumbUrl: string | null = null
+          if (fillForSection?.action === 'aigc' && fillForSection.cover_url) {
+            thumbUrl = fillForSection.cover_url
+          } else if (fillForSection?.action === 'aigc_image' && fillForSection.aigc_image_url) {
+            thumbUrl = fillForSection.aigc_image_url
+          } else if (firstScene.source === 'aigc_t2v') {
+            thumbUrl = fillForSection?.cover_url ?? null
+          } else if (firstScene.source === 'aigc_image') {
+            thumbUrl = firstScene.aigc_image_url ?? fillForSection?.aigc_image_url ?? null
+          } else if (firstScene.source === 'user_material') {
+            const mat = materialById.get(firstScene.source_ref)
+            thumbUrl = mat?.thumbnail_url ?? null
+          }
+          const textCardSpec =
+            firstScene.text_card_spec ?? fillForSection?.text_card_spec ?? null
+
+          return (
+            <button
+              key={section.section_id}
+              onClick={() => onSelectScene(firstScene, gap, section)}
+              className={cn(
+                'absolute top-1 bottom-1 overflow-hidden rounded-md border-2 text-left text-[10px] text-white shadow-sm transition-all',
+                getSectionMeta(section.role).bg,
+                sectionBorderById.get(section.section_id) ?? 'border-border',
+                selected
+                  ? 'z-10 scale-[1.02] ring-4 ring-white ring-offset-2 ring-offset-card shadow-lg brightness-110'
+                  : 'hover:brightness-110',
+              )}
+              style={{ left: `${left}%`, width: `calc(${width}% - 2px)` }}
+              title={`${getSectionMeta(section.role).label} · ${section.theme}\n${section.content_description}\n（含 ${scenesInSec.length} 镜，点击在 Fill 面板里展开 / 编辑每镜）`}
+            >
+              <div className="absolute inset-0">
+                <SceneThumb scene={firstScene} thumbnailUrl={thumbUrl} textCardSpec={textCardSpec} />
+                <div className="pointer-events-none absolute inset-x-0 top-0 h-4 bg-gradient-to-b from-black/55 to-transparent" />
+                <div className="pointer-events-none absolute inset-x-0 bottom-0 h-6 bg-gradient-to-t from-black/65 to-transparent" />
+                {effectiveStatus === 'miss' && (
+                  <div
+                    className="pointer-events-none absolute inset-y-0 left-0 w-1 bg-rose-500"
+                    title="该段尚未补齐素材"
+                  />
+                )}
+                {/* 多镜段：右上角悬挂分镜竖线刻度，让用户直观感觉到「这段被切成几镜」 */}
+                {scenesInSec.length > 1 && (
+                  <div className="pointer-events-none absolute inset-0">
+                    {scenesInSec.slice(1).map((sc) => {
+                      const innerLeft = ((sc.start - start) / Math.max(0.001, end - start)) * 100
+                      return (
+                        <div
+                          key={`tick-${sc.scene_id}`}
+                          className="absolute inset-y-0 w-px bg-white/40"
+                          style={{ left: `${innerLeft}%` }}
+                        />
+                      )
+                    })}
+                  </div>
+                )}
+              </div>
+              <div className="relative z-[1] flex h-full flex-col justify-between p-1">
+                <div className="flex items-center justify-between gap-1">
+                  <span className="rounded bg-black/40 px-1 font-mono text-[9px] text-white">
+                    {getSectionMeta(section.role).short}
+                  </span>
+                  <div className="flex items-center gap-1">
+                    {scenesInSec.length > 1 && (
+                      <span
+                        className="inline-flex h-3 items-center justify-center rounded-full bg-violet-300/95 px-1 font-mono text-[9px] font-bold text-violet-900"
+                        title={`本段拆为 ${scenesInSec.length} 个分镜（点击在 Fill 面板里逐镜调）`}
+                      >
+                        {scenesInSec.length}镜
+                      </span>
+                    )}
+                    {gap && (
+                      <span
+                        className={cn(
+                          'inline-flex h-3 min-w-3 items-center justify-center rounded-full px-1 text-[9px] font-bold',
+                          effectiveStatus === 'ok'
+                            ? 'bg-emerald-300 text-emerald-900'
+                            : effectiveStatus === 'warn'
+                              ? 'bg-amber-300 text-amber-900'
+                              : 'bg-rose-300 text-rose-900',
+                        )}
+                      >
+                        {STATUS_GLYPH[effectiveStatus]}
+                      </span>
+                    )}
+                  </div>
+                </div>
+                <div className="truncate rounded bg-black/40 px-1 text-[10px] font-semibold leading-tight text-white">
+                  {section.theme || getSectionMeta(section.role).label}
+                </div>
+              </div>
+            </button>
+          )
+        }) : scenes.map((scene) => {
           const left = pctOf(scene.start, total)
           const width = pctOf(scene.duration, total)
           // 用 source_ref ID 找 section 推断：scene.scene_id 形如 sc-<order>，匹配 AdaptedSection.order
@@ -681,20 +812,13 @@ export function FourTrackBoard({
             <button
               key={scene.scene_id}
               onClick={() => onSelectScene(scene, gap, section)}
-              draggable={!!onReorderSections && !readOnly && !busy && !!section}
-              onDragStart={handleSceneDragStart(section?.section_id ?? null)}
-              onDragOver={handleSceneDragOver}
-              onDrop={handleSceneDrop(section?.section_id ?? null)}
-              onDragEnd={() => setDragSectionId(null)}
               className={cn(
                 'absolute top-1 bottom-1 overflow-hidden rounded-md border-2 text-left text-[10px] text-white shadow-sm transition-all',
                 getSectionMeta(scene.section).bg,
-                STATUS_COLOR[effectiveStatus],
+                section ? sectionBorderById.get(section.section_id) ?? 'border-border' : 'border-border',
                 selected
                   ? 'z-10 scale-[1.02] ring-4 ring-white ring-offset-2 ring-offset-card shadow-lg brightness-110'
                   : 'hover:brightness-110',
-                dragSectionId === section?.section_id && 'opacity-50',
-                onReorderSections && !readOnly && 'cursor-grab active:cursor-grabbing',
               )}
               style={{ left: `${left}%`, width: `calc(${width}% - 2px)` }}
               title={

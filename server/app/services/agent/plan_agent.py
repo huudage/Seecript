@@ -61,9 +61,14 @@ _ADAPT_SYSTEM = (
     "**重要**：必须明确指出本段画面的『主体』（人物/物品/场景），"
     "若有多个并列主体（如『青铜器、玉器、瓷器』）须显式列出，"
     "下游会据此自动拆成多个分镜——一个主体 = 一个分镜。\n"
-    "**分镜数量硬约束（stage-23）**：每段拆出的分镜数控制在 1-3 个最佳，绝对不超过 5 个。\n"
+    "**分镜数量硬约束（stage-23 / E-PR 收敛）**：\n"
+    "- 开场段（opening / intro / hook / establish / intro_scene / title_card）"
+    "和收尾段（closing / recap / closer / resolve / wrap_up / payoff）："
+    "**默认 1 个分镜，最多 2 个**（结构骨架段镜头过多会显得拖沓、节奏松散）。\n"
+    "- 中间主体段（development / step_N / item_N / daily_N / flow / info_block 等）："
+    "1-3 个分镜最佳，绝对不超过 5 个。\n"
     "- 单一主体 / 单一动作 / 简短表达 → 1 个分镜（如『主播口播一句开场』）\n"
-    "- 2-3 个并列主体 / 一个动作的两三个机位 → 2-3 个分镜（推荐区间）\n"
+    "- 2-3 个并列主体 / 一个动作的两三个机位 → 2-3 个分镜（仅限主体段，推荐区间）\n"
     "- 多于 5 个并列项时，合并相邻同类（如『青铜器、玉器、瓷器、漆器、织物』→ 合为『文物群像 / 器物特写 / 文物细节』3 镜）\n"
     "宁可少不要多——分镜过密会让段落割裂、口播追不上，且素材生成成本翻倍\n"
     "- adaptation_note: 改编理由（≤60 字）—— 说明本段相比样例做了什么调整（保留/合并/重排/新增），"
@@ -348,10 +353,13 @@ def _parse_raw_items(raw: list, pattern: str = "dramatic") -> list[dict]:
         dur = max(_MIN_SEC, min(_MAX_SEC, dur))
 
         # stage-24：解析 shots[]（LLM 没给时下游 plan.py 会兜底 1 镜）
+        # E-PR 收敛：开场/收尾段最多 2 镜，主体段最多 5 镜
+        is_edge = role_is_opening(role, pattern) or role_is_closing(role, pattern)
+        shot_cap = 2 if is_edge else 5
         shots_raw = item.get("shots") or []
         shots_clean: list[dict] = []
         if isinstance(shots_raw, list):
-            for sh in shots_raw[:5]:  # 硬上限 5 个
+            for sh in shots_raw[:shot_cap]:
                 if not isinstance(sh, dict):
                     continue
                 visual = str(sh.get("visual", "") or "").strip()[:200]

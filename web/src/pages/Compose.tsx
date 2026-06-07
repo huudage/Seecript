@@ -916,31 +916,6 @@ export default function ComposePage() {
     [plan, setPlanAndPush],
   )
 
-  // 三轨拖拽落地：复用 /edit/compose 的 confirmed_ops 回放，跳 LLM、走同一 trace 沉淀
-  const handleReorderSections = useCallback(
-    async (sectionIdsInNewOrder: string[]) => {
-      if (!plan) return
-      setTrackBusy(true)
-      setError(null)
-      try {
-        const body = {
-          plan_id: plan.plan_id,
-          step: 'step2' as const,
-          instruction: `拖拽重排段落 → ${sectionIdsInNewOrder.join(' / ')}`,
-          apply: true,
-          confirmed_ops: [{ op: 'reorder_sections', section_ids: sectionIdsInNewOrder }],
-        }
-        const resp = await api.post<{ plan?: Plan }>('/edit/compose', body)
-        if (resp.plan) setPlanAndPush(resp.plan)
-      } catch (err) {
-        setError(err instanceof Error ? err.message : '段落重排失败')
-      } finally {
-        setTrackBusy(false)
-      }
-    },
-    [plan, setPlanAndPush],
-  )
-
   const handleMovePackagingItem = useCallback(
     async (itemId: string, newStartSeconds: number) => {
       if (!plan) return
@@ -1532,8 +1507,8 @@ export default function ComposePage() {
               onChangeTtsVoice={handleChangeTtsVoice}
               busy={trackBusy}
               phase="content-only"
+              contentTrackMode="sections"
               playheadSeconds={0}
-              onReorderSections={handleReorderSections}
               onMovePackagingItem={handleMovePackagingItem}
               onOpenPackagingDrawer={() => setPackagingDrawerOpen(true)}
             />
@@ -1836,7 +1811,6 @@ export default function ComposePage() {
                 phase={pendingGapsCount === 0 ? 'full' : 'content-only'}
                 playheadSeconds={playheadSeconds}
                 onSeek={seekPlayer}
-                onReorderSections={handleReorderSections}
                 onMovePackagingItem={handleMovePackagingItem}
                 onOpenPackagingDrawer={() => setPackagingDrawerOpen(true)}
               />
