@@ -164,6 +164,61 @@ function ScenePanel({
 
       {err && <p className="text-[10px] text-destructive">{err}</p>}
 
+      {/* stage-24：分镜清单。section.shots 非空时显示 LLM 拆分的分镜，
+          帮助创作者理解「这一段会被拆成 N 段渲染」的事实；只读，进一步编辑通过 ⌘K。 */}
+      {section?.shots && section.shots.length > 0 && (
+        <div className="rounded-md border border-violet-500/30 bg-violet-500/5 px-2 py-1.5">
+          <div className="mb-1 flex items-center justify-between">
+            <span className="text-[10px] font-semibold text-violet-400">
+              分镜清单 · 本段拆为 {section.shots.length} 镜
+            </span>
+            <span className="font-mono text-[9px] text-muted-foreground">
+              共 {section.shots.reduce((a, sh) => a + sh.duration_seconds, 0).toFixed(1)}s
+            </span>
+          </div>
+          <ul className="space-y-1">
+            {section.shots.map((sh) => (
+              <li
+                key={sh.order}
+                className="flex items-start gap-2 rounded bg-background/40 px-1.5 py-1 text-[10px]"
+              >
+                <span className="mt-0.5 inline-flex h-3.5 w-5 shrink-0 items-center justify-center rounded bg-violet-500/30 font-mono text-[9px] font-bold text-violet-100">
+                  #{sh.order + 1}
+                </span>
+                <div className="flex-1 space-y-0.5">
+                  <div className="flex items-center gap-1.5">
+                    <span className="font-semibold text-foreground">{sh.subject || '（无主体）'}</span>
+                    <span className="font-mono text-[9px] text-muted-foreground">
+                      {sh.duration_seconds.toFixed(1)}s
+                    </span>
+                    {sh.matched_material_id && (
+                      <span className="rounded bg-emerald-400/20 px-1 text-[9px] text-emerald-300" title={`已匹配素材 ${sh.matched_material_id} #${sh.matched_material_shot_index}`}>
+                        ✓ 匹配素材
+                      </span>
+                    )}
+                    {sh.source_hint && (
+                      <span className="rounded bg-secondary/60 px-1 font-mono text-[9px] text-muted-foreground">
+                        {sh.source_hint}
+                      </span>
+                    )}
+                  </div>
+                  {sh.visual && (
+                    <div className="text-muted-foreground">画面：{sh.visual}</div>
+                  )}
+                  {sh.narration && (
+                    <div className="text-muted-foreground">口播：{sh.narration}</div>
+                  )}
+                </div>
+              </li>
+            ))}
+          </ul>
+          <p className="mt-1 text-[9px] text-muted-foreground">
+            想改具体某镜的画面/口播/时长？按 ⌘K 告诉对话编辑小助手「
+            <code className="rounded bg-secondary/60 px-1">{section.section_id}</code>第 N 镜」。
+          </p>
+        </div>
+      )}
+
       <div className="flex items-center gap-2">
         <button
           onClick={() => void handleSave()}

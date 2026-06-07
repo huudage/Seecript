@@ -726,7 +726,17 @@ export function FourTrackBoard({
                   <span className="rounded bg-black/40 px-1 font-mono text-[9px] text-white">
                     {getSectionMeta(scene.section).short}
                   </span>
-                  {gap && (
+                  <div className="flex items-center gap-1">
+                    {/* stage-24 分镜数徽章：当本段被拆为多个分镜时显示 N 镜 */}
+                    {section?.shots && section.shots.length > 1 && (
+                      <span
+                        className="inline-flex h-3 items-center justify-center rounded-full bg-violet-300/95 px-1 font-mono text-[9px] font-bold text-violet-900"
+                        title={`本段拆为 ${section.shots.length} 个分镜：${section.shots.map((sh) => sh.subject || `#${sh.order + 1}`).join(' / ')}`}
+                      >
+                        {section.shots.length}镜
+                      </span>
+                    )}
+                    {gap && (
                     <span
                       className={cn(
                         'inline-flex h-3 min-w-3 items-center justify-center rounded-full px-1 text-[9px] font-bold',
@@ -740,6 +750,7 @@ export function FourTrackBoard({
                       {STATUS_GLYPH[effectiveStatus]}
                     </span>
                   )}
+                  </div>
                 </div>
                 <div className="truncate rounded bg-black/40 px-1 text-[10px] font-semibold leading-tight text-white">
                   {section?.theme || getSectionMeta(scene.section).label}
