@@ -533,6 +533,22 @@ export interface AigcTailFrameResponse {
  * 每段除了 role/theme，还携带 `content_description`（30-300 字内容说明），
  * 告诉创作者"本段画面/口播该呈现什么"——前端 AdaptedSectionList 直接展示。
  */
+/**
+ * stage-24：分镜计划——AdaptedSection 内的最小创作单位。
+ * 1-3 个为常态，最多 5。subject 是 chip 展示，visual 是图像/视频生成 prompt，
+ * narration 是本镜口播/字幕脚本，duration_seconds 决定 Scene 时长。
+ */
+export interface ShotPlan {
+  order: number
+  subject: string
+  visual: string
+  narration: string
+  duration_seconds: number
+  source_hint?: 'sample' | 'user_material' | 'aigc_t2v' | 'aigc_image' | 'text_card' | null
+  matched_material_id?: string | null
+  matched_material_shot_index?: number | null
+}
+
 export interface AdaptedSection {
   section_id: string
   role: SectionRole
@@ -549,11 +565,19 @@ export interface AdaptedSection {
   order: number
   /** LLM 决定的本段目标时长（秒），驱动 Scene.duration 与 AIGC 链式分段。 */
   duration_seconds: number
+  /** stage-24：本段内部分镜列表（0-5）。空列表→走单镜旧路径；非空→驱动 Scene 多镜物化。 */
+  shots: ShotPlan[]
 }
 
 export interface Scene {
   scene_id: string
   section: SectionRole
+  /** stage-24：本 Scene 属于哪个 AdaptedSection.section_id；旧 plan 为空时按 section（role）回退分组。 */
+  parent_section_id?: string | null
+  /** stage-24：本 Scene 在 section 内的分镜序号（从 0 起）；无切分时为 0。 */
+  shot_order: number
+  /** stage-24：分镜主体（人物/产品/动作短词），由 ShotPlan.subject 填，前端 chip 展示。 */
+  shot_subject: string
   source: 'sample' | 'user_material' | 'aigc_t2v' | 'aigc_image' | 'text_card'
   source_ref: string
   start: number

@@ -398,6 +398,9 @@ async def build_plan(req: PlanBuildRequest) -> Plan:
             scene = Scene(
                 scene_id=f"sc-{sec.order}",
                 section=sec.role,  # type: ignore[arg-type]
+                parent_section_id=sec.section_id,
+                shot_order=0,
+                shot_subject=sec.shots[0].subject if sec.shots else "",
                 source="aigc_image",  # type: ignore[arg-type]
                 source_ref=source_ref,
                 start=timeline_cursor,
@@ -415,34 +418,154 @@ async def build_plan(req: PlanBuildRequest) -> Plan:
             timeline_cursor += target_duration
             continue
 
-        # ---- Path B: 多镜头 aigc_image 拆分 ----
-        # 当 fill 返回多张图（aigc_image_urls 非空且 >1），把一个 AdaptedSection
-        # 等长拆成 N 个 Scene（每个一张图）。narration 留在第一张图 Scene 上以便
-        # 后续 TTS / 字幕生成；其余子 Scene 留空 narration（packaging_track 阶段
-        # 默认会跳过空 narration，所以不会产生重复字幕）。
-        if source == "aigc_image" and len(aigc_image_urls) > 1:
-            n_shots = len(aigc_image_urls)
-            per_shot = target_duration / n_shots
-            for shot_idx, shot_url in enumerate(aigc_image_urls):
-                scene = Scene(
-                    scene_id=f"sc-{sec.order}-shot{shot_idx+1}",
-                    section=sec.role,  # type: ignore[arg-type]
-                    source="aigc_image",  # type: ignore[arg-type]
-                    source_ref=f"{source_ref}-shot{shot_idx+1}",
-                    start=timeline_cursor,
-                    duration=per_shot,
-                    in_point=0.0,
-                    out_point=None,
-                    # 仅第一张图 Scene 承载 narration / voiceover；其余留空避免重复字幕。
-                    narration=(narration_override or "") if shot_idx == 0 else "",
-                    voiceover_url=voiceover_url if shot_idx == 0 else None,
-                    aigc_video_urls=[],
-                    aigc_image_url=shot_url,
-                    text_card_spec=None,
-                    animation_spec=animation_spec,
-                )
-                main_track.append(scene)
-                timeline_cursor += per_shot
+        # ---- stage-24 multi-shot 物化：sec.shots 显式拆分驱动 ----
+        # 触发条件：sec.shots 长度 ≥ 2，或老 aigc_image 多图（path B）。两者会走同一路径。
+        # 优先级：sec.shots 是结构性事实，aigc_image_urls 是已生成的素材；当 N 张图与
+        # N 个 ShotPlan 数量不一致时，按数量小的对齐（保证不漏镜也不漏图）。
+        n_shots = len(sec.shots)
+        n_imgs = len(aigc_image_urls)
+        if n_shots >= 2 or (source == "aigc_image" and n_imgs > 1):
+            # 决定本段最终拆分镜头数 N：以 sec.shots 为准（plan_agent 给的拆分意图）；
+            # 老 plan / fallback 没给 shots 时退回 aigc_image_urls 长度。
+            if n_shots >= 2:
+                N = n_shots
+                shot_durs = [float(sh.duration_seconds) for sh in sec.shots]
+            else:
+                N = n_imgs
+                shot_durs = [target_duration / N] * N
+            sum_dur = sum(shot_durs) or target_duration
+            # 归一化到段总时长（plan_agent 已做但兜底）
+            shot_durs = [d * target_duration / sum_dur for d in shot_durs]
+
+            # 选材策略：
+            # - aigc_image：循环 aigc_image_urls，images 不够时复用最后一张
+            # - user_material：所有 shot 用同一 material；in/out 由 _pick_shot_for_section
+            #   选定后按比例细分（PR-B 会改成按 shot.subject 选 MaterialShot）
+            # - text_card：每个 shot 自成 text_card，main_text=subject 或 narration 首句
+            # - aigc_t2v：把 video_urls 按比例分给各 shot（>= N 段时 1:1，少于 N 时复用）
+            for shot_idx in range(N):
+                shot = sec.shots[shot_idx] if shot_idx < n_shots else None
+                shot_dur = shot_durs[shot_idx] if shot_idx < len(shot_durs) else target_duration / N
+                shot_subject = shot.subject if shot else ""
+                shot_narration = (shot.narration if shot else "") or (narration_override or "" if shot_idx == 0 else "")
+
+                sub_id = f"sc-{sec.order}-sh-{shot_idx}"
+
+                if source == "aigc_image":
+                    pick_url = aigc_image_urls[shot_idx] if shot_idx < n_imgs else (aigc_image_urls[-1] if n_imgs else aigc_image_url)
+                    main_track.append(Scene(
+                        scene_id=sub_id,
+                        section=sec.role,  # type: ignore[arg-type]
+                        parent_section_id=sec.section_id,
+                        shot_order=shot_idx,
+                        shot_subject=shot_subject,
+                        source="aigc_image",  # type: ignore[arg-type]
+                        source_ref=f"{source_ref}-sh-{shot_idx}" if n_imgs > 1 else source_ref,
+                        start=timeline_cursor,
+                        duration=shot_dur,
+                        in_point=0.0,
+                        out_point=None,
+                        narration=shot_narration,
+                        voiceover_url=voiceover_url if shot_idx == 0 else None,
+                        aigc_video_urls=[],
+                        aigc_image_url=pick_url,
+                        text_card_spec=None,
+                        animation_spec=animation_spec,
+                    ))
+                elif source == "text_card":
+                    # 每个 shot 一张字卡：main_text 取 subject（或 narration 首句），sub_text 取 narration 余文
+                    main_t = (shot_subject or (shot_narration.split("。")[0] if shot_narration else "") or "")[:24]
+                    sub_t = (shot_narration if shot_subject else "。".join(shot_narration.split("。")[1:]))[:40]
+                    base_spec = text_card_spec
+                    if base_spec is not None:
+                        spec = base_spec.model_copy(update={
+                            "main_text": main_t or base_spec.main_text,
+                            "sub_text": sub_t or base_spec.sub_text,
+                            "duration_seconds": round(max(1.5, min(15.0, shot_dur)), 2),
+                        })
+                    else:
+                        from ..schemas import TextCardSpec  # 延迟避免循环
+                        spec = TextCardSpec(main_text=main_t, sub_text=sub_t, duration_seconds=round(max(1.5, min(15.0, shot_dur)), 2))
+                    main_track.append(Scene(
+                        scene_id=sub_id,
+                        section=sec.role,  # type: ignore[arg-type]
+                        parent_section_id=sec.section_id,
+                        shot_order=shot_idx,
+                        shot_subject=shot_subject,
+                        source="text_card",  # type: ignore[arg-type]
+                        source_ref=f"text-card-{sec.section_id}-sh-{shot_idx}",
+                        start=timeline_cursor,
+                        duration=shot_dur,
+                        in_point=0.0,
+                        out_point=None,
+                        narration=shot_narration,
+                        voiceover_url=voiceover_url if shot_idx == 0 else None,
+                        aigc_video_urls=[],
+                        aigc_image_url=None,
+                        text_card_spec=spec,
+                        animation_spec=None,
+                    ))
+                elif source == "user_material":
+                    # PR-A 兜底：所有 shot 共用同一 material；在 material.shots 内按 shot_idx 顺序分配
+                    in_pt = 0.0
+                    out_pt: float | None = shot_dur
+                    if effective_project_id:
+                        mat = material_store.get(effective_project_id, source_ref)
+                        if mat is not None and mat.shots:
+                            # PR-A 简化：取 material.shots[shot_idx % N_mat]，PR-B 引入 subject 匹配
+                            mshot = mat.shots[shot_idx % len(mat.shots)]
+                            in_pt = float(mshot.start)
+                            cut_end = min(float(mshot.end), in_pt + shot_dur)
+                            out_pt = cut_end
+                    main_track.append(Scene(
+                        scene_id=sub_id,
+                        section=sec.role,  # type: ignore[arg-type]
+                        parent_section_id=sec.section_id,
+                        shot_order=shot_idx,
+                        shot_subject=shot_subject,
+                        source="user_material",  # type: ignore[arg-type]
+                        source_ref=source_ref,
+                        start=timeline_cursor,
+                        duration=shot_dur,
+                        in_point=in_pt,
+                        out_point=out_pt,
+                        narration=shot_narration,
+                        voiceover_url=voiceover_url if shot_idx == 0 else None,
+                        aigc_video_urls=[],
+                        aigc_image_url=None,
+                        text_card_spec=None,
+                        animation_spec=None,
+                    ))
+                else:  # aigc_t2v / sample / fallback
+                    # 简化：aigc_t2v 按 shot 比例切割 video_urls；不够 N 时复用最后一段
+                    sub_video_urls: list[str] = []
+                    if source == "aigc_t2v" and aigc_urls:
+                        if len(aigc_urls) >= N:
+                            # 按比例切片：shot_idx 落入 floor(shot_idx * len/N) 那段
+                            picked = aigc_urls[min(shot_idx * len(aigc_urls) // N, len(aigc_urls) - 1)]
+                            sub_video_urls = [picked]
+                        else:
+                            sub_video_urls = [aigc_urls[min(shot_idx, len(aigc_urls) - 1)]]
+                    main_track.append(Scene(
+                        scene_id=sub_id,
+                        section=sec.role,  # type: ignore[arg-type]
+                        parent_section_id=sec.section_id,
+                        shot_order=shot_idx,
+                        shot_subject=shot_subject,
+                        source=source,  # type: ignore[arg-type]
+                        source_ref=f"{source_ref}-sh-{shot_idx}" if N > 1 else source_ref,
+                        start=timeline_cursor,
+                        duration=shot_dur,
+                        in_point=0.0,
+                        out_point=None,
+                        narration=shot_narration,
+                        voiceover_url=voiceover_url if shot_idx == 0 else None,
+                        aigc_video_urls=sub_video_urls,
+                        aigc_image_url=None,
+                        text_card_spec=None,
+                        animation_spec=None,
+                    ))
+                timeline_cursor += shot_dur
             continue
 
         in_point = 0.0
@@ -479,9 +602,15 @@ async def build_plan(req: PlanBuildRequest) -> Plan:
         # 误以为系统替他做了 LLM 文案补全。改成：narration 仅在显式 fill (action=copy) 时写入，
         # 其余段落留空，由用户在 Compose UI 主动触发文案 / 配音 / AIGC。
         narration_text = narration_override or ""
+        # PR-A：即便 sec.shots 为 0/1，也给单 Scene 写上 parent_section_id + shot_order=0，
+        # 让前端 FourTrackBoard 的"按段聚合 → 展开分镜"逻辑统一走一条路径。
+        only_shot_subject = sec.shots[0].subject if sec.shots else ""
         scene = Scene(
             scene_id=f"sc-{sec.order}",
             section=sec.role,  # type: ignore[arg-type]
+            parent_section_id=sec.section_id,
+            shot_order=0,
+            shot_subject=only_shot_subject,
             source=source,  # type: ignore[arg-type]
             source_ref=source_ref,
             start=timeline_cursor,

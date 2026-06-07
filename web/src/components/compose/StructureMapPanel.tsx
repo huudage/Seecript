@@ -142,6 +142,7 @@ function deriveAdaptedFromMainTrack(plan: Plan): AdaptedSection[] {
       source_shot_indices: [],
       order: order++,
       duration_seconds: totalDuration,
+      shots: [],
     })
   })
   return result

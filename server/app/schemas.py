@@ -1070,22 +1070,80 @@ class FillResult(BaseModel):
 # Module 5 — 方案 Plan
 # =========================================================================
 
+class ShotPlan(BaseModel):
+    """stage-24：分镜级拆解。AdaptedSection.shots 的最小单元。
+
+    plan_agent 在改编 AdaptedSection 时会顺手把 content_description 拆成 1-3 个 ShotPlan
+    （超过 5 个会被合并）。下游：
+    - plan.py 把 N 个 ShotPlan 物化成 N 个 Scene（scene_id = sc-{sec.order}-sh-{shot.order}）
+    - gap_agent / aigc_prompt_agent 按 shot 级拼提示词 → Seedance/Seedream 按 shot 各跑一次
+    - 用户素材匹配（material_shot_matcher）按 shot.subject + visual_hint 选 MaterialShot
+    - 字幕/口播按 shot.narration 切片，TTS 用 shot.duration 分配
+
+    向后兼容：plan_agent 旧输出（无 shots[]）→ AdaptedSection.shots = [] →
+    plan.py 在物化时若 shots 为空会自动生成 1 个 ShotPlan 包住整段（行为与旧版一致）。
+    """
+
+    order: int = Field(..., ge=0, description="本镜在 section 内的序号（从 0 开始）")
+    subject: str = Field(
+        default="",
+        max_length=40,
+        description="本镜画面主体（人物/物品/场景），如『主播口播』『青铜器特写』『展厅全景』",
+    )
+    visual: str = Field(
+        ...,
+        max_length=200,
+        description="画面应呈现什么：主体 + 动作 + 构图 + 镜头语言（≤80 字）",
+    )
+    narration: str = Field(
+        default="",
+        max_length=200,
+        description="本镜口播/字幕（可空——纯画面镜头允许无口播）",
+    )
+    duration_seconds: float = Field(
+        default=2.5,
+        ge=1.0,
+        le=15.0,
+        description="本镜目标时长，所有 shot 之和应等于 AdaptedSection.duration_seconds",
+    )
+    source_hint: Optional[Literal["sample", "user_material", "aigc_t2v", "aigc_image", "text_card"]] = Field(
+        default=None,
+        description="LLM 给的素材来源建议；None 时由 plan.py / gap_agent 按 fills 路由决定",
+    )
+    matched_material_id: Optional[str] = Field(
+        default=None,
+        description="匹配上的用户素材 material_id（shot_matcher 写入）",
+    )
+    matched_material_shot_index: Optional[int] = Field(
+        default=None,
+        description="匹配上的用户素材内分镜 index（MaterialShot.index）",
+    )
+
+
 class AdaptedSection(BaseModel):
     """LLM 改编后的段落结构。Plan 的"叙事单位"层，位于 Scene"剪辑单位"层之上。
 
     流程：样例 manifest.sections（真模型拆出的样例骨架）+ 用户 brief + video_goal
-    → LLM 改编 → AdaptedSection[]（含每段 content_description 内容说明）。
+    → LLM 改编 → AdaptedSection[]（含每段 content_description 内容说明 + shots[] 分镜列表）。
 
     Scene 负责"用哪个素材切片、时长多少"；AdaptedSection 负责"这一段叙事上要讲什么"。
+    stage-24：新增 shots[] 列表把段拆成 1-3 个 ShotPlan，下游补全/匹配/生成都按 shot 走。
     """
 
     section_id: str = Field(..., description="本 plan 内稳定 id，如 'sec-0'；Gap.section_id 反查")
-    role: SectionRole = Field(..., description="段落角色（4 元枚举，全视频类型通用）")
+    role: SectionRole = Field(..., description="段落角色（4 元枚举,全视频类型通用）")
     theme: str = Field(default="", max_length=20, description="紧贴用户主题的中文短标签（≤8 字）")
     content_description: str = Field(
         ...,
         max_length=300,
         description="内容说明：本段画面/口播应呈现什么；由 LLM 紧贴 brief+video_goal 生成",
+    )
+    shots: list[ShotPlan] = Field(
+        default_factory=list,
+        description=(
+            "stage-24 分镜级拆解。1-3 个最佳，最多 5 个。"
+            "为空时 plan.py 物化为 1 个 Scene 包整段（向后兼容）。"
+        ),
     )
     source_section_indices: list[int] = Field(
         default_factory=list,
@@ -1133,6 +1191,24 @@ class Scene(BaseModel):
 
     scene_id: str
     section: SectionRole = Field(..., description="本场所属段落角色（opening/development/climax/closing）")
+    parent_section_id: Optional[str] = Field(
+        default=None,
+        description=(
+            "stage-24：本 Scene 所属 AdaptedSection.section_id，如『sec-0』。"
+            "前端 FourTrackBoard 按 section 折叠展开 N 个 shot Scene 用。"
+            "向后兼容：旧 plan 没有这个字段时前端按 scene.section（role）兜底分组。"
+        ),
+    )
+    shot_order: int = Field(
+        default=0,
+        ge=0,
+        description="stage-24：本 Scene 在所属 section 内的分镜序号（从 0 开始）；不切分时恒为 0。",
+    )
+    shot_subject: str = Field(
+        default="",
+        max_length=40,
+        description="stage-24：本镜画面主体（人物/物品/场景），从 ShotPlan.subject 来；前端 chip 显示。",
+    )
     source: Literal["sample", "user_material", "aigc_t2v", "aigc_image", "text_card"]
     source_ref: str = Field(..., description="样例镜头 id / material_id / Seedance/Seedream 任务返回的 media_id / text_card 的标识")
     start: float = Field(..., description="时间线上的起点（秒）")

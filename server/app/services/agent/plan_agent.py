@@ -27,6 +27,7 @@ from ...schemas import (
     SampleManifest,
     Section,
     SectionRole,
+    ShotPlan,
     STRUCTURAL_PATTERNS,
     allowed_roles_for,
     role_is_closing,
@@ -69,10 +70,17 @@ _ADAPT_SYSTEM = (
     "以及为什么这样做更贴合创作者需求；可空字符串\n"
     "- tempo: 节奏标签（slow/medium/fast/peak/deceleration 之一，可为 null）\n"
     "- duration_seconds: 本段时长（浮点秒）。开场/收尾 3-5s，峰值 5-10s，主体 4-8s；所有段之和贴近目标总时长\n"
-    "- source_section_indices: 改编自原样例池哪些段落下标（合并后的 flat 下标）；纯新增段为 []\n\n"
+    "- source_section_indices: 改编自原样例池哪些段落下标（合并后的 flat 下标）；纯新增段为 []\n"
+    "- shots: **stage-24** 把本段按上面分镜数量约束拆成 1-3（最多 5）个分镜对象的数组。"
+    "每个分镜对象字段：subject（≤8 字主体，如『主播』『青铜器』『展厅全景』）、"
+    "visual（≤80 字画面描述：主体+动作+构图+镜头语言）、"
+    "narration（≤80 字本镜口播或字幕，纯画面镜头可空）、"
+    "duration_seconds（本镜时长，所有 shot 之和应等于本段 duration_seconds，"
+    "单镜 1-15s）。\n\n"
     "返回 JSON：{\"adapted_sections\": [{\"role\": str, \"theme\": str, "
     "\"content_description\": str, \"adaptation_note\": str, \"tempo\": str|null, "
-    "\"duration_seconds\": number, \"source_section_indices\": [int]}]}"
+    "\"duration_seconds\": number, \"source_section_indices\": [int], "
+    "\"shots\": [{\"subject\": str, \"visual\": str, \"narration\": str, \"duration_seconds\": number}]}]}"
 )
 
 
@@ -338,6 +346,33 @@ def _parse_raw_items(raw: list, pattern: str = "dramatic") -> list[dict]:
         except (TypeError, ValueError):
             dur = default_dur
         dur = max(_MIN_SEC, min(_MAX_SEC, dur))
+
+        # stage-24：解析 shots[]（LLM 没给时下游 plan.py 会兜底 1 镜）
+        shots_raw = item.get("shots") or []
+        shots_clean: list[dict] = []
+        if isinstance(shots_raw, list):
+            for sh in shots_raw[:5]:  # 硬上限 5 个
+                if not isinstance(sh, dict):
+                    continue
+                visual = str(sh.get("visual", "") or "").strip()[:200]
+                if not visual:
+                    continue
+                subject = str(sh.get("subject", "") or "").strip()[:40]
+                narration = str(sh.get("narration", "") or "").strip()[:200]
+                try:
+                    sh_dur = float(sh.get("duration_seconds") or 0)
+                except (TypeError, ValueError):
+                    sh_dur = 0.0
+                if sh_dur <= 0:
+                    sh_dur = 2.5
+                sh_dur = max(1.0, min(15.0, sh_dur))
+                shots_clean.append({
+                    "subject": subject,
+                    "visual": visual,
+                    "narration": narration,
+                    "duration_seconds": round(sh_dur, 2),
+                })
+
         out.append({
             "role": role,
             "theme": theme,
@@ -346,6 +381,7 @@ def _parse_raw_items(raw: list, pattern: str = "dramatic") -> list[dict]:
             "tempo": tempo,
             "source_section_indices": src_idx,
             "duration_seconds": dur,
+            "shots": shots_clean,
         })
     return out
 
@@ -479,6 +515,58 @@ def _enforce_hard_constraints(items: list[dict], n_src: int, pattern: str = "dra
     return items
 
 
+def _normalize_shot_durations(shots_raw: list[dict], section_total: float) -> list[ShotPlan]:
+    """把每个 ShotPlan 的 duration_seconds 归一到 section 总时长。
+
+    1. 总和与 section 总时长偏差 ≤ 10% 直接用
+    2. 否则按比例缩放，clamp 到 [1.0, 15.0]
+    3. 残差均摊到非边界镜
+    返回 list[ShotPlan]；shots_raw 为空时返回 []。
+    """
+    if not shots_raw:
+        return []
+    n = len(shots_raw)
+    cur = sum(float(s.get("duration_seconds") or 0) for s in shots_raw) or 1.0
+    if cur > 0:
+        ratio = section_total / cur
+        for s in shots_raw:
+            d = float(s.get("duration_seconds") or 2.5) * ratio
+            s["duration_seconds"] = max(1.0, min(15.0, d))
+    new_total = sum(float(s["duration_seconds"]) for s in shots_raw)
+    delta = section_total - new_total
+    if abs(delta) > 0.1:
+        adjustable = [s for s in shots_raw if 1.0 < s["duration_seconds"] < 15.0]
+        if adjustable:
+            share = delta / len(adjustable)
+            for s in adjustable:
+                s["duration_seconds"] = max(1.0, min(15.0, s["duration_seconds"] + share))
+
+    out: list[ShotPlan] = []
+    for order, s in enumerate(shots_raw):
+        out.append(ShotPlan(
+            order=order,
+            subject=s.get("subject", "") or "",
+            visual=s.get("visual", "") or "",
+            narration=s.get("narration", "") or "",
+            duration_seconds=round(float(s.get("duration_seconds") or 2.5), 2),
+        ))
+    return out
+
+
+def _auto_shots_for_section(section_total: float, content_description: str, role: str) -> list[ShotPlan]:
+    """plan_agent 没给 shots[] 时（旧 LLM/缓存）的兜底：1 镜包整段。
+
+    保持向后兼容：plan.py 物化时若 shots 为空会调本函数生成默认 1 镜。
+    """
+    return [ShotPlan(
+        order=0,
+        subject="",
+        visual=(content_description or f"本段（{role}）画面")[:200],
+        narration="",
+        duration_seconds=round(max(1.0, min(15.0, section_total)), 2),
+    )]
+
+
 def _materialize(
     items: list[dict],
     combined_sections: list[tuple[int, Section, int]],
@@ -490,6 +578,10 @@ def _materialize(
     跨样例（同一段引用了不同 manifest 的 sections）时 source_shot_indices 置空，因为
     shot 编号在不同 manifest 间会重号，无法稳定映射到 thumbnail。
     纯新增段（source_section_indices=[]）借用相邻段的 shots，让前端缩略图能展示。
+
+    stage-24：把 LLM 给的 shots[] 归一化到 section 总时长后写入 AdaptedSection.shots。
+    LLM 没给 shots[] 时不在这里兜底——交给 plan.py 在物化 Scene 时按需处理（也会在
+    decompose 端复制 ShotPlan）。
     """
     if not items:
         return []
@@ -519,17 +611,20 @@ def _materialize(
             shot_indices = [last_shots[-1]]
 
         role = it["role"]
+        section_dur = float(it.get("duration_seconds") or _default_duration_for(role, pattern))
+        shots_list = _normalize_shot_durations(it.get("shots", []) or [], section_dur)
         out.append(AdaptedSection(
             section_id=f"sec-{order}",
             role=role,
             theme=it.get("theme", "") or _default_theme(role, pattern),
             content_description=it["content_description"],
+            shots=shots_list,
             adaptation_note=it.get("adaptation_note", "") or "",
             tempo=it.get("tempo"),
             source_section_indices=src_idx,
             source_shot_indices=shot_indices,
             order=order,
-            duration_seconds=float(it.get("duration_seconds") or _default_duration_for(role, pattern)),
+            duration_seconds=section_dur,
         ))
         if shot_indices:
             last_shots = shot_indices
@@ -550,6 +645,7 @@ def _fallback_adaptation(sample_sections, target_total: float = 30.0, pattern: s
         round(max(_MIN_SEC, min(_MAX_SEC, d * scale)), 1) for d in raw_durs
     ]
     for order, sec in enumerate(sample_sections):
+        sec_dur = durs[order]
         out.append(AdaptedSection(
             section_id=f"sec-{order}",
             role=sec.role,
@@ -558,12 +654,13 @@ def _fallback_adaptation(sample_sections, target_total: float = 30.0, pattern: s
                 f"[fallback] 沿用样例 {sec.role} 段结构，"
                 f"建议按本段镜头节奏组织画面与口播。"
             ),
+            shots=_auto_shots_for_section(sec_dur, "", sec.role),
             adaptation_note="",
             tempo=None,
             source_section_indices=[order],
             source_shot_indices=list(sec.shot_indices or []),
             order=order,
-            duration_seconds=durs[order],
+            duration_seconds=sec_dur,
         ))
     return out
 
