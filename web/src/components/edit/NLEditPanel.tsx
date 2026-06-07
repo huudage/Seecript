@@ -34,8 +34,8 @@ const TRACK_META: Record<EditTrack, { label: string; placeholder: string; hint: 
   main: {
     label: '镜头',
     placeholder:
-      '例：把第 1 段缩短到 3 秒；第 2 段换成另一个素材；第 3 段加个溶解转场',
-    hint: '只改镜头本身：时长 / 用的素材 / 转场。不动字幕、口播、背景音乐。',
+      '例：把 sec-1 第 2 镜改到 3 秒；sec-2 第 1 镜换成另一段素材；sec-0 第 3 镜加一个溶解转场',
+    hint: '只改镜头本身：单镜时长 / 单镜素材 / 单镜转场。stage-24 起每个分镜独立成 scene，可单独调。',
   },
   packaging: {
     label: '包装',
@@ -44,8 +44,8 @@ const TRACK_META: Record<EditTrack, { label: string; placeholder: string; hint: 
   },
   voice: {
     label: '字幕 / 口播',
-    placeholder: '例：第 1 段字幕改得更口语化一点；第 2 段改成「现在下单立减 99」',
-    hint: '只改字幕文案。字幕轨立刻刷新；如果开启了口播，配音也会自动重合成。',
+    placeholder: '例：sec-1 第 2 镜口播改得更口语化；sec-2 第 1 镜字幕改成「现在下单立减 99」',
+    hint: '只改单个分镜的字幕文案。字幕轨立刻刷新；如果开启了口播，对应分镜的配音也会自动重合成。',
   },
 }
 

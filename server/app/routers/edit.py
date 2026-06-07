@@ -271,14 +271,22 @@ _TRACK_CONFIG: dict[str, tuple[list[dict], str]] = {
 def _build_user_prompt(plan: Plan, instruction: str, marks: list, track: str) -> str:
     parts: list[str] = []
     if track in ("main", "voice"):
-        parts.append("当前 Plan main_track：")
+        parts.append("当前 Plan main_track（每行 = 一个分镜的 Scene；stage-24 起每镜独立成 Scene）：")
         for sc in plan.main_track:
             tr = sc.transition_in
             tr_s = f" trans={tr.style}/{tr.duration:.2f}s" if tr else ""
+            # stage-24：surface parent_section_id + shot_order，让 LLM 能把『sec-1 第 2 镜』映射到 scene_id
+            psid = getattr(sc, "parent_section_id", None) or "-"
+            sord = getattr(sc, "shot_order", 0) or 0
+            ssub = (getattr(sc, "shot_subject", "") or "").strip()
+            shot_tag = f" parent={psid} shot={sord}({ssub[:18]!r})" if psid != "-" else ""
             parts.append(
-                f"- {sc.scene_id} ({sc.section}) src={sc.source_ref} "
+                f"- {sc.scene_id} ({sc.section}){shot_tag} src={sc.source_ref} "
                 f"dur={sc.duration:.1f}s narr={sc.narration!r}{tr_s}"
             )
+        parts.append(
+            "命名映射：用户说『sec-X 第 N 镜』→ 找 parent_section_id==sec-X 且 shot==N-1 的那一行 scene_id。"
+        )
     if track == "packaging":
         parts.append("当前 packaging_track：")
         for it in plan.packaging_track:

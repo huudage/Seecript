@@ -61,9 +61,14 @@ _SYSTEM_STEP2 = (
     "update_section_duration（调某段时长，2-30 秒）、"
     "delete_section（删除某段）、"
     "reorder_sections（按 section_id 列表重排）、"
+    "update_shot_visual（改某段下第 N 个分镜的画面描述）、"
+    "update_shot_narration（改某分镜的口播/字幕，同步主轨 scene）、"
+    "update_shot_duration（改某分镜的时长 1-12 秒，自动缩放段总时长与对应 scene）、"
     "regenerate_fill（重新生成某段已有 fill，仅 rerank/copy/aigc_image；aigc 视频不允许通过对话重生成）。"
     "用户表达模糊时按惯例：『稍短=×0.85 / 更短=×0.7 / 更长=×1.25 / 长很多=×1.5』，"
     "时长统一钳制 [2, 30] 秒。"
+    "**分镜级编辑**：用户说『sec-1 第 2 镜画面改成…』『sec-2 第 1 镜口播改成…』『sec-0 第 3 镜短一点』时，"
+    "用 update_shot_visual / update_shot_narration / update_shot_duration；shot_order 从 0 起（用户说『第 1 镜』即 shot_order=0）。"
     "若用户说『换一张图 / 重新生图 sec-1』『换文案』『重新挑素材』→ regenerate_fill。"
     "若用户说『重新生成视频』『重做 AI 视频』→ **不要 tool_calls**，直接讲解："
     "『AI 视频成本高，请在 AIGC 面板手动改提示词后点重新生成。』"
@@ -236,6 +241,58 @@ _TOOL_UPDATE_COMPOSE_SETTING = {
 }
 
 
+_TOOL_UPDATE_SHOT_VISUAL = {
+    "type": "function",
+    "function": {
+        "name": "update_shot_visual",
+        "description": "改某段（section_id）下第 shot_order 个分镜的画面描述（visual，≤120 字）。",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "section_id": {"type": "string", "description": "AdaptedSection.section_id，如 sec-1"},
+                "shot_order": {"type": "integer", "description": "分镜序号（0 起，对应 ShotPlan.order）"},
+                "visual": {"type": "string", "description": "新的画面描述（≤120 字，主体+动作+构图+氛围）"},
+            },
+            "required": ["section_id", "shot_order", "visual"],
+        },
+    },
+}
+
+_TOOL_UPDATE_SHOT_NARRATION = {
+    "type": "function",
+    "function": {
+        "name": "update_shot_narration",
+        "description": "改某段下第 shot_order 个分镜的口播/字幕（narration，≤200 字）；同步更新主轨对应 scene.narration。",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "section_id": {"type": "string"},
+                "shot_order": {"type": "integer"},
+                "narration": {"type": "string"},
+            },
+            "required": ["section_id", "shot_order", "narration"],
+        },
+    },
+}
+
+_TOOL_UPDATE_SHOT_DURATION = {
+    "type": "function",
+    "function": {
+        "name": "update_shot_duration",
+        "description": "改某段下第 shot_order 个分镜的时长（秒，钳制 [1, 12]）；自动按比例缩放 section.duration_seconds 与对应 scene.duration。",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "section_id": {"type": "string"},
+                "shot_order": {"type": "integer"},
+                "duration_seconds": {"type": "number"},
+            },
+            "required": ["section_id", "shot_order", "duration_seconds"],
+        },
+    },
+}
+
+
 _TOOL_REGENERATE_FILL = {
     "type": "function",
     "function": {
@@ -270,6 +327,9 @@ _TOOLS_STEP2: list[dict] = [
     _TOOL_UPDATE_DURATION,
     _TOOL_DELETE_SECTION,
     _TOOL_REORDER_SECTIONS,
+    _TOOL_UPDATE_SHOT_VISUAL,
+    _TOOL_UPDATE_SHOT_NARRATION,
+    _TOOL_UPDATE_SHOT_DURATION,
     _TOOL_REGENERATE_FILL,
 ]
 
@@ -489,6 +549,138 @@ def _mut_reorder_sections(plan: Plan, args: dict) -> ComposeEditDiff | None:
     )
 
 
+def _find_shot(sec: AdaptedSection, shot_order: int):
+    """按 ShotPlan.order 在 section.shots 中精确匹配；不存在返回 None。"""
+    for sh in (sec.shots or []):
+        if sh.order == shot_order:
+            return sh
+    return None
+
+
+def _matching_scene(plan: Plan, sec: AdaptedSection, shot_order: int):
+    """匹配 stage-24 Scene：parent_section_id == sec.section_id 且 shot_order 相等。"""
+    for sc in plan.main_track:
+        if getattr(sc, "parent_section_id", None) == sec.section_id and getattr(sc, "shot_order", -1) == shot_order:
+            return sc
+    return None
+
+
+def _mut_update_shot_visual(plan: Plan, args: dict) -> ComposeEditDiff | None:
+    sid = args.get("section_id") or ""
+    try:
+        shot_order = int(args.get("shot_order"))
+    except (TypeError, ValueError):
+        return None
+    new_visual = (args.get("visual") or "").strip()
+    if not sid or not new_visual:
+        return None
+    sec = _find_section(plan, sid)
+    if sec is None:
+        return None
+    shot = _find_shot(sec, shot_order)
+    if shot is None:
+        return ComposeEditDiff(
+            op="update_shot_visual", target_id=f"{sid}#{shot_order}",
+            before=None, after=None,
+            summary=f"段 {sid} 没有第 {shot_order+1} 镜（共 {len(sec.shots or [])} 镜）",
+        )
+    before = shot.visual
+    shot.visual = new_visual[:120]
+    return ComposeEditDiff(
+        op="update_shot_visual",
+        target_id=f"{sid}#{shot_order}",
+        before=before,
+        after=shot.visual,
+        summary=f"段 {sid} 第 {shot_order+1} 镜画面改写（{len(before)}→{len(shot.visual)} 字）",
+    )
+
+
+def _mut_update_shot_narration(plan: Plan, args: dict) -> ComposeEditDiff | None:
+    sid = args.get("section_id") or ""
+    try:
+        shot_order = int(args.get("shot_order"))
+    except (TypeError, ValueError):
+        return None
+    new_narration = (args.get("narration") or "").strip()
+    if not sid:
+        return None
+    sec = _find_section(plan, sid)
+    if sec is None:
+        return None
+    shot = _find_shot(sec, shot_order)
+    if shot is None:
+        return ComposeEditDiff(
+            op="update_shot_narration", target_id=f"{sid}#{shot_order}",
+            before=None, after=None,
+            summary=f"段 {sid} 没有第 {shot_order+1} 镜（共 {len(sec.shots or [])} 镜）",
+        )
+    before = shot.narration
+    shot.narration = new_narration[:200]
+    scene_synced = False
+    sc = _matching_scene(plan, sec, shot_order)
+    if sc is not None:
+        sc.narration = shot.narration
+        scene_synced = True
+    base = f"段 {sid} 第 {shot_order+1} 镜口播改写（{len(before)}→{len(shot.narration)} 字）"
+    if scene_synced:
+        base += "；已同步主轨 scene"
+    return ComposeEditDiff(
+        op="update_shot_narration",
+        target_id=f"{sid}#{shot_order}",
+        before=before,
+        after=shot.narration,
+        summary=base,
+    )
+
+
+def _mut_update_shot_duration(plan: Plan, args: dict) -> ComposeEditDiff | None:
+    sid = args.get("section_id") or ""
+    try:
+        shot_order = int(args.get("shot_order"))
+        new_dur = float(args.get("duration_seconds", 0) or 0)
+    except (TypeError, ValueError):
+        return None
+    if not sid or new_dur <= 0:
+        return None
+    sec = _find_section(plan, sid)
+    if sec is None:
+        return None
+    shot = _find_shot(sec, shot_order)
+    if shot is None:
+        return ComposeEditDiff(
+            op="update_shot_duration", target_id=f"{sid}#{shot_order}",
+            before=None, after=None,
+            summary=f"段 {sid} 没有第 {shot_order+1} 镜（共 {len(sec.shots or [])} 镜）",
+        )
+    new_dur = max(1.0, min(12.0, new_dur))
+    before = shot.duration_seconds
+    if abs(new_dur - before) < 0.05:
+        return None
+    delta = new_dur - before
+    shot.duration_seconds = new_dur
+    sec_before = sec.duration_seconds
+    sec.duration_seconds = max(2.0, min(120.0, sec_before + delta))
+    scene_synced = False
+    sc = _matching_scene(plan, sec, shot_order)
+    if sc is not None:
+        sc.duration = max(0.5, sc.duration + delta)
+        scene_synced = True
+    info = _rebuild_timeline(plan)
+    base = (
+        f"段 {sid} 第 {shot_order+1} 镜时长 {before:.1f}s → {new_dur:.1f}s"
+        f"（段总时长 {sec_before:.1f}s → {sec.duration_seconds:.1f}s；总时长 {info['total']:.1f}s）"
+    )
+    if scene_synced:
+        base += "；主轨 scene 已同步"
+    return ComposeEditDiff(
+        op="update_shot_duration",
+        target_id=f"{sid}#{shot_order}",
+        before=round(before, 2),
+        after=round(new_dur, 2),
+        summary=_summary_with_rebuild(base, info),
+    )
+
+
 def _mut_update_text_card(plan: Plan, args: dict) -> ComposeEditDiff | None:
     sid = args.get("scene_id") or ""
     if not sid:
@@ -666,6 +858,9 @@ _MUTATORS: dict[str, Callable[[Plan, dict], ComposeEditDiff | None]] = {
     "update_section_duration": _mut_update_duration,
     "delete_section": _mut_delete_section,
     "reorder_sections": _mut_reorder_sections,
+    "update_shot_visual": _mut_update_shot_visual,
+    "update_shot_narration": _mut_update_shot_narration,
+    "update_shot_duration": _mut_update_shot_duration,
     "update_text_card_spec": _mut_update_text_card,
     "update_packaging_text": _mut_update_packaging_text,
     "move_packaging_item": _mut_move_packaging_item,
@@ -854,6 +1049,9 @@ _STEP_ALLOWED_OPS: dict[ComposeEditStep, set[str]] = {
         "update_section_duration",
         "delete_section",
         "reorder_sections",
+        "update_shot_visual",
+        "update_shot_narration",
+        "update_shot_duration",
         "regenerate_fill",
     },
     "step3": {
@@ -872,6 +1070,9 @@ _CONTENT_TRACK_OPS = {
     "update_section_duration",
     "delete_section",
     "reorder_sections",
+    "update_shot_visual",
+    "update_shot_narration",
+    "update_shot_duration",
     "regenerate_fill",
 }
 
@@ -913,6 +1114,14 @@ def _build_user_prompt(plan: Plan, instruction: str, step: ComposeEditStep) -> s
             f"- {sec.section_id} role={sec.role} 时长={sec.duration_seconds:.1f}s "
             f"scene 数={n}{gap_flag} 主题={sec.theme[:30]!r} 描述={sec.content_description[:60]!r}"
         )
+        # stage-24：分镜级摘要——shot_order 从 0 起，前端"第 N 镜"= shot_order=N-1
+        shots = getattr(sec, "shots", None) or []
+        if shots:
+            for sh in shots:
+                parts.append(
+                    f"    · 第 {sh.order+1} 镜 (shot_order={sh.order}) "
+                    f"{sh.duration_seconds:.1f}s 主体={sh.subject[:20]!r} 画面={sh.visual[:40]!r} 口播={sh.narration[:40]!r}"
+                )
 
     # 包装态额外信息
     if step == "step3":
@@ -940,7 +1149,7 @@ def _build_user_prompt(plan: Plan, instruction: str, step: ComposeEditStep) -> s
 
     parts.append(
         f"\n【本 step={step} 能改什么】"
-        + ("段落文案 / 段落时长 / 删段 / 重排顺序" if step == "step2"
+        + ("段落文案 / 段落时长 / 删段 / 重排顺序 / 分镜画面 / 分镜口播 / 分镜时长" if step == "step2"
            else "字卡文案与字号 / 包装项文字 / BGM 偏移 / BGM 音量 / Compose 设置（tone/cta/keywords/platform/ratio/duration）")
     )
     parts.append(f"\n【用户消息】{instruction}")
@@ -985,6 +1194,32 @@ def _mock_intent(instruction: str, step: ComposeEditStep) -> list[dict[str, Any]
                 return [{"name": "update_compose_setting", "arguments": {"aspect_ratio": ratio}}]
 
     if step == "step2":
+        # stage-24 分镜级编辑兜底：『sec-1 第 2 镜短一点 / 改成 3 秒』『sec-0 第 1 镜画面改成 ...』『sec-2 第 3 镜口播改成 ...』
+        m_shot_dur = re.search(r"(sec-\d+)[^第]{0,15}?第\s*(\d+)\s*镜.{0,15}?(\d+(?:\.\d+)?)\s*秒", txt)
+        if m_shot_dur:
+            return [{"name": "update_shot_duration", "arguments": {
+                "section_id": m_shot_dur.group(1),
+                "shot_order": int(m_shot_dur.group(2)) - 1,
+                "duration_seconds": float(m_shot_dur.group(3)),
+            }}]
+        m_shot_visual = re.search(r"(sec-\d+)[^第]{0,15}?第\s*(\d+)\s*镜.{0,8}?画面.{0,8}?(?:改成|改为|是)?\s*[:：]?\s*(.+)", txt)
+        if m_shot_visual:
+            visual = m_shot_visual.group(3).strip().strip("『』""\"'")
+            if visual:
+                return [{"name": "update_shot_visual", "arguments": {
+                    "section_id": m_shot_visual.group(1),
+                    "shot_order": int(m_shot_visual.group(2)) - 1,
+                    "visual": visual[:120],
+                }}]
+        m_shot_narr = re.search(r"(sec-\d+)[^第]{0,15}?第\s*(\d+)\s*镜.{0,8}?(?:口播|字幕|文案).{0,8}?(?:改成|改为|是)?\s*[:：]?\s*(.+)", txt)
+        if m_shot_narr:
+            narr = m_shot_narr.group(3).strip().strip("『』""\"'")
+            if narr:
+                return [{"name": "update_shot_narration", "arguments": {
+                    "section_id": m_shot_narr.group(1),
+                    "shot_order": int(m_shot_narr.group(2)) - 1,
+                    "narration": narr[:200],
+                }}]
         # 时长
         m_dur = re.search(r"(sec-\d+|第\s*\d+\s*段).{0,15}?(\d+(?:\.\d+)?)\s*秒", txt)
         if m_dur:
