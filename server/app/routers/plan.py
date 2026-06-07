@@ -34,9 +34,11 @@ from ..schemas import (
     ReferenceVersion,
     SampleManifest,
     Scene,
+    SceneTransition,
     TargetPlatform,
     TextCardSpec,
     ToneStyle,
+    TransitionStyle,
     TTSVoice,
 )
 from ..services.agent.plan_agent import adapt_structure
@@ -879,6 +881,66 @@ async def patch_plan_settings(plan_id: str, body: PlanSettingsPatch) -> Plan:
     return plan
 
 
+class RegenerateNarrationsResponse(BaseModel):
+    """POST /plan/{plan_id}/regenerate-narrations 返回。"""
+    plan: Plan
+    updated_scene_ids: list[str]
+    skipped_scene_ids: list[str] = Field(default_factory=list)
+    note: str = ""
+
+
+@router.post("/plan/{plan_id}/regenerate-narrations", response_model=RegenerateNarrationsResponse)
+async def regenerate_plan_narrations(plan_id: str) -> RegenerateNarrationsResponse:
+    """step3 入口调：综合段长+内容直接给出每段口播，禁止复述凑时长。
+
+    设计意图：
+    - plan_agent 在 step1/step2 给的 narration 是"还没定稿时的估算"——段长会随用户调整而变。
+    - 进 step3 之前段长已稳，需要按"每秒 5 字"的预算重新出一份**严丝合缝**的口播。
+    - LLM 失败时不抹掉旧文案（避免回退灾难），仅记 skipped。
+    - 不在这里调 TTS——前端拿到新 narration 后再触发 /voice/synthesize-all（如果开了 voiceover）。
+    """
+    plan = plan_store.get(plan_id)
+    if plan is None:
+        raise HTTPException(status_code=404, detail=f"plan_id 不存在：{plan_id}")
+
+    from ..services.agent.narration_agent import regenerate_narrations
+
+    new_narrations = await regenerate_narrations(plan)
+    if not new_narrations:
+        return RegenerateNarrationsResponse(
+            plan=plan,
+            updated_scene_ids=[],
+            skipped_scene_ids=[s.scene_id for s in plan.main_track],
+            note="LLM 暂不可用 / 返回不合法；保留旧 narration",
+        )
+
+    updated: list[str] = []
+    skipped: list[str] = []
+    for i, sc in enumerate(plan.main_track):
+        new_text = new_narrations.get(sc.scene_id)
+        if new_text is None:
+            skipped.append(sc.scene_id)
+            continue
+        # 同步清空已合成的 voiceover_url：文案变了，旧 wav 已失效，强制重新合成
+        plan.main_track[i] = sc.model_copy(update={
+            "narration": new_text,
+            "voiceover_url": None,
+        })
+        updated.append(sc.scene_id)
+
+    plan_store.put(plan)
+    log.info(
+        "[plan] regenerate narrations plan=%s updated=%d skipped=%d",
+        plan_id, len(updated), len(skipped),
+    )
+    return RegenerateNarrationsResponse(
+        plan=plan,
+        updated_scene_ids=updated,
+        skipped_scene_ids=skipped,
+        note=f"已重写 {len(updated)} 段口播",
+    )
+
+
 class SceneEditPatch(BaseModel):
     """PATCH /plan/{plan_id}/scene/{scene_id}：用户在四轨板"内容轨"上直接编辑段落内容。
 
@@ -985,6 +1047,44 @@ async def patch_plan_scene(plan_id: str, scene_id: str, body: SceneEditPatch) ->
             append_trace_b(DEFAULT_USER_ID, trace)
     except Exception as exc:  # noqa: BLE001
         log.warning("[plan] profile.trace_b (scene_edit) write failed: %s", exc)
+    return plan
+
+
+class SceneTransitionPatch(BaseModel):
+    """PATCH /plan/{plan_id}/scene/{scene_id}/transition：更新某分镜的入场转场样式。
+
+    Scene.transition_in 表示与上一段的衔接方式；sc-0 永远忽略此字段。
+    style=hard_cut 时直接清空 transition_in（concat demuxer 走硬切）；其余值写一条 SceneTransition。
+    """
+    style: TransitionStyle
+    duration: Optional[float] = Field(default=None, ge=0.1, le=1.5, description="转场持续秒数；缺省走 SceneTransition 默认 0.4s")
+
+
+@router.patch("/plan/{plan_id}/scene/{scene_id}/transition", response_model=Plan)
+async def patch_scene_transition(plan_id: str, scene_id: str, body: SceneTransitionPatch) -> Plan:
+    """更新某 scene 的 transition_in：用户在包装轨上点击转场节点后选了一个新样式。"""
+    plan = plan_store.get(plan_id)
+    if plan is None:
+        raise HTTPException(status_code=404, detail=f"plan_id 不存在：{plan_id}")
+    scene_idx = next((i for i, s in enumerate(plan.main_track) if s.scene_id == scene_id), None)
+    if scene_idx is None:
+        raise HTTPException(status_code=404, detail=f"scene_id 不存在：{scene_id}")
+    if scene_idx == 0:
+        raise HTTPException(status_code=400, detail="首个分镜不能设置入场转场")
+    scene = plan.main_track[scene_idx]
+    if body.style == "hard_cut":
+        new_transition = None
+    else:
+        duration = body.duration if body.duration is not None else (
+            scene.transition_in.duration if scene.transition_in else 0.4
+        )
+        new_transition = SceneTransition(style=body.style, duration=duration)
+    plan.main_track[scene_idx] = scene.model_copy(update={"transition_in": new_transition})
+    plan_store.put(plan)
+    log.info(
+        "[plan] scene transition patched plan=%s scene=%s style=%s dur=%.2f",
+        plan_id, scene_id, body.style, (new_transition.duration if new_transition else 0.0),
+    )
     return plan
 
 

@@ -16,6 +16,7 @@ import type {
   SampleManifest,
   Scene,
   TextCardSpec,
+  TransitionStyle,
   TTSVoice,
 } from '@/types/schemas'
 
@@ -124,10 +125,14 @@ interface Props {
    * 字卡段不依赖 fill（Scene.text_card_spec 已携带规格直接 CSS 复刻）。
    */
   fills?: FillResult[]
-  /** 包装轨某 item 拖动到新 start 秒——父级落 plan。 */
+  /** @deprecated 拖动会触发 step 跳回 step2，且与 click-to-edit 弹窗模型语义重叠；保留 prop 仅供老调用方编译通过。 */
   onMovePackagingItem?: (itemId: string, newStartSeconds: number) => void | Promise<void>
   /** 打开"包装方案"侧抽屉——配合 actions 区"打开方案 ⤢"按钮。 */
   onOpenPackagingDrawer?: () => void
+  /** 点击包装组件 → 父级唤起编辑弹窗（PR-I.2：替代拖动平移与重生按钮）。 */
+  onEditPackagingItem?: (item: PackagingItem) => void
+  /** 点击分镜间的转场节点 → 唤起转场样式选择弹窗。 */
+  onEditTransition?: (sceneId: string, currentStyle: TransitionStyle | null) => void
 }
 
 const STATUS_GLYPH: Record<GapStatus, string> = { ok: '✓', warn: '!', miss: '×' }
@@ -276,7 +281,6 @@ export function FourTrackBoard({
   onSynthesizeScene,
   onSynthesizeAll,
   onClearVoice,
-  onRecommendPackaging,
   onAddPackagingItem,
   onDeletePackagingItem,
   onPickBgm,
@@ -295,8 +299,8 @@ export function FourTrackBoard({
   referenceManifests,
   materials,
   fills,
-  onMovePackagingItem,
-  onOpenPackagingDrawer,
+  onEditPackagingItem,
+  onEditTransition,
 }: Props) {
   const total = plan.duration_seconds || 0
   const scenes = plan.main_track
@@ -330,7 +334,7 @@ export function FourTrackBoard({
     if (scenes.length === 0) return false
     return scenes.every((sc) => !(sc.narration ?? '').trim() || !!sc.voiceover_url)
   }, [scenes, voiceoverEnabled])
-  const packagingReady = scenes.length > 0 && allVoicesReady
+  void allVoicesReady // 守门指标暂不显示在轨上，但保留计算便于之后接入
 
   // section_id → AdaptedSection 索引
   const sectionById = useMemo(() => {
@@ -453,9 +457,8 @@ export function FourTrackBoard({
     [bgm?.track_url, busy, computeAnchorFromClientX, onBgmAnchorChange],
   )
 
-  /* ==================== 包装轨拖动平移（HTML5 drag）==================== */
+  /* ==================== 包装轨 row ref（被 packagingRowRef 仅作 DOM 测量用，已不再支持拖动平移）==================== */
   const packagingRowRef = useRef<HTMLDivElement | null>(null)
-  const dragPackagingRef = useRef<{ itemId: string; durationSec: number; grabFracInItem: number } | null>(null)
 
   // 包装轨「+ 添加组件 ▾」下拉开闭——点其它地方关闭
   const [addMenuOpen, setAddMenuOpen] = useState(false)
@@ -465,53 +468,6 @@ export function FourTrackBoard({
     window.addEventListener('click', close)
     return () => window.removeEventListener('click', close)
   }, [addMenuOpen])
-
-  const handlePackagingDragStart = useCallback(
-    (itemId: string, startSec: number, endSec: number) => (e: React.DragEvent) => {
-      if (!onMovePackagingItem || readOnly || busy || total <= 0) return
-      const el = packagingRowRef.current
-      const dur = Math.max(0.1, endSec - startSec)
-      if (!el) return
-      const rect = el.getBoundingClientRect()
-      // 抓握点在 item 内部的相对位置（0=item 左边、1=item 右边），用来落点准确
-      const itemLeftPx = rect.left + (startSec / total) * rect.width
-      const grabFracInItem = Math.max(0, Math.min(1, (e.clientX - itemLeftPx) / ((dur / total) * rect.width)))
-      dragPackagingRef.current = { itemId, durationSec: dur, grabFracInItem }
-      e.dataTransfer.setData('application/x-packaging-item-id', itemId)
-      e.dataTransfer.effectAllowed = 'move'
-    },
-    [busy, onMovePackagingItem, readOnly, total],
-  )
-
-  const handlePackagingRowDragOver = useCallback(
-    (e: React.DragEvent) => {
-      if (!onMovePackagingItem) return
-      if (e.dataTransfer.types.includes('application/x-packaging-item-id')) {
-        e.preventDefault()
-        e.dataTransfer.dropEffect = 'move'
-      }
-    },
-    [onMovePackagingItem],
-  )
-
-  const handlePackagingRowDrop = useCallback(
-    (e: React.DragEvent) => {
-      const drag = dragPackagingRef.current
-      dragPackagingRef.current = null
-      if (!onMovePackagingItem || !drag || total <= 0) return
-      const el = packagingRowRef.current
-      if (!el) return
-      e.preventDefault()
-      const rect = el.getBoundingClientRect()
-      const dropX = Math.max(rect.left, Math.min(rect.right, e.clientX))
-      const dropSec = ((dropX - rect.left) / rect.width) * total
-      // 减去抓握偏移：item 左侧 = drop 秒 − grabFrac×duration
-      const itemSpanSec = drag.durationSec
-      const newStart = Math.max(0, Math.min(total - itemSpanSec, dropSec - drag.grabFracInItem * itemSpanSec))
-      void onMovePackagingItem(drag.itemId, Math.round(newStart * 10) / 10)
-    },
-    [onMovePackagingItem, total],
-  )
 
   /* ==================== BGM 音量本地态 + 300ms debounce ==================== */
 
@@ -1175,26 +1131,15 @@ export function FourTrackBoard({
         label="包装轨"
         hint={`${nonSubtitleItems.length} 项${subtitleItems.length > 0 ? `（字幕 ${subtitleItems.length} 项展示在字幕轨）` : ''}`}
         rowRef={packagingRowRef}
-        onDragOver={onMovePackagingItem ? handlePackagingRowDragOver : undefined}
-        onDrop={onMovePackagingItem ? handlePackagingRowDrop : undefined}
         actions={
           !readOnly ? (
             <div className="flex flex-nowrap items-center gap-1 whitespace-nowrap">
-              {onOpenPackagingDrawer && (
-                <button
-                  onClick={() => onOpenPackagingDrawer()}
-                  title="打开包装方案侧栏（查看 / 编辑当前方案）"
-                  className="rounded border border-border bg-background/70 px-1.5 py-0.5 text-[10px] text-muted-foreground hover:bg-secondary hover:text-foreground"
-                >
-                  打开方案 ⤢
-                </button>
-              )}
               {onAddPackagingItem && (
                 <div className="relative" onClick={(e) => e.stopPropagation()}>
                   <button
                     onClick={() => setAddMenuOpen((v) => !v)}
                     disabled={busy}
-                    title="加单个包装组件：标题条 / 贴纸 / 封面（AI 给草稿，落到轨上再用 ⌘K 改字）"
+                    title="加单个包装组件：标题条 / 贴纸 / 封面（AI 给草稿，落到轨上点击改）"
                     className="rounded border border-border bg-background/70 px-1.5 py-0.5 text-[10px] text-muted-foreground hover:bg-secondary hover:text-foreground disabled:opacity-50"
                   >
                     {busy ? '⏳…' : '+组件 ▾'}
@@ -1221,94 +1166,112 @@ export function FourTrackBoard({
                   )}
                 </div>
               )}
-              {onRecommendPackaging && (
-                <button
-                  onClick={() => void onRecommendPackaging()}
-                  disabled={busy || !packagingReady}
-                  title={
-                    !packagingReady
-                      ? voiceoverEnabled
-                        ? '请先在口播轨点「一键全段合成」，把配音都跑完，再生成包装'
-                        : '镜头内容还没准备好'
-                      : packaging.length > 0
-                        ? '基于最新内容重写包装方案'
-                        : '生成转场 / 封面 / 标题 / 贴纸等包装项'
-                  }
-                  className={cn(
-                    'rounded border border-primary/40 bg-primary/10 px-1.5 py-0.5 text-[10px] text-primary hover:bg-primary/20 disabled:opacity-50',
-                    !packagingReady && 'cursor-not-allowed',
-                  )}
-                >
-                  {packaging.length > 0 ? '重生' : '生成'}
-                </button>
-              )}
             </div>
           ) : null
         }
       >
-        {nonSubtitleItems.length === 0 ? (
+        {nonSubtitleItems.length === 0 && scenes.length < 2 ? (
           <div className="absolute inset-1 flex items-center justify-center rounded-md border border-dashed border-border bg-background/30 text-center text-[10px] text-muted-foreground">
-            {!packagingReady && voiceoverEnabled
-              ? '镜头与配音都齐了之后，点右上「一键生成」自动写转场 / 封面 / 标题 / 贴纸'
-              : '还没生成包装项（标题 / 转场 / 封面 / 贴纸）'}
+            还没生成包装项（标题 / 转场 / 封面 / 贴纸）
           </div>
         ) : (
-          nonSubtitleItems.map((it, i) => {
-            const left = pctOf(it.start, total)
-            const span = Math.max(0.6, pctOf(it.end - it.start, total))
-            const pkgSelected = selectedPackagingItemId === it.item_id
-            const draggable = !!onMovePackagingItem && !readOnly && !busy
-            const canDelete = !!onDeletePackagingItem && !readOnly && !busy
-            return (
-              <button
-                key={`${it.item_id}-${i}`}
-                type="button"
-                onClick={() => onSelectPackaging?.(it)}
-                draggable={draggable}
-                onDragStart={draggable ? handlePackagingDragStart(it.item_id, it.start, it.end) : undefined}
-                className={cn(
-                  'group absolute top-1 bottom-1 flex items-center justify-center overflow-hidden rounded text-[10px] font-medium shadow transition',
-                  PACKAGING_KIND_COLOR[it.kind],
-                  onSelectPackaging && 'cursor-pointer',
-                  draggable && 'cursor-grab active:cursor-grabbing',
-                  pkgSelected ? 'ring-2 ring-primary ring-offset-1 ring-offset-card' : onSelectPackaging ? 'hover:brightness-110' : '',
-                )}
-                style={{ left: `${left}%`, width: `calc(${span}% - 1px)` }}
-                title={
-                  (it.text
-                    ? `${PACKAGING_KIND_LABEL[it.kind]} · ${it.text}`
-                    : `${PACKAGING_KIND_LABEL[it.kind]} · ${(it.end - it.start).toFixed(1)}s`) +
-                  (draggable ? '\n点击：用自然语言改包装；拖动：沿时间轴平移' : '\n点击：用自然语言改包装')
-                }
-              >
-                <span className="truncate px-1">{it.text || PACKAGING_KIND_LABEL[it.kind]}</span>
-                {canDelete && (
-                  <span
-                    role="button"
-                    tabIndex={0}
+          <>
+            {/* 转场节点：每两镜之间一个不可拖动的 ⇆ 占位，点击 → 父级唤起转场样式弹窗 */}
+            {scenes.length > 1 &&
+              scenes.slice(1).map((sc, idx) => {
+                // 节点定位在两镜衔接点（sc.start，即上镜末 / 下镜首）
+                const at = sc.start
+                const left = pctOf(at, total)
+                const trans = sc.transition_in ?? null
+                const styleLabel = trans ? TRANSITION_LABEL[trans.style] : '硬切'
+                const tone = trans ? TRANSITION_TONE[trans.style] : 'bg-slate-300/70 text-slate-900'
+                const interactive = !!onEditTransition && !readOnly
+                return (
+                  <button
+                    type="button"
+                    key={`transition-${sc.scene_id}-${idx}`}
+                    disabled={!interactive}
                     onClick={(e) => {
                       e.stopPropagation()
-                      void onDeletePackagingItem(it.item_id)
+                      onEditTransition?.(sc.scene_id, trans?.style ?? null)
                     }}
-                    onKeyDown={(e) => {
-                      if (e.key === 'Enter' || e.key === ' ') {
-                        e.preventDefault()
+                    title={
+                      interactive
+                        ? `转场到「${sc.scene_id}」：${styleLabel}\n点击：选择转场样式`
+                        : `转场到「${sc.scene_id}」：${styleLabel}`
+                    }
+                    className={cn(
+                      'absolute top-1 z-10 inline-flex h-6 -translate-x-1/2 select-none items-center gap-0.5 rounded-full border border-white/60 px-1.5 text-[9px] font-semibold shadow-sm',
+                      tone,
+                      interactive ? 'cursor-pointer hover:scale-110 hover:brightness-110' : 'cursor-default opacity-80',
+                    )}
+                    style={{ left: `${left}%` }}
+                  >
+                    <span>⇆</span>
+                    <span className="max-w-[44px] truncate">{styleLabel}</span>
+                  </button>
+                )
+              })}
+            {nonSubtitleItems.map((it, i) => {
+              const left = pctOf(it.start, total)
+              const span = Math.max(0.6, pctOf(it.end - it.start, total))
+              const pkgSelected = selectedPackagingItemId === it.item_id
+              const canEdit = !!onEditPackagingItem && !readOnly && !busy
+              const canDelete = !!onDeletePackagingItem && !readOnly && !busy
+              return (
+                <button
+                  key={`${it.item_id}-${i}`}
+                  type="button"
+                  onClick={() => {
+                    if (canEdit) {
+                      onEditPackagingItem!(it)
+                    } else {
+                      onSelectPackaging?.(it)
+                    }
+                  }}
+                  className={cn(
+                    'group absolute top-1 bottom-1 flex items-center justify-center overflow-hidden rounded text-[10px] font-medium shadow transition',
+                    PACKAGING_KIND_COLOR[it.kind],
+                    (canEdit || onSelectPackaging) && 'cursor-pointer',
+                    pkgSelected ? 'ring-2 ring-primary ring-offset-1 ring-offset-card' : 'hover:brightness-110',
+                  )}
+                  style={{ left: `${left}%`, width: `calc(${span}% - 1px)` }}
+                  title={
+                    (it.text
+                      ? `${PACKAGING_KIND_LABEL[it.kind]} · ${it.text}`
+                      : `${PACKAGING_KIND_LABEL[it.kind]} · ${(it.end - it.start).toFixed(1)}s`) +
+                    '\n点击：打开编辑弹窗（文案 / 时间 / 样式）'
+                  }
+                >
+                  <span className="truncate px-1">{it.text || PACKAGING_KIND_LABEL[it.kind]}</span>
+                  {canDelete && (
+                    <span
+                      role="button"
+                      tabIndex={0}
+                      onClick={(e) => {
                         e.stopPropagation()
                         void onDeletePackagingItem(it.item_id)
-                      }
-                    }}
-                    title="删除该包装项"
-                    className={cn(
-                      'absolute right-0.5 top-0.5 inline-flex h-3.5 w-3.5 cursor-pointer items-center justify-center rounded-full bg-black/40 text-[9px] font-bold text-white opacity-0 transition-opacity hover:bg-rose-500 group-hover:opacity-100',
-                      pkgSelected && 'opacity-100',
-                    )}
-                  >
-                    ×
-                  </span>
-                )}
-              </button>
-            )
-          })
+                      }}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter' || e.key === ' ') {
+                          e.preventDefault()
+                          e.stopPropagation()
+                          void onDeletePackagingItem(it.item_id)
+                        }
+                      }}
+                      title="删除该包装项"
+                      className={cn(
+                        'absolute right-0.5 top-0.5 inline-flex h-3.5 w-3.5 cursor-pointer items-center justify-center rounded-full bg-black/40 text-[9px] font-bold text-white opacity-0 transition-opacity hover:bg-rose-500 group-hover:opacity-100',
+                        pkgSelected && 'opacity-100',
+                      )}
+                    >
+                      ×
+                    </span>
+                  )}
+                </button>
+              )
+            })}
+          </>
         )}
       </TrackRow>
       )}

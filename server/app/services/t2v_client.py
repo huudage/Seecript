@@ -71,6 +71,23 @@ class QueryResult:
     elapsed_ms: int = 0
 
 
+# 画面禁文字硬约束：Seedance T2V 没有 negative_prompt 字段，给正向 prompt 末尾贴硬约束。
+# 字卡（text_card）走的是 Remotion CSS 渲染、不进 T2V，不受影响。
+_NO_TEXT_SUFFIX = (
+    "\n\n严格要求：画面内绝对不要任何文字、汉字、字母、数字、标题、字幕、弹幕、"
+    "角标、Logo、水印、印章、店招、海报上的可读字符；如出现文字视为生成失败。"
+)
+
+
+def enforce_no_text_in_prompt(prompt: str) -> str:
+    p = (prompt or "").strip()
+    if not p:
+        return p
+    if "绝对不要任何文字" in p and "Logo" in p:
+        return p
+    return p + _NO_TEXT_SUFFIX
+
+
 class T2VClient(ABC):
     name: str = "abstract"
 
@@ -214,7 +231,7 @@ class DoubaoArkT2VClient(T2VClient):
         watermark: Optional[bool] = None,
     ) -> SubmitResult:
         url = f"{self._base_url}/contents/generations/tasks"
-        content: list[dict] = [{"type": "text", "text": prompt}]
+        content: list[dict] = [{"type": "text", "text": enforce_no_text_in_prompt(prompt)}]
         for img in _merge_reference_images(first_frame, last_frame, reference_images):
             content.append({
                 "type": "image_url",

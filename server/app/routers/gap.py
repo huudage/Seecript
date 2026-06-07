@@ -156,14 +156,20 @@ def _resolve_plan_and_scene_for_gap(gap: Gap):
 
 
 def _maybe_auto_tts(result: FillResult) -> FillResult:
-    """copy 动作 + plan.settings.voiceover_enabled=True → 自动调 TTS 并把 voiceover_url
-    回填到 FillResult + scene.voiceover_url（让 rebuild plan 时也能用上）。
+    """`copy / aigc / aigc_image` 任一动作 + plan.settings.voiceover_enabled=True
+    → 自动调 TTS 并把 voiceover_url 回填到 FillResult + scene.voiceover_url（让 rebuild plan
+    时也能用上）。
 
-    失败不抛——TTS 抖动不能阻断 copy fill 的成功语义；只在 note 里追加诊断。
+    narration 文本来源优先级：
+    1. FillResult.narration（copy / 字卡路径会带）
+    2. scene.narration（aigc / aigc_image 路径下，scene 已有 plan_agent 或
+       /plan/{id}/regenerate-narrations 写好的口播文本）
+
+    失败不抛——TTS 抖动不能阻断 fill 的成功语义；只在 note 里追加诊断。
     注意：synthesize_scene_voice 是同步阻塞调用，async 调用方必须用
     `await asyncio.to_thread(_maybe_auto_tts, ...)` 包一层。
     """
-    if result.action != "copy" or not (result.narration or "").strip():
+    if result.action not in ("copy", "aigc", "aigc_image"):
         return result
     if not result.section_id:
         return result
@@ -174,8 +180,14 @@ def _maybe_auto_tts(result: FillResult) -> FillResult:
     if scene is None:
         return result
 
-    # 把 result.narration 同步到 scene.narration（让 synthesize_scene_voice 用到新文案）
-    scene.narration = result.narration.strip()
+    # 文本：优先 result.narration（copy 路径），否则用 scene.narration
+    text = (result.narration or "").strip() or (scene.narration or "").strip()
+    if not text:
+        return result
+
+    # copy 路径：把新文案同步回 scene；aigc/aigc_image 路径不动 scene.narration（保留 plan 阶段定稿）
+    if result.action == "copy":
+        scene.narration = text
     try:
         ret = synthesize_scene_voice(plan, scene.scene_id, text=None, voice=None)
     except TTSError as exc:
@@ -189,8 +201,8 @@ def _maybe_auto_tts(result: FillResult) -> FillResult:
         return result
     url, _truncated, chars = ret
     plan_store.put(plan)
-    log.info("[gap] auto-tts plan=%s scene=%s backend=%s chars=%d url=%s",
-             plan.plan_id, scene.scene_id, tts_backend_name(), chars, url)
+    log.info("[gap] auto-tts plan=%s scene=%s action=%s backend=%s chars=%d url=%s",
+             plan.plan_id, scene.scene_id, result.action, tts_backend_name(), chars, url)
     return result.model_copy(update={"voiceover_url": url})
 
 

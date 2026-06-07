@@ -4,11 +4,18 @@
  * 后端真源：
  * - PATCH /plan/{plan_id}/settings    —— 翻转 ComposeSettings 局部字段
  * - PATCH /plan/{plan_id}/scene/{scene_id} —— 编辑 Scene 文本 + 联动 AdaptedSection
+ * - PATCH /plan/{plan_id}/scene/{scene_id}/transition —— 改某分镜入场转场样式
  *
- * 两个都不重跑 LLM：仅落盘 + 返回最新 Plan。
+ * 三个都不重跑 LLM：仅落盘 + 返回最新 Plan。
  */
 import { api } from '@/api/client'
-import type { Plan, PlanId, PlanSettingsPatch, SceneEditPatch } from '@/types/schemas'
+import type {
+  Plan,
+  PlanId,
+  PlanSettingsPatch,
+  SceneEditPatch,
+  SceneTransitionPatch,
+} from '@/types/schemas'
 
 export async function patchPlanSettings(planId: PlanId, patch: PlanSettingsPatch): Promise<Plan> {
   return await api.patch<Plan>(`/plan/${planId}/settings`, patch)
@@ -20,4 +27,12 @@ export async function patchPlanScene(
   patch: SceneEditPatch,
 ): Promise<Plan> {
   return await api.patch<Plan>(`/plan/${planId}/scene/${sceneId}`, patch)
+}
+
+export async function patchSceneTransition(
+  planId: PlanId,
+  sceneId: string,
+  patch: SceneTransitionPatch,
+): Promise<Plan> {
+  return await api.patch<Plan>(`/plan/${planId}/scene/${sceneId}/transition`, patch)
 }

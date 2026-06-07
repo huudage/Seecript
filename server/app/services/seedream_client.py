@@ -58,6 +58,27 @@ def _ratio_to_size(ratio: str) -> tuple[int, int]:
     return _RATIO_TO_SIZE.get(ratio.strip(), _RATIO_TO_SIZE["16:9"])
 
 
+# 画面禁文字硬约束：Seedream 没有官方 negative_prompt 字段，但豆包对正向 prompt 末尾的
+# 「不要 / 无 ...」中文模式有较好遵循度。所有走 Seedream 的 prompt 在出 HTTP 之前统一加这个尾巴。
+# 字卡（text_card）走的是 Remotion CSS 渲染、不进 Seedream，因此不会被这个约束误伤。
+_NO_TEXT_SUFFIX = (
+    "\n\n严格要求：画面内绝对不要任何文字、汉字、字母、数字、标题、字幕、弹幕、"
+    "角标、Logo、水印、印章、店招、海报上的可读字符；"
+    "如果画面里出现了任何形式的文字，视为出图失败。"
+)
+
+
+def enforce_no_text_in_prompt(prompt: str) -> str:
+    """画面禁文字硬约束。任何路径出图前都过一道，避免 Seedream 自由发挥写大字。"""
+    p = (prompt or "").strip()
+    if not p:
+        return p
+    # 已附加过则不重复（节省 token；避免重复触发 LLM 拒答）
+    if "绝对不要任何文字" in p and "Logo" in p:
+        return p
+    return p + _NO_TEXT_SUFFIX
+
+
 class SeedreamClient(ABC):
     name: str = "abstract"
 
@@ -172,7 +193,7 @@ class DoubaoArkSeedreamClient(SeedreamClient):
         # - size 走精确像素 WxH（5.0 也兼容 "1K"/"2K" 预设，但我们按 ratio 算的 WxH 更可控）
         body: dict = {
             "model": self._model,
-            "prompt": prompt[:1500],
+            "prompt": enforce_no_text_in_prompt(prompt)[:1500],
             "size": f"{w}x{h}",
             "sequential_image_generation": "disabled",
             "response_format": "url",
@@ -246,7 +267,7 @@ class DoubaoArkSeedreamClient(SeedreamClient):
         joined = "\n\n".join(f"镜头{i+1}：{p}" for i, p in enumerate(prompts[:n]))
         body: dict = {
             "model": self._model,
-            "prompt": joined[:3000],
+            "prompt": enforce_no_text_in_prompt(joined)[:3000],
             "size": f"{w}x{h}",
             "sequential_image_generation": "auto",
             "sequential_image_generation_options": {"max_images": n},

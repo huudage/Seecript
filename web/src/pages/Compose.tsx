@@ -6,7 +6,7 @@ import { deletePlanBgm, patchPlanBgm } from '@/api/bgm'
 import { patchPlanSettings } from '@/api/plan'
 import { createSSE } from '@/api/sse'
 import { commitStep, getStepSnapshot } from '@/api/steps'
-import { deleteVoice, synthesizeAll, synthesizeOne } from '@/api/voice'
+import { deleteVoice, regenerateNarrations, synthesizeAll, synthesizeOne } from '@/api/voice'
 import { BatchAigcButton } from '@/components/compose/BatchAigcButton'
 import { BatchCopyButton } from '@/components/compose/BatchCopyButton'
 import { BgmPickerDialog } from '@/components/compose/BgmPickerDialog'
@@ -20,11 +20,13 @@ import { FillCopyPanel } from '@/components/compose/FillCopyPanel'
 import { FillRerankPanel } from '@/components/compose/FillRerankPanel'
 import { FourTrackBoard } from '@/components/compose/FourTrackBoard'
 import { MaterialGrid } from '@/components/compose/MaterialGrid'
+import { PackagingItemEditDialog } from '@/components/compose/PackagingItemEditDialog'
 import { PackagingPanel } from '@/components/compose/PackagingPanel'
 import { ReferencePicker } from '@/components/compose/ReferencePicker'
 import { SceneEditPanel } from '@/components/compose/SceneEditPanel'
 import { StructureMapPanel } from '@/components/compose/StructureMapPanel'
 import { SubtitleEditPopover } from '@/components/compose/SubtitleEditPopover'
+import { TransitionStylePicker } from '@/components/compose/TransitionStylePicker'
 import { VersionMenu } from '@/components/compose/VersionMenu'
 import { PageShell } from '@/components/layout/PageShell'
 import { PlanPlayer, type PlanPlayerHandle } from '@/components/preview/PlanPlayer'
@@ -42,6 +44,7 @@ import type {
   GapFillRequest,
   Material,
   MaterialUploadResponse,
+  PackagingItem,
   PackagingItemDraftRequest,
   PackagingItemDraftResponse,
   PackagingItemPlaceRequest,
@@ -225,6 +228,12 @@ export default function ComposePage() {
   const [trackBusy, setTrackBusy] = useState(false)
   const [bgmPickerOpen, setBgmPickerOpen] = useState(false)
   const [editingSubtitleScene, setEditingSubtitleScene] = useState<Scene | null>(null)
+  // PR-I.2 step3 包装轨：组件改用点击弹窗（不再支持拖动平移），转场节点同样走弹窗
+  const [editingPackagingItem, setEditingPackagingItem] = useState<PackagingItem | null>(null)
+  const [editingTransition, setEditingTransition] = useState<{
+    sceneId: string
+    currentStyle: TransitionStyle | null
+  } | null>(null)
   // ⌘K 自然语言编辑（R6）：唤起 ComposeCommandBar，作用域由 activeStep 决定
   const [commandBarOpen, setCommandBarOpen] = useState(false)
   useEffect(() => {
@@ -876,6 +885,57 @@ export default function ComposePage() {
       setTrackBusy(false)
     }
   }, [plan, setPlanAndPush])
+
+  /**
+   * 进入 step3 时的一次性筹备：
+   * 1. 综合段长 + 内容重写每段口播（禁复述凑时长）
+   * 2. 若开了配音，自动一键 TTS 全片
+   * 3. 自动跑一次包装 AI 推荐 + apply
+   *
+   * 失败不阻塞 step3 解锁——用户进 step3 后可手动重跑各项。
+   */
+  const handleEnterStep3 = useCallback(async () => {
+    if (!plan) return
+    setStep3Unlocked(true)
+    setActiveStep(3)
+    setTrackBusy(true)
+    setError(null)
+    try {
+      // 1) 重写口播
+      const ren = await regenerateNarrations(plan.plan_id)
+      setPlanAndPush(ren.plan)
+      // 2) 自动 TTS（若启用了配音 + 有更新的段落）
+      if (ren.plan.settings.voiceover_enabled && ren.updated_scene_ids.length > 0) {
+        try {
+          const tts = await synthesizeAll(plan.plan_id)
+          if (tts.failures.length === 0) {
+            await refetchPlan(plan.plan_id)
+          } else {
+            await refetchPlan(plan.plan_id)
+            setError(
+              `${tts.synthesized.length} 段已合成；${tts.failures.length} 段失败，可在口播轨手动重试`,
+            )
+          }
+        } catch (ttsErr) {
+          setError(ttsErr instanceof Error ? `配音失败：${ttsErr.message}` : '配音失败')
+        }
+      }
+      // 3) 自动包装推荐 + apply（包装轨没东西时才跑——避免覆盖用户已经手挑过的方案）
+      const hasPackaging = (plan.packaging_track ?? []).some((it) => it.kind !== 'subtitle')
+      if (!hasPackaging) {
+        try {
+          await handleRecommendPackaging()
+        } catch (pkgErr) {
+          // 包装失败不阻塞，用户可以在包装轨手动 +组件
+          console.warn('[step3] auto packaging recommend failed', pkgErr)
+        }
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : '进入 step3 准备失败')
+    } finally {
+      setTrackBusy(false)
+    }
+  }, [plan, refetchPlan, setPlanAndPush, handleRecommendPackaging])
 
   const handleBgmAnchorChange = useCallback(
     async (newAnchor: number) => {
@@ -1531,6 +1591,13 @@ export default function ComposePage() {
               playheadSeconds={0}
               onMovePackagingItem={handleMovePackagingItem}
               onOpenPackagingDrawer={() => setPackagingDrawerOpen(true)}
+              onEditPackagingItem={(item) => {
+                setEditingPackagingItem(item)
+                setSelectedPackagingItemId(item.item_id)
+              }}
+              onEditTransition={(sceneId, currentStyle) =>
+                setEditingTransition({ sceneId, currentStyle })
+              }
             />
           </div>
 
@@ -1732,18 +1799,19 @@ export default function ComposePage() {
             <button
               type="button"
               onClick={() => {
-                setStep3Unlocked(true)
-                setActiveStep(3)
+                void handleEnterStep3()
               }}
-              disabled={pendingGapsCount > 0}
+              disabled={pendingGapsCount > 0 || trackBusy}
               className={cn(
                 'flex-1 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground transition-colors',
-                pendingGapsCount > 0 && 'cursor-not-allowed opacity-60',
+                (pendingGapsCount > 0 || trackBusy) && 'cursor-not-allowed opacity-60',
               )}
             >
               {pendingGapsCount > 0
                 ? `还有 ${pendingGapsCount} 段缺口待补 · 补齐后进入第 3 步`
-                : '进入第 3 步 → 解锁口播 / 包装 / BGM 与实时预览'}
+                : trackBusy
+                  ? '准备中…（重写口播 / 配音 / 包装推荐）'
+                  : '进入第 3 步 → 解锁口播 / 包装 / BGM 与实时预览'}
             </button>
             {pendingGapsCount === 0 && (
               <button
@@ -1840,6 +1908,14 @@ export default function ComposePage() {
                 onSeek={seekPlayer}
                 onMovePackagingItem={handleMovePackagingItem}
                 onOpenPackagingDrawer={() => setPackagingDrawerOpen(true)}
+                onEditPackagingItem={(item) => {
+                  setEditingPackagingItem(item)
+                  setSelectedPackagingItemId(item.item_id)
+                  seekPlayer(item.start)
+                }}
+                onEditTransition={(sceneId, currentStyle) =>
+                  setEditingTransition({ sceneId, currentStyle })
+                }
               />
             </div>
           </>
@@ -1971,6 +2047,29 @@ export default function ComposePage() {
           scene={editingSubtitleScene}
           planId={plan.plan_id}
           onClose={() => setEditingSubtitleScene(null)}
+          onPlanUpdated={setPlanAndPush}
+        />
+      )}
+
+      {/* PR-I.2 包装组件编辑弹窗：点击包装轨上 title_bar/sticker/cover → 改文案/时间/样式 */}
+      {plan && (
+        <PackagingItemEditDialog
+          open={!!editingPackagingItem}
+          item={editingPackagingItem}
+          planId={plan.plan_id}
+          onClose={() => setEditingPackagingItem(null)}
+          onPlanUpdated={setPlanAndPush}
+        />
+      )}
+
+      {/* PR-I.2 转场样式弹窗：点击包装轨上分镜之间的 ⇆ 节点 */}
+      {plan && (
+        <TransitionStylePicker
+          open={!!editingTransition}
+          sceneId={editingTransition?.sceneId ?? null}
+          currentStyle={editingTransition?.currentStyle ?? null}
+          planId={plan.plan_id}
+          onClose={() => setEditingTransition(null)}
           onPlanUpdated={setPlanAndPush}
         />
       )}

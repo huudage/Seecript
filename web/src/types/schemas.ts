@@ -1048,6 +1048,15 @@ export interface SceneEditPatch {
   content_description?: string | null
 }
 
+/**
+ * PATCH /plan/{plan_id}/scene/{scene_id}/transition —— 改某分镜入场转场样式。
+ * style=hard_cut 表示清空 transition_in（concat demuxer 走硬切）。
+ */
+export interface SceneTransitionPatch {
+  style: TransitionStyle
+  duration?: number | null
+}
+
 // =========================================================================
 // Module 5b — Packaging Agent
 // =========================================================================

@@ -44,3 +44,21 @@ export async function synthesizeAll(planId: PlanId): Promise<VoiceSynthesizeAllR
 export async function deleteVoice(planId: PlanId, sceneId: string): Promise<Plan> {
   return await api.delete<Plan>(`/voice/${planId}/${sceneId}`)
 }
+
+export interface RegenerateNarrationsResponse {
+  plan: Plan
+  updated_scene_ids: string[]
+  skipped_scene_ids: string[]
+  note: string
+}
+
+/**
+ * step3 入口调：综合段长 + 内容直接重写每段口播（禁复述凑时长）。
+ * LLM 失败返回旧 plan + 全部 skipped；调用方仅在 updated_scene_ids 非空时再触发 TTS。
+ */
+export async function regenerateNarrations(planId: PlanId): Promise<RegenerateNarrationsResponse> {
+  return await api.post<RegenerateNarrationsResponse>(
+    `/plan/${planId}/regenerate-narrations`,
+    {},
+  )
+}
