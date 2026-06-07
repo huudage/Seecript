@@ -77,10 +77,9 @@ export function FillAigcPanel({
   const [promptLoading, setPromptLoading] = useState(false)
 
   // -- 多镜头 (path B：仅 image 模式可用) --
-  // 主体清单：每行一个主体描述。
-  // 留空 → 后端按 section.content_description 自动抽取主体并拆分；
-  // 填了 → 按行数等于 n_shots，按行内容作为每个镜头的差异化主体描述。
-  const [subjectsText, setSubjectsText] = useState<string>('')
+  // stage-25：直接从 plan.adapted_sections[gap.section_id].shots 读取本段已规划的分镜清单作为
+  // n_shots/subjects 来源——分镜数已是 plan_agent 决策的产物，无需让用户再填。前端只展示一个
+  // read-only chip 列表方便用户确认。
 
   // -- run --
   const [loading, setLoading] = useState(false)
@@ -108,26 +107,35 @@ export function FillAigcPanel({
     setPrompt('')
     setPromptThinking([])
     setPromptErr(null)
-    setSubjectsText('')
     setUseTailFrame(false)
     setTailFrameDataUrl(null)
     setTailFrameErr(null)
     setErr(null)
   }, [gap.gap_id])
 
-  // gap.section_id → plan.main_track 的 scene_id
+  // gap.section_id → plan.main_track 的 scene_id + 本段已规划分镜清单
   const sceneInfo = useMemo(() => {
-    if (!plan || !gap.section_id) return { sceneId: null, hasPrev: false, prevReady: false, sectionDuration: 0 }
+    if (!plan || !gap.section_id) {
+      return { sceneId: null, hasPrev: false, prevReady: false, sectionDuration: 0, plannedSubjects: [] as string[] }
+    }
     const sec = plan.adapted_sections.find((s) => s.section_id === gap.section_id)
-    if (!sec) return { sceneId: null, hasPrev: false, prevReady: false, sectionDuration: 0 }
+    if (!sec) {
+      return { sceneId: null, hasPrev: false, prevReady: false, sectionDuration: 0, plannedSubjects: [] as string[] }
+    }
     const sceneId = `sc-${sec.order}`
     const prevSceneId = sec.order > 0 ? `sc-${sec.order - 1}` : null
     const prevScene = prevSceneId ? plan.main_track.find((s) => s.scene_id === prevSceneId) : null
+    // 读 ShotPlan.subject 作为多镜主体清单；空 subject 兜底跳过。
+    const plannedSubjects = (sec.shots ?? [])
+      .map((sh) => (sh.subject ?? '').trim())
+      .filter((s) => s.length > 0)
+      .slice(0, 4)
     return {
       sceneId,
       hasPrev: !!prevSceneId,
       prevReady: !!prevScene && prevScene.aigc_video_urls.length > 0,
       sectionDuration: Number(sec.duration_seconds) || 0,
+      plannedSubjects,
     }
   }, [plan, gap.section_id])
 
@@ -385,20 +393,13 @@ export function FillAigcPanel({
       if (mode === 'video' && useTailFrame && tailFrameDataUrl) {
         params.first_frame_url = tailFrameDataUrl
       }
-      // AI 生图再渲染：把 subjectsText（每行一项）作为 subjects 透传；
-      // 后端缺省会基于 section.content_description 自动抽取主体清单，
-      // 前端这里只在用户显式填了行才覆盖。
+      // AI 生图再渲染：subjects/n_shots 不再让用户输入，直接从 plan.adapted_sections.shots（plan_agent
+      // 已决策的分镜清单）读取。前端不再硬塞——为空时让后端走 content_description 兜底自动抽取。
       if (mode === 'image') {
-        const subjects = subjectsText
-          .split(/\r?\n/)
-          .map((s) => s.trim())
-          .filter(Boolean)
-          .slice(0, 4)
-        if (subjects.length > 0) {
-          params.subjects = subjects
-          params.n_shots = subjects.length
+        if (sceneInfo.plannedSubjects.length > 0) {
+          params.subjects = sceneInfo.plannedSubjects
+          params.n_shots = sceneInfo.plannedSubjects.length
         }
-        // 不再前端硬塞 n_shots；让后端按主体数 + content_description 自动决策
       }
       const body: GapFillRequest = {
         gap_id: gap.gap_id,
@@ -412,11 +413,18 @@ export function FillAigcPanel({
     } finally {
       setLoading(false)
     }
-  }, [gap.gap_id, gap.requirement, imageSlots, mode, onResult, plan, prompt, subjectsText, tailFrameDataUrl, useTailFrame])
+  }, [gap.gap_id, gap.requirement, imageSlots, mode, onResult, plan, prompt, sceneInfo.plannedSubjects, sceneInfo.sectionDuration, tailFrameDataUrl, useTailFrame])
 
-  const firstTaskId = fill?.chunk_task_ids?.[0] ?? fill?.new_material_id ?? extractTaskId(fill?.note)
+  // image 模式 Seedream 是同步出图，没有 Seedance 任务队列概念——不要拿 new_material_id 当 task_id 去
+  // 调 /gap/aigc-refresh（那是 Seedance 视频专用），否则会用 img-xxxx 当 task_id 查 Seedance 任务，
+  // 必然 404 → 把刚 ok 的 fill 覆盖成 warn → UI 显示『失败』。
+  const firstTaskId = mode === 'image'
+    ? null
+    : (fill?.chunk_task_ids?.[0] ?? fill?.new_material_id ?? extractTaskId(fill?.note))
   const canRefresh = !!fill && fill.status !== 'ok' && !!firstTaskId && mode === 'video'
   const expectedChunks = extractExpectedChunks(fill?.note) ?? fill?.chunks_count ?? 0
+  // image 模式：只要有 aigc_image_url 就算预览就绪——即便 status 不是 ok（如 persist 失败但 CDN url
+  // 仍可用），也得让用户能看到图，避免『图都出来了却显示生成失败』。
   const hasPreview = mode === 'image'
     ? !!fill?.aigc_image_url
     : !!fill?.video_urls && fill.video_urls.length > 0
@@ -564,8 +572,7 @@ export function FillAigcPanel({
           err={err}
           onRun={handleRun}
           fillExists={!!fill}
-          subjectsText={subjectsText}
-          onSubjectsTextChange={setSubjectsText}
+          plannedSubjects={sceneInfo.plannedSubjects}
         />
       )}
 
@@ -884,8 +891,7 @@ function PromptStage({
   err,
   onRun,
   fillExists,
-  subjectsText,
-  onSubjectsTextChange,
+  plannedSubjects,
 }: {
   mode: 'video' | 'image'
   prompt: string
@@ -908,8 +914,7 @@ function PromptStage({
   err: string | null
   onRun: () => void
   fillExists: boolean
-  subjectsText: string
-  onSubjectsTextChange: (s: string) => void
+  plannedSubjects: string[]
 }) {
   return (
     <>
@@ -1016,30 +1021,33 @@ function PromptStage({
         </p>
       </div>
 
-      {/* AI 生图再渲染：取消 n_shots 手动选择——后端根据 content_description 自动
-          抽取主体清单（1 主体 → 单镜头 ken-burns；2-4 主体 → 多镜头 storyboard / keyframe_morph）。
-          subjectsText 仍保留作为「手动覆盖」入口，留空则后端自动推断。 */}
+      {/* AI 生图再渲染：分镜数 / 主体清单都从 plan_agent 已经决策好的 ShotPlan 读，
+          用户不再需要手动填——这里只 read-only 展示一下让用户知道会出几张图。 */}
       {mode === 'image' && (
         <div className="space-y-1.5 rounded border border-border bg-secondary/30 p-2">
           <div className="flex items-center justify-between text-[11px]">
-            <span className="font-medium">主体（自动从内容轨抽取）</span>
-            <span className="text-[10px] text-muted-foreground">留空让 AI 解析</span>
+            <span className="font-medium">
+              本段分镜 · {plannedSubjects.length > 0 ? `${plannedSubjects.length} 张图` : '1 张图（单镜头）'}
+            </span>
+            <span className="text-[10px] text-muted-foreground">由内容轨自动决定</span>
           </div>
-          <textarea
-            value={subjectsText}
-            onChange={(e) => onSubjectsTextChange(e.target.value)}
-            rows={3}
-            placeholder="可选：每行一个主体描述（最多 4 行）。留空则后端按内容轨『主体：A、B、C』自动拆分。"
-            disabled={loading}
-            className={cn(
-              'w-full resize-y rounded border border-border bg-background px-2 py-1 text-[11px] outline-none focus:border-primary',
-              loading && 'cursor-wait opacity-60',
-            )}
-          />
-          <p className="text-[10px] text-muted-foreground">
-            后端会先看你填的主体；如果留空，就从本段 content_description 自动提取主体清单——
-            1 个主体走单镜头 ken-burns 动效，2-4 个主体自动拆成多镜头 storyboard / keyframe_morph 渲染。
-          </p>
+          {plannedSubjects.length > 0 ? (
+            <div className="flex flex-wrap gap-1">
+              {plannedSubjects.map((sub, i) => (
+                <span
+                  key={`${i}-${sub}`}
+                  className="rounded-full border border-border bg-background/70 px-2 py-0.5 text-[10px]"
+                  title={sub}
+                >
+                  镜 {i + 1}：{sub.slice(0, 20)}{sub.length > 20 ? '…' : ''}
+                </span>
+              ))}
+            </div>
+          ) : (
+            <p className="text-[10px] text-muted-foreground">
+              本段没有分镜规划 · 走单图 ken-burns 动效
+            </p>
+          )}
         </div>
       )}
 
@@ -1173,11 +1181,19 @@ function FillStatusCard({
                 : 'text-amber-600 dark:text-amber-300',
             )}
           >
-            {fill.status === 'ok' ? '完成' : '生成中 / 异常'}
+            {fill.status === 'ok'
+              ? '完成'
+              : mode === 'image'
+                ? '生图未完成'
+                : '生成中 / 异常'}
           </span>
         </span>
         <span className="text-muted-foreground">
-          {fill.chunks_count}/{expectedChunks || '?'} 段
+          {mode === 'image'
+            ? fill.aigc_image_urls && fill.aigc_image_urls.length > 1
+              ? `${fill.aigc_image_urls.length} 张图`
+              : '1 张图'
+            : `${fill.chunks_count}/${expectedChunks || '?'} 段`}
         </span>
       </div>
       {fill.note && <p className="text-muted-foreground">{fill.note}</p>}
@@ -1185,7 +1201,7 @@ function FillStatusCard({
       {!hasPreview && (
         <div className="rounded-md border border-amber-500/40 bg-amber-500/10 p-2">
           <p className="text-[11px] font-medium text-amber-700 dark:text-amber-300">
-            还没有可预览的视频
+            {mode === 'image' ? '图片还没就绪' : '还没有可预览的视频'}
             {autoPolling && (
               <span className="ml-2 text-[10px] font-normal text-amber-600/80">
                 · 自动刷新中 {autoPollAttempts}/{AUTO_POLL_MAX_ATTEMPTS}
@@ -1194,10 +1210,14 @@ function FillStatusCard({
           </p>
           <p className="mt-0.5 text-[10px] text-muted-foreground">
             {fill.status === 'ok'
-              ? '生成完成但暂时拿不到视频链接，可以点刷新再试。'
+              ? mode === 'image'
+                ? '生成完成但暂时拿不到图片链接，可以重新点开始生成再试。'
+                : '生成完成但暂时拿不到视频链接，可以点刷新再试。'
               : autoPolling
                 ? `视频还在生成（排队 / 渲染 / 上传中）。每 ${AUTO_POLL_INTERVAL_MS / 1000} 秒自动查一次，最长 ${(AUTO_POLL_INTERVAL_MS * AUTO_POLL_MAX_ATTEMPTS) / 60000} 分钟。`
-                : '视频还没出来（超时 / 排队中 / 失败）。点下方刷新可以再查一次。'}
+                : mode === 'image'
+                  ? `Seedream 生图未返回图片：${fill.note || '请检查提示词或重试'}`
+                  : '视频还没出来（超时 / 排队中 / 失败）。点下方刷新可以再查一次。'}
           </p>
           {firstTaskId && (
             <p className="mt-1 font-mono text-[10px] text-muted-foreground">

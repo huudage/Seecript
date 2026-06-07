@@ -346,6 +346,33 @@ async def fill_all(req: GapFillAllRequest) -> GapFillAllResponse:
         if req.action == "aigc":
             prompt = template or f"短视频画面：{gap.requirement}"
             params = _inject_aigc_params(gap, {"prompt": prompt})
+        elif req.action == "aigc_image":
+            # AI 生图再渲染：批量逐段串行调 Seedream。subjects/n_shots 由 fill_gap 内部
+            # 从 plan.adapted_sections.shots 兜底自动抽取，不需要前端透传。
+            prompt = template or f"短视频画面：{gap.requirement}"
+            params = {"prompt": prompt}
+            # 把本段已规划分镜清单透传，让 Seedream 按 shot.subject 生成多镜头
+            section = next(
+                (s for s in plan.adapted_sections if s.section_id == gap.section_id),
+                None,
+            )
+            if section and section.shots:
+                planned_subjects = [
+                    (sh.subject or "").strip()
+                    for sh in section.shots
+                    if (sh.subject or "").strip()
+                ][:4]
+                if planned_subjects:
+                    params["subjects"] = planned_subjects
+                    params["n_shots"] = len(planned_subjects)
+            # ratio 来源同 single-fill 的 _inject_aigc_params 路径
+            ratio = (
+                plan.settings.aspect_ratio
+                if plan.settings and plan.settings.aspect_ratio
+                else None
+            )
+            if ratio:
+                params["ratio"] = ratio
         else:
             # copy：复用 single-fill 的 prompt_hint 协议；
             # 同步把 plan 里已有字卡的版式快照传过去，让后续生成的字卡保持一致风格。

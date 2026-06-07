@@ -7,6 +7,7 @@ import { patchPlanSettings } from '@/api/plan'
 import { createSSE } from '@/api/sse'
 import { commitStep, getStepSnapshot } from '@/api/steps'
 import { deleteVoice, synthesizeAll, synthesizeOne } from '@/api/voice'
+import { BatchAigcButton } from '@/components/compose/BatchAigcButton'
 import { BatchCopyButton } from '@/components/compose/BatchCopyButton'
 import { BgmPickerDialog } from '@/components/compose/BgmPickerDialog'
 import { BriefInput } from '@/components/compose/BriefInput'
@@ -1595,6 +1596,13 @@ export default function ComposePage() {
                 existingTextCards={fills
                   .filter((f) => f.status === 'ok' && f.action === 'copy' && f.text_card_spec)
                   .map((f) => f.text_card_spec!)}
+                onDone={handleBatchDone}
+              />
+              <BatchAigcButton
+                mode="image"
+                planId={plan.plan_id}
+                pendingCount={pendingGapsCount}
+                skipGapIds={fills.filter((f) => f.status === 'ok').map((f) => f.gap_id)}
                 onDone={handleBatchDone}
               />
             </div>

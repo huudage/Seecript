@@ -915,11 +915,12 @@ class GapFillAllRequest(BaseModel):
 
     action:
       - "aigc"（默认，向后兼容）：每个缺口走 Seedance T2V 链式生成
+      - "aigc_image"：每个缺口走 Seedream 文生图 + Remotion 动效渲染（成本远低于 T2V）
       - "copy"：每个缺口走 LLM 文案补全（用 gap.requirement 作为 prompt_hint）
     """
 
     plan_id: str
-    action: Literal["copy", "aigc"] = Field(
+    action: Literal["copy", "aigc", "aigc_image"] = Field(
         default="aigc",
         description="批量补全使用的动作；rerank 不支持批量（依赖人工挑选）",
     )

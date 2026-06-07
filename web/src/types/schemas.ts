@@ -951,7 +951,7 @@ export interface PlanBuildRequest {
 export interface GapFillAllRequest {
   plan_id: PlanId
   /** 批量补全使用的动作；默认 aigc（向后兼容）。rerank 不支持批量。 */
-  action?: 'copy' | 'aigc'
+  action?: 'copy' | 'aigc' | 'aigc_image'
   prompt_template?: string | null
   /** 已采纳/已完成的 gap_id 列表，传过去让后端跳过它们（避免覆盖单条手动生成的字卡/镜头）。 */
   skip_gap_ids?: GapId[]
