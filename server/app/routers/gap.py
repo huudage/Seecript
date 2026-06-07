@@ -3,7 +3,8 @@
 `POST /api/gap/detect`  根据 plan_id（反查 sample manifest）+ session_id（反查用户素材）
                         算槽位匹配，返回 Gap[]；结果存进 GapStore，让 fill 直接 lookup。
 `POST /api/gap/fill`    按 gap_id 从 GapStore 拿 Gap，分发到 rerank / copy / aigc。
-`POST /api/gap/fill-all` 一键 AI 生成所有 status≠ok 的 gap（顺序执行，遇错即停）。
+`POST /api/gap/fill-all` 一键 AI 生成所有 status≠ok 的 gap；
+                        aigc T2V 链式承接走串行+遇错即停，aigc_image/copy 段间独立走 asyncio.gather 并发。
 """
 from __future__ import annotations
 
@@ -320,12 +321,12 @@ async def fill(req: GapFillRequest) -> FillResult:
 
 @router.post("/gap/fill-all", response_model=GapFillAllResponse)
 async def fill_all(req: GapFillAllRequest) -> GapFillAllResponse:
-    """一键补全：把 plan 下所有 status≠ok 的 gap 顺序走 action。
+    """一键补全：把 plan 下所有 status≠ok 的 gap 走 action。
 
-    顺序执行（aigc 链式生成依赖时序，copy 也走串行避免 LLM 配额抖动）。
-    - action="aigc"：T2V 链式承接，前一段失败会污染尾帧，遇错即停（保留原语义）。
-    - action="aigc_image" / "copy"：每段独立，best-effort 继续跑剩余 gap，
-      把失败原因写进 stopped_reason 但不中断；调用方收到 fills 后逐个标注成功/失败。
+    - action="aigc"：T2V 链式承接（前段尾帧 → 后段首帧），必须串行 + 遇错即停。
+    - action="aigc_image" / "copy"：每段独立，**并行执行**（asyncio.gather），
+      避免 4 段串行下 nginx 60s upstream 超时（即"failed to fetch"）。
+      失败段写进 stopped_reason 但不中断其它并发任务。
     """
     plan = plan_store.get(req.plan_id)
     if plan is None:
@@ -351,21 +352,16 @@ async def fill_all(req: GapFillAllRequest) -> GapFillAllResponse:
 
     log.info("[gap-fill-all] plan=%s action=%s pending=%d", req.plan_id, req.action, len(pending))
 
-    fills: list[FillResult] = []
-    failed_gap_id: Optional[str] = None
-    stopped_reason: Optional[str] = None
     template = (req.prompt_template or "").strip()
 
-    for gap in pending:
+    def _build_params(gap: Gap) -> dict:
+        """根据 action 类型为单个 gap 构建 fill_gap 参数。"""
         if req.action == "aigc":
             prompt = template or f"短视频画面：{gap.requirement}"
-            params = _inject_aigc_params(gap, {"prompt": prompt})
-        elif req.action == "aigc_image":
-            # AI 生图再渲染：批量逐段串行调 Seedream。subjects/n_shots 由 fill_gap 内部
-            # 从 plan.adapted_sections.shots 兜底自动抽取，不需要前端透传。
+            return _inject_aigc_params(gap, {"prompt": prompt})
+        if req.action == "aigc_image":
             prompt = template or f"短视频画面：{gap.requirement}"
-            params = {"prompt": prompt}
-            # 把本段已规划分镜清单透传，让 Seedream 按 shot.subject 生成多镜头
+            params: dict = {"prompt": prompt}
             section = next(
                 (s for s in plan.adapted_sections if s.section_id == gap.section_id),
                 None,
@@ -379,7 +375,6 @@ async def fill_all(req: GapFillAllRequest) -> GapFillAllResponse:
                 if planned_subjects:
                     params["subjects"] = planned_subjects
                     params["n_shots"] = len(planned_subjects)
-            # ratio 来源同 single-fill 的 _inject_aigc_params 路径
             ratio = (
                 plan.settings.aspect_ratio
                 if plan.settings and plan.settings.aspect_ratio
@@ -387,56 +382,79 @@ async def fill_all(req: GapFillAllRequest) -> GapFillAllResponse:
             )
             if ratio:
                 params["ratio"] = ratio
+            return params
+        # copy
+        existing_cards: list[dict[str, object]] = []
+        if req.existing_text_cards:
+            for spec in req.existing_text_cards:
+                existing_cards.append(spec.model_dump())
         else:
-            # copy：复用 single-fill 的 prompt_hint 协议；
-            # 同步把 plan 里已有字卡的版式快照传过去，让后续生成的字卡保持一致风格。
-            # 优先用前端透传（req.existing_text_cards）——绕过『fill-all 抢在 runAnalyze 之前
-            # 用旧 plan_id 调进来时 plan.main_track 字卡为空』的时序竞态。
-            existing_cards: list[dict[str, object]] = []
-            if req.existing_text_cards:
-                for spec in req.existing_text_cards:
-                    existing_cards.append(spec.model_dump())
-            else:
-                for sc in plan.main_track:
-                    if sc.text_card_spec is None:
-                        continue
-                    # 跳过当前 gap 自己对应的段（不让自己抄自己，循环驱动风格漂移）
-                    if gap.section_id:
-                        m = re.match(r"^sc-(\d+)$", sc.scene_id or "")
-                        if m:
-                            sec = next(
-                                (s for s in plan.adapted_sections if s.order == int(m.group(1))), None,
-                            )
-                            if sec and sec.section_id == gap.section_id:
-                                continue
-                    existing_cards.append(sc.text_card_spec.model_dump())
-            log.info(
-                "[gap-fill-all] copy gap=%s existing_cards=%d (from %s)",
-                gap.gap_id, len(existing_cards),
-                "frontend" if req.existing_text_cards else "plan.main_track",
-            )
-            params = {
-                "prompt_hint": gap.requirement,
-                "existing_text_cards": existing_cards,
-            }
-        try:
-            result = await fill_gap(gap, req.action, params)
-        except Exception as exc:
-            log.exception("[gap-fill-all] gap=%s action=%s raised", gap.gap_id, req.action)
-            failed_gap_id = gap.gap_id
-            stopped_reason = f"生成异常：{exc}"
-            # aigc T2V 链式承接（尾帧续写），前段挂掉后续没法继续；其他 action 段间独立，best-effort
-            if req.action == "aigc":
+            for sc in plan.main_track:
+                if sc.text_card_spec is None:
+                    continue
+                if gap.section_id:
+                    m = re.match(r"^sc-(\d+)$", sc.scene_id or "")
+                    if m:
+                        sec = next(
+                            (s for s in plan.adapted_sections if s.order == int(m.group(1))), None,
+                        )
+                        if sec and sec.section_id == gap.section_id:
+                            continue
+                existing_cards.append(sc.text_card_spec.model_dump())
+        log.info(
+            "[gap-fill-all] copy gap=%s existing_cards=%d (from %s)",
+            gap.gap_id, len(existing_cards),
+            "frontend" if req.existing_text_cards else "plan.main_track",
+        )
+        return {
+            "prompt_hint": gap.requirement,
+            "existing_text_cards": existing_cards,
+        }
+
+    fills: list[FillResult] = []
+    failed_gap_id: Optional[str] = None
+    stopped_reason: Optional[str] = None
+
+    if req.action == "aigc":
+        # T2V 链式承接：必须串行，前段尾帧 → 后段首帧；遇错即停（之前的 break 语义）
+        for gap in pending:
+            params = _build_params(gap)
+            try:
+                result = await fill_gap(gap, req.action, params)
+            except Exception as exc:
+                log.exception("[gap-fill-all] gap=%s action=%s raised", gap.gap_id, req.action)
+                failed_gap_id = gap.gap_id
+                stopped_reason = f"生成异常：{exc}"
                 break
-            continue
-        result = await asyncio.to_thread(_maybe_auto_tts, result)
-        fills.append(result)
-        if result.status != "ok":
-            failed_gap_id = gap.gap_id
-            stopped_reason = f"{gap.gap_id} 失败：{result.note or result.status}"
-            if req.action == "aigc":
+            result = await asyncio.to_thread(_maybe_auto_tts, result)
+            fills.append(result)
+            if result.status != "ok":
+                failed_gap_id = gap.gap_id
+                stopped_reason = f"{gap.gap_id} 失败：{result.note or result.status}"
                 break
-            # aigc_image / copy：记录失败但继续跑剩余 gap
+    else:
+        # aigc_image / copy：段间独立 → 并行执行（return_exceptions 保证一段挂掉
+        # 不会污染 gather 的其他任务；失败的 gap 仍有 fill 占位 / stopped_reason 兜底）
+        async def _run_one(gap: Gap) -> tuple[Gap, FillResult | Exception]:
+            try:
+                r = await fill_gap(gap, req.action, _build_params(gap))
+                r = await asyncio.to_thread(_maybe_auto_tts, r)
+                return gap, r
+            except Exception as exc:  # noqa: BLE001
+                log.exception("[gap-fill-all] gap=%s action=%s raised", gap.gap_id, req.action)
+                return gap, exc
+
+        outcomes = await asyncio.gather(*[_run_one(g) for g in pending])
+        for gap, outcome in outcomes:
+            if isinstance(outcome, Exception):
+                if failed_gap_id is None:
+                    failed_gap_id = gap.gap_id
+                    stopped_reason = f"生成异常：{outcome}"
+                continue
+            fills.append(outcome)
+            if outcome.status != "ok" and failed_gap_id is None:
+                failed_gap_id = gap.gap_id
+                stopped_reason = f"{gap.gap_id} 失败：{outcome.note or outcome.status}"
 
     return GapFillAllResponse(
         plan_id=req.plan_id,
