@@ -410,9 +410,19 @@ function ShotRow({
               <span className="text-[10px] font-semibold">字卡占位（瞬时）</span>
               <button
                 type="button"
-                disabled={busy}
+                disabled={busy || !mainText.trim()}
+                title={
+                  !mainText.trim()
+                    ? '请先填主文案——空文案会落『（待补全）』占位字到画面'
+                    : '应用字卡占位'
+                }
                 onClick={() => void callSwap({ source: 'text_card', main_text: mainText, sub_text: subText })}
-                className="rounded bg-primary px-2 py-0.5 text-[10px] text-primary-foreground disabled:opacity-50"
+                className={cn(
+                  'rounded px-2 py-0.5 text-[10px]',
+                  busy || !mainText.trim()
+                    ? 'cursor-not-allowed bg-secondary text-muted-foreground'
+                    : 'bg-primary text-primary-foreground',
+                )}
               >
                 应用
               </button>

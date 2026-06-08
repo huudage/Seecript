@@ -281,7 +281,22 @@ export default function ComposePage() {
   // 关键场景：用户点了「✨ 参照样板批量补字卡」之后，乐观更新立刻把 pendingGapsCount 抹零，
   // 但后端 /gap/fill-all 还在跑、plan rebuild 也还没回来；此时若让用户进 step3，
   // 内容轨预览的还是旧的 text-card-fill-empty 占位，不是补好后的真字卡。
-  const [batchFillBusy, setBatchFillBusy] = useState(false)
+  //
+  // 审计修 B1：原本是单 boolean 共享在 BatchCopy + BatchAigc 之间——任一先完成 finally 就解锁，
+  // 另一个仍在跑用户即可进 step3。改为 Set<key>：两个按钮各持一个 key，任意非空都视为忙。
+  const [batchBusyKeys, setBatchBusyKeys] = useState<Set<string>>(() => new Set())
+  const batchFillBusy = batchBusyKeys.size > 0
+  const setBatchBusyFor = useCallback(
+    (key: string) => (busy: boolean) => {
+      setBatchBusyKeys((prev) => {
+        const next = new Set(prev)
+        if (busy) next.add(key)
+        else next.delete(key)
+        return next
+      })
+    },
+    [],
+  )
   const lastStep3PlanIdRef = useRef<string | null>(null)
   // 通过 ref 读取当前 activeStep，避免把 activeStep 加入 useEffect 依赖
   // 而引发 plan_id 没变也跑这段重置逻辑的副作用
@@ -945,18 +960,22 @@ export default function ComposePage() {
    * 2. 若开了配音，自动一键 TTS 全片
    * 3. 自动跑一次包装 AI 推荐 + apply
    *
-   * 失败不阻塞 step3 解锁——用户进 step3 后可手动重跑各项。
+   * 审计修 B2：原本 setStep3Unlocked(true) + setActiveStep(3) 在 try 之前就执行——
+   * 若 regenerateNarrations 抛错，用户已经被推到 step3 看到没口播的轨。
+   * 改为：先在 try 内跑完关键路径（regenerateNarrations 是必须项），
+   * 再 setStep3Unlocked(true) + setActiveStep(3)。TTS 与包装失败仍走子 try-catch 不阻塞。
    */
   const handleEnterStep3 = useCallback(async () => {
     if (!plan) return
-    setStep3Unlocked(true)
-    setActiveStep(3)
     setTrackBusy(true)
     setError(null)
     try {
-      // 1) 重写口播
+      // 1) 重写口播（关键路径：失败就不进 step3）
       const ren = await regenerateNarrations(plan.plan_id)
       setPlanAndPush(ren.plan)
+      // 关键路径成功 → 解锁 step3 并切过去；后续 TTS / 包装失败仅设 error 不阻塞
+      setStep3Unlocked(true)
+      setActiveStep(3)
       // 2) 自动 TTS（若启用了配音 + 有更新的段落）
       if (ren.plan.settings.voiceover_enabled && ren.updated_scene_ids.length > 0) {
         try {
@@ -1719,7 +1738,7 @@ export default function ComposePage() {
                   .filter((f) => f.status === 'ok' && f.action === 'copy' && f.text_card_spec)
                   .map((f) => f.text_card_spec!)}
                 onDone={handleBatchDone}
-                onLoadingChange={setBatchFillBusy}
+                onLoadingChange={setBatchBusyFor('copy')}
               />
               <BatchAigcButton
                 mode="image"
@@ -1727,7 +1746,7 @@ export default function ComposePage() {
                 pendingCount={pendingGapsCount}
                 skipGapIds={fills.filter((f) => f.status === 'ok').map((f) => f.gap_id)}
                 onDone={handleBatchDone}
-                onLoadingChange={setBatchFillBusy}
+                onLoadingChange={setBatchBusyFor('aigc_image')}
               />
             </div>
           </div>
