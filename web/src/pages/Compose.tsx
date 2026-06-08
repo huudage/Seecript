@@ -2060,8 +2060,8 @@ export default function ComposePage() {
               onPlanUpdate={setPlanAndPush}
               className="mb-2"
             />
-            <div className="mb-3 grid gap-3 md:grid-cols-[minmax(0,280px)_1fr]">
-              <div className="rounded-lg border border-border bg-card p-2">
+            <div className="mb-3 grid items-start gap-3 md:grid-cols-[minmax(0,280px)_1fr]">
+              <div className="rounded-lg border border-border bg-card p-2 md:sticky md:top-4 md:self-start">
                 <div className="mb-1.5 flex items-center justify-between px-1 text-[11px] text-muted-foreground">
                   <span className="font-medium">实时预览（无需等渲染）</span>
                   <span className="font-mono">{playheadSeconds.toFixed(1)}s / {plan.duration_seconds.toFixed(1)}s</span>
