@@ -565,8 +565,48 @@ async def build_plan(req: PlanBuildRequest) -> Plan:
                         animation_spec=None,
                     ))
                 elif source == "user_material":
-                    # PR-B：优先按 ShotPlan.matched_material_* 选定的 MaterialShot；
-                    # 没匹配时回落到 PR-A 的 shot_idx % len(mat.shots) cyclic 策略。
+                    # stage-26 PR-N.2 三档物化决策（替代 PR-B 的 cyclic 兜底）：
+                    #   good   → 按 matched_material_shot_index 精准切（原 PR-B 逻辑）
+                    #   weak   → 同上，但 needs_fill=True 让前端段卡显示『待修补』提醒
+                    #   missing→ 不再 cyclic 取错素材，直接降级 text_card 占位
+                    #            （main_text=shot.subject）+ needs_fill=True
+                    #   无 quality 字段（旧 plan 反序列化）→ 走原 cyclic 兜底，不标 needs_fill
+                    quality = getattr(shot, "match_quality", None) if shot else None
+                    needs_fill = quality in ("weak", "missing") if quality else False
+
+                    if quality == "missing":
+                        # 缺匹配：用 text_card 占位（避免 cyclic 把开场镜塞到收尾段）
+                        main_t = (shot_subject or (shot_narration.split("。")[0] if shot_narration else "") or "")[:24]
+                        sub_t = (shot_narration if shot_subject else "。".join(shot_narration.split("。")[1:]))[:40]
+                        from ..schemas import TextCardSpec  # 延迟避免循环
+                        spec = TextCardSpec(
+                            main_text=main_t or sec.theme or sec.role,
+                            sub_text=sub_t,
+                            duration_seconds=round(max(1.5, min(15.0, shot_dur)), 2),
+                        )
+                        main_track.append(Scene(
+                            scene_id=sub_id,
+                            section=sec.role,  # type: ignore[arg-type]
+                            parent_section_id=sec.section_id,
+                            shot_order=shot_idx,
+                            shot_subject=shot_subject,
+                            source="text_card",  # type: ignore[arg-type]
+                            source_ref=f"text-card-fallback-{sec.section_id}-sh-{shot_idx}",
+                            start=timeline_cursor,
+                            duration=shot_dur,
+                            in_point=0.0,
+                            out_point=None,
+                            narration=shot_narration,
+                            voiceover_url=voiceover_url if shot_idx == 0 else None,
+                            aigc_video_urls=[],
+                            aigc_image_url=None,
+                            text_card_spec=spec,
+                            animation_spec=None,
+                            needs_fill=True,
+                        ))
+                        timeline_cursor += shot_dur
+                        continue
+
                     in_pt = 0.0
                     out_pt: float | None = shot_dur
                     chosen_mat_id = source_ref
@@ -589,6 +629,8 @@ async def build_plan(req: PlanBuildRequest) -> Plan:
                             in_pt = float(mshot.start)
                             cut_end = min(float(mshot.end), in_pt + shot_dur)
                             out_pt = cut_end
+                            # 老 plan 没跑过 shot_matcher → cyclic 命中也要标待修补
+                            needs_fill = True
                     main_track.append(Scene(
                         scene_id=sub_id,
                         section=sec.role,  # type: ignore[arg-type]
@@ -607,6 +649,7 @@ async def build_plan(req: PlanBuildRequest) -> Plan:
                         aigc_image_url=None,
                         text_card_spec=None,
                         animation_spec=None,
+                        needs_fill=needs_fill,
                     ))
                 else:  # aigc_t2v / sample / fallback
                     # 简化：aigc_t2v 按 shot 比例切割 video_urls；不够 N 时复用最后一段
@@ -1123,6 +1166,237 @@ async def list_plans(project_id: str) -> list[Plan]:
     """按 project_id 列出该项目所有 plans。前端进 Compose 时根据 step snapshot
     拿单个 plan_id；用本接口可在调试/历史回看时拉全量。"""
     return plan_store.list_by_project(project_id)
+
+
+# ---------------------------------------------------------------------------
+# stage-26 PR-N.4：单镜（Scene）换源
+# ---------------------------------------------------------------------------
+
+class SceneSwapSourceRequest(BaseModel):
+    """POST /plan/{plan_id}/scene/{scene_id}/swap-source 入参。
+
+    把单个 Scene 的 source 切到指定类型，让用户精修『匹配不上的某一镜』而不必整段换源。
+    每种 source 走对应的同步生成路径——返回时 Scene 已就绪可立即预览。
+    """
+    source: Literal["user_material", "aigc_image", "aigc_t2v", "text_card"] = Field(
+        ..., description="目标 source 类型"
+    )
+    material_id: Optional[str] = Field(default=None, description="source=user_material 必填")
+    material_shot_index: Optional[int] = Field(
+        default=None, description="source=user_material 时指定 MaterialShot.index；缺省走首镜"
+    )
+    prompt_hint: Optional[str] = Field(
+        default=None, max_length=200,
+        description="source=aigc_image / aigc_t2v 时给 LLM 的额外提示；缺省走 shot.subject + visual",
+    )
+    main_text: Optional[str] = Field(
+        default=None, max_length=24,
+        description="source=text_card 时主文案；缺省走 shot.subject",
+    )
+    sub_text: Optional[str] = Field(default=None, max_length=40, description="source=text_card 时副文案")
+
+
+@router.post("/plan/{plan_id}/scene/{scene_id}/swap-source", response_model=Plan)
+async def swap_scene_source(
+    plan_id: str, scene_id: str, body: SceneSwapSourceRequest
+) -> Plan:
+    """单镜换源：把某 Scene 的 source 切到 user_material / aigc_image / aigc_t2v / text_card。
+
+    与 PATCH /scene/{id} 区别：那是改文本字段（narration/theme/content_description），
+    本接口是改素材来源——会同步调 Seedream / Seedance / 切素材入出点 / 装 TextCardSpec，
+    返回 plan 时该 Scene 已就绪。
+
+    成功后清掉 needs_fill。失败抛 502 / 500，plan 不变。
+    """
+    plan = plan_store.get(plan_id)
+    if plan is None:
+        raise HTTPException(status_code=404, detail=f"plan_id 不存在：{plan_id}")
+    scene_idx = next((i for i, s in enumerate(plan.main_track) if s.scene_id == scene_id), None)
+    if scene_idx is None:
+        raise HTTPException(status_code=404, detail=f"scene_id 不存在：{scene_id}")
+    scene = plan.main_track[scene_idx]
+
+    # 反查归属 AdaptedSection / ShotPlan，给 aigc 路径喂上下文
+    section: Optional[AdaptedSection] = None
+    shot_plan = None
+    if scene.parent_section_id:
+        section = next(
+            (sec for sec in plan.adapted_sections if sec.section_id == scene.parent_section_id),
+            None,
+        )
+        if section is not None and section.shots:
+            shot_plan = next(
+                (sh for sh in section.shots if sh.order == scene.shot_order),
+                None,
+            )
+
+    shot_dur = scene.duration
+
+    if body.source == "text_card":
+        # 直接装 TextCardSpec，不调外部
+        main_t = (body.main_text or scene.shot_subject or (scene.narration or "").split("。")[0] or "")[:24]
+        if not main_t and section is not None:
+            main_t = (section.theme or section.role)[:24]
+        sub_t = (body.sub_text or "")[:40]
+        spec = TextCardSpec(
+            main_text=main_t or "（待补全）",
+            sub_text=sub_t,
+            duration_seconds=round(max(1.5, min(15.0, shot_dur)), 2),
+        )
+        new_scene = scene.model_copy(update={
+            "source": "text_card",
+            "source_ref": f"text-card-swap-{scene_id}",
+            "in_point": 0.0,
+            "out_point": None,
+            "aigc_video_urls": [],
+            "aigc_image_url": None,
+            "text_card_spec": spec,
+            "animation_spec": None,
+            "needs_fill": False,
+        })
+    elif body.source == "user_material":
+        if not body.material_id:
+            raise HTTPException(status_code=400, detail="source=user_material 必须传 material_id")
+        proj_id = plan.project_id
+        if not proj_id:
+            raise HTTPException(status_code=400, detail="plan 缺少 project_id，无法定位用户素材")
+        mat = material_store.get(proj_id, body.material_id)
+        if mat is None:
+            raise HTTPException(status_code=404, detail=f"material_id 不存在：{body.material_id}")
+        in_pt = 0.0
+        out_pt: float | None = shot_dur
+        if mat.shots:
+            target_idx = body.material_shot_index
+            mshot = None
+            if target_idx is not None:
+                mshot = next((ms for ms in mat.shots if ms.index == target_idx), None)
+            if mshot is None:
+                mshot = mat.shots[0]
+            in_pt = float(mshot.start)
+            out_pt = min(float(mshot.end), in_pt + shot_dur)
+        new_scene = scene.model_copy(update={
+            "source": "user_material",
+            "source_ref": mat.material_id,
+            "in_point": in_pt,
+            "out_point": out_pt,
+            "aigc_video_urls": [],
+            "aigc_image_url": None,
+            "text_card_spec": None,
+            "animation_spec": None,
+            "needs_fill": False,
+        })
+    elif body.source == "aigc_image":
+        # 同步走 Seedream 单图：用 shot 主题 + 用户 hint
+        from ..services.agent.aigc_prompt_agent import _fallback_prompt
+        from ..services.agent.gap_agent import _persist_aigc_image
+        from ..services.seedream_client import SeedreamError, get_seedream_client
+        from ..schemas import Gap
+        # 拼 prompt：优先用 shot.visual / subject，hint 拼到尾巴
+        if shot_plan is not None:
+            base_text = " ".join(s for s in (shot_plan.subject, shot_plan.visual) if s).strip()
+        else:
+            base_text = scene.shot_subject or (scene.narration or "")
+        if body.prompt_hint:
+            base_text = f"{base_text}（{body.prompt_hint}）" if base_text else body.prompt_hint
+        if not base_text:
+            base_text = section.content_description if section else f"短视频画面：{scene.section}"
+        prompt = base_text[:200]
+        ratio_pref = (plan.settings.aspect_ratio if plan.settings else None) or "9:16"
+        try:
+            seedream = get_seedream_client()
+            images = await seedream.generate(prompt, ratio=ratio_pref, n=1, watermark=False)
+        except SeedreamError as exc:
+            raise HTTPException(status_code=502, detail=f"Seedream 出图失败：{exc}") from exc
+        except Exception as exc:  # noqa: BLE001
+            raise HTTPException(status_code=502, detail=f"Seedream 出图异常：{exc}") from exc
+        if not images:
+            raise HTTPException(status_code=502, detail="Seedream 返回 0 张图")
+        persisted = await _persist_aigc_image(images[0].url, scene_id)
+        final_url = persisted or images[0].url
+        new_scene = scene.model_copy(update={
+            "source": "aigc_image",
+            "source_ref": f"img-swap-{scene_id}",
+            "in_point": 0.0,
+            "out_point": None,
+            "aigc_video_urls": [],
+            "aigc_image_url": final_url,
+            "text_card_spec": None,
+            "animation_spec": None,
+            "needs_fill": False,
+        })
+        log.info(
+            "[scene-swap] %s → aigc_image url=%s prompt='%s'",
+            scene_id, final_url[:80], prompt[:60],
+        )
+    elif body.source == "aigc_t2v":
+        # 同步走 Seedance 单段（per scene 时长 ≤ 12s 时 1 次提交即可，超过则切链；本接口不切链，直接最长 12s）
+        from ..services.t2v_client import T2VError, get_t2v_client
+        from ..services.agent.gap_agent import SEEDANCE_MAX_SECONDS, _persist_aigc_video
+        if shot_plan is not None:
+            base_text = " ".join(s for s in (shot_plan.subject, shot_plan.visual) if s).strip()
+        else:
+            base_text = scene.shot_subject or (scene.narration or "")
+        if body.prompt_hint:
+            base_text = f"{base_text}（{body.prompt_hint}）" if base_text else body.prompt_hint
+        if not base_text:
+            base_text = section.content_description if section else f"短视频画面：{scene.section}"
+        prompt = base_text[:200]
+        ratio_pref = (plan.settings.aspect_ratio if plan.settings else None) or "9:16"
+        per_chunk_seconds = int(round(min(float(SEEDANCE_MAX_SECONDS), max(2.0, shot_dur))))
+        t2v = get_t2v_client()
+        try:
+            submit = await t2v.submit(
+                prompt=prompt, duration_seconds=per_chunk_seconds, ratio=ratio_pref,
+            )
+        except T2VError as exc:
+            raise HTTPException(status_code=502, detail=f"Seedance 提交失败：{exc}") from exc
+        # 简化：循环 query 等待完成，超时拍 502
+        import asyncio as _asyncio, time as _time
+        deadline = _time.time() + 180.0
+        video_url = ""
+        while _time.time() < deadline:
+            try:
+                q = await t2v.query(submit.task_id)
+            except T2VError as exc:
+                raise HTTPException(status_code=502, detail=f"Seedance 轮询失败：{exc}") from exc
+            if q.status == "succeeded" and q.video_url:
+                video_url = q.video_url
+                break
+            if q.status in ("failed", "cancelled"):
+                raise HTTPException(
+                    status_code=502,
+                    detail=f"Seedance 任务失败：{q.fail_reason or 'unknown'}",
+                )
+            await _asyncio.sleep(4.0)
+        if not video_url:
+            raise HTTPException(status_code=504, detail="Seedance 任务超时（>180s）")
+        persisted = await _persist_aigc_video(video_url, scene_id)
+        final_url = persisted or video_url
+        new_scene = scene.model_copy(update={
+            "source": "aigc_t2v",
+            "source_ref": submit.task_id,
+            "in_point": 0.0,
+            "out_point": None,
+            "aigc_video_urls": [final_url],
+            "aigc_image_url": None,
+            "text_card_spec": None,
+            "animation_spec": None,
+            "needs_fill": False,
+        })
+        log.info(
+            "[scene-swap] %s → aigc_t2v url=%s prompt='%s'",
+            scene_id, final_url[:80], prompt[:60],
+        )
+    else:
+        raise HTTPException(status_code=400, detail=f"不支持的 source 类型：{body.source}")
+
+    plan.main_track[scene_idx] = new_scene
+    plan_store.put(plan)
+    log.info(
+        "[plan] scene source swapped plan=%s scene=%s %s → %s",
+        plan_id, scene_id, scene.source, body.source,
+    )
+    return plan
 
 
 # ---------------------------------------------------------------------------

@@ -1162,6 +1162,21 @@ class ShotPlan(BaseModel):
         default=None,
         description="匹配上的用户素材内分镜 index（MaterialShot.index）",
     )
+    match_quality: Literal["good", "weak", "missing"] = Field(
+        default="good",
+        description=(
+            "stage-26 PR-N.1：匹配质量三档。"
+            "good=匹配分 ≥0.30，weak=≥0.10，missing=<0.10。"
+            "物化层根据此字段决策：missing 不再 cyclic 取错素材，改走 text_card 占位；"
+            "weak 仍走 user_material 但前端会显示『待修补』提醒。"
+        ),
+    )
+    match_score: float = Field(
+        default=0.0,
+        ge=0.0,
+        le=1.0,
+        description="shot_matcher 给的原始匹配分（0-1），用于排错与回归分析，前端不直显数字。",
+    )
     targets: list[ShotTarget] = Field(
         default_factory=list,
         max_length=4,
@@ -1290,6 +1305,14 @@ class Scene(BaseModel):
     text_card_spec: Optional["TextCardSpec"] = Field(
         default=None,
         description="source=text_card 且来自 copy fill 时的字卡渲染 spec；为 None 时 _render_text_card 用默认 spec。",
+    )
+    needs_fill: bool = Field(
+        default=False,
+        description=(
+            "stage-26 PR-N.1：本 Scene 需要用户介入修补（弱匹配 / 缺匹配 / fallback 兜底）。"
+            "True 时前端段卡上挂橙色提示 chip + 段卡质量色条把这一镜计入『待修补』。"
+            "默认 False（匹配良好或用户已主动确认）。换源接口成功后会清回 False。"
+        ),
     )
     transition_in: Optional[SceneTransition] = Field(
         default=None,

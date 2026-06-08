@@ -29,6 +29,29 @@ const IMPACT_COLOR: Record<Gap['impact'], string> = {
   low: 'bg-slate-400',
 }
 
+/** stage-26 PR-N.3：分镜级匹配质量色条聚合。
+ *
+ * 段卡顶部显示一条三色质量色条，按本段 shots[*].match_quality 比例分段：
+ *   - good (≥0.30)  → 绿
+ *   - weak (≥0.10)  → 橙（『待修补』提醒）
+ *   - missing (<0.10 / 无匹配) → 灰（物化层兜底成 text_card 占位）
+ *
+ * 用户一眼能看到本段哪些镜头需要换源；具体到镜头的换源 UI 在 SceneEditPanel（PR-N.5）。
+ */
+type QualityCounts = { good: number; weak: number; missing: number; total: number }
+
+function countShotQuality(sec: AdaptedSection): QualityCounts {
+  const counts: QualityCounts = { good: 0, weak: 0, missing: 0, total: 0 }
+  for (const sh of sec.shots ?? []) {
+    counts.total += 1
+    const q = sh.match_quality
+    if (q === 'good') counts.good += 1
+    else if (q === 'weak') counts.weak += 1
+    else counts.missing += 1
+  }
+  return counts
+}
+
 /** 段汇总状态：取 gaps 中最差状态（miss > warn > ok）。无 gap 时为 'empty'。 */
 type SectionStatus = GapStatus | 'empty'
 
@@ -123,6 +146,7 @@ export function AdaptedSectionList({
         const status = rollup(sectionGaps, filledGapIds)
         const meta = getSectionMeta(sec.role, pattern)
         const tempo = sec.tempo
+        const qc = countShotQuality(sec)
         return (
           <li
             key={sec.section_id}
@@ -155,6 +179,45 @@ export function AdaptedSectionList({
                 {SECTION_STATUS_LABEL[status]}
               </span>
             </header>
+            {qc.total > 0 && (
+              <div
+                className="flex items-center gap-2 border-t border-border/60 bg-background/60 px-3 py-1.5"
+                title={`分镜匹配质量：精准 ${qc.good} / 待修补 ${qc.weak} / 缺匹配 ${qc.missing}`}
+              >
+                <div className="flex h-1.5 flex-1 overflow-hidden rounded bg-muted">
+                  {qc.good > 0 && (
+                    <div
+                      className="bg-emerald-500"
+                      style={{ width: `${(qc.good / qc.total) * 100}%` }}
+                    />
+                  )}
+                  {qc.weak > 0 && (
+                    <div
+                      className="bg-amber-500"
+                      style={{ width: `${(qc.weak / qc.total) * 100}%` }}
+                    />
+                  )}
+                  {qc.missing > 0 && (
+                    <div
+                      className="bg-slate-400"
+                      style={{ width: `${(qc.missing / qc.total) * 100}%` }}
+                    />
+                  )}
+                </div>
+                <div className="flex shrink-0 items-center gap-1.5 text-[10px] font-mono">
+                  {qc.good > 0 && (
+                    <span className="text-emerald-700 dark:text-emerald-300">●{qc.good}</span>
+                  )}
+                  {qc.weak > 0 && (
+                    <span className="text-amber-700 dark:text-amber-300">●{qc.weak}</span>
+                  )}
+                  {qc.missing > 0 && (
+                    <span className="text-slate-500">●{qc.missing}</span>
+                  )}
+                  <span className="text-muted-foreground">/{qc.total}</span>
+                </div>
+              </div>
+            )}
             <div className="border-t border-border/60 bg-secondary/30 px-3 py-2">
               <p className="text-[11px] leading-relaxed text-foreground/90">
                 {sec.content_description || '（暂无说明）'}

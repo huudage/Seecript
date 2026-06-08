@@ -277,6 +277,11 @@ export default function ComposePage() {
   //     → 不复位，避免无关的 plan rebuild 把用户从 step3 弹回 step2（这是 PR-K 修复点）。
   //   - 其他情况（如 step1/2 中的 plan rebuild）→ 复位为锁定，老 step3 解锁状态不要串到新 plan。
   const [step3Unlocked, setStep3Unlocked] = useState(false)
+  // stage-26 PR-N.6：批量字卡/AIGC 在跑期间禁止进入 step3——
+  // 关键场景：用户点了「✨ 参照样板批量补字卡」之后，乐观更新立刻把 pendingGapsCount 抹零，
+  // 但后端 /gap/fill-all 还在跑、plan rebuild 也还没回来；此时若让用户进 step3，
+  // 内容轨预览的还是旧的 text-card-fill-empty 占位，不是补好后的真字卡。
+  const [batchFillBusy, setBatchFillBusy] = useState(false)
   const lastStep3PlanIdRef = useRef<string | null>(null)
   // 通过 ref 读取当前 activeStep，避免把 activeStep 加入 useEffect 依赖
   // 而引发 plan_id 没变也跑这段重置逻辑的副作用
@@ -357,8 +362,21 @@ export default function ComposePage() {
     }
     if (activeStep === 3 && !step3Unlocked) {
       setActiveStep(2)
+      return
     }
-  }, [plan, activeStep, step3Unlocked, setActiveStep])
+    // stage-26 PR-N.6：已经进入 step3 但批量补字卡或换源把内容轨打回了 needs_fill /
+    // text-card-fill-empty 兜底——把用户拉回 step2 补齐再放行。
+    const unfilled = plan
+      ? plan.main_track.filter(
+          (sc) =>
+            sc.needs_fill === true ||
+            (sc.source_ref ?? '').startsWith('text-card-fill-empty'),
+        ).length
+      : 0
+    if (activeStep === 3 && (batchFillBusy || unfilled > 0)) {
+      setActiveStep(2)
+    }
+  }, [plan, activeStep, step3Unlocked, batchFillBusy, setActiveStep])
 
   /* --------------------- 渲染流水线（内联 · 无独立页面）--------------------- */
   // 设计：用户点「生成视频」之后，先补缺口 + 生成包装 + commit compose，再自动 POST /render/submit
@@ -762,6 +780,24 @@ export default function ComposePage() {
       ).length,
     [gaps, fills],
   )
+
+  // stage-26 PR-N.6：内容轨『还未补齐』的 Scene 数。两类都算：
+  //   - 后端 PR-N.2 标记 needs_fill=true（匹配 weak/missing 物化时落下的兜底）
+  //   - PR-L.3 兜底字卡（source_ref 以 text-card-fill-empty 开头）—— 这是真实的
+  //     『某段 fill 跑空了，临时塞了文字卡占位』的场景，没补齐前内容轨残缺
+  // 用于：
+  //   a) 「进入第 3 步」按钮 disabled — 内容轨没补完不许进
+  //   b) WorkshopStepNav step3 tab disabled — 顶部 tab 也跟着锁
+  // 不再用 pendingGapsCount 单独门控 step3（那是 gap 模型层面的"待补"，乐观更新会瞬间归零）；
+  // 真正能反映轨道更新进度的是 plan.main_track 实际状态。
+  const mainTrackUnfilledCount = useMemo(() => {
+    if (!plan) return 0
+    return plan.main_track.filter(
+      (sc) =>
+        sc.needs_fill === true ||
+        (sc.source_ref ?? '').startsWith('text-card-fill-empty'),
+    ).length
+  }, [plan])
 
   const handleBatchDone = useCallback(
     async (resp: GapFillAllResponse) => {
@@ -1295,6 +1331,8 @@ export default function ComposePage() {
           hasPlan={!!plan}
           step3Unlocked={step3Unlocked}
           pendingGapsCount={pendingGapsCount}
+          mainTrackUnfilledCount={mainTrackUnfilledCount}
+          batchFillBusy={batchFillBusy}
           onChange={setActiveStep}
         />
         {plan && (
@@ -1681,6 +1719,7 @@ export default function ComposePage() {
                   .filter((f) => f.status === 'ok' && f.action === 'copy' && f.text_card_spec)
                   .map((f) => f.text_card_spec!)}
                 onDone={handleBatchDone}
+                onLoadingChange={setBatchFillBusy}
               />
               <BatchAigcButton
                 mode="image"
@@ -1688,6 +1727,7 @@ export default function ComposePage() {
                 pendingCount={pendingGapsCount}
                 skipGapIds={fills.filter((f) => f.status === 'ok').map((f) => f.gap_id)}
                 onDone={handleBatchDone}
+                onLoadingChange={setBatchFillBusy}
               />
             </div>
           </div>
@@ -1818,19 +1858,36 @@ export default function ComposePage() {
               onClick={() => {
                 void handleEnterStep3()
               }}
-              disabled={pendingGapsCount > 0 || trackBusy}
+              disabled={
+                pendingGapsCount > 0 ||
+                trackBusy ||
+                batchFillBusy ||
+                mainTrackUnfilledCount > 0 ||
+                analyzing
+              }
               className={cn(
                 'flex-1 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground transition-colors',
-                (pendingGapsCount > 0 || trackBusy) && 'cursor-not-allowed opacity-60',
+                (pendingGapsCount > 0 ||
+                  trackBusy ||
+                  batchFillBusy ||
+                  mainTrackUnfilledCount > 0 ||
+                  analyzing) &&
+                  'cursor-not-allowed opacity-60',
               )}
             >
-              {pendingGapsCount > 0
-                ? `还有 ${pendingGapsCount} 段缺口待补 · 补齐后进入第 3 步`
-                : trackBusy
-                  ? '准备中…（重写口播 / 配音 / 包装推荐）'
-                  : '进入第 3 步 → 解锁口播 / 包装 / BGM 与实时预览'}
+              {batchFillBusy
+                ? '一键补字卡进行中…内容轨同步后才能进入第 3 步'
+                : analyzing
+                  ? '内容轨重排中…'
+                  : mainTrackUnfilledCount > 0
+                    ? `内容轨还有 ${mainTrackUnfilledCount} 段未补完 · 补齐后进入第 3 步`
+                    : pendingGapsCount > 0
+                      ? `还有 ${pendingGapsCount} 段缺口待补 · 补齐后进入第 3 步`
+                      : trackBusy
+                        ? '准备中…（重写口播 / 配音 / 包装推荐）'
+                        : '进入第 3 步 → 解锁口播 / 包装 / BGM 与实时预览'}
             </button>
-            {pendingGapsCount === 0 && (
+            {pendingGapsCount === 0 && mainTrackUnfilledCount === 0 && !batchFillBusy && (
               <button
                 type="button"
                 onClick={() => setActiveStep(1)}
@@ -2245,6 +2302,8 @@ function WorkshopStepNav({
   hasPlan,
   step3Unlocked,
   pendingGapsCount,
+  mainTrackUnfilledCount,
+  batchFillBusy,
   onChange,
 }: {
   activeStep: WorkshopStep
@@ -2253,6 +2312,10 @@ function WorkshopStepNav({
   hasPlan: boolean
   step3Unlocked: boolean
   pendingGapsCount: number
+  /** stage-26 PR-N.6：plan.main_track 里还有几段 needs_fill / fill-empty 占位。>0 时禁止进 step3。 */
+  mainTrackUnfilledCount: number
+  /** stage-26 PR-N.6：一键批量补字卡 / AIGC 正在跑。期间禁止进 step3。 */
+  batchFillBusy: boolean
   onChange: (step: WorkshopStep) => void
 }) {
   const step2Reason = !hasReferences
@@ -2264,11 +2327,18 @@ function WorkshopStepNav({
         : ''
   const step3Reason = !hasPlan
     ? '先在第 2 步生成内容轨'
-    : !step3Unlocked
-      ? '请在第 2 步底部点「进入第 3 步」解锁'
-      : pendingGapsCount > 0
-        ? `还有 ${pendingGapsCount} 个缺口未补，可继续进入第 3 步自动补全`
-        : ''
+    : batchFillBusy
+      ? '一键补字卡进行中…内容轨同步完成后才能进入第 3 步'
+      : mainTrackUnfilledCount > 0
+        ? `内容轨还有 ${mainTrackUnfilledCount} 段未补完，请先在第 2 步补齐再进入第 3 步`
+        : !step3Unlocked
+          ? '请在第 2 步底部点「进入第 3 步」解锁'
+          : pendingGapsCount > 0
+            ? `还有 ${pendingGapsCount} 个缺口未补，可继续进入第 3 步自动补全`
+            : ''
+
+  const step3Disabled =
+    !hasPlan || !step3Unlocked || batchFillBusy || mainTrackUnfilledCount > 0
 
   const steps: { id: WorkshopStep; title: string; sub: string; disabled: boolean; tip: string }[] = [
     {
@@ -2289,7 +2359,7 @@ function WorkshopStepNav({
       id: 3,
       title: '3 · 多轨 + 出片',
       sub: '包装轨 + 口播配音 + 一键生成视频',
-      disabled: !hasPlan || !step3Unlocked,
+      disabled: step3Disabled,
       tip: step3Reason,
     },
   ]

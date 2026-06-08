@@ -71,6 +71,23 @@ class ShotMatch:
     def matched(self) -> bool:
         return self.material_id is not None and self.material_shot_index is not None
 
+    @property
+    def quality(self) -> str:
+        """stage-26 PR-N.2 三档分级：good≥0.30，weak≥0.10，<0.10=missing。
+
+        物化层据此决策：missing 不再 cyclic 取错素材，改走 text_card 占位。
+        阈值是经验值：0.10 = bigram Jaccard 几乎无重合且 role 也没匹配上，
+        强行用对应素材必然跑题；0.30 = 中文双字 N-gram 命中 30% + role 加权，
+        视觉一致性大概率成立。
+        """
+        if not self.matched:
+            return "missing"
+        if self.score >= 0.30:
+            return "good"
+        if self.score >= 0.10:
+            return "weak"
+        return "missing"
+
 
 def _score_pair(
     plan_shot: ShotPlan, mat_shot: MaterialShot, section_role: SectionRole
@@ -165,10 +182,14 @@ def match_section_shots(
 
 
 def apply_matches_to_section(section: AdaptedSection, matches: list[ShotMatch]) -> AdaptedSection:
-    """把 ShotMatch 写回 section.shots[*].matched_material_id/shot_index。
+    """把 ShotMatch 写回 section.shots[*].matched_material_id/shot_index + match_quality/score。
+
+    stage-26 PR-N.2：除了原本写回 matched_material_*，再把 quality 三档 + 原始分数
+    一并落到 ShotPlan，供 plan.py 物化层（missing → text_card 兜底）和前端段卡质量
+    色条共用。
 
     返回新的 AdaptedSection（深拷贝）；原对象不变。matches 里 matched=False 的项
-    保持 ShotPlan.matched_material_* 为 None。
+    保持 matched_material_* 为 None，match_quality 写 missing、score 写 0.0。
     """
     if not matches:
         return section
@@ -181,6 +202,14 @@ def apply_matches_to_section(section: AdaptedSection, matches: list[ShotMatch]) 
                 "matched_material_id": m.material_id,
                 "matched_material_shot_index": m.material_shot_index,
                 "source_hint": sh.source_hint or "user_material",
+                "match_quality": m.quality,
+                "match_score": round(m.score, 4),
+            }))
+        elif m:
+            # 未匹配也写 quality=missing + score=0，让前端能区分『从未跑过匹配』与『跑过但没匹上』
+            new_shots.append(sh.model_copy(update={
+                "match_quality": "missing",
+                "match_score": 0.0,
             }))
         else:
             new_shots.append(sh)

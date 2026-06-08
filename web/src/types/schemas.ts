@@ -562,6 +562,13 @@ export interface ShotPlan {
   source_hint?: 'sample' | 'user_material' | 'aigc_t2v' | 'aigc_image' | 'text_card' | null
   matched_material_id?: string | null
   matched_material_shot_index?: number | null
+  /** stage-26 PR-N.1：匹配质量三档。
+   *  good=匹配分≥0.30，weak=≥0.10，missing=<0.10。
+   *  物化层据此决策：missing 不再 cyclic 取错素材，改走 text_card 占位；
+   *  weak 仍走 user_material 但前端段卡显示『待修补』提醒。 */
+  match_quality?: 'good' | 'weak' | 'missing'
+  /** shot_matcher 给的原始匹配分（0-1），仅用于排错；前端不直显数字。 */
+  match_score?: number
   /** stage-25：本镜要呈现的目标列表（0-4 个）。空 = 单目标按 visual 整段出图（老路）；
    *  非空 = aigc 多图合成（N 张 Seedream → 喂 T2V）。 */
   targets?: ShotTarget[]
@@ -613,6 +620,10 @@ export interface Scene {
   text_card_spec?: TextCardSpec | null
   /** source=aigc_image 时 Remotion AnimatedImage 渲染规格；预览侧用来跑动效。 */
   animation_spec?: AnimationSpec | null
+  /** stage-26 PR-N.1：本 Scene 需要用户介入修补（弱匹配/缺匹配/兜底占位）。
+   *  true 时段卡质量色条把这一镜计入『待修补』，UI 挂橙色提示 chip。
+   *  换源接口成功后清回 false。 */
+  needs_fill?: boolean
   /** 与上一段衔接方式；sc-0 永远忽略此字段。None / hard_cut 走 concat demuxer，其他走 xfade。 */
   transition_in?: SceneTransition | null
 }

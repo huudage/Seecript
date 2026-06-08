@@ -1,9 +1,9 @@
 import { useState } from 'react'
 
-import { patchPlanScene } from '@/api/plan'
+import { patchPlanScene, swapSceneSource, type SceneSwapSourceRequest } from '@/api/plan'
 import { SECTION_LABEL } from '@/lib/sections'
 import { cn } from '@/lib/utils'
-import type { PackagingItem, Plan, Scene } from '@/types/schemas'
+import type { PackagingItem, Plan, Scene, ShotPlan } from '@/types/schemas'
 
 const PKG_KIND_LABEL: Record<PackagingItem['kind'], string> = {
   subtitle: '字幕',
@@ -11,6 +11,18 @@ const PKG_KIND_LABEL: Record<PackagingItem['kind'], string> = {
   sticker: '贴纸/水印',
   transition: '切换',
   cover: '封面',
+}
+
+/** stage-26 PR-N.5：单镜换源 chip 颜色 + 文案。 */
+const QUALITY_TONE: Record<'good' | 'weak' | 'missing', string> = {
+  good: 'bg-emerald-500/20 text-emerald-700 dark:text-emerald-300',
+  weak: 'bg-amber-500/20 text-amber-700 dark:text-amber-300',
+  missing: 'bg-slate-500/30 text-slate-600 dark:text-slate-300',
+}
+const QUALITY_LABEL: Record<'good' | 'weak' | 'missing', string> = {
+  good: '✓ 精准',
+  weak: '⚠ 待修补',
+  missing: '○ 缺匹配',
 }
 
 /**
@@ -164,8 +176,8 @@ function ScenePanel({
 
       {err && <p className="text-[10px] text-destructive">{err}</p>}
 
-      {/* stage-24：分镜清单。section.shots 非空时显示 LLM 拆分的分镜，
-          帮助创作者理解「这一段会被拆成 N 段渲染」的事实；只读，进一步编辑通过 ⌘K。 */}
+      {/* stage-24 / stage-26：分镜清单 + 单镜换源（PR-N.5）。
+          每条 shot 旁挂 match_quality chip + 「换源」按钮——good 段也可换源（用户可能要主动替素材）。 */}
       {section?.shots && section.shots.length > 0 && (
         <div className="rounded-md border border-violet-500/30 bg-violet-500/5 px-2 py-1.5">
           <div className="mb-1 flex items-center justify-between">
@@ -177,40 +189,22 @@ function ScenePanel({
             </span>
           </div>
           <ul className="space-y-1">
-            {section.shots.map((sh) => (
-              <li
-                key={sh.order}
-                className="flex items-start gap-2 rounded bg-background/40 px-1.5 py-1 text-[10px]"
-              >
-                <span className="mt-0.5 inline-flex h-3.5 w-5 shrink-0 items-center justify-center rounded bg-violet-500/30 font-mono text-[9px] font-bold text-violet-100">
-                  #{sh.order + 1}
-                </span>
-                <div className="flex-1 space-y-0.5">
-                  <div className="flex items-center gap-1.5">
-                    <span className="font-semibold text-foreground">{sh.subject || '（无主体）'}</span>
-                    <span className="font-mono text-[9px] text-muted-foreground">
-                      {sh.duration_seconds.toFixed(1)}s
-                    </span>
-                    {sh.matched_material_id && (
-                      <span className="rounded bg-emerald-400/20 px-1 text-[9px] text-emerald-300" title={`已匹配素材 ${sh.matched_material_id} #${sh.matched_material_shot_index}`}>
-                        ✓ 匹配素材
-                      </span>
-                    )}
-                    {sh.source_hint && (
-                      <span className="rounded bg-secondary/60 px-1 font-mono text-[9px] text-muted-foreground">
-                        {sh.source_hint}
-                      </span>
-                    )}
-                  </div>
-                  {sh.visual && (
-                    <div className="text-muted-foreground">画面：{sh.visual}</div>
-                  )}
-                  {sh.narration && (
-                    <div className="text-muted-foreground">口播：{sh.narration}</div>
-                  )}
-                </div>
-              </li>
-            ))}
+            {section.shots.map((sh) => {
+              const sceneOfShot = plan.main_track.find(
+                (sc) =>
+                  sc.parent_section_id === section.section_id && sc.shot_order === sh.order,
+              )
+              return (
+                <ShotRow
+                  key={sh.order}
+                  shot={sh}
+                  scene={sceneOfShot ?? null}
+                  planId={plan.plan_id}
+                  onSaved={onSaved}
+                  disabled={busy}
+                />
+              )
+            })}
           </ul>
           <p className="mt-1 text-[9px] text-muted-foreground">
             想改具体某镜的画面/口播/时长？按 ⌘K 告诉对话编辑小助手「
@@ -290,5 +284,193 @@ function PackagingPanel({ item }: { item: PackagingItem }) {
         告诉它 item_id「{item.item_id}」就行。
       </p>
     </div>
+  )
+}
+
+/**
+ * stage-26 PR-N.5：单镜行 + 换源面板。
+ *
+ * 三档质量 chip + 「换源」按钮，点开展开三个换源动作：
+ * - 字卡占位：直接装 TextCardSpec（瞬时，无外部调用）
+ * - AI 生图：Seedream 同步出图（~6-15s）
+ * - AI 视频：Seedance 同步轮询（最长 ~180s，超时返 504）
+ *
+ * 不提供 user_material 选择器（需要项目素材列表跨组件传参）——
+ * 想换素材请用 ⌘K 对话编辑或在 step1 重新上传素材后重跑分析。
+ */
+function ShotRow({
+  shot,
+  scene,
+  planId,
+  onSaved,
+  disabled,
+}: {
+  shot: ShotPlan
+  scene: Scene | null
+  planId: string
+  onSaved: (plan: Plan) => void
+  disabled: boolean
+}) {
+  const [open, setOpen] = useState(false)
+  const [busy, setBusy] = useState(false)
+  const [err, setErr] = useState<string | null>(null)
+  const [hintText, setHintText] = useState('')
+  const [mainText, setMainText] = useState(shot.subject ?? '')
+  const [subText, setSubText] = useState('')
+
+  const quality: 'good' | 'weak' | 'missing' =
+    (shot.match_quality as 'good' | 'weak' | 'missing' | undefined) ?? 'good'
+  const sceneId = scene?.scene_id
+  const needsFill = scene?.needs_fill === true
+  const canSwap = !!sceneId && !disabled && !busy
+
+  const promptFallback = [shot.subject, shot.visual, shot.narration]
+    .filter((s) => s && s.trim())
+    .join('；')
+
+  const callSwap = async (body: SceneSwapSourceRequest) => {
+    if (!sceneId) return
+    setBusy(true)
+    setErr(null)
+    try {
+      const fresh = await swapSceneSource(planId, sceneId, body)
+      onSaved(fresh)
+      setOpen(false)
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : '换源失败')
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  return (
+    <li className="rounded bg-background/40 px-1.5 py-1 text-[10px]">
+      <div className="flex items-start gap-2">
+        <span className="mt-0.5 inline-flex h-3.5 w-5 shrink-0 items-center justify-center rounded bg-violet-500/30 font-mono text-[9px] font-bold text-violet-100">
+          #{shot.order + 1}
+        </span>
+        <div className="flex-1 space-y-0.5">
+          <div className="flex flex-wrap items-center gap-1.5">
+            <span className="font-semibold text-foreground">{shot.subject || '（无主体）'}</span>
+            <span className="font-mono text-[9px] text-muted-foreground">
+              {shot.duration_seconds.toFixed(1)}s
+            </span>
+            <span
+              className={cn('rounded px-1 py-0.5 text-[9px] font-medium', QUALITY_TONE[quality])}
+              title={
+                shot.match_score != null
+                  ? `匹配分 ${shot.match_score.toFixed(2)} · ${
+                      quality === 'good'
+                        ? '≥0.30 精准对齐'
+                        : quality === 'weak'
+                          ? '0.10-0.30 待修补'
+                          : '<0.10 缺匹配（已用字卡占位）'
+                    }`
+                  : '本镜质量等级'
+              }
+            >
+              {QUALITY_LABEL[quality]}
+            </span>
+            {scene?.source && (
+              <span className="rounded bg-secondary/60 px-1 font-mono text-[9px] text-muted-foreground">
+                {scene.source}
+              </span>
+            )}
+            {needsFill && (
+              <span className="rounded bg-amber-500/30 px-1 text-[9px] font-medium text-amber-700 dark:text-amber-300">
+                待修补
+              </span>
+            )}
+            {canSwap && (
+              <button
+                type="button"
+                onClick={() => {
+                  setOpen((v) => !v)
+                  setErr(null)
+                }}
+                className="ml-auto rounded border border-border bg-card px-1.5 py-0.5 text-[9px] hover:bg-secondary"
+              >
+                {open ? '收起' : '换源…'}
+              </button>
+            )}
+          </div>
+          {shot.visual && <div className="text-muted-foreground">画面：{shot.visual}</div>}
+          {shot.narration && <div className="text-muted-foreground">口播：{shot.narration}</div>}
+        </div>
+      </div>
+
+      {open && sceneId && (
+        <div className="mt-1.5 space-y-1.5 rounded border border-border bg-card/60 p-2">
+          <div className="text-[10px] font-semibold text-muted-foreground">
+            换素材来源 · scene <span className="font-mono">{sceneId}</span>
+          </div>
+          {/* 字卡占位 */}
+          <div className="grid gap-1 rounded border border-border/60 bg-background/50 p-1.5">
+            <div className="flex items-center justify-between">
+              <span className="text-[10px] font-semibold">字卡占位（瞬时）</span>
+              <button
+                type="button"
+                disabled={busy}
+                onClick={() => void callSwap({ source: 'text_card', main_text: mainText, sub_text: subText })}
+                className="rounded bg-primary px-2 py-0.5 text-[10px] text-primary-foreground disabled:opacity-50"
+              >
+                应用
+              </button>
+            </div>
+            <input
+              value={mainText}
+              maxLength={24}
+              disabled={busy}
+              onChange={(e) => setMainText(e.target.value)}
+              placeholder={shot.subject || '主文案（≤24 字）'}
+              className="w-full rounded border border-border bg-background px-1.5 py-0.5 text-[10px]"
+            />
+            <input
+              value={subText}
+              maxLength={40}
+              disabled={busy}
+              onChange={(e) => setSubText(e.target.value)}
+              placeholder="副文案（可空）"
+              className="w-full rounded border border-border bg-background px-1.5 py-0.5 text-[10px]"
+            />
+          </div>
+          {/* AI 生图 / 视频 共用一个 prompt_hint */}
+          <div className="grid gap-1 rounded border border-border/60 bg-background/50 p-1.5">
+            <span className="text-[10px] font-semibold">AI 生成（生图 ~10s / 视频 ~3min）</span>
+            <textarea
+              value={hintText}
+              rows={2}
+              maxLength={200}
+              disabled={busy}
+              onChange={(e) => setHintText(e.target.value)}
+              placeholder={`额外提示（可空，默认用：${promptFallback || '本镜主体+画面+口播'}）`}
+              className="w-full resize-y rounded border border-border bg-background px-1.5 py-0.5 text-[10px]"
+            />
+            <div className="flex gap-1">
+              <button
+                type="button"
+                disabled={busy}
+                onClick={() => void callSwap({ source: 'aigc_image', prompt_hint: hintText || undefined })}
+                className="flex-1 rounded border border-emerald-500/60 bg-emerald-500/10 px-2 py-0.5 text-[10px] text-emerald-700 hover:bg-emerald-500/20 disabled:opacity-50 dark:text-emerald-300"
+              >
+                {busy ? '生成中…' : '出 AI 图'}
+              </button>
+              <button
+                type="button"
+                disabled={busy}
+                onClick={() => void callSwap({ source: 'aigc_t2v', prompt_hint: hintText || undefined })}
+                className="flex-1 rounded border border-primary/60 bg-primary/10 px-2 py-0.5 text-[10px] text-primary hover:bg-primary/20 disabled:opacity-50"
+              >
+                {busy ? '生成中…' : '出 AI 视频'}
+              </button>
+            </div>
+          </div>
+          {err && <p className="text-[10px] text-destructive">{err}</p>}
+          <p className="text-[9px] text-muted-foreground">
+            AI 视频同步轮询最长 180s；卡住可关闭后用 ⌘K 让小助手帮忙换源。
+          </p>
+        </div>
+      )}
+    </li>
   )
 }

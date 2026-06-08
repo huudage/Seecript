@@ -17,6 +17,7 @@ export function BatchAigcButton({
   skipGapIds,
   onDone,
   mode = 'video',
+  onLoadingChange,
 }: {
   planId: string | null
   pendingCount: number
@@ -25,15 +26,25 @@ export function BatchAigcButton({
   onDone: (resp: GapFillAllResponse) => void
   /** 'video' = Seedance T2V（默认）；'image' = Seedream 文生图 + Remotion 动效。 */
   mode?: 'video' | 'image'
+  /** stage-26 PR-N.6：把内部 loading 同步给父组件，用于 step3 准入门控 */
+  onLoadingChange?: (busy: boolean) => void
 }) {
   const [loading, setLoading] = useState(false)
   const [err, setErr] = useState<string | null>(null)
 
   const disabled = !planId || pendingCount === 0 || loading
 
+  const setBusy = useCallback(
+    (b: boolean) => {
+      setLoading(b)
+      onLoadingChange?.(b)
+    },
+    [onLoadingChange],
+  )
+
   const handleRun = useCallback(async () => {
     if (!planId) return
-    setLoading(true)
+    setBusy(true)
     setErr(null)
     try {
       const body: GapFillAllRequest = {
@@ -46,9 +57,9 @@ export function BatchAigcButton({
     } catch (e) {
       setErr(e instanceof Error ? e.message : '批量生成失败')
     } finally {
-      setLoading(false)
+      setBusy(false)
     }
-  }, [mode, onDone, planId, skipGapIds])
+  }, [mode, onDone, planId, setBusy, skipGapIds])
 
   return (
     <div className="flex flex-col gap-1">

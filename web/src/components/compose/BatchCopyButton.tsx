@@ -21,6 +21,7 @@ export function BatchCopyButton({
   adoptedTextCardCount,
   existingTextCards,
   onDone,
+  onLoadingChange,
 }: {
   planId: string | null
   pendingCount: number
@@ -31,6 +32,8 @@ export function BatchCopyButton({
   /** 已采纳的字卡 spec 列表——透传给后端做风格样板，绕过 plan_id 时序竞态。 */
   existingTextCards?: TextCardSpec[]
   onDone: (resp: GapFillAllResponse) => void
+  /** stage-26 PR-N.6：把内部 loading 同步给父组件，用于 step3 准入门控 */
+  onLoadingChange?: (busy: boolean) => void
 }) {
   const [loading, setLoading] = useState(false)
   const [err, setErr] = useState<string | null>(null)
@@ -38,9 +41,17 @@ export function BatchCopyButton({
   const noSample = adoptedTextCardCount < 1
   const disabled = !planId || pendingCount === 0 || loading || noSample
 
+  const setBusy = useCallback(
+    (b: boolean) => {
+      setLoading(b)
+      onLoadingChange?.(b)
+    },
+    [onLoadingChange],
+  )
+
   const handleRun = useCallback(async () => {
     if (!planId) return
-    setLoading(true)
+    setBusy(true)
     setErr(null)
     try {
       const body: GapFillAllRequest = {
@@ -55,9 +66,9 @@ export function BatchCopyButton({
     } catch (e) {
       setErr(e instanceof Error ? e.message : '批量字卡补全失败')
     } finally {
-      setLoading(false)
+      setBusy(false)
     }
-  }, [existingTextCards, onDone, planId, skipGapIds])
+  }, [existingTextCards, onDone, planId, setBusy, skipGapIds])
 
   return (
     <div className="flex flex-col gap-1">
