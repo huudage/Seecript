@@ -155,7 +155,7 @@ export function SwapSourceDialog({
                 {sceneId ?? '（未关联 Scene）'}
               </span>
             </h3>
-            <p className="mt-0.5 text-[11px] text-muted-foreground">
+            <p className="mt-0.5 text-xs text-muted-foreground">
               第 {shot.order + 1} 镜 · {shot.duration_seconds.toFixed(1)}s ·{' '}
               {shot.subject || '（无主体）'}
             </p>
@@ -193,12 +193,12 @@ export function SwapSourceDialog({
         </div>
 
         <div className="flex-1 overflow-y-auto px-4 py-3">
-          <p className="mb-2 text-[11px] text-muted-foreground">{MODE_HINT[mode]}</p>
+          <p className="mb-2 text-xs text-muted-foreground">{MODE_HINT[mode]}</p>
 
           {mode === 'text_card' && (
             <div className="space-y-2">
               <label className="block space-y-0.5">
-                <span className="text-[10px] text-muted-foreground">主文案（≤24 字，必填）</span>
+                <span className="text-xs text-muted-foreground">主文案（≤24 字，必填）</span>
                 <input
                   value={mainText}
                   maxLength={24}
@@ -210,7 +210,7 @@ export function SwapSourceDialog({
                 />
               </label>
               <label className="block space-y-0.5">
-                <span className="text-[10px] text-muted-foreground">副文案（≤40 字，可空）</span>
+                <span className="text-xs text-muted-foreground">副文案（≤40 字，可空）</span>
                 <input
                   value={subText}
                   maxLength={40}
@@ -220,7 +220,7 @@ export function SwapSourceDialog({
                   className="w-full rounded border border-border bg-background px-2 py-1 text-xs disabled:opacity-60"
                 />
               </label>
-              <p className="rounded bg-muted/40 px-2 py-1 text-[10px] text-muted-foreground">
+              <p className="rounded bg-muted/40 px-2 py-1 text-xs text-muted-foreground">
                 字卡画面由 ffmpeg 即烧——背景色 / 字号 / 字体走包装样板，瞬时落入轨道。
               </p>
             </div>
@@ -229,7 +229,7 @@ export function SwapSourceDialog({
           {(mode === 'aigc_image' || mode === 'aigc_t2v') && (
             <div className="space-y-2">
               <label className="block space-y-0.5">
-                <span className="text-[10px] text-muted-foreground">
+                <span className="text-xs text-muted-foreground">
                   额外提示词（可空，默认用本镜画面 + 口播 + 主体拼接）
                 </span>
                 <textarea
@@ -244,11 +244,11 @@ export function SwapSourceDialog({
               </label>
               {shot.targets && shot.targets.length > 0 && (
                 <div className="rounded bg-muted/40 px-2 py-1.5">
-                  <div className="mb-1 text-[10px] text-muted-foreground">本镜目标（自动注入 prompt）</div>
+                  <div className="mb-1 text-xs text-muted-foreground">本镜目标（自动注入 prompt）</div>
                   <ul className="space-y-0.5">
                     {shot.targets.map((t, i) => (
-                      <li key={i} className="text-[11px]">
-                        <span className="font-mono text-[10px] text-muted-foreground">{t.kind}</span>{' '}
+                      <li key={i} className="text-xs">
+                        <span className="font-mono text-xs text-muted-foreground">{t.kind}</span>{' '}
                         <span className="font-semibold">{t.name}</span>
                         {t.visual_hint && (
                           <span className="ml-1 text-muted-foreground">· {t.visual_hint}</span>
@@ -259,7 +259,7 @@ export function SwapSourceDialog({
                 </div>
               )}
               {mode === 'aigc_t2v' && (
-                <p className="rounded bg-amber-500/10 px-2 py-1 text-[10px] text-amber-700 dark:text-amber-300">
+                <p className="rounded bg-amber-500/10 px-2 py-1 text-xs text-amber-700 dark:text-amber-300">
                   ⚠ AI 视频同步轮询最长 180s；生成期间请勿关闭页面。
                 </p>
               )}
@@ -282,7 +282,7 @@ export function SwapSourceDialog({
         </div>
 
         {err && (
-          <p className="border-t border-destructive/30 bg-destructive/10 px-4 py-1.5 text-[11px] text-destructive">
+          <p className="border-t border-destructive/30 bg-destructive/10 px-4 py-1.5 text-xs text-destructive">
             {err}
           </p>
         )}
@@ -328,7 +328,7 @@ function UserMaterialPicker({
 }) {
   if (materials.length === 0) {
     return (
-      <div className="rounded-md border border-dashed border-border bg-background/30 p-6 text-center text-[11px] text-muted-foreground">
+      <div className="rounded-md border border-dashed border-border bg-background/30 p-6 text-center text-xs text-muted-foreground">
         项目素材库还是空的——回到上方上传一些图/视频，或从系统素材库添加。
       </div>
     )
@@ -359,14 +359,14 @@ function UserMaterialPicker({
                     loading="lazy"
                   />
                 ) : (
-                  <div className="flex h-full w-full items-center justify-center text-[10px] text-muted-foreground">
+                  <div className="flex h-full w-full items-center justify-center text-xs text-muted-foreground">
                     {m.media_type === 'audio' ? '🎵' : m.media_type === 'video' ? '🎬' : '🖼'}
                   </div>
                 )}
               </div>
               <div className="px-1.5 py-1">
-                <div className="truncate text-[10px] font-medium">{m.filename}</div>
-                <div className="flex items-center gap-1 text-[9px] text-muted-foreground">
+                <div className="truncate text-xs font-medium">{m.filename}</div>
+                <div className="flex items-center gap-1 text-xs text-muted-foreground">
                   <span className="font-mono">{m.media_type}</span>
                   {m.shots && m.shots.length > 1 && <span>· {m.shots.length} 镜</span>}
                 </div>
@@ -380,14 +380,14 @@ function UserMaterialPicker({
       {targetMaterial && targetMaterial.shots && targetMaterial.shots.length > 1 && (
         <div className="rounded border border-border bg-background/40 p-2">
           <div className="mb-1.5 flex items-center justify-between">
-            <span className="text-[10px] font-semibold text-muted-foreground">
+            <span className="text-xs font-semibold text-muted-foreground">
               选具体哪一镜（不选则后端自动按 shot_matcher 配）
             </span>
             {pickedShotIdx != null && (
               <button
                 type="button"
                 onClick={() => onPickShot(null)}
-                className="text-[10px] text-muted-foreground hover:text-foreground"
+                className="text-xs text-muted-foreground hover:text-foreground"
               >
                 清除
               </button>
@@ -417,12 +417,12 @@ function UserMaterialPicker({
                         loading="lazy"
                       />
                     ) : (
-                      <div className="flex h-full w-full items-center justify-center text-[9px] text-muted-foreground">
+                      <div className="flex h-full w-full items-center justify-center text-xs text-muted-foreground">
                         无图
                       </div>
                     )}
                   </div>
-                  <div className="px-1 py-0.5 text-[9px]">
+                  <div className="px-1 py-0.5 text-xs">
                     <span className="font-mono">#{sh.index}</span>{' '}
                     <span className="text-muted-foreground">{sh.duration.toFixed(1)}s</span>
                   </div>

@@ -27,7 +27,7 @@ export function TimelineTrack({
 }) {
   return (
     <div>
-      <div className="mb-1 flex items-center justify-between text-[11px] text-muted-foreground">
+      <div className="mb-1 flex items-center justify-between text-xs text-muted-foreground">
         <span>{label}</span>
         <span className="font-mono">
           {duration.toFixed(1)}s · {items.length}
@@ -35,7 +35,7 @@ export function TimelineTrack({
       </div>
       <div className="relative h-8 overflow-hidden rounded-md border border-border bg-background/40">
         {items.length === 0 ? (
-          <div className="flex h-full items-center justify-center text-[11px] text-muted-foreground">
+          <div className="flex h-full items-center justify-center text-xs text-muted-foreground">
             {empty ?? '空'}
           </div>
         ) : (
@@ -46,7 +46,7 @@ export function TimelineTrack({
               <div
                 key={it.key}
                 className={cn(
-                  'absolute top-0 flex h-full items-center overflow-hidden border-r border-white/40 px-1 text-[10px] text-white',
+                  'absolute top-0 flex h-full items-center overflow-hidden border-r border-white/40 px-1 text-xs text-white',
                   it.color,
                 )}
                 style={{ left: `${left}%`, width: `${width}%` }}

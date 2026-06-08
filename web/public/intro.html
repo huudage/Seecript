@@ -1,0 +1,421 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Seecript</title>
+<meta name="description" content="拆解爆款视频结构，AI 重组你的创作灵感">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&family=Noto+Sans+SC:wght@400;500;600;700;800;900&display=swap" rel="stylesheet">
+<style>
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+html{scroll-behavior:smooth}
+body{
+  font-family:'Inter','Noto Sans SC',-apple-system,BlinkMacSystemFont,'PingFang SC','Microsoft YaHei',sans-serif;
+  background:#06060a;color:#fff;line-height:1.6;
+  -webkit-font-smoothing:antialiased;-moz-osx-font-smoothing:grayscale;overflow-x:hidden
+}
+a{color:inherit;text-decoration:none}
+
+/* ===== Animations ===== */
+@keyframes glowFloat{0%,100%{transform:translate(-50%,-50%) scale(1);opacity:.3}50%{transform:translate(-50%,-50%) scale(1.12);opacity:.5}}
+@keyframes shimmer{0%{background-position:-200% center}100%{background-position:200% center}}
+@keyframes fadeUp{from{opacity:0;transform:translateY(20px)}to{opacity:1;transform:translateY(0)}}
+.anim{animation:fadeUp .6s cubic-bezier(.22,1,.36,1) forwards;opacity:0}
+.anim-1{animation-delay:.1s}.anim-2{animation-delay:.2s}.anim-3{animation-delay:.3s}
+
+/* ===== Shared ===== */
+.container{max-width:1100px;margin:0 auto;padding:0 24px}
+.section-label{display:block;font-size:11px;font-weight:600;letter-spacing:.12em;text-transform:uppercase;color:#00d4ff;margin-bottom:8px}
+.section-title{font-size:clamp(22px,2.5vw,32px);font-weight:800;line-height:1.2;margin-bottom:4px}
+.section-sub{font-size:13px;color:rgba(255,255,255,.35);margin-top:4px}
+.section{padding:44px 0}
+
+/* ===== Nav ===== */
+nav{
+  position:fixed;top:0;left:0;right:0;z-index:100;
+  padding:14px 0;background:rgba(6,6,10,.9);backdrop-filter:blur(14px);-webkit-backdrop-filter:blur(14px);
+  border-bottom:1px solid rgba(255,255,255,.04)
+}
+nav .container{display:flex;align-items:center;justify-content:space-between}
+.logo{font-size:19px;font-weight:900;letter-spacing:-.02em;background:linear-gradient(135deg,#00d4ff,#6366f1);box-shadow:0 0 24px rgba(0,212,255,.15);-webkit-background-clip:text;-webkit-text-fill-color:transparent;background-clip:text}
+.nav-links{display:flex;gap:28px}
+.nav-links a{font-size:13px;font-weight:500;color:rgba(255,255,255,.45);transition:color .25s;letter-spacing:.02em}
+.nav-links a:hover{color:rgba(255,255,255,.85)}
+
+/* ===== Hero ===== */
+.hero{
+  min-height:45vh;display:flex;align-items:center;justify-content:center;
+  position:relative;overflow:hidden;padding:80px 0 32px
+}
+.hero-particles{position:absolute;inset:0;pointer-events:none}.hero-particle{position:absolute;border-radius:50%;background:hsl(190 90% 50% / 0.12);animation:particle-float 3s ease-in-out infinite}.hero-particle:nth-child(1){width:4px;height:4px;top:20%;left:15%;animation-delay:0s}.hero-particle:nth-child(2){width:3px;height:3px;top:35%;right:20%;animation-delay:0.5s}.hero-particle:nth-child(3){width:5px;height:5px;bottom:30%;left:25%;animation-delay:1s}.hero-particle:nth-child(4){width:3px;height:3px;top:50%;right:15%;animation-delay:1.5s}.hero-particle:nth-child(5){width:4px;height:4px;bottom:20%;right:30%;animation-delay:2s}.hero-particle:nth-child(6){width:3px;height:3px;top:15%;right:35%;animation-delay:2.5s}.hero-particle:nth-child(7){width:5px;height:5px;bottom:40%;left:40%;animation-delay:0.8s}.hero-particle:nth-child(8){width:3px;height:3px;top:45%;left:10%;animation-delay:1.8s}@keyframes particle-float{0%,100%{transform:translateY(0) scale(1);opacity:.3}50%{transform:translateY(-8px) scale(1.5);opacity:.7}}.hero-glow{position:absolute;width:700px;height:700px;border-radius:50%;background:radial-gradient(circle,rgba(0,212,255,.07),rgba(123,97,255,.04),transparent 65%);top:45%;left:50%;animation:glowFloat 7s ease-in-out infinite;pointer-events:none}
+.hero-grid{position:absolute;inset:0;background-image:linear-gradient(rgba(255,255,255,.012) 1px,transparent 1px),linear-gradient(90deg,rgba(255,255,255,.012) 1px,transparent 1px);background-size:60px 60px;pointer-events:none}
+.hero .container{position:relative;z-index:1;text-align:center}
+.hero h1{
+  font-size:clamp(48px,9vw,110px);font-weight:900;line-height:1.05;letter-spacing:-.04em;margin-bottom:16px
+}
+.hero h1 .gradient{
+  background:linear-gradient(135deg,#00d4ff,#6366f1,#a855f7,#00d4ff);
+  background-size:300% auto;
+  -webkit-background-clip:text;-webkit-text-fill-color:transparent;background-clip:text;
+  animation:shimmer 5s ease-in-out infinite
+}
+.hero p{
+  font-size:clamp(14px,1.2vw,17px);color:rgba(255,255,255,.45);
+  max-width:480px;margin:0 auto;line-height:1.6;letter-spacing:.01em
+}
+
+/* ===== Value Cards（之前视觉设计） ===== */
+.value-section{background:#07070c;padding:44px 0}
+.value-header{text-align:center;margin-bottom:28px}
+.value-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:14px}
+.value-card{
+  padding:24px 22px;border-radius:14px;
+  border:1px solid rgba(255,255,255,.04);
+  background:rgba(255,255,255,.015);
+  backdrop-filter:blur(12px);-webkit-backdrop-filter:blur(12px);
+  transition:all .35s ease;cursor:default;
+  display:flex;flex-direction:column;align-items:center;text-align:center
+}
+.value-card:hover{border-color:rgba(0,212,255,.15);background:rgba(255,255,255,.04);transform:translateY(-3px)}
+.value-card-img{width:100%;height:100px;border-radius:8px;margin-bottom:16px;overflow:hidden;background:rgba(0,212,255,.03);display:flex;align-items:center;justify-content:center}
+.value-card-img svg{width:100%;height:100%}
+.value-card h3{font-size:17px;font-weight:700;margin-bottom:6px}
+.value-card p{font-size:13px;color:rgba(255,255,255,.45);line-height:1.6;max-width:240px}
+
+/* ===== Workflow ===== */
+.workflow-section{padding:44px 0}
+.workflow-header{text-align:center;margin-bottom:28px}
+.workflow-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:16px}
+.step-card{text-align:center;transition:all .35s ease}
+.step-card:hover{transform:translateY(-4px)}
+.step-img-wrap{
+  width:100%;aspect-ratio:16/10;border-radius:12px;overflow:hidden;margin-bottom:14px;
+  position:relative;border:1px solid rgba(255,255,255,.04);background:rgba(255,255,255,.015);transition:border-color .3s ease
+}
+.step-card:hover .step-img-wrap{border-color:rgba(0,212,255,.15)}
+.step-img-wrap img{width:100%;height:100%;object-fit:cover;display:block;transition:transform .4s ease}
+.step-card:hover .step-img-wrap img{transform:scale(1.05)}
+.step-img-wrap .overlay{position:absolute;inset:0;background:linear-gradient(to top,rgba(0,0,0,.55),transparent 35%);pointer-events:none}
+.step-num{
+  position:absolute;top:10px;left:10px;width:26px;height:26px;border-radius:50%;
+  display:flex;align-items:center;justify-content:center;font-size:13px;font-weight:800;
+  background:rgba(0,0,0,.4);backdrop-filter:blur(6px);color:#fff;border:1px solid rgba(255,255,255,.08)
+}
+.step-card h4{font-size:14px;font-weight:700;margin-bottom:4px}
+.step-card p{font-size:12px;color:rgba(255,255,255,.4);line-height:1.5;padding:0 4px}
+
+/* ===== Philosophy ===== */
+.philosophy-section{padding:44px 0;background:#06060a}
+.philosophy-header{text-align:center;margin-bottom:32px}
+.phil-grid{display:grid;grid-template-columns:repeat(2,1fr);gap:24px}
+.phil-card{
+  padding:40px 36px;border-radius:16px;border:1px solid rgba(255,255,255,.04);
+  background:linear-gradient(135deg,rgba(0,212,255,.03),rgba(123,97,255,.03));
+  text-align:center;position:relative;overflow:hidden;transition:all .4s ease
+}
+.phil-card:hover{border-color:rgba(0,212,255,.15);transform:translateY(-3px)}
+.phil-card::before{content:'';position:absolute;top:-50%;left:-50%;width:200%;height:200%;background:conic-gradient(from 0deg at 50% 50%,transparent,rgba(0,212,255,.03),transparent,rgba(123,97,255,.03),transparent);animation:spin 10s linear infinite;opacity:0;transition:opacity .4s}
+.phil-card:hover::before{opacity:1}
+@keyframes spin{to{transform:rotate(360deg)}}
+.phil-card .content{position:relative;z-index:1}
+.phil-icon{font-size:28px;margin-bottom:16px;display:block}
+.phil-card h3{font-size:clamp(20px,2vw,26px);font-weight:800;line-height:1.3;margin-bottom:10px}
+.phil-card h3 .gradient-text{background:linear-gradient(135deg,#00d4ff,#a855f7);-webkit-background-clip:text;-webkit-text-fill-color:transparent;background-clip:text}
+.phil-card p{font-size:14px;color:rgba(255,255,255,.45);line-height:1.7;max-width:360px;margin:0 auto}
+
+/* ===== Footer ===== */
+footer{padding:32px 0 20px;text-align:center;border-top:1px solid rgba(255,255,255,.04)}
+.footer-copy{font-size:12px;color:rgba(255,255,255,.2);letter-spacing:.02em}
+
+/* ===== Responsive ===== */
+@media(max-width:900px){
+  .value-grid{grid-template-columns:1fr;gap:12px}
+  .value-card{flex-direction:row;align-items:center;text-align:left;padding:18px 16px;gap:14px}
+  .value-card-img{width:80px;height:64px;flex-shrink:0;margin-bottom:0;border-radius:6px}
+  .value-card p{max-width:none}
+  .workflow-grid{grid-template-columns:repeat(2,1fr);gap:20px}
+  .phil-grid{grid-template-columns:1fr;gap:16px}
+}
+@media(max-width:768px){
+  .hero h1{font-size:clamp(40px,14vw,72px)}
+  .nav-links a{display:none}
+  .hero{padding:60px 0 24px;min-height:40vh}
+  .phil-card{padding:32px 24px}
+}
+@media(max-width:480px){
+  .workflow-grid{grid-template-columns:1fr;gap:24px;max-width:400px;margin:0 auto}
+}
+
+.cta-btn{display:inline-flex;align-items:center;gap:10px;padding:16px 44px;border-radius:14px;font-size:17px;font-weight:700;color:#fff;background:linear-gradient(135deg,#00d4ff,#6366f1);text-decoration:none;position:relative;transition:all .35s;box-shadow:0 0 32px rgba(0,212,255,.2),0 4px 16px rgba(0,0,0,.3)}
+.cta-btn:hover{transform:translateY(-2px);box-shadow:0 0 48px rgba(0,212,255,.35),0 8px 24px rgba(0,0,0,.4)}
+.cta-btn::before,.cta-btn::after{content:'';position:absolute;inset:-3px;border-radius:17px;border:2px solid transparent;animation:cta-ring 2.5s ease-out infinite;pointer-events:none}
+.cta-btn::before{animation-delay:0s;border-color:rgba(0,212,255,.25)}
+.cta-btn::after{animation-delay:.8s;border-color:rgba(99,102,241,.2)}
+@keyframes cta-ring{0%{inset:-3px;opacity:1}100%{inset:-20px;opacity:0}}
+.cta-particles{position:absolute;inset:-4px;pointer-events:none;overflow:visible}
+.cta-particle{position:absolute;width:3px;height:3px;border-radius:50%;background:#00d4ff;animation:cta-float 1.5s ease-out infinite;opacity:0}
+.cta-particle:nth-child(1){top:50%;left:-8px;animation-delay:0s}
+.cta-particle:nth-child(2){top:20%;right:-6px;animation-delay:.3s}
+.cta-particle:nth-child(3){bottom:30%;left:-10px;animation-delay:.6s}
+.cta-particle:nth-child(4){top:40%;right:-12px;animation-delay:.9s}
+.cta-particle:nth-child(5){bottom:50%;right:-4px;animation-delay:1.2s}
+@keyframes cta-float{0%{transform:translate(0,0) scale(1);opacity:0}30%{opacity:.8}100%{transform:translate(var(--tx,10px),var(--ty,-10px)) scale(0);opacity:0}}
+.cta-particle:nth-child(1){--tx:12px;--ty:-14px}
+.cta-particle:nth-child(2){--tx:-10px;--ty:-12px}
+.cta-particle:nth-child(3){--tx:14px;--ty:10px}
+.cta-particle:nth-child(4){--tx:-12px;--ty:8px}
+.cta-particle:nth-child(5){--tx:8px;--ty:-16px}
+
+/* 粒子过渡动画 */
+.transition-overlay{position:fixed;inset:0;z-index:9999;pointer-events:none;opacity:0;transition:opacity .3s}
+.transition-overlay.active{opacity:1}
+.transition-particle{position:absolute;width:6px;height:6px;border-radius:50%;animation:particle-burst .7s cubic-bezier(.25,.46,.45,.94) forwards}
+@keyframes particle-burst{0%{transform:translate(0,0) scale(1);opacity:1}100%{transform:translate(var(--bx),var(--by)) scale(0);opacity:0}}
+.page-fade{transition:opacity .5s ease}
+.page-fade.out{opacity:0}
+</style>
+</head>
+<body>
+
+<nav>
+  <div class="container">
+    <div class="logo">Seecript</div>
+    <div class="nav-links">
+      <a href="/">我的项目</a>
+      <a href="/library">素材与灵感</a>
+      <a href="/decompose">分析热门结构</a>
+      <a href="/workshop">创作工作台</a>
+      <a href="/knowledge">创作偏好</a>
+      
+    </div>
+  </div>
+</nav>
+
+<main class="page-fade">
+<!-- ===== Hero ===== -->
+<section class="hero">
+  <div class="hero-glow"></div>
+  <div class="hero-grid"></div>
+  <div class="hero-particles">
+    <div class="hero-particle"></div><div class="hero-particle"></div><div class="hero-particle"></div><div class="hero-particle"></div><div class="hero-particle"></div><div class="hero-particle"></div><div class="hero-particle"></div><div class="hero-particle"></div>
+  </div>
+  <div class="container">
+    <h1 class="anim anim-1"><span class="gradient">Seecript</span></h1>
+    <p class="anim anim-2">上传你喜欢的视频，AI 自动拆解结构与节奏，换上你的素材一键导出同样精彩的作品</p>
+    <div class="anim anim-3" style="margin-top:36px">
+      <a href="/" class="cta-btn">
+        开始创作
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path stroke-linecap="round" stroke-linejoin="round" d="M5 12h14M12 5l7 7-7 7"/></svg>
+        <span class="cta-particles">
+          <span class="cta-particle"></span><span class="cta-particle"></span><span class="cta-particle"></span><span class="cta-particle"></span><span class="cta-particle"></span>
+        </span>
+      </a>
+    </div>
+  </div>
+</section>
+
+<!-- ===== 核心价值（之前视觉） ===== -->
+<section class="section value-section" id="value">
+  <div class="container">
+    <div class="value-header">
+      <span class="section-label">核心价值</span>
+      <h2 class="section-title">Seecript 能为你做什么</h2>
+      <p class="section-sub">不讲技术，只讲价值</p>
+    </div>
+    <div class="value-grid">
+      <div class="value-card">
+        <div class="value-card-img">
+          <svg viewBox="0 0 220 100" xmlns="http://www.w3.org/2000/svg">
+            <defs><linearGradient id="g1" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#00d4ff" stop-opacity="0.6"/><stop offset="1" stop-color="#7b61ff" stop-opacity="0.3"/></linearGradient></defs>
+            <rect x="20" y="55" width="10" height="25" rx="2" fill="url(#g1)" opacity="0.4"/>
+            <rect x="34" y="40" width="10" height="40" rx="2" fill="url(#g1)" opacity="0.5"/>
+            <rect x="48" y="25" width="10" height="55" rx="2" fill="url(#g1)" opacity="0.7"/>
+            <rect x="62" y="35" width="10" height="45" rx="2" fill="url(#g1)" opacity="0.6"/>
+            <rect x="76" y="45" width="10" height="35" rx="2" fill="url(#g1)" opacity="0.5"/>
+            <rect x="90" y="50" width="10" height="30" rx="2" fill="url(#g1)" opacity="0.4"/>
+            <rect x="104" y="60" width="10" height="20" rx="2" fill="url(#g1)" opacity="0.3"/>
+            <rect x="118" y="55" width="10" height="25" rx="2" fill="url(#g1)" opacity="0.35"/>
+            <rect x="132" y="42" width="10" height="38" rx="2" fill="url(#g1)" opacity="0.55"/>
+            <rect x="146" y="30" width="10" height="50" rx="2" fill="url(#g1)" opacity="0.65"/>
+            <rect x="160" y="20" width="10" height="60" rx="2" fill="url(#g1)" opacity="0.8"/>
+            <rect x="174" y="38" width="10" height="42" rx="2" fill="url(#g1)" opacity="0.55"/>
+            <circle cx="169" cy="20" r="18" fill="none" stroke="#00d4ff" stroke-width="1.2" opacity="0.6"/>
+            <circle cx="175" cy="18" r="3" fill="#00d4ff" opacity="0.8"/>
+          </svg>
+        </div>
+        <h3>看懂爆款</h3>
+        <p>AI 分析热门视频的节奏、结构和亮点，秒懂它为什么受欢迎</p>
+      </div>
+      <div class="value-card">
+        <div class="value-card-img">
+          <svg viewBox="0 0 220 100" xmlns="http://www.w3.org/2000/svg">
+            <defs><linearGradient id="g2" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#7b61ff" stop-opacity="0.5"/><stop offset="1" stop-color="#00d4ff" stop-opacity="0.3"/></linearGradient></defs>
+            <rect x="30" y="15" width="70" height="70" rx="6" fill="url(#g2)" opacity="0.2" stroke="rgba(255,255,255,0.1)" stroke-width="1"/>
+            <rect x="55" y="25" width="70" height="70" rx="6" fill="url(#g2)" opacity="0.3" stroke="rgba(255,255,255,0.12)" stroke-width="1"/>
+            <rect x="80" y="18" width="70" height="70" rx="6" fill="url(#g2)" opacity="0.15" stroke="rgba(255,255,255,0.08)" stroke-width="0.8"/>
+            <line x1="95" y1="30" x2="95" y2="75" stroke="rgba(255,255,255,0.2)" stroke-width="0.5"/>
+            <line x1="100" y1="28" x2="100" y2="78" stroke="rgba(255,255,255,0.15)" stroke-width="0.5"/>
+            <circle cx="97" cy="53" r="6" fill="#00d4ff" opacity="0.5"/>
+            <line x1="115" y1="35" x2="135" y2="35" stroke="rgba(255,255,255,0.1)" stroke-width="1" rx="2"/>
+            <line x1="115" y1="45" x2="130" y2="45" stroke="rgba(255,255,255,0.08)" stroke-width="1" rx="2"/>
+            <line x1="115" y1="55" x2="140" y2="55" stroke="rgba(255,255,255,0.1)" stroke-width="1" rx="2"/>
+            <line x1="115" y1="65" x2="125" y2="65" stroke="rgba(255,255,255,0.06)" stroke-width="1" rx="2"/>
+          </svg>
+        </div>
+        <h3>重组灵感</h3>
+        <p>套用爆款的节奏与结构，快速做出属于你自己的精彩视频</p>
+      </div>
+      <div class="value-card">
+        <div class="value-card-img">
+          <svg viewBox="0 0 220 100" xmlns="http://www.w3.org/2000/svg">
+            <defs><linearGradient id="g3" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#00d4ff" stop-opacity="0.5"/><stop offset="1" stop-color="#7b61ff" stop-opacity="0.4"/></linearGradient></defs>
+            <rect x="40" y="20" width="140" height="60" rx="10" fill="url(#g3)" opacity="0.15" stroke="rgba(255,255,255,0.08)" stroke-width="1"/>
+            <polygon points="103,35 103,65 130,50" fill="#00d4ff" opacity="0.7"/>
+            <circle cx="60" cy="50" r="3" fill="rgba(255,255,255,0.15)"/>
+            <line x1="68" y1="50" x2="85" y2="50" stroke="rgba(255,255,255,0.1)" stroke-width="0.8"/>
+            <circle cx="145" cy="35" r="2" fill="#7b61ff" opacity="0.4"/>
+            <circle cx="155" cy="30" r="1.5" fill="#7b61ff" opacity="0.25"/>
+            <circle cx="150" cy="65" r="2" fill="#7b61ff" opacity="0.35"/>
+            <rect x="170" y="55" width="20" height="6" rx="3" fill="rgba(255,255,255,0.06)"/>
+          </svg>
+        </div>
+        <h3>一键出片</h3>
+        <p>自动配好转场与封面，省去繁琐剪辑步骤，直接导出成片</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ===== 操作流程（配真实图片） ===== -->
+<section class="section workflow-section" id="workflow">
+  <div class="container">
+    <div class="workflow-header">
+      <span class="section-label">操作流程</span>
+      <h2 class="section-title">四步搞定，就这么简单</h2>
+    </div>
+    <div class="workflow-grid">
+      <div class="step-card">
+        <div class="step-img-wrap">
+          <img src="https://images.unsplash.com/photo-1517694712202-14dd9538aa97?w=600&h=375&fit=crop&auto=format" alt="挑个样片" loading="lazy">
+          <div class="overlay"></div>
+          <div class="step-num">1</div>
+        </div>
+        <h4>挑个样片</h4>
+        <p>从素材库选一个热门视频，或者上传你自己的作品</p>
+      </div>
+      <div class="step-card">
+        <div class="step-img-wrap">
+          <img src="https://images.unsplash.com/photo-1504639725590-34d0984388bd?w=600&h=375&fit=crop&auto=format" alt="AI 自动分析" loading="lazy">
+          <div class="overlay"></div>
+          <div class="step-num">2</div>
+        </div>
+        <h4>AI 自动分析</h4>
+        <p>系统自动拆解镜头、节奏变化和高光点位置</p>
+      </div>
+      <div class="step-card">
+        <div class="step-img-wrap">
+          <img src="https://images.unsplash.com/photo-1460925895917-afdab827c52f?w=600&h=375&fit=crop&auto=format" alt="换上你的内容" loading="lazy">
+          <div class="overlay"></div>
+          <div class="step-num">3</div>
+        </div>
+        <h4>换上你的内容</h4>
+        <p>拖拽替换成自己的素材，空缺部分 AI 自动补全</p>
+      </div>
+      <div class="step-card">
+        <div class="step-img-wrap">
+          <img src="https://images.unsplash.com/photo-1492691527719-9d1e07e534b4?w=600&h=375&fit=crop&auto=format" alt="导出视频" loading="lazy">
+          <div class="overlay"></div>
+          <div class="step-num">4</div>
+        </div>
+        <h4>导出视频</h4>
+        <p>选上喜欢的封面和转场，一键导出直接发布</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ===== 产品理念（原样式） ===== -->
+<section class="section philosophy-section" id="philosophy">
+  <div class="container">
+    <div class="philosophy-header">
+      <span class="section-label">产品理念</span>
+      <h2 class="section-title">我们相信的</h2>
+    </div>
+    <div class="phil-grid">
+      <div class="phil-card">
+        <div class="content">
+          <span class="phil-icon">🎵</span>
+          <h3>每个爆款<br><span class="gradient-text">都有自己的节奏</span></h3>
+          <p>好的内容不是偶然——每一段节奏、每一个镜头都有迹可循。找到它，你的作品也能发光</p>
+        </div>
+      </div>
+      <div class="phil-card">
+        <div class="content">
+          <span class="phil-icon">🌟</span>
+          <h3>创作<br><span class="gradient-text">不必从零开始</span></h3>
+          <p>最好的创作不是凭空想象，而是在优秀的基础上再进一步。站在好内容之上，走得更远</p>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+</main>
+
+<footer>
+  <div class="container">
+    <div class="footer-copy">© 2026 Seecript · MIT License</div>
+  </div>
+</footer>
+
+
+<div class="transition-overlay" id="transitionOverlay"></div>
+<script>
+(function(){
+  var btn = document.querySelector('.cta-btn');
+  if(!btn) return;
+  btn.addEventListener('click', function(e){
+    e.preventDefault();
+    var overlay = document.getElementById('transitionOverlay');
+    var rect = btn.getBoundingClientRect();
+    var cx = rect.left + rect.width/2;
+    var cy = rect.top + rect.height/2;
+
+    // Create 40 particles
+    var frag = document.createDocumentFragment();
+    var colors = ['#00d4ff','#6366f1','#a855f7','#22d3ee','#818cf8'];
+    for(var i=0;i<40;i++){
+      var p = document.createElement('div');
+      p.className = 'transition-particle';
+      p.style.left = cx + 'px';
+      p.style.top = cy + 'px';
+      p.style.background = colors[i % colors.length];
+      p.style.width = (2 + Math.random()*6) + 'px';
+      p.style.height = p.style.width;
+      var angle = Math.random() * Math.PI * 2;
+      var dist = 80 + Math.random() * 300;
+      p.style.setProperty('--bx', Math.cos(angle)*dist + 'px');
+      p.style.setProperty('--by', Math.sin(angle)*dist + 'px');
+      p.style.animationDelay = (Math.random()*0.15) + 's';
+      p.style.animationDuration = (0.5 + Math.random()*0.4) + 's';
+      frag.appendChild(p);
+    }
+    overlay.appendChild(frag);
+
+    // Fade page content
+    var main = document.querySelector('main');
+    if(main) main.classList.add('out');
+
+    // Trigger overlay
+    overlay.classList.add('active');
+
+    // Navigate after animation
+    setTimeout(function(){
+      window.location.href = '/';
+    }, 650);
+  });
+})();
+</script>
+</body>
+</html>

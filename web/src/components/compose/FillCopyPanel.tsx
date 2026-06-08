@@ -135,7 +135,7 @@ function CardPreview({ spec }: { spec: TextCardSpec }) {
             <div className="text-[13px] leading-tight" style={mainStyle}>
               {spec.main_text || <span className="opacity-30">主标题</span>}
             </div>
-            <div className="text-[10px] leading-tight" style={subStyle}>
+            <div className="text-xs leading-tight" style={subStyle}>
               {spec.sub_text}
             </div>
           </>
@@ -145,7 +145,7 @@ function CardPreview({ spec }: { spec: TextCardSpec }) {
               {spec.main_text || <span className="opacity-30">主标题</span>}
             </div>
             {spec.sub_text && (
-              <div className="text-[10px] leading-tight" style={subStyle}>
+              <div className="text-xs leading-tight" style={subStyle}>
                 {spec.sub_text}
               </div>
             )}
@@ -159,7 +159,7 @@ function CardPreview({ spec }: { spec: TextCardSpec }) {
           </div>
         )}
       </div>
-      <p className="text-center text-[9px] text-muted-foreground">
+      <p className="text-center text-xs text-muted-foreground">
         预览（仅样式参考） · 成品由 AI 直接烧制到画面
       </p>
     </div>
@@ -317,7 +317,7 @@ export function FillCopyPanel({
     <div className="space-y-2 rounded-md border border-border bg-background/40 p-3">
       <div className="flex items-center justify-between">
         <h4 className="text-xs font-semibold">字卡画面 · 客制化</h4>
-        <span className="text-[10px] text-muted-foreground">
+        <span className="text-xs text-muted-foreground">
           {phase === 'idle' && '待开始'}
           {phase === 'analyzing-outline' && '分析中…'}
           {phase === 'outline' && '调参'}
@@ -328,7 +328,7 @@ export function FillCopyPanel({
 
       {phase === 'idle' && (
         <div className="space-y-2">
-          <p className="text-[11px] text-muted-foreground">
+          <p className="text-xs text-muted-foreground">
             AI 看一遍段落 + 整体设置，先给一份字卡设计（主副文本 / 字体 / 版式 / 配色 / 动画 / Emoji）；
             你再随心调，AI 最终把字卡烧制成视频片段，落到画面轨。
           </p>
@@ -337,12 +337,12 @@ export function FillCopyPanel({
             onChange={(e) => setPromptHint(e.target.value.slice(0, 200))}
             rows={2}
             placeholder="可选：给 AI 一个方向（如『暗黑科技风』『治愈手写』『大字报式爆点』）"
-            className="w-full resize-y rounded-md border border-border bg-background px-2 py-1.5 text-[11px] outline-none focus:border-primary"
+            className="w-full resize-y rounded-md border border-border bg-background px-2 py-1.5 text-xs outline-none focus:border-primary"
           />
           <div className="flex items-center justify-between gap-2">
             <button
               onClick={skipToGenerate}
-              className="text-[11px] text-muted-foreground underline-offset-2 hover:underline"
+              className="text-xs text-muted-foreground underline-offset-2 hover:underline"
             >
               跳过 · 用默认风格直接生成
             </button>
@@ -353,7 +353,7 @@ export function FillCopyPanel({
               AI 设计字卡 ✨
             </button>
           </div>
-          {analyzeError && <p className="text-[11px] text-destructive">{analyzeError}</p>}
+          {analyzeError && <p className="text-xs text-destructive">{analyzeError}</p>}
         </div>
       )}
 
@@ -364,7 +364,7 @@ export function FillCopyPanel({
               <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-primary/60" />
               <span className="relative inline-flex h-2 w-2 rounded-full bg-primary" />
             </span>
-            <span className="text-[11px] font-medium">AI 正在为本段设计字卡…</span>
+            <span className="text-xs font-medium">AI 正在为本段设计字卡…</span>
           </div>
           <ThinkingSteps steps={thinking} animated />
         </div>
@@ -375,7 +375,7 @@ export function FillCopyPanel({
           <div className="space-y-3">
             {thinking.length > 0 && (
               <details className="rounded-md border border-border bg-background/30 px-2 py-1">
-                <summary className="cursor-pointer text-[11px] text-muted-foreground">
+                <summary className="cursor-pointer text-xs text-muted-foreground">
                   AI 思考 ({thinking.length} 步)
                 </summary>
                 <div className="mt-1">
@@ -386,9 +386,9 @@ export function FillCopyPanel({
 
             {/* 主文本 */}
             <div className="space-y-1">
-              <label className="flex items-center justify-between text-[11px] font-semibold text-muted-foreground">
+              <label className="flex items-center justify-between text-xs font-semibold text-muted-foreground">
                 <span>主标题</span>
-                <span className="font-mono text-[10px]">{spec.main_text.length}/24</span>
+                <span className="font-mono text-xs">{spec.main_text.length}/24</span>
               </label>
               <input
                 type="text"
@@ -400,21 +400,21 @@ export function FillCopyPanel({
 
             {/* 副文本 */}
             <div className="space-y-1">
-              <label className="flex items-center justify-between text-[11px] font-semibold text-muted-foreground">
+              <label className="flex items-center justify-between text-xs font-semibold text-muted-foreground">
                 <span>副标题（可空）</span>
-                <span className="font-mono text-[10px]">{spec.sub_text.length}/40</span>
+                <span className="font-mono text-xs">{spec.sub_text.length}/40</span>
               </label>
               <input
                 type="text"
                 value={spec.sub_text}
                 onChange={(e) => updateSpec('sub_text', e.target.value.slice(0, 40))}
-                className="w-full rounded-md border border-border bg-background px-2 py-1.5 text-[11px] outline-none focus:border-primary"
+                className="w-full rounded-md border border-border bg-background px-2 py-1.5 text-xs outline-none focus:border-primary"
               />
             </div>
 
             {/* font_family */}
             <div className="space-y-1">
-              <label className="text-[11px] font-semibold text-muted-foreground">字体族</label>
+              <label className="text-xs font-semibold text-muted-foreground">字体族</label>
               <div className="grid grid-cols-4 gap-1">
                 {FONT_OPTIONS.map((opt) => (
                   <button
@@ -422,14 +422,14 @@ export function FillCopyPanel({
                     type="button"
                     onClick={() => updateSpec('font_family', opt.value)}
                     className={cn(
-                      'rounded-md border px-1.5 py-1 text-left text-[11px] transition',
+                      'rounded-md border px-1.5 py-1 text-left text-xs transition',
                       spec.font_family === opt.value
                         ? 'border-primary bg-primary/10 text-foreground'
                         : 'border-border bg-background/60 text-muted-foreground hover:border-primary/60',
                     )}
                   >
                     <div className="font-semibold">{opt.label}</div>
-                    <div className="text-[9px] text-muted-foreground">{opt.hint}</div>
+                    <div className="text-xs text-muted-foreground">{opt.hint}</div>
                   </button>
                 ))}
               </div>
@@ -437,7 +437,7 @@ export function FillCopyPanel({
 
             {/* layout */}
             <div className="space-y-1">
-              <label className="text-[11px] font-semibold text-muted-foreground">版式</label>
+              <label className="text-xs font-semibold text-muted-foreground">版式</label>
               <div className="grid grid-cols-4 gap-1">
                 {LAYOUT_OPTIONS.map((opt) => (
                   <button
@@ -445,14 +445,14 @@ export function FillCopyPanel({
                     type="button"
                     onClick={() => updateSpec('layout', opt.value)}
                     className={cn(
-                      'rounded-md border px-1.5 py-1 text-left text-[11px] transition',
+                      'rounded-md border px-1.5 py-1 text-left text-xs transition',
                       spec.layout === opt.value
                         ? 'border-primary bg-primary/10 text-foreground'
                         : 'border-border bg-background/60 text-muted-foreground hover:border-primary/60',
                     )}
                   >
                     <div className="font-semibold">{opt.label}</div>
-                    <div className="text-[9px] text-muted-foreground">{opt.hint}</div>
+                    <div className="text-xs text-muted-foreground">{opt.hint}</div>
                   </button>
                 ))}
               </div>
@@ -460,7 +460,7 @@ export function FillCopyPanel({
 
             {/* bg_mode */}
             <div className="space-y-1">
-              <label className="text-[11px] font-semibold text-muted-foreground">背景模式</label>
+              <label className="text-xs font-semibold text-muted-foreground">背景模式</label>
               <div className="grid grid-cols-4 gap-1">
                 {BG_MODE_OPTIONS.map((opt) => (
                   <button
@@ -468,14 +468,14 @@ export function FillCopyPanel({
                     type="button"
                     onClick={() => updateSpec('bg_mode', opt.value)}
                     className={cn(
-                      'rounded-md border px-1.5 py-1 text-left text-[11px] transition',
+                      'rounded-md border px-1.5 py-1 text-left text-xs transition',
                       spec.bg_mode === opt.value
                         ? 'border-primary bg-primary/10 text-foreground'
                         : 'border-border bg-background/60 text-muted-foreground hover:border-primary/60',
                     )}
                   >
                     <div className="font-semibold">{opt.label}</div>
-                    <div className="text-[9px] text-muted-foreground">{opt.hint}</div>
+                    <div className="text-xs text-muted-foreground">{opt.hint}</div>
                   </button>
                 ))}
               </div>
@@ -484,7 +484,7 @@ export function FillCopyPanel({
             {/* 颜色三件套 */}
             <div className="grid grid-cols-3 gap-2">
               <div className="space-y-1">
-                <label className="text-[10px] font-semibold text-muted-foreground">背景</label>
+                <label className="text-xs font-semibold text-muted-foreground">背景</label>
                 <div className="flex items-center gap-1">
                   <input
                     type="color"
@@ -499,12 +499,12 @@ export function FillCopyPanel({
                       const v = e.target.value
                       if (/^#[0-9A-Fa-f]{0,6}$/.test(v)) updateSpec('bg_color', v.toUpperCase())
                     }}
-                    className="w-full rounded-md border border-border bg-background px-1.5 py-1 text-[10px] font-mono outline-none focus:border-primary"
+                    className="w-full rounded-md border border-border bg-background px-1.5 py-1 text-xs font-mono outline-none focus:border-primary"
                   />
                 </div>
               </div>
               <div className="space-y-1">
-                <label className="text-[10px] font-semibold text-muted-foreground">文本</label>
+                <label className="text-xs font-semibold text-muted-foreground">文本</label>
                 <div className="flex items-center gap-1">
                   <input
                     type="color"
@@ -519,12 +519,12 @@ export function FillCopyPanel({
                       const v = e.target.value
                       if (/^#[0-9A-Fa-f]{0,6}$/.test(v)) updateSpec('text_color', v.toUpperCase())
                     }}
-                    className="w-full rounded-md border border-border bg-background px-1.5 py-1 text-[10px] font-mono outline-none focus:border-primary"
+                    className="w-full rounded-md border border-border bg-background px-1.5 py-1 text-xs font-mono outline-none focus:border-primary"
                   />
                 </div>
               </div>
               <div className="space-y-1">
-                <label className="text-[10px] font-semibold text-muted-foreground">强调</label>
+                <label className="text-xs font-semibold text-muted-foreground">强调</label>
                 <div className="flex items-center gap-1">
                   <input
                     type="color"
@@ -539,7 +539,7 @@ export function FillCopyPanel({
                       const v = e.target.value
                       if (/^#[0-9A-Fa-f]{0,6}$/.test(v)) updateSpec('accent_color', v.toUpperCase())
                     }}
-                    className="w-full rounded-md border border-border bg-background px-1.5 py-1 text-[10px] font-mono outline-none focus:border-primary"
+                    className="w-full rounded-md border border-border bg-background px-1.5 py-1 text-xs font-mono outline-none focus:border-primary"
                   />
                 </div>
               </div>
@@ -547,7 +547,7 @@ export function FillCopyPanel({
 
             {/* animation */}
             <div className="space-y-1">
-              <label className="text-[11px] font-semibold text-muted-foreground">入场动画</label>
+              <label className="text-xs font-semibold text-muted-foreground">入场动画</label>
               <div className="grid grid-cols-4 gap-1">
                 {ANIM_OPTIONS.map((opt) => (
                   <button
@@ -555,14 +555,14 @@ export function FillCopyPanel({
                     type="button"
                     onClick={() => updateSpec('animation', opt.value)}
                     className={cn(
-                      'rounded-md border px-1.5 py-1 text-left text-[11px] transition',
+                      'rounded-md border px-1.5 py-1 text-left text-xs transition',
                       spec.animation === opt.value
                         ? 'border-primary bg-primary/10 text-foreground'
                         : 'border-border bg-background/60 text-muted-foreground hover:border-primary/60',
                     )}
                   >
                     <div className="font-semibold">{opt.label}</div>
-                    <div className="text-[9px] text-muted-foreground">{opt.hint}</div>
+                    <div className="text-xs text-muted-foreground">{opt.hint}</div>
                   </button>
                 ))}
               </div>
@@ -570,9 +570,9 @@ export function FillCopyPanel({
 
             {/* emoji */}
             <div className="space-y-1">
-              <label className="flex items-center justify-between text-[11px] font-semibold text-muted-foreground">
+              <label className="flex items-center justify-between text-xs font-semibold text-muted-foreground">
                 <span>Emoji 点缀（≤3）</span>
-                <span className="font-mono text-[10px]">{spec.emoji_decor.length}/3</span>
+                <span className="font-mono text-xs">{spec.emoji_decor.length}/3</span>
               </label>
               <div className="flex flex-wrap gap-1">
                 {EMOJI_POOL.map((e) => (
@@ -595,7 +595,7 @@ export function FillCopyPanel({
 
             {/* duration */}
             <div className="space-y-1">
-              <label className="flex items-center justify-between text-[11px] font-semibold text-muted-foreground">
+              <label className="flex items-center justify-between text-xs font-semibold text-muted-foreground">
                 <span>播放时长</span>
                 <span className="font-mono">{spec.duration_seconds.toFixed(1)} s</span>
               </label>
@@ -612,12 +612,12 @@ export function FillCopyPanel({
 
             {/* keywords hint（只读提示） */}
             {globalKeywords.length > 0 && outline?.must_include_keywords && outline.must_include_keywords.length > 0 && (
-              <p className="text-[10px] text-muted-foreground">
+              <p className="text-xs text-muted-foreground">
                 💡 AI 推荐承载关键词：{outline.must_include_keywords.join(' / ')}（已带入下次生成）
               </p>
             )}
 
-            {genError && <p className="text-[11px] text-destructive">{genError}</p>}
+            {genError && <p className="text-xs text-destructive">{genError}</p>}
 
             <div className="flex items-center justify-end gap-2">
               <button
@@ -641,7 +641,7 @@ export function FillCopyPanel({
 
           {/* 右侧实时预览 */}
           <div className="space-y-1">
-            <p className="text-[10px] font-semibold text-muted-foreground">实时预览</p>
+            <p className="text-xs font-semibold text-muted-foreground">实时预览</p>
             <CardPreview spec={spec} />
           </div>
         </div>
@@ -654,17 +654,17 @@ export function FillCopyPanel({
               <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-primary/60" />
               <span className="relative inline-flex h-2 w-2 rounded-full bg-primary" />
             </span>
-            <span className="text-[11px] font-medium">AI 正在把字卡烧制成视频片段…</span>
+            <span className="text-xs font-medium">AI 正在把字卡烧制成视频片段…</span>
           </div>
-          <p className="text-[10px] text-muted-foreground">通常 2-5 秒</p>
+          <p className="text-xs text-muted-foreground">通常 2-5 秒</p>
         </div>
       )}
 
       {phase === 'result' && fill && fill.action === 'copy' && fill.text_card_spec && (
         <div className="grid gap-3 lg:grid-cols-[1fr_140px]">
-          <div className="space-y-2 text-[11px]">
+          <div className="space-y-2 text-xs">
             <p className="text-muted-foreground">已生成字卡画面规格：</p>
-            <ul className="space-y-1 rounded-md border border-border bg-background/30 px-3 py-2 font-mono text-[10px]">
+            <ul className="space-y-1 rounded-md border border-border bg-background/30 px-3 py-2 font-mono text-xs">
               <li>主：{fill.text_card_spec.main_text || <em className="text-muted-foreground">空</em>}</li>
               <li>副：{fill.text_card_spec.sub_text || <em className="text-muted-foreground">空</em>}</li>
               <li>字体 {fill.text_card_spec.font_family} · 版式 {fill.text_card_spec.layout} · 动画 {fill.text_card_spec.animation}</li>
@@ -681,14 +681,14 @@ export function FillCopyPanel({
               </button>
               <button
                 onClick={() => setPhase('idle')}
-                className="text-[11px] text-muted-foreground underline-offset-2 hover:underline"
+                className="text-xs text-muted-foreground underline-offset-2 hover:underline"
               >
                 重新分析
               </button>
             </div>
           </div>
           <div className="space-y-1">
-            <p className="text-[10px] font-semibold text-muted-foreground">画面预览</p>
+            <p className="text-xs font-semibold text-muted-foreground">画面预览</p>
             <CardPreview spec={fill.text_card_spec} />
           </div>
         </div>

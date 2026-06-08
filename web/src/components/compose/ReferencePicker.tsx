@@ -91,10 +91,10 @@ export function ReferencePicker() {
     <section className="rounded-lg border border-border bg-card p-4">
       <header className="mb-3 flex flex-wrap items-center gap-2">
         <h2 className="text-sm font-semibold">结构参考</h2>
-        <span className="text-[11px] text-muted-foreground">
+        <span className="text-xs text-muted-foreground">
           从已拆解版本库挑 1-2 个 (sample, 槽) 作为结构知识——支持同一样例两个版本
         </span>
-        <div className="ml-auto flex items-center gap-2 text-[11px]">
+        <div className="ml-auto flex items-center gap-2 text-xs">
           <span className="text-muted-foreground">已选 {selected.length}/2</span>
           {selected.length > 0 && (
             <button
@@ -119,8 +119,8 @@ export function ReferencePicker() {
       {/* 视频类型分类过滤——LibraryItem 已有 video_type，但之前 Compose 步骤 1 没暴露过滤项，
           有几十个样例时只能上下翻。这里按类型拍平选项让用户秒锁到目标类别。 */}
       <div className="mb-2 flex flex-wrap items-center gap-1.5">
-        <span className="text-[10px] font-medium text-muted-foreground">类型</span>
-        <div className="inline-flex flex-wrap items-center gap-0.5 rounded-md border border-border bg-background/40 p-0.5 text-[11px]">
+        <span className="text-xs font-medium text-muted-foreground">类型</span>
+        <div className="inline-flex flex-wrap items-center gap-0.5 rounded-md border border-border bg-background/40 p-0.5 text-xs">
           {(['all', 'marketing', 'editing', 'motion_graph'] as const).map((f) => {
             const label = f === 'all' ? '全部' : VIDEO_TYPE_LABEL[f]
             const active = videoTypeFilter === f
@@ -139,7 +139,7 @@ export function ReferencePicker() {
                 )}
               >
                 {label}
-                <span className="ml-1 text-[9px] opacity-70">{count}</span>
+                <span className="ml-1 text-xs opacity-70">{count}</span>
               </button>
             )
           })}
@@ -148,7 +148,7 @@ export function ReferencePicker() {
 
       {/* 已选 chips */}
       {selected.length > 0 && (
-        <div className="mb-3 flex flex-wrap items-center gap-1.5 text-[11px]">
+        <div className="mb-3 flex flex-wrap items-center gap-1.5 text-xs">
           {selected.map((r, i) => {
             const meta = items?.find(
               (it) => it.sample_id === r.sample_id && it.slot_id === r.slot_id,
@@ -158,17 +158,17 @@ export function ReferencePicker() {
                 key={`${r.sample_id}-${r.slot_id}`}
                 className="inline-flex items-center gap-1 rounded-full border border-primary/40 bg-primary/5 px-2 py-0.5 text-primary"
               >
-                <span className="rounded-sm bg-primary px-1 text-[10px] font-bold text-primary-foreground">
+                <span className="rounded-sm bg-primary px-1 text-xs font-bold text-primary-foreground">
                   {String.fromCharCode(65 + i)}
                 </span>
                 <span className="font-medium">
                   {meta?.sample_title ?? r.sample_id}
                 </span>
-                <span className="text-[10px] text-muted-foreground">{meta?.label ?? r.slot_id.slice(0, 8)}</span>
+                <span className="text-xs text-muted-foreground">{meta?.label ?? r.slot_id.slice(0, 8)}</span>
                 <button
                   type="button"
                   onClick={() => toggleReference(r)}
-                  className="ml-0.5 text-[10px] text-muted-foreground hover:text-foreground"
+                  className="ml-0.5 text-xs text-muted-foreground hover:text-foreground"
                   title="移除"
                 >
                   ×
@@ -186,7 +186,7 @@ export function ReferencePicker() {
       )}
 
       {loading && !items && (
-        <p className="text-[11px] text-muted-foreground">加载中…</p>
+        <p className="text-xs text-muted-foreground">加载中…</p>
       )}
 
       {items && items.length === 0 && (
@@ -219,7 +219,7 @@ export function ReferencePicker() {
                 />
                 <div className="min-w-0 flex-1">
                   <p className="truncate text-xs font-medium" title={g.sample_title}>{g.sample_title}</p>
-                  <p className="text-[10px] text-muted-foreground">
+                  <p className="text-xs text-muted-foreground">
                     {g.scene} · {VIDEO_TYPE_LABEL[g.video_type]}
                   </p>
                 </div>
@@ -234,7 +234,7 @@ export function ReferencePicker() {
                       onClick={() => toggleReference({ sample_id: v.sample_id, slot_id: v.slot_id })}
                       title={`${v.label} · ${v.duration_seconds.toFixed(1)}s · ${v.shot_count} 镜头${v.is_active ? ' · active' : ''}`}
                       className={cn(
-                        'rounded-md border px-2 py-0.5 text-[11px] transition-colors',
+                        'rounded-md border px-2 py-0.5 text-xs transition-colors',
                         active
                           ? 'border-primary bg-primary text-primary-foreground'
                           : 'border-border bg-background hover:bg-secondary',
@@ -242,7 +242,7 @@ export function ReferencePicker() {
                     >
                       {v.label}
                       {v.is_active && (
-                        <span className={cn('ml-1 text-[9px]', active ? 'opacity-80' : 'text-emerald-500')}>●</span>
+                        <span className={cn('ml-1 text-xs', active ? 'opacity-80' : 'text-emerald-500')}>●</span>
                       )}
                     </button>
                   )

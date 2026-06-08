@@ -50,7 +50,7 @@ export function AnalysisCard({ analysis }: Props) {
       <div className="mb-4 flex items-baseline gap-4 border-b border-border pb-3">
         <div>
           <div className="text-3xl font-bold tabular-nums">{overall_score}</div>
-          <div className="text-[10px] text-muted-foreground">综合评分</div>
+          <div className="text-xs text-muted-foreground">综合评分</div>
         </div>
         {one_line_verdict && (
           <div className="flex-1 text-sm leading-relaxed text-foreground">{one_line_verdict}</div>
@@ -71,7 +71,7 @@ export function AnalysisCard({ analysis }: Props) {
               <li key={i} className="flex items-start gap-2 text-xs leading-relaxed">
                 <span
                   className={cn(
-                    'shrink-0 rounded px-1.5 py-0.5 text-[10px] font-medium',
+                    'shrink-0 rounded px-1.5 py-0.5 text-xs font-medium',
                     ASPECT_COLOR[h.aspect],
                   )}
                 >
@@ -97,7 +97,7 @@ export function AnalysisCard({ analysis }: Props) {
                 <div className="flex items-start gap-2">
                   <span
                     className={cn(
-                      'shrink-0 rounded px-1.5 py-0.5 text-[10px] font-medium',
+                      'shrink-0 rounded px-1.5 py-0.5 text-xs font-medium',
                       ASPECT_COLOR[im.aspect],
                     )}
                   >
@@ -105,7 +105,7 @@ export function AnalysisCard({ analysis }: Props) {
                   </span>
                   <span className="flex-1">{im.text}</span>
                 </div>
-                <div className="ml-12 mt-0.5 text-[11px] text-muted-foreground">
+                <div className="ml-12 mt-0.5 text-xs text-muted-foreground">
                   → {im.suggestion}
                 </div>
               </li>

@@ -1,5 +1,6 @@
 import { useEffect } from 'react'
-import { NavLink, Navigate, Route, Routes, useLocation } from 'react-router-dom'
+import { NavLink, Navigate, Route, Routes } from 'react-router-dom'
+import { useLocation } from 'react-router-dom'
 import { cn } from '@/lib/utils'
 
 import HomePage from '@/pages/Home'
@@ -12,20 +13,21 @@ import { useProjectsStore } from '@/stores/projects'
 /**
  * 顶栏 = 4 模块平铺导航。
  *
- * - 首页：项目列表
- * - 资产库：收藏的爆款样例 + 上传素材
- * - 样例拆解：把样例拆出结构
- * - 视频工坊：写主题 → 配素材 → 对照结构 → 出片（吸收原 Compose + Migrate）
+ * - 我的项目：项目列表
+ * - 素材与灵感：热门样例 + 上传素材
+ * - 分析热门结构：拆出热门视频结构
+ * - 创作工作台：写主题 → 配素材 → 对照结构 → 出片
  *
  * 旧路由 /compose、/migrate 全部重定向到 /workshop。
  * 项目工作流的 step_states 仍由后端跟踪,但不再决定导航可见性 —— 用户自己点。
  */
-const NAV_ITEMS: { to: string; label: string; requireProject: boolean }[] = [
-  { to: '/', label: '首页', requireProject: false },
-  { to: '/library', label: '资产库', requireProject: false },
-  { to: '/decompose', label: '样例拆解', requireProject: true },
-  { to: '/workshop', label: '视频工坊', requireProject: true },
-  { to: '/knowledge', label: '个性知识库', requireProject: false },
+const NAV_ITEMS: { to: string; label: string; requireProject: boolean; external?: boolean }[] = [
+  { to: '/intro.html', label: '首页', requireProject: false, external: true },
+  { to: '/', label: '我的项目', requireProject: false },
+  { to: '/library', label: '素材与灵感', requireProject: false },
+  { to: '/decompose', label: '分析热门结构', requireProject: true },
+  { to: '/workshop', label: '创作工作台', requireProject: true },
+  { to: '/knowledge', label: '我的创作偏好', requireProject: false },
 ]
 
 // 需要先选项目才能进的 path。
@@ -42,23 +44,26 @@ function ProjectGuard({ children }: { children: React.ReactNode }) {
 
 export default function App() {
   const refreshProjects = useProjectsStore((s) => s.refresh)
+  const location = useLocation()
   useEffect(() => {
     void refreshProjects()
   }, [refreshProjects])
 
   return (
     <div className="flex min-h-screen flex-col bg-background text-foreground">
-      <header className="border-b border-border bg-card">
+      <header className="border-b border-border bg-card/80 backdrop-blur-xl">
         <div className="mx-auto flex max-w-screen-2xl items-center gap-6 px-6 py-3">
-          <span className="font-semibold tracking-tight">
-            Seecript<span className="text-muted-foreground"> · 短视频结构借鉴助手</span>
+          <span className="font-semibold tracking-tight select-none">
+            <span className="bg-gradient-to-r from-cyan-400 to-violet-500 bg-clip-text text-transparent">Seecript</span>
+            <span className="text-muted-foreground"> · AI 视频创作助手</span>
           </span>
           <MainNav />
           <CurrentProjectBadge />
         </div>
       </header>
 
-      <main className="flex-1">
+      <main className="flex-1" key={location.pathname}>
+        <div className="animate-fade-up">
         <Routes>
           <Route index element={<HomePage />} />
           <Route path="/library" element={<LibraryPage />} />
@@ -84,6 +89,7 @@ export default function App() {
           <Route path="/migrate" element={<Navigate to="/workshop?tab=migrate" replace />} />
           <Route path="/render" element={<Navigate to="/workshop" replace />} />
         </Routes>
+        </div>
       </main>
     </div>
   )
@@ -96,6 +102,17 @@ function MainNav() {
     <nav className="flex items-center gap-1 text-sm">
       {NAV_ITEMS.map((item) => {
         const disabled = item.requireProject && !currentProjectId
+        if (item.external) {
+          return (
+            <a
+              key={item.to}
+              href={item.to}
+              className="relative rounded-md px-3 py-1.5 text-sm text-muted-foreground transition-all duration-200 hover:text-foreground"
+            >
+              {item.label}
+            </a>
+          )
+        }
         return (
           <NavLink
             key={item.to}
@@ -106,11 +123,11 @@ function MainNav() {
             }}
             className={({ isActive }) =>
               cn(
-                'rounded-md px-3 py-1.5 transition-colors',
+                'relative rounded-md px-3 py-1.5 transition-all duration-200',
                 isActive
-                  ? 'bg-accent text-accent-foreground'
-                  : 'text-muted-foreground hover:bg-secondary hover:text-foreground',
-                disabled && 'cursor-not-allowed opacity-40 hover:bg-transparent hover:text-muted-foreground',
+                  ? 'text-foreground font-medium after:absolute after:bottom-0 after:left-1/2 after:-translate-x-1/2 after:h-0.5 after:w-4 after:rounded-full after:bg-primary after:shadow-[0_0_8px_var(--color-primary)]'
+                  : 'text-muted-foreground hover:text-foreground',
+                disabled && 'cursor-not-allowed opacity-40 hover:text-muted-foreground',
               )
             }
             title={disabled ? '先在首页选一个项目再进来' : undefined}

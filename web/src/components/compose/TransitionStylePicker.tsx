@@ -87,7 +87,7 @@ export function TransitionStylePicker({
       >
         <header className="mb-3 flex items-center justify-between">
           <h3 className="text-sm font-semibold">
-            转场样式 · <span className="font-mono text-[11px] text-muted-foreground">{sceneId}</span>
+            转场样式 · <span className="font-mono text-xs text-muted-foreground">{sceneId}</span>
           </h3>
           <button
             onClick={onClose}
@@ -98,7 +98,7 @@ export function TransitionStylePicker({
           </button>
         </header>
 
-        <p className="mb-3 text-[11px] leading-relaxed text-muted-foreground">
+        <p className="mb-3 text-xs leading-relaxed text-muted-foreground">
           切换该分镜与上一段的衔接方式；硬切走 concat 直拼，其他走 ffmpeg xfade。
         </p>
 
@@ -120,7 +120,7 @@ export function TransitionStylePicker({
                 title={STYLE_HINT[style]}
               >
                 <div className="font-semibold">{TRANSITION_LABEL[style]}</div>
-                <div className="mt-0.5 line-clamp-2 text-[10px] opacity-80">{STYLE_HINT[style]}</div>
+                <div className="mt-0.5 line-clamp-2 text-xs opacity-80">{STYLE_HINT[style]}</div>
               </button>
             )
           })}
@@ -128,7 +128,7 @@ export function TransitionStylePicker({
 
         {picked !== 'hard_cut' && (
           <label className="mt-3 block">
-            <span className="mb-1 block text-[11px] font-medium text-muted-foreground">
+            <span className="mb-1 block text-xs font-medium text-muted-foreground">
               转场时长（秒，0.1 ~ 1.5）
             </span>
             <input
@@ -140,14 +140,14 @@ export function TransitionStylePicker({
               onChange={(e) => setDuration(parseFloat(e.target.value))}
               className="w-full accent-primary"
             />
-            <div className="mt-1 text-right font-mono text-[11px] text-muted-foreground">
+            <div className="mt-1 text-right font-mono text-xs text-muted-foreground">
               {duration.toFixed(1)}s
             </div>
           </label>
         )}
 
         {error && (
-          <p className="mt-3 rounded-md border border-destructive/40 bg-destructive/5 px-2 py-1 text-[11px] text-destructive">
+          <p className="mt-3 rounded-md border border-destructive/40 bg-destructive/5 px-2 py-1 text-xs text-destructive">
             {error}
           </p>
         )}

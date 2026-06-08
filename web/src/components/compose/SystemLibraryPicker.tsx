@@ -119,7 +119,7 @@ export function SystemLibraryPicker({
         <header className="flex items-start justify-between border-b border-border px-4 py-3">
           <div>
             <h3 className="text-sm font-semibold">从系统素材库添加</h3>
-            <p className="mt-0.5 text-[11px] text-muted-foreground">
+            <p className="mt-0.5 text-xs text-muted-foreground">
               共享素材池——点击勾选后克隆到本项目；克隆生成新 material_id，与系统库独立。
             </p>
           </div>
@@ -179,21 +179,21 @@ export function SystemLibraryPicker({
                         </div>
                       )}
                       {active && (
-                        <span className="absolute right-1 top-1 rounded bg-primary px-1 text-[10px] text-primary-foreground">
+                        <span className="absolute right-1 top-1 rounded bg-primary px-1 text-xs text-primary-foreground">
                           ✓
                         </span>
                       )}
                     </div>
                     <div className="px-2 py-1.5">
-                      <div className="truncate text-[11px] font-medium" title={m.filename}>
+                      <div className="truncate text-xs font-medium" title={m.filename}>
                         {m.filename}
                       </div>
-                      <div className="flex items-center gap-1 text-[10px] text-muted-foreground">
+                      <div className="flex items-center gap-1 text-xs text-muted-foreground">
                         <span className="font-mono">{m.media_type}</span>
                         {m.shots && m.shots.length > 1 && <span>· {m.shots.length} 镜</span>}
                       </div>
                       {m.tags.length > 0 && (
-                        <div className="mt-0.5 line-clamp-1 text-[9px] text-muted-foreground">
+                        <div className="mt-0.5 line-clamp-1 text-xs text-muted-foreground">
                           {m.tags.slice(0, 3).join(' · ')}
                         </div>
                       )}
@@ -206,7 +206,7 @@ export function SystemLibraryPicker({
         </div>
 
         {(err || skippedCount > 0) && (
-          <div className="border-t border-border bg-amber-500/10 px-4 py-1.5 text-[11px]">
+          <div className="border-t border-border bg-amber-500/10 px-4 py-1.5 text-xs">
             {err && <p className="text-destructive">{err}</p>}
             {skippedCount > 0 && (
               <p className="text-amber-700 dark:text-amber-300">
@@ -217,7 +217,7 @@ export function SystemLibraryPicker({
         )}
 
         <footer className="flex shrink-0 items-center justify-between gap-2 border-t border-border px-4 py-2">
-          <span className="text-[11px] text-muted-foreground">
+          <span className="text-xs text-muted-foreground">
             已选 {picked.size}/{items.length} 个
             {picked.size > 20 && '（单次最多 20 个）'}
           </span>

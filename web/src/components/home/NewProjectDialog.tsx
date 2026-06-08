@@ -135,7 +135,7 @@ export function NewProjectDialog({
                     )}
                   >
                     <div className="text-sm font-semibold">{VIDEO_TYPE_LABEL[vt]}</div>
-                    <div className="text-[11px] leading-snug text-muted-foreground">
+                    <div className="text-xs leading-snug text-muted-foreground">
                       {VIDEO_TYPE_HINT[vt]}
                     </div>
                   </button>
@@ -157,7 +157,7 @@ export function NewProjectDialog({
               placeholder="例如：博物馆冬令营推广"
               className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-primary"
             />
-            <p className="text-[11px] text-muted-foreground">
+            <p className="text-xs text-muted-foreground">
               最长 80 字。选种类后会自动给个默认名，按需修改即可。
             </p>
           </div>
@@ -168,7 +168,7 @@ export function NewProjectDialog({
           <div className="flex-1">
             {submitError && <p className="text-xs text-destructive">{submitError}</p>}
             {!submitError && (
-              <p className="text-[11px] text-muted-foreground">
+              <p className="text-xs text-muted-foreground">
                 创建后进入「样例拆解」页选样例，再进「视频工坊」生成内容轨
               </p>
             )}

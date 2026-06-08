@@ -8,7 +8,7 @@ import { cn } from '@/lib/utils'
  * 个性知识库管理页 —— Hermes 风格规则库的总开关 + 项目级粒度管理。
  *
  * 三块内容：
- *  1. 用户级设置：实时蒸馏开关（关掉只写 trace 不出 KB）。
+ *  1. 用户级设置：自动学习开关（关掉只写 trace 不出 KB）。
  *  2. 默认库说明：内置 prompt（不可关、不可编辑），文字告知。
  *  3. 项目 KB 列表：每个项目一个折叠卡，显示规则数 + summary；
  *     - top-10 最近完成的项目：标 "默认启用"，复选框 disabled。
@@ -174,8 +174,8 @@ export default function KnowledgePage() {
 
   return (
     <PageShell
-      title="个性知识库"
-      subtitle="每次合成完成自动沉淀单项目规则；下次「智能分析」与「自动补全」时按最近 10 个完成项目 + 手动启用项目自动注入。"
+      title="我的创作偏好"
+      subtitle="AI 会记住你的创作习惯。每次完成视频后自动总结你的风格偏好，下次创作时自动帮你保持一致。"
     >
       {error && (
         <div className="mb-4 rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive">
@@ -188,7 +188,7 @@ export default function KnowledgePage() {
       ) : (
         <div className="space-y-6">
           {/* ============ 1. 用户级设置 ============ */}
-          <section className="rounded-lg border border-border bg-card p-4">
+          <section className="rounded-xl border border-border bg-card p-4 transition-all duration-300 hover:border-primary/20">
             <h2 className="text-sm font-semibold">用户级设置</h2>
             <label className="mt-3 flex items-start gap-3 text-sm">
               <input
@@ -201,8 +201,8 @@ export default function KnowledgePage() {
               <div>
                 <div className="font-medium">实时蒸馏</div>
                 <div className="text-xs leading-relaxed text-muted-foreground">
-                  开启后，每次完成渲染会立即让 AI 总结该项目的结构/口播/节奏偏好，沉淀到项目知识库；
-                  关闭只记录用例不出知识条目（后续可手动触发或重新打开）。
+                  开启后，每次导出视频时 AI 会自动总结你的创作偏好；
+                  关闭后只保存记录不自动总结（后续可手动触发或重新打开）。
                 </div>
               </div>
             </label>
@@ -211,8 +211,8 @@ export default function KnowledgePage() {
           {/* ============ 2. 默认库 ============ */}
           <section className="rounded-lg border border-border bg-card p-4">
             <div className="flex items-center justify-between">
-              <h2 className="text-sm font-semibold">默认库（永远启用）</h2>
-              <span className="rounded-full bg-secondary px-2 py-0.5 text-[11px] text-secondary-foreground">
+              <h2 className="text-sm font-semibold">默认偏好（始终生效）</h2>
+              <span className="rounded-full bg-secondary px-2 py-0.5 text-xs text-secondary-foreground">
                 内置 · 不可关
               </span>
             </div>
@@ -224,14 +224,14 @@ export default function KnowledgePage() {
           {/* ============ 3. 项目 KB 列表 ============ */}
           <section className="rounded-lg border border-border bg-card p-4">
             <div className="mb-3 flex items-center justify-between">
-              <h2 className="text-sm font-semibold">项目知识包</h2>
+              <h2 className="text-sm font-semibold">项目偏好</h2>
               <span className="text-xs text-muted-foreground">
-                {overview.projects.length} 个 · 当前注入 {totalActiveRules} 条规则
+                {overview.projects.length} 个 · 当前注入 {totalActiveRules} 条偏好
               </span>
             </div>
             {overview.projects.length === 0 ? (
               <p className="text-sm text-muted-foreground">
-                还没有蒸馏出的项目 KB。完成一个项目的渲染（且开启实时蒸馏）后会出现在这里。
+                还没有项目偏好。完成一个视频的导出（且开启自动学习）后，AI 会帮你总结。
               </p>
             ) : (
               <ul className="space-y-2">
@@ -242,7 +242,7 @@ export default function KnowledgePage() {
                     <li
                       key={p.project_id}
                       className={cn(
-                        'rounded-md border border-border bg-background/40 p-3 transition-colors',
+                        'rounded-xl bg-card shadow-sm p-3 transition-all duration-300 hover:shadow-md',
                         p.enabled && 'border-primary/40 bg-primary/5',
                       )}
                     >
@@ -252,7 +252,7 @@ export default function KnowledgePage() {
                           title={
                             p.is_top10
                               ? '最近 10 个已完成项目自动启用，无法手动关闭'
-                              : '手动启用后，plan/build 与 gap/fill 会注入本项目的蒸馏规则'
+                              : '启用后，AI 创作时会参考这个项目的偏好'
                           }
                         >
                           <input
@@ -270,13 +270,13 @@ export default function KnowledgePage() {
                                 : 'bg-secondary text-secondary-foreground',
                             )}
                           >
-                            {p.is_top10 ? '默认启用 (TOP10)' : p.enabled ? '已启用' : '未启用'}
+                            {p.is_top10 ? '自动启用（最近项目）' : p.enabled ? '已启用' : '未启用'}
                           </span>
                         </label>
                         <div className="min-w-0 flex-1">
                           <div className="flex items-baseline gap-2">
                             <span className="truncate text-sm font-medium">{p.project_title}</span>
-                            <span className="text-[10px] text-muted-foreground">
+                            <span className="text-xs text-muted-foreground">
                               {p.rules_count} 条规则
                               {p.video_type && ` · ${p.video_type}`}
                             </span>
@@ -284,14 +284,14 @@ export default function KnowledgePage() {
                           <p className="mt-0.5 truncate text-xs text-muted-foreground" title={p.summary}>
                             {p.summary || '（暂无 summary）'}
                           </p>
-                          <p className="mt-0.5 text-[10px] text-muted-foreground">
+                          <p className="mt-0.5 text-xs text-muted-foreground">
                             最近渲染：{formatTs(p.render_committed_at)}
                           </p>
                         </div>
                         <button
                           type="button"
                           onClick={() => handleExpand(p.project_id)}
-                          className="rounded-md border border-border bg-card px-2 py-1 text-xs hover:bg-secondary"
+                          className="rounded-lg border border-border bg-card px-2 py-1 text-xs font-medium hover:bg-secondary hover:-translate-y-px active:scale-[0.98] transition-all duration-200"
                         >
                           {isExpanded ? '收起' : '查看规则'}
                         </button>
@@ -309,7 +309,7 @@ export default function KnowledgePage() {
                             <ul className="space-y-1.5">
                               {exp.rules.length === 0 && (
                                 <li className="text-xs text-muted-foreground">
-                                  暂无规则（蒸馏判定信号不足）
+                                  暂无偏好（信号不足，无法自动总结）
                                 </li>
                               )}
                               {exp.rules.map((r) => (
@@ -318,10 +318,10 @@ export default function KnowledgePage() {
                                   className="rounded border border-border/60 bg-card px-2 py-1.5"
                                 >
                                   <div className="flex items-center gap-2">
-                                    <span className="rounded-full bg-primary/15 px-1.5 py-0.5 text-[10px] font-medium text-primary">
+                                    <span className="rounded-full bg-primary/15 px-1.5 py-0.5 text-xs font-medium text-primary">
                                       {SCOPE_LABEL[r.scope] ?? r.scope}
                                     </span>
-                                    <span className="text-[10px] text-muted-foreground">
+                                    <span className="text-xs text-muted-foreground">
                                       #{r.id}
                                     </span>
                                   </div>

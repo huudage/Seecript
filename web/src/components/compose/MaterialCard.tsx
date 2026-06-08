@@ -41,13 +41,13 @@ export function MaterialCard({
         <button
           {...(dragHandleProps ?? {})}
           aria-label="拖拽排序"
-          className="absolute left-1 top-1 rounded bg-black/40 px-1.5 py-0.5 text-[10px] text-white opacity-0 transition-opacity group-hover:opacity-100 cursor-grab active:cursor-grabbing"
+          className="absolute left-1 top-1 rounded bg-black/40 px-1.5 py-0.5 text-xs text-white opacity-0 transition-opacity group-hover:opacity-100 cursor-grab active:cursor-grabbing"
         >
           ⋮⋮
         </button>
 
         {/* 媒体类型 chip */}
-        <span className="absolute right-1 top-1 rounded bg-black/50 px-1.5 py-0.5 text-[10px] uppercase text-white">
+        <span className="absolute right-1 top-1 rounded bg-black/50 px-1.5 py-0.5 text-xs uppercase text-white">
           {material.media_type}
         </span>
 
@@ -55,7 +55,7 @@ export function MaterialCard({
         {material.highlight_score >= 0.5 && (
           <span
             className={cn(
-              'absolute right-1 bottom-7 rounded px-1.5 py-0.5 text-[10px] font-bold text-black',
+              'absolute right-1 bottom-7 rounded px-1.5 py-0.5 text-xs font-bold text-black',
               material.highlight_score >= 0.75 ? 'bg-yellow-300' : 'bg-slate-200',
             )}
             title={material.highlight_reason ?? '高光评分（AI 判断）'}
@@ -72,7 +72,7 @@ export function MaterialCard({
           && material.preprocess_status !== 'skipped' && (
           <span
             className={cn(
-              'absolute bottom-7 left-1 rounded px-1.5 py-0.5 text-[10px] font-medium',
+              'absolute bottom-7 left-1 rounded px-1.5 py-0.5 text-xs font-medium',
               material.preprocess_status === 'failed'
                 ? 'bg-red-500/80 text-white'
                 : 'bg-black/60 text-white',
@@ -97,7 +97,7 @@ export function MaterialCard({
           && material.shots
           && material.shots.length > 0 && (
           <span
-            className="absolute bottom-7 left-1 rounded bg-emerald-500/80 px-1.5 py-0.5 text-[10px] font-medium text-white"
+            className="absolute bottom-7 left-1 rounded bg-emerald-500/80 px-1.5 py-0.5 text-xs font-medium text-white"
             title={`AI 已切出 ${material.shots.length} 个镜头`}
           >
             ✓ {material.shots.length} 镜头
@@ -108,7 +108,7 @@ export function MaterialCard({
         {material.recommended_section && (
           <span
             className={cn(
-              'absolute bottom-0 left-0 right-0 px-1.5 py-0.5 text-[10px] font-medium text-white',
+              'absolute bottom-0 left-0 right-0 px-1.5 py-0.5 text-xs font-medium text-white',
               SECTION_BG[material.recommended_section],
             )}
           >
@@ -133,7 +133,7 @@ export function MaterialCard({
           )}
         </div>
         {material.duration_seconds != null && (
-          <span className="font-mono text-[10px] text-muted-foreground">
+          <span className="font-mono text-xs text-muted-foreground">
             {material.duration_seconds.toFixed(1)}s
           </span>
         )}
@@ -142,13 +142,13 @@ export function MaterialCard({
             {material.tags.slice(0, 5).map((t) => (
               <span
                 key={t}
-                className="rounded-sm bg-secondary px-1 py-px text-[10px] text-muted-foreground"
+                className="rounded-sm bg-secondary px-1 py-px text-xs text-muted-foreground"
               >
                 {t}
               </span>
             ))}
             {material.tags.length > 5 && (
-              <span className="text-[10px] text-muted-foreground">+{material.tags.length - 5}</span>
+              <span className="text-xs text-muted-foreground">+{material.tags.length - 5}</span>
             )}
           </div>
         )}

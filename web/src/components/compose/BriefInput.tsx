@@ -30,7 +30,7 @@ export function BriefInput({
         <label className="text-xs font-semibold text-foreground">
           主题 / 卖点{required && <span className="ml-1 text-destructive">*</span>}
         </label>
-        <span className={cn('font-mono text-[10px]', len > 450 ? 'text-amber-600' : 'text-muted-foreground')}>
+        <span className={cn('font-mono text-xs', len > 450 ? 'text-amber-600' : 'text-muted-foreground')}>
           {len}/500
         </span>
       </div>
@@ -46,7 +46,7 @@ export function BriefInput({
         )}
       />
       {errorVisible && (
-        <p className="mt-1 text-[11px] text-destructive">主题不能为空——AI 需要它来定方向。</p>
+        <p className="mt-1 text-xs text-destructive">主题不能为空——AI 需要它来定方向。</p>
       )}
     </div>
   )

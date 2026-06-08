@@ -22,7 +22,7 @@ export function VideoGoalInput({
     <div>
       <div className="mb-2 flex items-center justify-between">
         <label className="text-xs font-semibold text-foreground">视频要求与目的</label>
-        <span className={cn('font-mono text-[10px]', len > 450 ? 'text-amber-600' : 'text-muted-foreground')}>
+        <span className={cn('font-mono text-xs', len > 450 ? 'text-amber-600' : 'text-muted-foreground')}>
           {len}/500
         </span>
       </div>
@@ -33,7 +33,7 @@ export function VideoGoalInput({
         placeholder={placeholder}
         className="w-full resize-y rounded-md border border-border bg-background/60 p-2 text-sm leading-relaxed outline-none placeholder:text-muted-foreground/70 focus:border-primary"
       />
-      <p className="mt-1 text-[11px] text-muted-foreground">
+      <p className="mt-1 text-xs text-muted-foreground">
         可选——填了它，结构会按你的目的改编样例骨架，而不是照搬。
       </p>
     </div>

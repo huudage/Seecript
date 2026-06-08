@@ -141,7 +141,7 @@ export function DraggableCommandFab({
         'touch-none select-none hover:bg-secondary active:cursor-grabbing',
       )}
     >
-      <span className="rounded bg-primary/10 px-1.5 py-0.5 font-mono text-[10px] text-primary">{badge}</span>
+      <span className="rounded bg-primary/10 px-1.5 py-0.5 font-mono text-xs text-primary">{badge}</span>
       <span>{label}</span>
     </button>
   )

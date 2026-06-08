@@ -76,7 +76,7 @@ export function ComposeSettingsPanel({
         <div className="space-y-3 border-t border-border p-3">
           {/* 目标时长 */}
           <div>
-            <label className="text-[11px] font-semibold text-muted-foreground">目标总时长（秒）</label>
+            <label className="text-xs font-semibold text-muted-foreground">目标总时长（秒）</label>
             <div className="mt-1 flex items-center gap-2">
               <input
                 type="range"
@@ -100,7 +100,7 @@ export function ComposeSettingsPanel({
 
           {/* 平台 */}
           <div>
-            <label className="text-[11px] font-semibold text-muted-foreground">目标平台</label>
+            <label className="text-xs font-semibold text-muted-foreground">目标平台</label>
             <div className="mt-1 grid grid-cols-2 gap-1.5">
               {PLATFORM_OPTIONS.map((opt) => (
                 <button
@@ -115,7 +115,7 @@ export function ComposeSettingsPanel({
                   )}
                 >
                   <div className="font-semibold">{opt.label}</div>
-                  <div className="text-[10px] text-muted-foreground">{opt.hint}</div>
+                  <div className="text-xs text-muted-foreground">{opt.hint}</div>
                 </button>
               ))}
             </div>
@@ -123,7 +123,7 @@ export function ComposeSettingsPanel({
 
           {/* 画面比例（v2 与平台解耦） */}
           <div>
-            <label className="text-[11px] font-semibold text-muted-foreground">画面比例</label>
+            <label className="text-xs font-semibold text-muted-foreground">画面比例</label>
             <div className="mt-1 grid grid-cols-3 gap-1.5">
               {ASPECT_OPTIONS.map((opt) => (
                 <button
@@ -138,7 +138,7 @@ export function ComposeSettingsPanel({
                   )}
                 >
                   <div className="font-mono font-semibold">{opt.label}</div>
-                  <div className="text-[10px] text-muted-foreground">{opt.hint}</div>
+                  <div className="text-xs text-muted-foreground">{opt.hint}</div>
                 </button>
               ))}
             </div>
@@ -154,7 +154,7 @@ export function ComposeSettingsPanel({
 
           {/* 结构迁移倾向 —— 决定 plan/copy/aigc agent 的"调性版本" */}
           <div>
-            <label className="text-[11px] font-semibold text-muted-foreground">
+            <label className="text-xs font-semibold text-muted-foreground">
               结构迁移倾向
               <span className="ml-2 font-normal text-muted-foreground/70">
                 决定新结构相对原片的偏向
@@ -174,7 +174,7 @@ export function ComposeSettingsPanel({
                   )}
                 >
                   <div className="font-semibold">{opt.label}</div>
-                  <div className="text-[10px] text-muted-foreground">{opt.hint}</div>
+                  <div className="text-xs text-muted-foreground">{opt.hint}</div>
                 </button>
               ))}
             </div>
@@ -183,8 +183,8 @@ export function ComposeSettingsPanel({
           {/* 结尾引导语 */}
           <div>
             <div className="flex items-center justify-between">
-              <label className="text-[11px] font-semibold text-muted-foreground">结尾引导语（最多 20 字）</label>
-              <span className="font-mono text-[10px] text-muted-foreground">{value.cta.length}/20</span>
+              <label className="text-xs font-semibold text-muted-foreground">结尾引导语（最多 20 字）</label>
+              <span className="font-mono text-xs text-muted-foreground">{value.cta.length}/20</span>
             </div>
             <input
               type="text"

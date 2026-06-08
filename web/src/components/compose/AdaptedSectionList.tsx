@@ -159,20 +159,20 @@ export function AdaptedSectionList({
                   meta.bg,
                 )}
               />
-              <span className="font-mono text-[10px] text-muted-foreground">
+              <span className="font-mono text-xs text-muted-foreground">
                 {meta.short}
               </span>
               <span className="font-semibold text-foreground">
                 {sec.theme || meta.label}
               </span>
               {tempo && (
-                <span className={cn('rounded px-1.5 py-0.5 text-[10px]', TEMPO_TONE[tempo] ?? 'bg-secondary text-muted-foreground')}>
+                <span className={cn('rounded px-1.5 py-0.5 text-xs', TEMPO_TONE[tempo] ?? 'bg-secondary text-muted-foreground')}>
                   {TEMPO_LABEL[tempo] ?? tempo}
                 </span>
               )}
               <span
                 className={cn(
-                  'ml-auto rounded px-1.5 py-0.5 text-[10px]',
+                  'ml-auto rounded px-1.5 py-0.5 text-xs',
                   SECTION_STATUS_COLOR[status],
                 )}
               >
@@ -204,7 +204,7 @@ export function AdaptedSectionList({
                     />
                   )}
                 </div>
-                <div className="flex shrink-0 items-center gap-1.5 text-[10px] font-mono">
+                <div className="flex shrink-0 items-center gap-1.5 text-xs font-mono">
                   {qc.good > 0 && (
                     <span className="text-emerald-700 dark:text-emerald-300">●{qc.good}</span>
                   )}
@@ -219,11 +219,11 @@ export function AdaptedSectionList({
               </div>
             )}
             <div className="border-t border-border/60 bg-secondary/30 px-3 py-2">
-              <p className="text-[11px] leading-relaxed text-foreground/90">
+              <p className="text-xs leading-relaxed text-foreground/90">
                 {sec.content_description || '（暂无说明）'}
               </p>
               {sec.adaptation_note && (
-                <p className="mt-1 text-[10px] italic text-muted-foreground">
+                <p className="mt-1 text-xs italic text-muted-foreground">
                   改编思路：{sec.adaptation_note}
                 </p>
               )}
@@ -244,11 +244,11 @@ export function AdaptedSectionList({
                             : 'border-border bg-background/40 hover:bg-secondary/60',
                         )}
                       >
-                        <div className="flex items-center gap-2 text-[11px]">
+                        <div className="flex items-center gap-2 text-xs">
                           <span className={cn('rounded px-1 py-0.5', STATUS_COLOR[gap.status])}>
                             {STATUS_GLYPH[gap.status]}
                           </span>
-                          <span className="rounded bg-secondary px-1 py-0.5 font-mono text-[10px]">
+                          <span className="rounded bg-secondary px-1 py-0.5 font-mono text-xs">
                             镜头 {gap.slot_index + 1}
                           </span>
                           <span className="flex items-center gap-1">
@@ -260,11 +260,11 @@ export function AdaptedSectionList({
                             </span>
                           )}
                         </div>
-                        <p className="mt-1 line-clamp-2 text-[11px] text-foreground">
+                        <p className="mt-1 line-clamp-2 text-xs text-foreground">
                           {gap.requirement}
                         </p>
                         {gap.matched_material_id && (
-                          <p className="mt-0.5 text-[10px] text-muted-foreground">
+                          <p className="mt-0.5 text-xs text-muted-foreground">
                             已配上 <span className="font-mono">{gap.matched_material_id}</span>
                           </p>
                         )}
@@ -274,7 +274,7 @@ export function AdaptedSectionList({
                 })}
               </ul>
             ) : (
-              <p className="px-3 py-2 text-[11px] text-muted-foreground">
+              <p className="px-3 py-2 text-xs text-muted-foreground">
                 这一段不需要补素材——已经按结构规划完成。
               </p>
             )}

@@ -85,7 +85,7 @@ export function BatchCopyButton({
                 : `按 ${adoptedTextCardCount} 个已采纳字卡的样式批量补齐 ${pendingCount} 段（已采纳的不会被覆盖）`
         }
         className={cn(
-          'inline-flex items-center gap-1 rounded-md border px-2 py-1 text-[11px] font-medium transition-colors',
+          'inline-flex items-center gap-1 rounded-md border px-2 py-1 text-xs font-medium transition-colors',
           disabled
             ? 'cursor-not-allowed border-border bg-background/40 text-muted-foreground'
             : 'border-emerald-500/60 bg-emerald-500/10 text-emerald-700 hover:bg-emerald-500/20 dark:text-emerald-300',
@@ -97,7 +97,7 @@ export function BatchCopyButton({
             ? `🔒 一键补字卡（需先手动出 1 张样板）`
             : `✨ 参照样板批量补字卡（${pendingCount}）`}
       </button>
-      {err && <p className="text-[10px] text-destructive">{err}</p>}
+      {err && <p className="text-xs text-destructive">{err}</p>}
     </div>
   )
 }

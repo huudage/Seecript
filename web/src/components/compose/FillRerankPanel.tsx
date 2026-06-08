@@ -50,7 +50,7 @@ export function FillRerankPanel({
     <div className="space-y-3 rounded-md border border-border bg-background/40 p-3">
       <div className="flex items-center justify-between">
         <h4 className="text-xs font-semibold">换素材预览</h4>
-        <span className="text-[11px] text-muted-foreground">
+        <span className="text-xs text-muted-foreground">
           {swapMaterial
             ? `候选素材 ${swapMaterial.filename}`
             : fill.new_material_id
@@ -62,7 +62,7 @@ export function FillRerankPanel({
       <TimelineTrack label="原方案" duration={plan.duration_seconds || 1} items={renderItems(plan.main_track)} />
       <TimelineTrack label="换后" duration={plan.duration_seconds || 1} items={renderItems(reranked)} />
 
-      {fill.note && <p className="text-[11px] text-muted-foreground">{fill.note}</p>}
+      {fill.note && <p className="text-xs text-muted-foreground">{fill.note}</p>}
 
       <div className="flex items-center justify-end gap-2">
         {onCancel && (

@@ -89,18 +89,18 @@ function SectionNode({ data }: NodeProps<Node<SectionNodeData>>) {
       title={data.tooltip}
     >
       <div className="flex items-center justify-between gap-2">
-        <div className="text-[11px] font-bold uppercase tracking-wider" style={{ color }}>
+        <div className="text-xs font-bold uppercase tracking-wider" style={{ color }}>
           {sideLabel} · {meta.label}
         </div>
         <span
-          className="rounded px-1.5 py-0.5 text-[10px] font-medium text-white"
+          className="rounded px-1.5 py-0.5 text-xs font-medium text-white"
           style={{ background: color }}
         >
           {RELATION_LABEL[data.relation]}
         </span>
       </div>
       <div className="mt-0.5 line-clamp-1 text-sm font-semibold text-slate-800">{data.theme}</div>
-      <div className="text-[11px] text-slate-500">{data.meta}</div>
+      <div className="text-xs text-slate-500">{data.meta}</div>
       {/* 左侧样例：右出；中间新方案：左入 + 右出；右侧样例：左入 */}
       {(data.side === 'sample-left' || isCenter) && (
         <Handle
@@ -355,7 +355,7 @@ export function StructureMapPanel({
     <div className={cn('flex h-full flex-col gap-2', className)}>
       <div className="flex flex-wrap items-center gap-3 text-xs text-muted-foreground">
         <span className="inline-flex items-center gap-1">
-          <span className="text-[10px] font-medium text-foreground">段色：</span>
+          <span className="text-xs font-medium text-foreground">段色：</span>
           {Array.from({ length: Math.min(plan.adapted_sections?.length ?? 0, SECTION_PALETTE.length) }).map((_, i) => (
             <span
               key={i}
@@ -364,23 +364,23 @@ export function StructureMapPanel({
               title={`第 ${i + 1} 段`}
             />
           ))}
-          <span className="ml-1 text-[10px] opacity-70">每段一色 · 连线同色串起两侧</span>
+          <span className="ml-1 text-xs opacity-70">每段一色 · 连线同色串起两侧</span>
         </span>
         <span className="inline-flex items-center gap-1">
           <span
-            className="inline-block rounded border-2 px-1.5 text-[10px] font-medium text-white"
+            className="inline-block rounded border-2 px-1.5 text-xs font-medium text-white"
             style={{ background: ORPHAN_COLOR, borderColor: ORPHAN_COLOR }}
           >
             未沿用
           </span>
-          <span className="text-[10px] opacity-70">样例独有 · 不被采用</span>
+          <span className="text-xs opacity-70">样例独有 · 不被采用</span>
         </span>
         {fallback && (
-          <span className="text-[10px] text-amber-700">
+          <span className="text-xs text-amber-700">
             · 该方案未携带 adapted_sections，按 main_track 兜底展示
           </span>
         )}
-        <span className="ml-auto text-[10px] opacity-70">
+        <span className="ml-auto text-xs opacity-70">
           只读栅格 · {dual ? '左样例1 / 中新方案 / 右样例2' : '左样例 / 右新方案'}
         </span>
       </div>

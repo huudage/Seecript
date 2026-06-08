@@ -186,7 +186,7 @@ export function BgmPickerDialog({
                 )}
               >
                 <span className="flex-1 truncate font-medium">{a.title || a.file_name}</span>
-                <span className="font-mono text-[10px] text-muted-foreground">
+                <span className="font-mono text-xs text-muted-foreground">
                   {typeof a.metadata.duration_seconds === 'number'
                     ? `${(a.metadata.duration_seconds as number).toFixed(1)}s`
                     : '?s'}
@@ -196,7 +196,7 @@ export function BgmPickerDialog({
                 </span>
                 <span
                   className={cn(
-                    'rounded px-1.5 py-0.5 text-[10px] font-medium',
+                    'rounded px-1.5 py-0.5 text-xs font-medium',
                     a.status === 'ready'
                       ? 'bg-emerald-500/15 text-emerald-700 dark:text-emerald-300'
                       : a.status === 'processing'

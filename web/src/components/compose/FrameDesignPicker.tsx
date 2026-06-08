@@ -86,7 +86,7 @@ export function FrameDesignPicker({
 
   return (
     <div>
-      <label className="text-[11px] font-semibold text-muted-foreground">
+      <label className="text-xs font-semibold text-muted-foreground">
         视频风格
         <span className="ml-2 font-normal text-muted-foreground/70">{summary}</span>
       </label>
@@ -100,7 +100,7 @@ export function FrameDesignPicker({
             onClick={() => onChange({ preset: opt.value })}
             title={opt.hint}
             className={cn(
-              'rounded-full border px-2 py-0.5 text-[11px] transition',
+              'rounded-full border px-2 py-0.5 text-xs transition',
               value.preset === opt.value
                 ? 'border-primary bg-primary/10 text-foreground'
                 : 'border-border bg-background/60 text-muted-foreground hover:border-primary/60',
@@ -114,7 +114,7 @@ export function FrameDesignPicker({
       <button
         type="button"
         onClick={() => setOpen((v) => !v)}
-        className="mt-2 text-[11px] text-muted-foreground hover:text-foreground"
+        className="mt-2 text-xs text-muted-foreground hover:text-foreground"
       >
         {open ? '▾ 收起细调' : '▸ 展开细调（色板 / 动效密度 / 质感）'}
       </button>
@@ -123,12 +123,12 @@ export function FrameDesignPicker({
         <div className="mt-2 space-y-3 rounded-md border border-border bg-background/30 p-2">
           {/* 主色板 */}
           <div>
-            <label className="text-[10px] font-semibold text-muted-foreground">主色板（最多 6 色，HEX）</label>
+            <label className="text-xs font-semibold text-muted-foreground">主色板（最多 6 色，HEX）</label>
             <div className="mt-1 flex flex-wrap items-center gap-1.5">
               {value.palette.map((c) => (
                 <span
                   key={c}
-                  className="inline-flex items-center gap-1 rounded border border-border bg-background px-1.5 py-0.5 font-mono text-[10px]"
+                  className="inline-flex items-center gap-1 rounded border border-border bg-background px-1.5 py-0.5 font-mono text-xs"
                 >
                   <span className="inline-block h-3 w-3 rounded-sm border border-border/80" style={{ backgroundColor: c }} />
                   {c}
@@ -150,7 +150,7 @@ export function FrameDesignPicker({
                   onKeyDown={handleColorKey}
                   onBlur={handleAddColor}
                   placeholder="#FFE600"
-                  className="w-20 rounded-md border border-border bg-background/60 px-1.5 py-0.5 font-mono text-[10px] outline-none focus:border-primary"
+                  className="w-20 rounded-md border border-border bg-background/60 px-1.5 py-0.5 font-mono text-xs outline-none focus:border-primary"
                 />
               )}
             </div>
@@ -158,7 +158,7 @@ export function FrameDesignPicker({
 
           {/* 动效密度 */}
           <div>
-            <label className="text-[10px] font-semibold text-muted-foreground">动效密度</label>
+            <label className="text-xs font-semibold text-muted-foreground">动效密度</label>
             <div className="mt-1 grid grid-cols-3 gap-1">
               {MOTION_OPTIONS.map((opt) => (
                 <button
@@ -166,14 +166,14 @@ export function FrameDesignPicker({
                   type="button"
                   onClick={() => onChange({ motion_density: opt.value })}
                   className={cn(
-                    'rounded-md border px-1.5 py-1 text-left text-[10px] transition',
+                    'rounded-md border px-1.5 py-1 text-left text-xs transition',
                     value.motion_density === opt.value
                       ? 'border-primary bg-primary/10 text-foreground'
                       : 'border-border bg-background/60 text-muted-foreground hover:border-primary/60',
                   )}
                 >
                   <div className="font-semibold">{opt.label}</div>
-                  <div className="text-[9px] text-muted-foreground">{opt.hint}</div>
+                  <div className="text-xs text-muted-foreground">{opt.hint}</div>
                 </button>
               ))}
             </div>
@@ -181,7 +181,7 @@ export function FrameDesignPicker({
 
           {/* 质感开关 */}
           <div className="flex items-center gap-3">
-            <label className="flex items-center gap-1 text-[10px] text-muted-foreground">
+            <label className="flex items-center gap-1 text-xs text-muted-foreground">
               <input
                 type="checkbox"
                 checked={value.grain_overlay}
@@ -189,7 +189,7 @@ export function FrameDesignPicker({
               />
               颗粒 / 胶片质感
             </label>
-            <label className="flex items-center gap-1 text-[10px] text-muted-foreground">
+            <label className="flex items-center gap-1 text-xs text-muted-foreground">
               <input
                 type="checkbox"
                 checked={value.vignette}
@@ -201,7 +201,7 @@ export function FrameDesignPicker({
 
           {/* 额外风格备注 */}
           <div>
-            <label className="text-[10px] font-semibold text-muted-foreground">额外风格备注（≤ 200 字）</label>
+            <label className="text-xs font-semibold text-muted-foreground">额外风格备注（≤ 200 字）</label>
             <textarea
               value={value.notes}
               onChange={handleNotes}

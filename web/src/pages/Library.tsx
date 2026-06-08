@@ -133,8 +133,8 @@ export default function LibraryPage() {
 
   return (
     <PageShell
-      title="资产库"
-      subtitle="爆款样例和你常用的素材都在这里。点样例进「样例拆解」可以拆出它的结构。"
+      title="素材与灵感"
+      subtitle="热门样例和你的素材都在这里。选中一个热门视频，分析它的结构，找到创作灵感。"
     >
       <div className="mb-5 inline-flex items-center gap-1 rounded-lg border border-border bg-card p-1 text-sm">
         {(['samples', 'assets'] as const).map((s) => (
@@ -142,9 +142,9 @@ export default function LibraryPage() {
             key={s}
             onClick={() => setSection(s)}
             className={cn(
-              'rounded-md px-4 py-1.5 font-medium transition-colors',
+              'rounded-lg px-4 py-1.5 font-medium transition-all duration-200',
               section === s
-                ? 'bg-primary text-primary-foreground'
+                ? 'bg-primary text-primary-foreground shadow-sm'
                 : 'text-muted-foreground hover:bg-secondary hover:text-foreground',
             )}
           >
@@ -169,14 +169,14 @@ export default function LibraryPage() {
                 key={t}
                 onClick={() => setTab(t)}
                 className={cn(
-                  'rounded-md px-3 py-1.5 transition-colors',
+                  'rounded-lg px-3 py-1.5 transition-all duration-200',
                   tab === t
-                    ? 'bg-primary text-primary-foreground'
+                    ? 'bg-primary text-primary-foreground shadow-sm'
                     : 'text-muted-foreground hover:bg-secondary hover:text-foreground',
                 )}
               >
                 {t === 'system' ? '官方样例' : '我上传的'}
-                <span className="ml-1 text-[10px] opacity-70">
+                <span className="ml-1 text-xs opacity-70">
                   {t === 'system' ? counts.system : counts.user}
                 </span>
               </button>
@@ -187,7 +187,7 @@ export default function LibraryPage() {
               前端按 system/user tab 内再做二次过滤。这里把分类暴露出来，否则用户只看到一种贴在
               卡片角的小徽标，永远找不到"只看 Vlog 样例"。 */}
           <div className="mb-4 flex flex-wrap items-center gap-2">
-            <span className="text-[11px] font-medium text-muted-foreground">视频类型</span>
+            <span className="text-xs font-medium text-muted-foreground">视频类型</span>
             <div className="inline-flex flex-wrap items-center gap-1 rounded-lg border border-border bg-card p-1 text-xs">
               {(['all', 'marketing', 'editing', 'motion_graph'] as const).map((f) => {
                 const label = f === 'all' ? '全部' : VIDEO_TYPE_LABEL[f]
@@ -199,14 +199,14 @@ export default function LibraryPage() {
                     onClick={() => setVideoTypeFilter(f)}
                     title={f === 'all' ? '不过滤视频类型' : VIDEO_TYPE_HINT[f]}
                     className={cn(
-                      'rounded-md px-2.5 py-1 transition-colors',
+                      'rounded-lg px-2.5 py-1 transition-all duration-200',
                       active
-                        ? 'bg-primary text-primary-foreground'
+                        ? 'bg-primary text-primary-foreground shadow-sm'
                         : 'text-muted-foreground hover:bg-secondary hover:text-foreground',
                     )}
                   >
                     {label}
-                    <span className="ml-1 text-[10px] opacity-70">{count}</span>
+                    <span className="ml-1 text-xs opacity-70">{count}</span>
                   </button>
                 )
               })}
@@ -247,8 +247,8 @@ export default function LibraryPage() {
                 }
               }}
               className={cn(
-                'group flex cursor-pointer flex-col overflow-hidden rounded-lg border bg-card text-left transition-all',
-                'hover:shadow-lg hover:-translate-y-0.5 focus:outline-none focus:ring-2 focus:ring-primary/40',
+                'group flex cursor-pointer flex-col overflow-hidden rounded-xl bg-card shadow-sm text-left transition-all duration-300 hover:shadow-md',
+                'hover:shadow-[var(--shadow-md)] hover:-translate-y-0.5 focus:outline-none focus:ring-2 focus:ring-primary/40',
                 selectedSampleIds.includes(item.id)
                   ? 'border-primary ring-2 ring-primary/40'
                   : 'border-border',
@@ -265,7 +265,7 @@ export default function LibraryPage() {
                 <div className="absolute right-2 top-2 rounded-full bg-foreground/80 px-2 py-0.5 text-xs font-medium text-background">
                   {item.scene}
                 </div>
-                <div className="absolute left-2 top-2 rounded-full bg-primary/90 px-2 py-0.5 text-[10px] font-medium text-primary-foreground">
+                <div className="absolute left-2 top-2 rounded-full bg-primary/90 px-2 py-0.5 text-xs font-medium text-primary-foreground">
                   {VIDEO_TYPE_LABEL[item.video_type]}
                 </div>
                 <button
@@ -323,7 +323,7 @@ function PreviewModal({ item, onClose }: { item: LibraryItem; onClose: () => voi
 
   return (
     <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 px-4 py-8"
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm px-4 py-8"
       onClick={onClose}
     >
       <div
@@ -341,7 +341,7 @@ function PreviewModal({ item, onClose }: { item: LibraryItem; onClose: () => voi
             type="button"
             onClick={onClose}
             aria-label="关闭预览"
-            className="ml-3 flex h-8 w-8 shrink-0 items-center justify-center rounded-md text-muted-foreground hover:bg-secondary hover:text-foreground"
+            className="ml-3 flex h-8 w-8 shrink-0 items-center justify-center rounded-lg text-muted-foreground hover:bg-secondary hover:text-foreground transition-colors duration-200"
           >
             <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} className="h-4 w-4">
               <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
@@ -365,14 +365,14 @@ function PreviewModal({ item, onClose }: { item: LibraryItem; onClose: () => voi
 function ManifestStatusBadge({ versionCount }: { versionCount: number }) {
   if (versionCount === 0) {
     return (
-      <span className="inline-flex items-center gap-1.5 rounded-full border border-border bg-muted px-2 py-0.5 text-[10px] font-medium text-muted-foreground">
+      <span className="inline-flex items-center gap-1.5 rounded-full border border-border bg-muted px-2 py-0.5 text-xs font-medium text-muted-foreground">
         <span className="h-1.5 w-1.5 rounded-full bg-muted-foreground/60" />
-        还没拆解
+        还没分析
       </span>
     )
   }
   return (
-    <span className="inline-flex items-center gap-1.5 rounded-full border border-emerald-400/40 bg-emerald-400/10 px-2 py-0.5 text-[10px] font-medium text-emerald-600 dark:text-emerald-300">
+    <span className="inline-flex items-center gap-1.5 rounded-full border border-emerald-400/40 bg-emerald-400/10 px-2 py-0.5 text-xs font-medium text-emerald-600 dark:text-emerald-300">
       <span className="h-1.5 w-1.5 rounded-full bg-emerald-500" />
       已拆解 · {versionCount} 个版本
     </span>
@@ -444,7 +444,7 @@ function UploadSampleCard({
       onDrop={onDrop}
       className={cn(
         'flex min-h-[256px] cursor-pointer flex-col items-center justify-center gap-2 rounded-lg border-2 border-dashed p-6 text-center transition-all',
-        'focus:outline-none focus:ring-2 focus:ring-primary/40',
+        'focus:outline-none focus:ring-2 focus:ring-primary/40 transition-all duration-300',
         uploading
           ? 'cursor-not-allowed border-border bg-card/50 opacity-60'
           : dragOver
@@ -467,12 +467,12 @@ function UploadSampleCard({
       <p className="text-sm font-semibold">
         {uploading ? '上传中…' : `上传到${tabLabel}`}
       </p>
-      <p className="px-2 text-[11px] leading-relaxed text-muted-foreground">
+      <p className="px-2 text-xs leading-relaxed text-muted-foreground">
         {tabDesc}
       </p>
       {/* 视频类型选择——上传时显式定类,避免被默认归入营销分类导致筛选错位 */}
       <label
-        className="mt-1 flex items-center gap-1.5 text-[11px] text-muted-foreground"
+        className="mt-1 flex items-center gap-1.5 text-xs text-muted-foreground"
         onClick={(e) => e.stopPropagation()}
       >
         <span>视频类型</span>
@@ -481,14 +481,14 @@ function UploadSampleCard({
           disabled={uploading}
           onChange={(e) => setVideoType(e.target.value as VideoType)}
           onClick={(e) => e.stopPropagation()}
-          className="rounded-md border border-border bg-background px-2 py-0.5 text-[11px] text-foreground focus:outline-none focus:ring-1 focus:ring-primary/40"
+          className="rounded-lg border border-input bg-background px-2 py-0.5 text-xs text-foreground transition-shadow duration-200 focus:ring-2 focus:ring-primary/20 focus:border-primary focus:outline-none"
         >
           <option value="marketing">{VIDEO_TYPE_LABEL.marketing}</option>
           <option value="editing">{VIDEO_TYPE_LABEL.editing}</option>
           <option value="motion_graph">{VIDEO_TYPE_LABEL.motion_graph}</option>
         </select>
       </label>
-      <p className="text-[11px] text-muted-foreground">
+      <p className="text-xs text-muted-foreground">
         mp4 / mov / webm，单个文件 ≤ 200MB、≤ 3 分钟
       </p>
       <input

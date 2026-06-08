@@ -45,7 +45,7 @@ const STEP_SCOPE: Record<'step2' | 'step3', string> = {
 
 const STEP_EDIT_EXAMPLES: Record<'step2' | 'step3', string[]> = {
   step2: ['把 sec-1 改成 5 秒', '删除 sec-2', '把段落顺序改成 sec-0、sec-2、sec-1', '把第二段文案改成「凌晨三点的便利店」'],
-  step3: ['BGM 推迟 2 秒', 'BGM 音量调到 0.6', '调性改紧凑', '画面改方版', '把字卡 sc-3 文字改成「现在就来」'],
+  step3: ['BGM 推迟 2 秒', 'BGM 音量调到 0.6', '调性改紧凑', '画面改方版', '把最后一段字卡文字改成「现在就来」'],
 }
 
 const QA_EXAMPLES = [
@@ -307,7 +307,7 @@ export function ComposeCommandBar({ open, onClose, planId, step, onApplied }: Pr
               {busy ? '思考中' : '发送'}
             </button>
           </div>
-          <div className="mt-1 text-[10px] text-muted-foreground">
+          <div className="mt-1 text-xs text-muted-foreground">
             Enter 发送 · Esc 关闭 · plan_id：{currentPlanId.slice(0, 18)}…
           </div>
         </div>
@@ -363,7 +363,7 @@ function ChatBubble({
         {/* diff 列表（agent 消息且有 diff） */}
         {isAgent && msg.diffs && msg.diffs.length > 0 && (
           <div className="mt-3 space-y-1.5 rounded-lg border bg-background/70 p-2">
-            <div className="text-[10px] uppercase tracking-wider text-muted-foreground">
+            <div className="text-xs uppercase tracking-wider text-muted-foreground">
               将要修改（{msg.diffs.length}）
             </div>
             <ul className="space-y-1">
@@ -372,7 +372,7 @@ function ChatBubble({
                   <span className="mt-1 inline-block h-1.5 w-1.5 shrink-0 rounded-full bg-primary" />
                   <div className="flex-1">
                     <div className="font-medium">{d.summary}</div>
-                    <div className="text-[10px] text-muted-foreground">
+                    <div className="text-xs text-muted-foreground">
                       op={d.op}
                       {d.target_id ? ` · ${d.target_id}` : ''}
                     </div>
@@ -385,26 +385,26 @@ function ChatBubble({
                 <>
                   <button
                     onClick={onDismiss}
-                    className="rounded border px-2.5 py-1 text-[11px] hover:bg-secondary"
+                    className="rounded border px-2.5 py-1 text-xs hover:bg-secondary"
                   >
                     撤回
                   </button>
                   <button
                     onClick={onApply}
-                    className="rounded bg-primary px-3 py-1 text-[11px] font-medium text-primary-foreground hover:bg-primary/90"
+                    className="rounded bg-primary px-3 py-1 text-xs font-medium text-primary-foreground hover:bg-primary/90"
                   >
                     应用 {msg.diffs.length} 项
                   </button>
                 </>
               )}
               {msg.applyState === 'applying' && (
-                <span className="text-[11px] text-muted-foreground">应用中…</span>
+                <span className="text-xs text-muted-foreground">应用中…</span>
               )}
               {msg.applyState === 'applied' && (
-                <span className="text-[11px] text-emerald-600">已应用 ✓</span>
+                <span className="text-xs text-emerald-600">已应用 ✓</span>
               )}
               {msg.applyState === 'dismissed' && (
-                <span className="text-[11px] text-muted-foreground">已撤回</span>
+                <span className="text-xs text-muted-foreground">已撤回</span>
               )}
             </div>
           </div>
@@ -417,7 +417,7 @@ function ChatBubble({
               <button
                 key={ex}
                 onClick={() => onPickExample(ex)}
-                className="rounded-full border bg-background/80 px-2.5 py-0.5 text-[11px] text-muted-foreground hover:bg-background"
+                className="rounded-full border bg-background/80 px-2.5 py-0.5 text-xs text-muted-foreground hover:bg-background"
               >
                 {ex}
               </button>

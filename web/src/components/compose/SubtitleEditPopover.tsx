@@ -90,7 +90,7 @@ export function SubtitleEditPopover({
           </button>
         </header>
 
-        <p className="mb-2 text-[11px] leading-relaxed text-muted-foreground">
+        <p className="mb-2 text-xs leading-relaxed text-muted-foreground">
           本段时长 {expectedSec.toFixed(1)}s，建议字数 ~{recommendedChars} 字（中文 4 字/秒）。
           字幕只决定下一次合成的烧入文本，不会重跑 AI；如需重合成口播，请在口播轨里点重合成。
         </p>
@@ -107,7 +107,7 @@ export function SubtitleEditPopover({
           )}
         />
 
-        <div className="mt-1 flex items-center justify-between text-[10px] text-muted-foreground">
+        <div className="mt-1 flex items-center justify-between text-xs text-muted-foreground">
           <span className={overLength ? 'text-amber-600 dark:text-amber-300' : ''}>
             {charCount} 字 {overLength ? `（超出建议 ${Math.round(charCount - recommendedChars)} 字，可能播不完）` : ''}
           </span>
@@ -115,7 +115,7 @@ export function SubtitleEditPopover({
         </div>
 
         {error && (
-          <p className="mt-2 rounded-md border border-destructive/40 bg-destructive/5 px-2 py-1 text-[11px] text-destructive">
+          <p className="mt-2 rounded-md border border-destructive/40 bg-destructive/5 px-2 py-1 text-xs text-destructive">
             {error}
           </p>
         )}

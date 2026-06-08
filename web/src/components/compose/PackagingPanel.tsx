@@ -174,7 +174,7 @@ export function PackagingPanel({
       <div className="flex items-center justify-between">
         <div>
           <h2 className="text-sm font-semibold">智能包装 · 5 维度多候选</h2>
-          <p className="text-[11px] text-muted-foreground">
+          <p className="text-xs text-muted-foreground">
             AI 一次给出字幕样式 / 标题条 / 贴纸 / 段落转场 / 封面 5 类候选，自己挑、自己组装。
           </p>
         </div>
@@ -215,7 +215,7 @@ export function PackagingPanel({
       <button
         type="button"
         onClick={() => setExpanded((x) => !x)}
-        className="flex w-full items-center justify-between rounded-md border border-dashed border-border bg-background/30 px-3 py-1.5 text-[11px] text-muted-foreground hover:bg-background/50"
+        className="flex w-full items-center justify-between rounded-md border border-dashed border-border bg-background/30 px-3 py-1.5 text-xs text-muted-foreground hover:bg-background/50"
       >
         <span>自定义高级设置（{expanded ? '收起' : '展开'}）</span>
         <span>{expanded ? '▴' : '▾'}</span>
@@ -261,7 +261,7 @@ export function PackagingPanel({
                 />
               ))}
               {rec.title_bars.length === 0 && (
-                <p className="text-[11px] text-muted-foreground">无候选</p>
+                <p className="text-xs text-muted-foreground">无候选</p>
               )}
             </div>
           </DimSection>
@@ -283,7 +283,7 @@ export function PackagingPanel({
                 />
               ))}
               {rec.stickers.length === 0 && (
-                <p className="text-[11px] text-muted-foreground">无候选</p>
+                <p className="text-xs text-muted-foreground">无候选</p>
               )}
             </div>
           </DimSection>
@@ -309,7 +309,7 @@ export function PackagingPanel({
                 />
               ))}
               {rec.transition_bundles.length === 0 && (
-                <p className="text-[11px] text-muted-foreground">无候选</p>
+                <p className="text-xs text-muted-foreground">无候选</p>
               )}
             </div>
           </DimSection>
@@ -331,7 +331,7 @@ export function PackagingPanel({
           </DimSection>
 
           {rec.notes.length > 0 && (
-            <ul className="space-y-0.5 text-[10px] text-muted-foreground">
+            <ul className="space-y-0.5 text-xs text-muted-foreground">
               {rec.notes.map((n, i) => (
                 <li key={i}>· {n}</li>
               ))}
@@ -341,7 +341,7 @@ export function PackagingPanel({
       )}
 
       {!rec && !running && !error && (
-        <p className="rounded-md border border-dashed border-border bg-background/30 px-3 py-2 text-[11px] text-muted-foreground">
+        <p className="rounded-md border border-dashed border-border bg-background/30 px-3 py-2 text-xs text-muted-foreground">
           点右上角「智能推荐」：AI 会按你当前的镜头顺序和主题，一次给 5 类候选。
         </p>
       )}
@@ -429,7 +429,7 @@ function PresetCards({
             )}
           >
             <span className="text-xs font-semibold">{meta.label}</span>
-            <span className="text-[10px] leading-tight text-muted-foreground">{meta.tagline}</span>
+            <span className="text-xs leading-tight text-muted-foreground">{meta.tagline}</span>
           </button>
         )
       })}
@@ -454,7 +454,7 @@ function DimSection({
     <div className="space-y-1.5 rounded-md border border-border bg-background/20 p-2.5">
       <div className="flex items-baseline gap-2">
         <h3 className="text-xs font-semibold">{title}</h3>
-        <span className="text-[10px] text-muted-foreground">{subtitle}</span>
+        <span className="text-xs text-muted-foreground">{subtitle}</span>
       </div>
       {children}
     </div>
@@ -479,11 +479,11 @@ function SubtitleCard({
         selected ? 'border-primary bg-primary/5' : 'border-border hover:border-primary/40',
       )}
     >
-      <div className="flex items-center gap-1.5 text-[11px]">
+      <div className="flex items-center gap-1.5 text-xs">
         <span className="font-semibold">{c.label}</span>
         {selected && <span className="text-primary">✓</span>}
       </div>
-      <div className="flex flex-wrap gap-1 text-[10px]">
+      <div className="flex flex-wrap gap-1 text-xs">
         <Pill>{c.font_size === 'large' ? '大字' : c.font_size === 'small' ? '小字' : '中字'}</Pill>
         <Pill>{c.position === 'top' ? '顶' : c.position === 'middle' ? '中' : '底'}</Pill>
         <Pill>
@@ -491,7 +491,7 @@ function SubtitleCard({
         </Pill>
         {c.bilingual && <Pill>双语</Pill>}
       </div>
-      <p className="text-[10px] text-muted-foreground">{c.rationale}</p>
+      <p className="text-xs text-muted-foreground">{c.rationale}</p>
     </button>
   )
 }
@@ -517,16 +517,16 @@ function TitleBarCard({
         selected ? 'border-primary bg-primary/5' : 'border-border hover:border-primary/40',
       )}
     >
-      <div className="flex items-center gap-1.5 text-[11px]">
+      <div className="flex items-center gap-1.5 text-xs">
         <input type="checkbox" checked={selected} readOnly className="cursor-pointer" />
         <span
-          className="rounded px-1.5 py-0.5 text-[10px] font-medium"
+          className="rounded px-1.5 py-0.5 text-xs font-medium"
           style={{ backgroundColor: c.background_color, color: c.color }}
         >
           {c.text}
         </span>
       </div>
-      <div className="flex flex-wrap items-center gap-1 text-[10px] text-muted-foreground">
+      <div className="flex flex-wrap items-center gap-1 text-xs text-muted-foreground">
         {scene && (
           <span className={cn('rounded px-1 py-0.5 font-medium text-white', SECTION_BG[scene.section])}>
             {SECTION_SHORT[scene.section]}
@@ -537,7 +537,7 @@ function TitleBarCard({
         </span>
         <Pill>{c.position}</Pill>
       </div>
-      <p className="text-[10px] text-muted-foreground">{c.rationale}</p>
+      <p className="text-xs text-muted-foreground">{c.rationale}</p>
     </button>
   )
 }
@@ -563,16 +563,16 @@ function StickerCard({
         selected ? 'border-primary bg-primary/5' : 'border-border hover:border-primary/40',
       )}
     >
-      <div className="flex items-center gap-1.5 text-[11px]">
+      <div className="flex items-center gap-1.5 text-xs">
         <input type="checkbox" checked={selected} readOnly className="cursor-pointer" />
         <span
-          className="rounded px-1.5 py-0.5 text-[10px] font-bold"
+          className="rounded px-1.5 py-0.5 text-xs font-bold"
           style={{ backgroundColor: c.background_color, color: c.color }}
         >
           {c.text}
         </span>
       </div>
-      <div className="flex flex-wrap items-center gap-1 text-[10px] text-muted-foreground">
+      <div className="flex flex-wrap items-center gap-1 text-xs text-muted-foreground">
         {scene && (
           <span className={cn('rounded px-1 py-0.5 font-medium text-white', SECTION_BG[scene.section])}>
             {SECTION_SHORT[scene.section]}
@@ -583,7 +583,7 @@ function StickerCard({
         </span>
         <Pill>{c.position}</Pill>
       </div>
-      <p className="text-[10px] text-muted-foreground">{c.rationale}</p>
+      <p className="text-xs text-muted-foreground">{c.rationale}</p>
     </button>
   )
 }
@@ -602,12 +602,12 @@ function TransitionBundleRow({
   const pickedOption = picked ? b.options.find((o) => o.style === picked) ?? null : null
   return (
     <div className="flex flex-wrap items-center gap-2 rounded-md border border-border bg-background/30 px-2.5 py-1.5">
-      <span className="font-mono text-[10px] text-muted-foreground">
+      <span className="font-mono text-xs text-muted-foreground">
         {b.at_seconds.toFixed(1)}s
       </span>
       <span
         className={cn(
-          'rounded px-1.5 py-0.5 text-[10px] font-medium text-white',
+          'rounded px-1.5 py-0.5 text-xs font-medium text-white',
           SECTION_BG[b.from_section] ?? 'bg-slate-500/80',
         )}
       >
@@ -616,7 +616,7 @@ function TransitionBundleRow({
       <span className="text-muted-foreground">→</span>
       <span
         className={cn(
-          'rounded px-1.5 py-0.5 text-[10px] font-medium text-white',
+          'rounded px-1.5 py-0.5 text-xs font-medium text-white',
           SECTION_BG[b.to_section] ?? 'bg-slate-500/80',
         )}
       >
@@ -631,7 +631,7 @@ function TransitionBundleRow({
               type="button"
               onClick={() => onPick(isPicked ? null : opt.style)}
               className={cn(
-                'rounded px-1.5 py-0.5 text-[10px] font-medium transition-colors',
+                'rounded px-1.5 py-0.5 text-xs font-medium transition-colors',
                 isPicked
                   ? cn('ring-1 ring-primary', TRANSITION_TONE[opt.style])
                   : cn(TRANSITION_TONE[opt.style], 'opacity-60 hover:opacity-100'),
@@ -648,14 +648,14 @@ function TransitionBundleRow({
         <button
           type="button"
           onClick={() => onPickCatalog(pickedOption.style)}
-          className="rounded border border-dashed border-border px-1.5 py-0.5 text-[10px] text-muted-foreground hover:border-primary hover:text-foreground"
+          className="rounded border border-dashed border-border px-1.5 py-0.5 text-xs text-muted-foreground hover:border-primary hover:text-foreground"
           title="从 HyperFrames catalog 挑一个风格 hint"
         >
           {pickedOption.catalog_block ? `风格：${pickedOption.catalog_block}` : '+ 选风格'}
         </button>
       )}
       {b.rationale && (
-        <span className="min-w-0 flex-1 truncate text-[10px] text-muted-foreground" title={b.rationale}>
+        <span className="min-w-0 flex-1 truncate text-xs text-muted-foreground" title={b.rationale}>
           {b.rationale}
         </span>
       )}
@@ -731,7 +731,7 @@ function CoverCard({
           </div>
         )}
       </div>
-      <div className="flex items-center gap-1.5 text-[10px]">
+      <div className="flex items-center gap-1.5 text-xs">
         {selected && <span className="text-primary">✓</span>}
         <Pill>{c.layout}</Pill>
         {c.palette.slice(0, 3).map((p) => (
@@ -755,20 +755,20 @@ function CoverCard({
               onPickCatalog()
             }
           }}
-          className="ml-auto cursor-pointer rounded border border-dashed border-border px-1.5 py-0.5 text-[10px] text-muted-foreground hover:border-primary hover:text-foreground"
+          className="ml-auto cursor-pointer rounded border border-dashed border-border px-1.5 py-0.5 text-xs text-muted-foreground hover:border-primary hover:text-foreground"
           title="从 HyperFrames catalog 挑一个封面风格 hint"
         >
           {c.catalog_block ? `风格：${c.catalog_block}` : '+ 选风格'}
         </span>
       </div>
-      <p className="text-[10px] text-muted-foreground">{c.rationale}</p>
+      <p className="text-xs text-muted-foreground">{c.rationale}</p>
     </button>
   )
 }
 
 function Pill({ children }: { children: React.ReactNode }) {
   return (
-    <span className="rounded bg-muted px-1.5 py-0.5 text-[10px] text-muted-foreground">
+    <span className="rounded bg-muted px-1.5 py-0.5 text-xs text-muted-foreground">
       {children}
     </span>
   )
@@ -807,7 +807,7 @@ function CustomPanel({
   return (
     <div className="space-y-3 rounded-md border border-border bg-background/20 p-3">
       <div>
-        <h4 className="mb-1.5 text-[11px] font-semibold text-muted-foreground">允许的转场风格（影响 AI 生成候选）</h4>
+        <h4 className="mb-1.5 text-xs font-semibold text-muted-foreground">允许的转场风格（影响 AI 生成候选）</h4>
         <div className="flex flex-wrap gap-1.5">
           {ALL_TRANSITIONS.map((style) => {
             const checked = prefs.allowed_transition_styles.includes(style)
@@ -817,7 +817,7 @@ function CustomPanel({
                 type="button"
                 onClick={() => toggleTransition(style)}
                 className={cn(
-                  'rounded px-2 py-0.5 text-[10px] font-medium transition-colors',
+                  'rounded px-2 py-0.5 text-xs font-medium transition-colors',
                   checked ? TRANSITION_TONE[style] : 'bg-muted text-muted-foreground hover:bg-muted/70',
                 )}
               >
@@ -826,7 +826,7 @@ function CustomPanel({
             )
           })}
         </div>
-        <label className="mt-2 flex items-center gap-2 text-[11px] text-muted-foreground">
+        <label className="mt-2 flex items-center gap-2 text-xs text-muted-foreground">
           <span>切换最长时长</span>
           <input
             type="range"
@@ -865,7 +865,7 @@ function CustomPanel({
         />
       </div>
 
-      <label className="flex items-center gap-2 text-[11px] text-muted-foreground">
+      <label className="flex items-center gap-2 text-xs text-muted-foreground">
         <span>AI 发挥度</span>
         <input
           type="range"
@@ -897,7 +897,7 @@ function RadioGroup<T extends string>({
 }) {
   return (
     <div>
-      <h4 className="mb-1.5 text-[11px] font-semibold text-muted-foreground">{label}</h4>
+      <h4 className="mb-1.5 text-xs font-semibold text-muted-foreground">{label}</h4>
       <div className="flex gap-1.5">
         {options.map((opt) => (
           <button
@@ -905,7 +905,7 @@ function RadioGroup<T extends string>({
             type="button"
             onClick={() => onChange(opt)}
             className={cn(
-              'flex-1 rounded px-2 py-0.5 text-[10px] transition-colors',
+              'flex-1 rounded px-2 py-0.5 text-xs transition-colors',
               value === opt
                 ? 'bg-primary text-primary-foreground'
                 : 'bg-muted text-muted-foreground hover:bg-muted/70',

@@ -64,7 +64,7 @@ export function GapList({
                 </span>
                 <span className="flex items-center gap-1">
                   <span className={cn('h-1.5 w-1.5 rounded-full', IMPACT_COLOR[gap.impact])} />
-                  <span className="text-[11px] text-muted-foreground">影响 {IMPACT_LABEL[gap.impact]}</span>
+                  <span className="text-xs text-muted-foreground">影响 {IMPACT_LABEL[gap.impact]}</span>
                 </span>
                 {filled && (
                   <span
@@ -78,7 +78,7 @@ export function GapList({
               </div>
               <p className="mt-1 line-clamp-2 text-xs text-foreground">{gap.requirement}</p>
               {gap.matched_material_id && (
-                <p className="mt-0.5 text-[10px] text-muted-foreground">
+                <p className="mt-0.5 text-xs text-muted-foreground">
                   已配上 <span className="font-mono">{gap.matched_material_id}</span>
                 </p>
               )}

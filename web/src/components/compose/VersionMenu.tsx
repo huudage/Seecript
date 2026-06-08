@@ -128,7 +128,7 @@ export function VersionMenu({
           <path d="M12 7v5l3 3" strokeLinecap="round" strokeLinejoin="round" />
         </svg>
         版本
-        <span className="text-[10px] text-muted-foreground">{open ? '▴' : '▾'}</span>
+        <span className="text-xs text-muted-foreground">{open ? '▴' : '▾'}</span>
       </button>
 
       {open && (
@@ -153,15 +153,15 @@ export function VersionMenu({
           </div>
 
           {error && (
-            <p className="mt-2 rounded bg-destructive/10 px-2 py-1 text-[11px] text-destructive">{error}</p>
+            <p className="mt-2 rounded bg-destructive/10 px-2 py-1 text-xs text-destructive">{error}</p>
           )}
 
           <div className="mt-2 max-h-72 space-y-1 overflow-y-auto">
             {items === null && loading && (
-              <p className="px-2 py-3 text-center text-[11px] text-muted-foreground">加载中…</p>
+              <p className="px-2 py-3 text-center text-xs text-muted-foreground">加载中…</p>
             )}
             {items && items.length === 0 && (
-              <p className="px-2 py-3 text-center text-[11px] text-muted-foreground">
+              <p className="px-2 py-3 text-center text-xs text-muted-foreground">
                 还没有保存的版本。点上面的「另存为新版本」开始记录你想留住的状态。
               </p>
             )}
@@ -174,13 +174,13 @@ export function VersionMenu({
                 >
                   <div className="min-w-0 flex-1">
                     <p className="truncate text-xs font-medium" title={it.name}>{it.name}</p>
-                    <p className="text-[10px] text-muted-foreground">{formatTs(it.ts)}</p>
+                    <p className="text-xs text-muted-foreground">{formatTs(it.ts)}</p>
                   </div>
                   <button
                     type="button"
                     onClick={() => void handleRestore(it)}
                     disabled={busy}
-                    className="rounded px-1.5 py-0.5 text-[10px] text-primary hover:bg-primary/10 disabled:opacity-60"
+                    className="rounded px-1.5 py-0.5 text-xs text-primary hover:bg-primary/10 disabled:opacity-60"
                     title="恢复到这个版本"
                   >
                     切到
@@ -189,7 +189,7 @@ export function VersionMenu({
                     type="button"
                     onClick={() => void handleDelete(it)}
                     disabled={busy}
-                    className="rounded px-1.5 py-0.5 text-[10px] text-destructive hover:bg-destructive/10 disabled:opacity-60"
+                    className="rounded px-1.5 py-0.5 text-xs text-destructive hover:bg-destructive/10 disabled:opacity-60"
                     title="删除这个版本"
                   >
                     删

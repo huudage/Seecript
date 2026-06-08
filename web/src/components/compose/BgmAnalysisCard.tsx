@@ -96,11 +96,11 @@ export function BgmAnalysisCard({
   const shapeHint = (variant === 'sample' ? ENERGY_SHAPE_HINT_SAMPLE : ENERGY_SHAPE_HINT)[analysis.energy_shape]
   return (
     <div className="grid grid-cols-[88px_1fr] gap-1">
-      <div className="pr-1 text-[10px] text-muted-foreground">
+      <div className="pr-1 text-xs text-muted-foreground">
         <span className="font-semibold text-foreground">{leftTitle}</span>
-        <p className="mt-0.5 text-[9px] leading-tight">{leftSubtitle}</p>
+        <p className="mt-0.5 text-xs leading-tight">{leftSubtitle}</p>
       </div>
-      <div className="space-y-2 rounded-md border border-violet-400/40 bg-violet-400/5 p-2 text-[11px]">
+      <div className="space-y-2 rounded-md border border-violet-400/40 bg-violet-400/5 p-2 text-xs">
         <div className="flex flex-wrap items-center gap-1.5">
           <span className="rounded-full bg-violet-500/15 px-2 py-0.5 font-medium text-violet-700 dark:text-violet-200">
             {analysis.title_guess || copy.unknownTitle}
@@ -108,14 +108,14 @@ export function BgmAnalysisCard({
           {analysis.mood_tags.slice(0, 6).map((tag) => (
             <span
               key={tag}
-              className="rounded-full border border-violet-400/40 px-1.5 py-0.5 text-[10px] text-violet-700 dark:text-violet-200"
+              className="rounded-full border border-violet-400/40 px-1.5 py-0.5 text-xs text-violet-700 dark:text-violet-200"
             >
               {tag}
             </span>
           ))}
           <span
             className={cn(
-              'ml-auto rounded px-1.5 py-0.5 font-mono text-[10px]',
+              'ml-auto rounded px-1.5 py-0.5 font-mono text-xs',
               score >= 0.7 && 'bg-emerald-500/15 text-emerald-700 dark:text-emerald-300',
               score >= 0.4 && score < 0.7 && 'bg-amber-500/15 text-amber-700 dark:text-amber-300',
               score < 0.4 && 'bg-rose-500/15 text-rose-700 dark:text-rose-300',
@@ -131,7 +131,7 @@ export function BgmAnalysisCard({
             <span className="rounded bg-fuchsia-500/20 px-1.5 py-0.5 font-bold text-fuchsia-700 dark:text-fuchsia-200">
               {shapeLabel}
             </span>
-            <span className="text-[10px] text-muted-foreground">{shapeHint}</span>
+            <span className="text-xs text-muted-foreground">{shapeHint}</span>
           </div>
           {analysis.energy_shape_reason && (
             <p className="mt-1 text-[10.5px] leading-snug text-foreground/80">
@@ -149,16 +149,16 @@ export function BgmAnalysisCard({
 
         {analysis.climaxes.length > 0 ? (
           <div className="space-y-0.5 text-[10.5px] leading-snug">
-            <p className="text-[10px] font-semibold text-foreground/70">
+            <p className="text-xs font-semibold text-foreground/70">
               {copy.climaxHeader}
             </p>
             <ul className="space-y-0.5">
               {analysis.climaxes.map((hl, idx) => (
                 <li key={idx} className="flex flex-wrap items-baseline gap-1.5">
-                  <span className="font-mono text-[10px] text-fuchsia-700 dark:text-fuchsia-300">
+                  <span className="font-mono text-xs text-fuchsia-700 dark:text-fuchsia-300">
                     {hl.at_seconds.toFixed(1)}s
                   </span>
-                  <span className="rounded bg-fuchsia-500/15 px-1 text-[10px] font-semibold text-fuchsia-700 dark:text-fuchsia-200">
+                  <span className="rounded bg-fuchsia-500/15 px-1 text-xs font-semibold text-fuchsia-700 dark:text-fuchsia-200">
                     {HIGHLIGHT_KIND_LABEL[hl.kind]}
                   </span>
                   {hl.label && <span className="font-medium text-foreground">{hl.label}</span>}
@@ -175,13 +175,13 @@ export function BgmAnalysisCard({
 
         {analysis.calm_segments.length > 0 && (
           <div className="space-y-0.5 text-[10.5px] leading-snug">
-            <p className="text-[10px] font-semibold text-foreground/70">
+            <p className="text-xs font-semibold text-foreground/70">
               {copy.calmHeader}
             </p>
             <ul className="space-y-0.5">
               {analysis.calm_segments.map((seg, idx) => (
                 <li key={idx} className="flex flex-wrap items-baseline gap-1.5">
-                  <span className="font-mono text-[10px] text-violet-700 dark:text-violet-300">
+                  <span className="font-mono text-xs text-violet-700 dark:text-violet-300">
                     {seg.start.toFixed(1)}–{seg.end.toFixed(1)}s
                   </span>
                   <span className="text-muted-foreground">{seg.note}</span>

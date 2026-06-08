@@ -80,7 +80,7 @@ export function DecomposeTable({ manifest }: Props) {
   return (
     <div className="overflow-x-auto rounded-lg border border-border">
       <table className="w-full border-collapse text-xs">
-        <thead className="bg-muted/50 text-left text-[11px] font-semibold text-muted-foreground">
+        <thead className="bg-muted/50 text-left text-xs font-semibold text-muted-foreground">
           <tr>
             <th className="w-[14%] border-b border-border px-3 py-2">结构</th>
             <th className="w-[18%] border-b border-border px-3 py-2">分镜</th>
@@ -105,18 +105,18 @@ export function DecomposeTable({ manifest }: Props) {
                   >
                     {section ? (
                       <div className="space-y-1">
-                        <div className="font-mono text-[10px] uppercase opacity-70">
+                        <div className="font-mono text-xs uppercase opacity-70">
                           {section.role}
                         </div>
                         <div className="font-semibold">
                           {section.theme || SECTION_LABEL[section.role] || section.role}
                         </div>
-                        <div className="text-[10px] text-muted-foreground">
+                        <div className="text-xs text-muted-foreground">
                           {formatTime(section.start)} – {formatTime(section.end)}
                         </div>
                       </div>
                     ) : (
-                      <span className="text-[10px] text-muted-foreground">未归段</span>
+                      <span className="text-xs text-muted-foreground">未归段</span>
                     )}
                   </td>
                 )}
@@ -130,22 +130,22 @@ export function DecomposeTable({ manifest }: Props) {
                         className="h-10 w-16 shrink-0 rounded border border-border object-cover"
                       />
                     ) : (
-                      <div className="flex h-10 w-16 shrink-0 items-center justify-center rounded border border-dashed border-border text-[9px] text-muted-foreground">
+                      <div className="flex h-10 w-16 shrink-0 items-center justify-center rounded border border-dashed border-border text-xs text-muted-foreground">
                         无图
                       </div>
                     )}
                     <div className="min-w-0 flex-1">
                       <div className="flex items-center gap-1">
-                        <span className="font-mono text-[10px] text-muted-foreground">
+                        <span className="font-mono text-xs text-muted-foreground">
                           #{shot.index}
                         </span>
                         {shot.merged_from && shot.merged_from.length > 1 && (
-                          <span className="rounded bg-amber-500/15 px-1 py-0.5 text-[9px] font-medium text-amber-700 dark:text-amber-300">
+                          <span className="rounded bg-amber-500/15 px-1 py-0.5 text-xs font-medium text-amber-700 dark:text-amber-300">
                             {shot.merged_from.length} 镜合 1
                           </span>
                         )}
                       </div>
-                      <div className="text-[10px] text-muted-foreground">
+                      <div className="text-xs text-muted-foreground">
                         {formatTime(shot.start)} – {formatTime(shot.end)} · {shot.duration.toFixed(1)}s
                       </div>
                     </div>
@@ -155,7 +155,7 @@ export function DecomposeTable({ manifest }: Props) {
                   {shot.visual_summary ? (
                     <p className="leading-relaxed">{shot.visual_summary}</p>
                   ) : (
-                    <p className="text-[11px] italic text-muted-foreground">
+                    <p className="text-xs italic text-muted-foreground">
                       （未生成画面描述）
                     </p>
                   )}
@@ -170,7 +170,7 @@ export function DecomposeTable({ manifest }: Props) {
                               : TARGET_KIND_LABEL[t.kind]
                           }
                           className={cn(
-                            'inline-flex items-center gap-0.5 rounded px-1.5 py-0.5 text-[9px] font-medium',
+                            'inline-flex items-center gap-0.5 rounded px-1.5 py-0.5 text-xs font-medium',
                             TARGET_KIND_STYLE[t.kind],
                           )}
                         >
@@ -187,7 +187,7 @@ export function DecomposeTable({ manifest }: Props) {
                       {shot.tags.slice(0, 5).map((t, ti) => (
                         <span
                           key={ti}
-                          className="rounded bg-muted px-1 py-0.5 text-[9px] text-muted-foreground"
+                          className="rounded bg-muted px-1 py-0.5 text-xs text-muted-foreground"
                         >
                           {t}
                         </span>
@@ -199,14 +199,14 @@ export function DecomposeTable({ manifest }: Props) {
                   {shot.script ? (
                     <p className="leading-relaxed">{shot.script}</p>
                   ) : (
-                    <p className="text-[11px] italic text-muted-foreground">（未生成脚本）</p>
+                    <p className="text-xs italic text-muted-foreground">（未生成脚本）</p>
                   )}
                   {shot.transcript && shot.transcript !== shot.script && (
                     <details className="mt-1">
-                      <summary className="cursor-pointer text-[10px] text-muted-foreground hover:text-foreground">
+                      <summary className="cursor-pointer text-xs text-muted-foreground hover:text-foreground">
                         原 ASR
                       </summary>
-                      <p className="mt-1 text-[10px] text-muted-foreground">{shot.transcript}</p>
+                      <p className="mt-1 text-xs text-muted-foreground">{shot.transcript}</p>
                     </details>
                   )}
                 </td>

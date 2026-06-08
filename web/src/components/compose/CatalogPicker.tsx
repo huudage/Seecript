@@ -85,7 +85,7 @@ export function CatalogPicker({ open, category, current, onPick, onClose }: Prop
         <div className="flex items-center justify-between border-b border-border px-4 py-2">
           <div>
             <h3 className="text-sm font-semibold">HyperFrames catalog · {category}</h3>
-            <p className="text-[11px] text-muted-foreground">
+            <p className="text-xs text-muted-foreground">
               点击挑一个风格 hint；后端 packaging_agent 会把 name 当作风格基准。当前：
               <span className="ml-1 font-mono">{current ?? '（无）'}</span>
             </p>
@@ -98,7 +98,7 @@ export function CatalogPicker({ open, category, current, onPick, onClose }: Prop
                   onPick(null)
                   onClose()
                 }}
-                className="rounded border border-border px-2 py-1 text-[11px] text-muted-foreground hover:bg-accent"
+                className="rounded border border-border px-2 py-1 text-xs text-muted-foreground hover:bg-accent"
               >
                 清除
               </button>
@@ -121,7 +121,7 @@ export function CatalogPicker({ open, category, current, onPick, onClose }: Prop
               type="button"
               onClick={() => setTag(null)}
               className={cn(
-                'rounded-full border px-2 py-0.5 text-[10px] transition',
+                'rounded-full border px-2 py-0.5 text-xs transition',
                 tag === null
                   ? 'border-primary bg-primary/10 text-foreground'
                   : 'border-border bg-background/60 text-muted-foreground hover:border-primary/60',
@@ -135,7 +135,7 @@ export function CatalogPicker({ open, category, current, onPick, onClose }: Prop
                 type="button"
                 onClick={() => setTag(tag === t ? null : t)}
                 className={cn(
-                  'rounded-full border px-2 py-0.5 text-[10px] transition',
+                  'rounded-full border px-2 py-0.5 text-xs transition',
                   tag === t
                     ? 'border-primary bg-primary/10 text-foreground'
                     : 'border-border bg-background/60 text-muted-foreground hover:border-primary/60',
@@ -231,20 +231,20 @@ function CatalogCard({
           />
         )}
         {selected && (
-          <span className="absolute right-1 top-1 rounded bg-primary px-1.5 py-0.5 text-[10px] font-semibold text-primary-foreground">
+          <span className="absolute right-1 top-1 rounded bg-primary px-1.5 py-0.5 text-xs font-semibold text-primary-foreground">
             ✓ 已选
           </span>
         )}
       </div>
       <div className="px-2 pb-2">
         <div className="truncate text-xs font-semibold">{item.title ?? item.name}</div>
-        <div className="truncate font-mono text-[10px] text-muted-foreground">{item.name}</div>
+        <div className="truncate font-mono text-xs text-muted-foreground">{item.name}</div>
         {item.tags.length > 0 && (
           <div className="mt-1 flex flex-wrap gap-1">
             {item.tags.slice(0, 3).map((t) => (
               <span
                 key={t}
-                className="rounded bg-muted px-1 py-0.5 text-[9px] text-muted-foreground"
+                className="rounded bg-muted px-1 py-0.5 text-xs text-muted-foreground"
               >
                 {t}
               </span>

@@ -538,7 +538,7 @@ export function FillAigcPanel({
     <div className="space-y-2 rounded-md border border-border bg-background/40 p-3">
       <div className="flex items-center justify-between">
         <h4 className="text-xs font-semibold">{mode === 'image' ? 'AI 生图再渲染' : 'AI 视频生成'}</h4>
-        <span className="text-[11px] text-muted-foreground">
+        <span className="text-xs text-muted-foreground">
           {mode === 'image' ? '单帧静图，按段落时长定格' : '时长跟随段落规划自动分段'}
         </span>
       </div>
@@ -659,7 +659,7 @@ function PhasePill({ phase, hasFill, mode }: { phase: Phase; hasFill: boolean; m
     )
 
   return (
-    <div className="flex items-center gap-1 text-[10px] font-medium">
+    <div className="flex items-center gap-1 text-xs font-medium">
       <span className={cls(step1Active, step1Done)}>1. 参考图</span>
       <span className="text-muted-foreground">→</span>
       <span className={cls(step2Active, step2Done)}>
@@ -686,7 +686,7 @@ function IdleStage({ onStart }: { onStart: () => void }) {
         判断本段需要哪些参考图，再写一条专业的视频生成提示词，最后调用视频生成模型出片。
         每一步都可以看 AI 的思考过程并干预。
       </p>
-      <ul className="space-y-0.5 text-[11px] text-muted-foreground">
+      <ul className="space-y-0.5 text-xs text-muted-foreground">
         <li>① 分析参考图清单（可上传 / 让 AI 出图 / 跳过）</li>
         <li>② 自动撰写视频提示词（可手动改）</li>
         <li>③ AI 视频生成（含尾帧承接，让前后段画面连得上）</li>
@@ -718,10 +718,10 @@ function ThinkingStage({
           <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-primary/60" />
           <span className="relative inline-flex h-2 w-2 rounded-full bg-primary" />
         </span>
-        <span className="text-[11px] font-medium">{title}</span>
+        <span className="text-xs font-medium">{title}</span>
       </div>
       <ThinkingSteps steps={steps} animated />
-      {err && <p className="text-[11px] text-destructive">{err}</p>}
+      {err && <p className="text-xs text-destructive">{err}</p>}
     </div>
   )
 }
@@ -772,7 +772,7 @@ function SpecStage({
     <div className="space-y-2">
       {/* 思考链总结：折叠展示，让用户知道 AI 怎么决定的 */}
       {thinking.length > 0 && (
-        <details className="rounded border border-border bg-secondary/30 px-2 py-1.5 text-[11px]" open>
+        <details className="rounded border border-border bg-secondary/30 px-2 py-1.5 text-xs" open>
           <summary className="cursor-pointer font-medium">
             AI 思路（{thinking.length} 步）
           </summary>
@@ -782,14 +782,14 @@ function SpecStage({
         </details>
       )}
 
-      <div className="flex items-center justify-between text-[11px]">
+      <div className="flex items-center justify-between text-xs">
         <span className="text-muted-foreground">
           AI 建议本段配 <span className="font-semibold text-foreground">{specs.length}</span> 张参考图：
         </span>
         <button
           type="button"
           onClick={onSkip}
-          className="text-[10px] text-primary underline-offset-2 hover:underline"
+          className="text-xs text-primary underline-offset-2 hover:underline"
         >
           跳过参考图 →
         </button>
@@ -803,7 +803,7 @@ function SpecStage({
           disabled={seedreamAllBusy}
           title={`串行调 Seedream 为剩余 ${pendingCount} 张未就绪的参考图出图（已上传 / 已生成的会跳过）`}
           className={cn(
-            'flex w-full items-center justify-center gap-1 rounded-md border border-primary/60 bg-primary/10 px-2 py-1.5 text-[11px] font-medium text-primary transition-colors hover:bg-primary/20',
+            'flex w-full items-center justify-center gap-1 rounded-md border border-primary/60 bg-primary/10 px-2 py-1.5 text-xs font-medium text-primary transition-colors hover:bg-primary/20',
             seedreamAllBusy && 'cursor-not-allowed opacity-60',
           )}
         >
@@ -824,8 +824,8 @@ function SpecStage({
           return (
             <div key={spec.slot_id} className="space-y-1.5 rounded border border-border bg-background/50 p-2">
               <div className="flex items-center justify-between gap-2">
-                <span className="text-[11px] font-semibold">{spec.caption}</span>
-                <span className="rounded bg-secondary px-1.5 py-0.5 text-[9px] font-mono text-muted-foreground">
+                <span className="text-xs font-semibold">{spec.caption}</span>
+                <span className="rounded bg-secondary px-1.5 py-0.5 text-xs font-mono text-muted-foreground">
                   {spec.ratio}
                 </span>
               </div>
@@ -837,7 +837,7 @@ function SpecStage({
                     alt={spec.caption}
                     className="h-20 w-20 flex-shrink-0 rounded border border-border object-cover"
                   />
-                  <div className="flex-1 space-y-1 text-[10px]">
+                  <div className="flex-1 space-y-1 text-xs">
                     <p className="text-muted-foreground">
                       已就绪 · {slot.source === 'upload' ? '用户上传' : 'AI 出图'}
                       {saveOk && (
@@ -851,7 +851,7 @@ function SpecStage({
                           onClick={() => onSaveToLibrary(spec)}
                           disabled={saving}
                           className={cn(
-                            'rounded border border-emerald-500/40 bg-emerald-500/10 px-1.5 py-0.5 text-[10px] text-emerald-700 hover:bg-emerald-500/20 dark:text-emerald-300',
+                            'rounded border border-emerald-500/40 bg-emerald-500/10 px-1.5 py-0.5 text-xs text-emerald-700 hover:bg-emerald-500/20 dark:text-emerald-300',
                             saving && 'cursor-not-allowed opacity-60',
                           )}
                         >
@@ -877,14 +877,14 @@ function SpecStage({
                     rows={2}
                     disabled={busy}
                     className={cn(
-                      'w-full resize-y rounded-md border border-border bg-background px-2 py-1 text-[11px] outline-none focus:border-primary',
+                      'w-full resize-y rounded-md border border-border bg-background px-2 py-1 text-xs outline-none focus:border-primary',
                       busy && 'cursor-wait opacity-60',
                     )}
                     placeholder="描述这张图（用于 AI 出图；上传方式可忽略）"
                   />
                   <div className="flex items-center gap-2">
                     <label className={cn(
-                      'flex-1 cursor-pointer rounded-md border border-border bg-secondary px-2 py-1 text-center text-[11px] hover:bg-secondary/80',
+                      'flex-1 cursor-pointer rounded-md border border-border bg-secondary px-2 py-1 text-center text-xs hover:bg-secondary/80',
                       busy && 'pointer-events-none opacity-60',
                     )}>
                       上传图片
@@ -904,7 +904,7 @@ function SpecStage({
                       onClick={() => onSeedream(spec)}
                       disabled={busy || !slotPrompt.trim()}
                       className={cn(
-                        'flex-1 rounded-md bg-primary px-2 py-1 text-[11px] font-medium text-primary-foreground',
+                        'flex-1 rounded-md bg-primary px-2 py-1 text-xs font-medium text-primary-foreground',
                         (busy || !slotPrompt.trim()) && 'cursor-not-allowed opacity-60',
                       )}
                     >
@@ -913,7 +913,7 @@ function SpecStage({
                   </div>
                 </>
               )}
-              {errMsg && <p className="text-[10px] text-destructive">{errMsg}</p>}
+              {errMsg && <p className="text-xs text-destructive">{errMsg}</p>}
             </div>
           )
         })}
@@ -987,14 +987,14 @@ function PromptStage({
       {Object.keys(imageSlots).length > 0 && (
         <div className="space-y-1">
           <div className="flex items-center justify-between">
-            <span className="text-[11px] font-semibold text-muted-foreground">
+            <span className="text-xs font-semibold text-muted-foreground">
               本段参考图（{Object.keys(imageSlots).length} 张）
             </span>
             {onBackToSpec && (
               <button
                 type="button"
                 onClick={onBackToSpec}
-                className="text-[10px] text-primary underline-offset-2 hover:underline"
+                className="text-xs text-primary underline-offset-2 hover:underline"
               >
                 ← 返回调整参考图
               </button>
@@ -1023,7 +1023,7 @@ function PromptStage({
       )}
 
       {Object.keys(imageSlots).length === 0 && imageSpecs.length > 0 && onBackToSpec && (
-        <div className="rounded border border-dashed border-amber-500/40 bg-amber-500/5 px-2 py-1.5 text-[10px] text-amber-700 dark:text-amber-300">
+        <div className="rounded border border-dashed border-amber-500/40 bg-amber-500/5 px-2 py-1.5 text-xs text-amber-700 dark:text-amber-300">
           已跳过参考图，本段将仅按文字提示词生成视频。
           <button
             type="button"
@@ -1037,7 +1037,7 @@ function PromptStage({
 
       {/* Agent 思考链 */}
       {thinking.length > 0 && !promptLoading && (
-        <details className="rounded border border-border bg-secondary/30 px-2 py-1.5 text-[11px]">
+        <details className="rounded border border-border bg-secondary/30 px-2 py-1.5 text-xs">
           <summary className="cursor-pointer font-medium">
             AI 怎么写出这条提示词的（{thinking.length} 步）
           </summary>
@@ -1049,7 +1049,7 @@ function PromptStage({
 
       <div>
         <div className="mb-1 flex items-center justify-between">
-          <label className="text-[11px] font-semibold text-muted-foreground">
+          <label className="text-xs font-semibold text-muted-foreground">
             视频生成提示词（AI 视频生成）
           </label>
           <button
@@ -1057,7 +1057,7 @@ function PromptStage({
             onClick={onRegenerate}
             disabled={promptLoading || loading}
             className={cn(
-              'text-[10px] text-primary underline-offset-2 hover:underline',
+              'text-xs text-primary underline-offset-2 hover:underline',
               (promptLoading || loading) && 'cursor-not-allowed opacity-60',
             )}
           >
@@ -1075,13 +1075,13 @@ function PromptStage({
             promptLoading && 'cursor-wait opacity-60',
           )}
         />
-        <div className="mt-0.5 flex items-center justify-between text-[10px]">
+        <div className="mt-0.5 flex items-center justify-between text-xs">
           <span className="text-muted-foreground">
             {promptErr ? <span className="text-destructive">{promptErr}</span> : '可手动修改后再点开始生成'}
           </span>
           <span className="font-mono text-muted-foreground">{prompt.length}/300</span>
         </div>
-        <p className="mt-1 text-[10px] text-muted-foreground">
+        <p className="mt-1 text-xs text-muted-foreground">
           输出分辨率：720p（比例随高级设置走）
         </p>
       </div>
@@ -1090,18 +1090,18 @@ function PromptStage({
           用户不再需要手动填——这里只 read-only 展示一下让用户知道会出几张图。 */}
       {mode === 'image' && (
         <div className="space-y-1.5 rounded border border-border bg-secondary/30 p-2">
-          <div className="flex items-center justify-between text-[11px]">
+          <div className="flex items-center justify-between text-xs">
             <span className="font-medium">
               本段分镜 · {plannedSubjects.length > 0 ? `${plannedSubjects.length} 张图` : '1 张图（单镜头）'}
             </span>
-            <span className="text-[10px] text-muted-foreground">由内容轨自动决定</span>
+            <span className="text-xs text-muted-foreground">由内容轨自动决定</span>
           </div>
           {plannedSubjects.length > 0 ? (
             <div className="flex flex-wrap gap-1">
               {plannedSubjects.map((sub, i) => (
                 <span
                   key={`${i}-${sub}`}
-                  className="rounded-full border border-border bg-background/70 px-2 py-0.5 text-[10px]"
+                  className="rounded-full border border-border bg-background/70 px-2 py-0.5 text-xs"
                   title={sub}
                 >
                   镜 {i + 1}：{sub.slice(0, 20)}{sub.length > 20 ? '…' : ''}
@@ -1109,7 +1109,7 @@ function PromptStage({
               ))}
             </div>
           ) : (
-            <p className="text-[10px] text-muted-foreground">
+            <p className="text-xs text-muted-foreground">
               本段没有分镜规划 · 走单图 ken-burns 动效
             </p>
           )}
@@ -1118,7 +1118,7 @@ function PromptStage({
 
       {/* 尾帧承接前段 */}
       <div className="space-y-1 rounded border border-border bg-secondary/30 p-2">
-        <label className="flex items-start gap-2 text-[11px]">
+        <label className="flex items-start gap-2 text-xs">
           <input
             type="checkbox"
             checked={useTailFrame}
@@ -1134,16 +1134,16 @@ function PromptStage({
           </span>
         </label>
         {!sceneHasPrev && (
-          <p className="pl-5 text-[10px] text-muted-foreground">本段是第一段，没有可承接的前段。</p>
+          <p className="pl-5 text-xs text-muted-foreground">本段是第一段，没有可承接的前段。</p>
         )}
         {sceneHasPrev && !scenePrevReady && (
-          <p className="pl-5 text-[10px] text-muted-foreground">前一段尚未补全，请先生成前段。</p>
+          <p className="pl-5 text-xs text-muted-foreground">前一段尚未补全，请先生成前段。</p>
         )}
         {tailFrameLoading && (
-          <p className="pl-5 text-[10px] text-muted-foreground">正在抽取前段尾帧…</p>
+          <p className="pl-5 text-xs text-muted-foreground">正在抽取前段尾帧…</p>
         )}
         {tailFrameErr && (
-          <p className="pl-5 text-[10px] text-destructive">{tailFrameErr}</p>
+          <p className="pl-5 text-xs text-destructive">{tailFrameErr}</p>
         )}
         {tailFrameDataUrl && (
           <div className="pl-5">
@@ -1167,7 +1167,7 @@ function PromptStage({
         {loading ? '生成中…（可能要 3 分钟以上）' : fillExists ? '改完提示词重新生成' : '开始生成'}
       </button>
 
-      {err && <p className="text-[11px] text-destructive">{err}</p>}
+      {err && <p className="text-xs text-destructive">{err}</p>}
     </>
   )
 }
@@ -1265,15 +1265,15 @@ function FillStatusCard({
 
       {!hasPreview && (
         <div className="rounded-md border border-amber-500/40 bg-amber-500/10 p-2">
-          <p className="text-[11px] font-medium text-amber-700 dark:text-amber-300">
+          <p className="text-xs font-medium text-amber-700 dark:text-amber-300">
             {mode === 'image' ? '图片还没就绪' : '还没有可预览的视频'}
             {autoPolling && (
-              <span className="ml-2 text-[10px] font-normal text-amber-600/80">
+              <span className="ml-2 text-xs font-normal text-amber-600/80">
                 · 自动刷新中 {autoPollAttempts}/{AUTO_POLL_MAX_ATTEMPTS}
               </span>
             )}
           </p>
-          <p className="mt-0.5 text-[10px] text-muted-foreground">
+          <p className="mt-0.5 text-xs text-muted-foreground">
             {fill.status === 'ok'
               ? mode === 'image'
                 ? '生成完成但暂时拿不到图片链接，可以重新点开始生成再试。'
@@ -1285,7 +1285,7 @@ function FillStatusCard({
                   : '视频还没出来（超时 / 排队中 / 失败）。点下方刷新可以再查一次。'}
           </p>
           {firstTaskId && (
-            <p className="mt-1 font-mono text-[10px] text-muted-foreground">
+            <p className="mt-1 font-mono text-xs text-muted-foreground">
               任务号：{firstTaskId}
             </p>
           )}
@@ -1294,7 +1294,7 @@ function FillStatusCard({
               onClick={onRefresh}
               disabled={refreshing}
               className={cn(
-                'mt-1.5 w-full rounded-md border border-amber-500/60 bg-amber-500/20 px-2 py-1 text-[11px] font-medium text-amber-700 transition-colors hover:bg-amber-500/30 dark:text-amber-200',
+                'mt-1.5 w-full rounded-md border border-amber-500/60 bg-amber-500/20 px-2 py-1 text-xs font-medium text-amber-700 transition-colors hover:bg-amber-500/30 dark:text-amber-200',
                 refreshing && 'cursor-not-allowed opacity-60',
               )}
             >
@@ -1309,13 +1309,13 @@ function FillStatusCard({
           {/* 多镜头模式（path B）：N 张图横向预览，每张一个保存按钮。 */}
           {fill.aigc_image_urls && fill.aigc_image_urls.length > 1 ? (
             <>
-              <div className="text-[10px] text-muted-foreground">
+              <div className="text-xs text-muted-foreground">
                 Seedream 故事板 · 本段拆 {fill.aigc_image_urls.length} 个子镜头（视觉一致）
               </div>
               <div className="grid grid-cols-2 gap-1.5">
                 {fill.aigc_image_urls.map((url, i) => (
                   <div key={`${url}-${i}`} className="space-y-0.5">
-                    <div className="flex items-center justify-between text-[10px] text-muted-foreground">
+                    <div className="flex items-center justify-between text-xs text-muted-foreground">
                       <span>镜头 {i + 1}</span>
                       <div className="flex items-center gap-1.5">
                         <button
@@ -1323,7 +1323,7 @@ function FillStatusCard({
                           onClick={() => handleSave(url, i)}
                           disabled={savingIdx === i || savedIdx.has(i) || !projectId}
                           className={cn(
-                            'rounded border px-1 py-0.5 text-[9px] font-medium transition-colors',
+                            'rounded border px-1 py-0.5 text-xs font-medium transition-colors',
                             savedIdx.has(i)
                               ? 'cursor-default border-emerald-500/50 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300'
                               : savingIdx === i
@@ -1345,7 +1345,7 @@ function FillStatusCard({
                         </a>
                       </div>
                     </div>
-                    {saveErr[i] && <p className="text-[10px] text-destructive">{saveErr[i]}</p>}
+                    {saveErr[i] && <p className="text-xs text-destructive">{saveErr[i]}</p>}
                     <img
                       src={url}
                       alt={`${saveTitle} 镜头 ${i + 1}`}
@@ -1357,7 +1357,7 @@ function FillStatusCard({
             </>
           ) : (
             <div className="space-y-0.5">
-              <div className="flex items-center justify-between text-[10px] text-muted-foreground">
+              <div className="flex items-center justify-between text-xs text-muted-foreground">
                 <span>Seedream 出图</span>
                 <div className="flex items-center gap-2">
                   <button
@@ -1365,7 +1365,7 @@ function FillStatusCard({
                     onClick={() => handleSave(fill.aigc_image_url!, 0)}
                     disabled={savingIdx === 0 || savedIdx.has(0) || !projectId}
                     className={cn(
-                      'rounded border px-1.5 py-0.5 text-[10px] font-medium transition-colors',
+                      'rounded border px-1.5 py-0.5 text-xs font-medium transition-colors',
                       savedIdx.has(0)
                         ? 'cursor-default border-emerald-500/50 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300'
                         : savingIdx === 0
@@ -1387,7 +1387,7 @@ function FillStatusCard({
                   </a>
                 </div>
               </div>
-              {saveErr[0] && <p className="text-[10px] text-destructive">{saveErr[0]}</p>}
+              {saveErr[0] && <p className="text-xs text-destructive">{saveErr[0]}</p>}
               <img
                 src={fill.aigc_image_url}
                 alt={saveTitle}
@@ -1402,7 +1402,7 @@ function FillStatusCard({
         <div className="space-y-1.5">
           {fill.video_urls.map((url, i) => (
             <div key={`${url}-${i}`} className="space-y-0.5">
-              <div className="flex items-center justify-between text-[10px] text-muted-foreground">
+              <div className="flex items-center justify-between text-xs text-muted-foreground">
                 <span>第 {i + 1} 段</span>
                 <div className="flex items-center gap-2">
                   <button
@@ -1410,7 +1410,7 @@ function FillStatusCard({
                     onClick={() => handleSave(url, i)}
                     disabled={savingIdx === i || savedIdx.has(i) || !projectId}
                     className={cn(
-                      'rounded border px-1.5 py-0.5 text-[10px] font-medium transition-colors',
+                      'rounded border px-1.5 py-0.5 text-xs font-medium transition-colors',
                       savedIdx.has(i)
                         ? 'cursor-default border-emerald-500/50 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300'
                         : savingIdx === i
@@ -1443,7 +1443,7 @@ function FillStatusCard({
                 </div>
               </div>
               {saveErr[i] && (
-                <p className="text-[10px] text-destructive">{saveErr[i]}</p>
+                <p className="text-xs text-destructive">{saveErr[i]}</p>
               )}
               <video
                 src={url}
@@ -1458,7 +1458,7 @@ function FillStatusCard({
       )}
 
       {fill.chunk_task_ids && fill.chunk_task_ids.length > 0 && (
-        <details className="text-[10px] text-muted-foreground">
+        <details className="text-xs text-muted-foreground">
           <summary className="cursor-pointer">任务号列表（{fill.chunk_task_ids.length}）</summary>
           <ul className="mt-1 space-y-0.5 font-mono">
             {fill.chunk_task_ids.map((t) => (
@@ -1473,7 +1473,7 @@ function FillStatusCard({
           onClick={onRefresh}
           disabled={refreshing}
           className={cn(
-            'rounded-md border border-primary/60 bg-primary/10 px-2 py-1 text-[11px] font-medium text-primary transition-colors hover:bg-primary/20',
+            'rounded-md border border-primary/60 bg-primary/10 px-2 py-1 text-xs font-medium text-primary transition-colors hover:bg-primary/20',
             refreshing && 'cursor-not-allowed opacity-60',
           )}
         >

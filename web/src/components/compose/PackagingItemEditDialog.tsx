@@ -107,7 +107,7 @@ export function PackagingItemEditDialog({
       >
         <header className="mb-3 flex items-center justify-between">
           <h3 className="text-sm font-semibold">
-            编辑{kindLabel[item.kind]} · <span className="font-mono text-[11px] text-muted-foreground">{item.item_id}</span>
+            编辑{kindLabel[item.kind]} · <span className="font-mono text-xs text-muted-foreground">{item.item_id}</span>
           </h3>
           <button
             onClick={onClose}
@@ -120,7 +120,7 @@ export function PackagingItemEditDialog({
 
         <div className="space-y-3">
           <label className="block">
-            <span className="mb-1 block text-[11px] font-medium text-muted-foreground">文案</span>
+            <span className="mb-1 block text-xs font-medium text-muted-foreground">文案</span>
             <textarea
               value={text}
               onChange={(e) => setText(e.target.value)}
@@ -132,7 +132,7 @@ export function PackagingItemEditDialog({
 
           <div className="grid grid-cols-2 gap-3">
             <label className="block">
-              <span className="mb-1 block text-[11px] font-medium text-muted-foreground">开始（秒）</span>
+              <span className="mb-1 block text-xs font-medium text-muted-foreground">开始（秒）</span>
               <input
                 type="number"
                 step={0.1}
@@ -143,7 +143,7 @@ export function PackagingItemEditDialog({
               />
             </label>
             <label className="block">
-              <span className="mb-1 block text-[11px] font-medium text-muted-foreground">结束（秒）</span>
+              <span className="mb-1 block text-xs font-medium text-muted-foreground">结束（秒）</span>
               <input
                 type="number"
                 step={0.1}
@@ -157,7 +157,7 @@ export function PackagingItemEditDialog({
 
           <div className="grid grid-cols-2 gap-3">
             <label className="block">
-              <span className="mb-1 block text-[11px] font-medium text-muted-foreground">主色</span>
+              <span className="mb-1 block text-xs font-medium text-muted-foreground">主色</span>
               <div className="flex items-center gap-2">
                 <input
                   type="color"
@@ -174,7 +174,7 @@ export function PackagingItemEditDialog({
               </div>
             </label>
             <label className="block">
-              <span className="mb-1 block text-[11px] font-medium text-muted-foreground">位置</span>
+              <span className="mb-1 block text-xs font-medium text-muted-foreground">位置</span>
               <select
                 value={position}
                 onChange={(e) => setPosition(e.target.value)}
@@ -193,7 +193,7 @@ export function PackagingItemEditDialog({
         </div>
 
         {error && (
-          <p className="mt-3 rounded-md border border-destructive/40 bg-destructive/5 px-2 py-1 text-[11px] text-destructive">
+          <p className="mt-3 rounded-md border border-destructive/40 bg-destructive/5 px-2 py-1 text-xs text-destructive">
             {error}
           </p>
         )}

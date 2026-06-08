@@ -161,7 +161,7 @@ export function AssetLibraryView() {
             >
               {KIND_LABEL[k]}
               {kind === k && counts > 0 && (
-                <span className="ml-1 text-[10px] opacity-70">{counts}</span>
+                <span className="ml-1 text-xs opacity-70">{counts}</span>
               )}
             </button>
           ))}
@@ -301,7 +301,7 @@ function AssetCard({
       <div className="flex items-center gap-3 px-3 py-1.5 text-sm hover:bg-muted/30">
         <span
           className={cn(
-            'shrink-0 rounded-full border px-1.5 py-0.5 text-[10px] font-medium',
+            'shrink-0 rounded-full border px-1.5 py-0.5 text-xs font-medium',
             STATUS_BADGE[asset.status],
           )}
         >
@@ -346,7 +346,7 @@ function AssetCard({
             <span className="flex-1 truncate font-medium" title={asset.title || asset.file_name}>
               {asset.title || asset.file_name}
             </span>
-            <span className="shrink-0 text-[11px] text-muted-foreground">
+            <span className="shrink-0 text-xs text-muted-foreground">
               {formatBytes(asset.file_size)}
               {dur && ` · ${dur}`}
               {asset.use_count > 0 && ` · 已用 ${asset.use_count}`}
@@ -362,14 +362,14 @@ function AssetCard({
             <button
               type="button"
               onClick={onEdit}
-              className="shrink-0 rounded-md px-2 py-1 text-[11px] text-muted-foreground hover:bg-secondary hover:text-foreground"
+              className="shrink-0 rounded-md px-2 py-1 text-xs text-muted-foreground hover:bg-secondary hover:text-foreground"
             >
               编辑
             </button>
             <button
               type="button"
               onClick={onDelete}
-              className="shrink-0 rounded-md px-2 py-1 text-[11px] text-destructive hover:bg-destructive/10"
+              className="shrink-0 rounded-md px-2 py-1 text-xs text-destructive hover:bg-destructive/10"
             >
               删除
             </button>
@@ -397,7 +397,7 @@ function AssetCard({
         )}
         <div
           className={cn(
-            'absolute right-2 top-2 rounded-full border px-2 py-0.5 text-[10px] font-medium',
+            'absolute right-2 top-2 rounded-full border px-2 py-0.5 text-xs font-medium',
             STATUS_BADGE[asset.status],
           )}
         >
@@ -447,7 +447,7 @@ function AssetCard({
             <h4 className="line-clamp-1 text-sm font-medium" title={asset.title || asset.file_name}>
               {asset.title || asset.file_name}
             </h4>
-            <div className="flex flex-wrap items-center gap-2 text-[11px] text-muted-foreground">
+            <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
               <span>{formatBytes(asset.file_size)}</span>
               {dur && <span>· {dur}</span>}
               {asset.use_count > 0 && <span>· 已用 {asset.use_count} 次</span>}
@@ -457,7 +457,7 @@ function AssetCard({
                 {asset.tags.map((t) => (
                   <span
                     key={t}
-                    className="rounded bg-secondary px-1.5 py-0.5 text-[10px] text-muted-foreground"
+                    className="rounded bg-secondary px-1.5 py-0.5 text-xs text-muted-foreground"
                   >
                     {t}
                   </span>
@@ -465,7 +465,7 @@ function AssetCard({
               </div>
             )}
             {asset.error && (
-              <p className="text-[11px] text-destructive" title={asset.error}>
+              <p className="text-xs text-destructive" title={asset.error}>
                 分析失败：{asset.error.slice(0, 60)}
               </p>
             )}
@@ -474,14 +474,14 @@ function AssetCard({
                 <button
                   type="button"
                   onClick={onEdit}
-                  className="rounded-md px-2 py-1 text-[11px] text-muted-foreground hover:bg-secondary hover:text-foreground"
+                  className="rounded-md px-2 py-1 text-xs text-muted-foreground hover:bg-secondary hover:text-foreground"
                 >
                   编辑
                 </button>
                 <button
                   type="button"
                   onClick={onDelete}
-                  className="rounded-md px-2 py-1 text-[11px] text-destructive hover:bg-destructive/10"
+                  className="rounded-md px-2 py-1 text-xs text-destructive hover:bg-destructive/10"
                 >
                   删除
                 </button>

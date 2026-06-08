@@ -107,7 +107,7 @@ function ScenePanel({
 
   if (!scene) {
     return (
-      <div className="rounded-md border border-dashed border-border bg-background/30 p-4 text-center text-[11px] text-muted-foreground">
+      <div className="rounded-md border border-dashed border-border bg-background/30 p-4 text-center text-xs text-muted-foreground">
         点四轨中任意片段（镜头 / 字幕 / 口播 / 包装），在这里编辑文字；
         要批量改或用一句话改请按 <kbd className="rounded bg-secondary px-1">⌘K</kbd> 找对话编辑小助手。
       </div>
@@ -146,13 +146,13 @@ function ScenePanel({
             {SECTION_LABEL[scene.section]} · {scene.scene_id}
           </span>
         </h3>
-        {dirty && <span className="text-[10px] text-amber-500">未保存</span>}
+        {dirty && <span className="text-xs text-amber-500">未保存</span>}
       </div>
 
       {section ? (
         <>
           <label className="block space-y-0.5">
-            <span className="text-[10px] text-muted-foreground">段主题</span>
+            <span className="text-xs text-muted-foreground">段主题</span>
             <input
               value={theme}
               maxLength={80}
@@ -163,7 +163,7 @@ function ScenePanel({
             />
           </label>
           <label className="block space-y-0.5">
-            <span className="text-[10px] text-muted-foreground">段落描述</span>
+            <span className="text-xs text-muted-foreground">段落描述</span>
             <textarea
               value={content}
               maxLength={400}
@@ -176,22 +176,22 @@ function ScenePanel({
           </label>
         </>
       ) : (
-        <p className="rounded bg-muted/40 px-2 py-1 text-[10px] text-muted-foreground">
+        <p className="rounded bg-muted/40 px-2 py-1 text-xs text-muted-foreground">
           该段无关联 AdaptedSection（老数据），无法在此直改；请按 ⌘K 找对话编辑小助手。
         </p>
       )}
 
-      {err && <p className="text-[10px] text-destructive">{err}</p>}
+      {err && <p className="text-xs text-destructive">{err}</p>}
 
       {/* stage-24 / stage-26：分镜清单 + 单镜换源（PR-N.5）。
           每条 shot 旁挂 match_quality chip + 「换源」按钮——good 段也可换源（用户可能要主动替素材）。 */}
       {section?.shots && section.shots.length > 0 && (
         <div className="rounded-md border border-violet-500/30 bg-violet-500/5 px-2 py-1.5">
           <div className="mb-1 flex items-center justify-between">
-            <span className="text-[10px] font-semibold text-violet-400">
+            <span className="text-xs font-semibold text-violet-400">
               分镜清单 · 本段拆为 {section.shots.length} 镜
             </span>
-            <span className="font-mono text-[9px] text-muted-foreground">
+            <span className="font-mono text-xs text-muted-foreground">
               共 {section.shots.reduce((a, sh) => a + sh.duration_seconds, 0).toFixed(1)}s
             </span>
           </div>
@@ -214,7 +214,7 @@ function ScenePanel({
               )
             })}
           </ul>
-          <p className="mt-1 text-[9px] text-muted-foreground">
+          <p className="mt-1 text-xs text-muted-foreground">
             想改具体某镜的画面/口播/时长？按 ⌘K 告诉对话编辑小助手「
             <code className="rounded bg-secondary/60 px-1">{section.section_id}</code>第 N 镜」。
           </p>
@@ -247,7 +247,7 @@ function ScenePanel({
         )}
       </div>
 
-      <p className="border-t border-border pt-2 text-[10px] text-muted-foreground">
+      <p className="border-t border-border pt-2 text-xs text-muted-foreground">
         想改字幕文案 / BGM / 调性，或用一句话批量改（"删除 sec-2"、"BGM 推迟 2 秒"）？按{' '}
         <kbd className="rounded bg-secondary px-1">⌘K</kbd> 找对话编辑小助手。
       </p>
@@ -265,20 +265,20 @@ function PackagingPanel({ item }: { item: PackagingItem }) {
             {PKG_KIND_LABEL[item.kind]} · {item.item_id}
           </span>
         </h3>
-        <span className="font-mono text-[10px] text-muted-foreground">
+        <span className="font-mono text-xs text-muted-foreground">
           {item.start.toFixed(1)}–{item.end.toFixed(1)}s
         </span>
       </div>
 
       {item.text && (
-        <div className="rounded bg-muted/40 px-2 py-1.5 text-[11px]">
-          <div className="mb-0.5 text-[10px] text-muted-foreground">当前文案</div>
+        <div className="rounded bg-muted/40 px-2 py-1.5 text-xs">
+          <div className="mb-0.5 text-xs text-muted-foreground">当前文案</div>
           <div className="whitespace-pre-wrap break-words">{item.text}</div>
         </div>
       )}
 
       {Object.keys(item.style).length > 0 && (
-        <details className="text-[10px]">
+        <details className="text-xs">
           <summary className="cursor-pointer text-muted-foreground">样式详情</summary>
           <pre className="mt-1 overflow-x-auto rounded bg-background/60 px-2 py-1 font-mono">
             {JSON.stringify(item.style, null, 2)}
@@ -286,7 +286,7 @@ function PackagingPanel({ item }: { item: PackagingItem }) {
         </details>
       )}
 
-      <p className="border-t border-border pt-2 text-[10px] text-muted-foreground">
+      <p className="border-t border-border pt-2 text-xs text-muted-foreground">
         要改文字 / BGM 偏移 / 调性等，按{' '}
         <kbd className="rounded bg-secondary px-1">⌘K</kbd> 找对话编辑小助手——
         告诉它 item_id「{item.item_id}」就行。
@@ -351,19 +351,19 @@ function ShotRow({
   ]
 
   return (
-    <li className="rounded bg-background/40 px-1.5 py-1 text-[10px]">
+    <li className="rounded bg-background/40 px-1.5 py-1 text-xs">
       <div className="flex items-start gap-2">
-        <span className="mt-0.5 inline-flex h-3.5 w-5 shrink-0 items-center justify-center rounded bg-violet-500/30 font-mono text-[9px] font-bold text-violet-100">
+        <span className="mt-0.5 inline-flex h-3.5 w-5 shrink-0 items-center justify-center rounded bg-violet-500/30 font-mono text-xs font-bold text-violet-100">
           #{shot.order + 1}
         </span>
         <div className="flex-1 space-y-0.5">
           <div className="flex flex-wrap items-center gap-1.5">
             <span className="font-semibold text-foreground">{shot.subject || '（无主体）'}</span>
-            <span className="font-mono text-[9px] text-muted-foreground">
+            <span className="font-mono text-xs text-muted-foreground">
               {shot.duration_seconds.toFixed(1)}s
             </span>
             <span
-              className={cn('rounded px-1 py-0.5 text-[9px] font-medium', QUALITY_TONE[quality])}
+              className={cn('rounded px-1 py-0.5 text-xs font-medium', QUALITY_TONE[quality])}
               title={
                 shot.match_score != null
                   ? `匹配分 ${shot.match_score.toFixed(2)} · ${
@@ -379,12 +379,12 @@ function ShotRow({
               {QUALITY_LABEL[quality]}
             </span>
             {scene?.source && (
-              <span className="rounded bg-secondary/60 px-1 font-mono text-[9px] text-muted-foreground">
+              <span className="rounded bg-secondary/60 px-1 font-mono text-xs text-muted-foreground">
                 {scene.source}
               </span>
             )}
             {needsFill && (
-              <span className="rounded bg-amber-500/30 px-1 text-[9px] font-medium text-amber-700 dark:text-amber-300">
+              <span className="rounded bg-amber-500/30 px-1 text-xs font-medium text-amber-700 dark:text-amber-300">
                 待修补
               </span>
             )}
@@ -393,11 +393,11 @@ function ShotRow({
           {shot.narration && <div className="text-muted-foreground">口播：{shot.narration}</div>}
           {shot.targets && shot.targets.length > 0 && (
             <div className="flex flex-wrap items-center gap-1 pt-0.5">
-              <span className="text-[9px] text-muted-foreground">目标：</span>
+              <span className="text-xs text-muted-foreground">目标：</span>
               {shot.targets.map((t, i) => (
                 <span
                   key={i}
-                  className="rounded bg-violet-500/15 px-1 py-0.5 text-[9px] text-violet-700 dark:text-violet-300"
+                  className="rounded bg-violet-500/15 px-1 py-0.5 text-xs text-violet-700 dark:text-violet-300"
                   title={t.visual_hint || undefined}
                 >
                   <span className="font-mono opacity-60">{t.kind}</span> {t.name}
@@ -413,7 +413,7 @@ function ShotRow({
                   type="button"
                   onClick={() => setDialogMode(b.mode)}
                   className={cn(
-                    'rounded border px-1.5 py-0.5 text-[10px] font-medium transition-colors',
+                    'rounded border px-1.5 py-0.5 text-xs font-medium transition-colors',
                     b.tone,
                   )}
                 >
