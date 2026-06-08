@@ -19,6 +19,7 @@ import asyncio
 import json
 import logging
 import re
+import shutil
 import uuid
 from pathlib import Path
 from typing import Any, Optional
@@ -26,7 +27,15 @@ from typing import Any, Optional
 from fastapi import APIRouter, File, Form, HTTPException, UploadFile
 
 from ..config import get_settings
-from ..schemas import Material, MaterialUploadResponse, SectionRole, VideoType, all_role_names
+from ..schemas import (
+    Material,
+    MaterialCloneFromSystemRequest,
+    MaterialCloneFromSystemResponse,
+    MaterialUploadResponse,
+    SectionRole,
+    VideoType,
+    all_role_names,
+)
 from ..services.llm_client import LLMError, get_llm_client
 from ..services.materials import material_store
 from ..services.materials.preprocess import dispatch as dispatch_preprocess
@@ -34,6 +43,10 @@ from ..services.video.ffmpeg import FFmpegError, extract_frame, ffmpeg_available
 
 log = logging.getLogger("seecript.material")
 router = APIRouter()
+
+#: 系统素材库的特殊 project_id。运维通过 `POST /material/upload?project_id=__system__`
+#: 往里塞共享素材；任何项目都能 list / clone-from-system。
+SYSTEM_PROJECT_ID = "__system__"
 
 # Stage-16：允许 5 模式下任何静态 role 名（step_N/item_N 走正则兜底）。
 # 上传时不知道用户最终用哪个 pattern，所以只过滤"明显非法"的字符串。
@@ -306,3 +319,107 @@ async def list_materials(project_id: str) -> list[Material]:
     if not sid:
         raise HTTPException(status_code=400, detail="project_id 必填")
     return material_store.list(sid)
+
+
+def _uploads_root() -> Path:
+    """复用 MaterialUploadService 的 uploads 根目录路由。"""
+    settings = get_settings()
+    root = settings.log_dir.parent / "var" / "uploads"
+    root.mkdir(parents=True, exist_ok=True)
+    return root
+
+
+def _clone_one_file(src_url: str, src_root: Path, dst_dir: Path, new_id: str, suffix: str) -> Optional[str]:
+    """src_url 形如 /uploads/__system__/<id>_<file.mp4>；按文件名找回源文件再复制到目标项目。
+
+    返回新文件的 file_url（同 /uploads/<dst_project>/<new_id>_xxx）；找不到源时返 None。
+    """
+    if not src_url:
+        return None
+    name = Path(src_url).name
+    src_path = src_root / name
+    if not src_path.exists():
+        log.warning("[material/clone] missing source file: %s", src_path)
+        return None
+    dst_name = f"{new_id}_{suffix}" if suffix else f"{new_id}_{name}"
+    dst_path = dst_dir / dst_name
+    try:
+        shutil.copy2(src_path, dst_path)
+    except Exception as exc:  # noqa: BLE001
+        log.warning("[material/clone] copy %s → %s failed: %s", src_path, dst_path, exc)
+        return None
+    return f"/uploads/{dst_dir.name}/{dst_path.name}"
+
+
+@router.post("/material/clone-from-system", response_model=MaterialCloneFromSystemResponse)
+async def clone_from_system(req: MaterialCloneFromSystemRequest) -> MaterialCloneFromSystemResponse:
+    """从系统素材库克隆若干素材到目标项目。
+
+    流程：
+    1. 校验目标 project_id，源 project_id 固定 __system__
+    2. 对每个 source_material_id：material_store.get → 复制原文件 + 缩略图到目标 uploads
+    3. 铸新 material_id，复制 tags / recommended_section / shots / preprocess_status 等元数据
+    4. 一并 put 到目标 store；视频类型已 ready 的不再触发 preprocess（已经预处理过）
+    """
+    target_project = req.project_id.strip()
+    if not target_project or target_project == SYSTEM_PROJECT_ID:
+        raise HTTPException(status_code=400, detail="目标 project_id 非法（不能为空或 __system__）")
+    if not req.source_material_ids:
+        raise HTTPException(status_code=400, detail="source_material_ids 必填且非空")
+
+    uploads_root = _uploads_root()
+    src_dir = uploads_root / SYSTEM_PROJECT_ID
+    dst_dir = uploads_root / target_project
+    dst_dir.mkdir(parents=True, exist_ok=True)
+
+    base_order = len(material_store.list(target_project))
+    created: list[Material] = []
+    skipped: list[str] = []
+
+    for offset, src_id in enumerate(req.source_material_ids):
+        src = material_store.get(SYSTEM_PROJECT_ID, src_id)
+        if src is None:
+            skipped.append(src_id)
+            continue
+        new_id = uuid.uuid4().hex[:12]
+        new_file_url = _clone_one_file(
+            src.file_url or "", src_dir, dst_dir, new_id, src.filename,
+        )
+        if not new_file_url:
+            skipped.append(src_id)
+            continue
+        # 缩略图（视频和 image 都可能有；image 的 thumbnail_url == file_url，不重复复制）
+        new_thumb_url: Optional[str] = None
+        if src.thumbnail_url:
+            if src.thumbnail_url == src.file_url:
+                new_thumb_url = new_file_url
+            else:
+                # 视频缩略图通常以 _thumb.jpg 结尾；直接按文件名复制
+                thumb_name = Path(src.thumbnail_url).name
+                thumb_src = src_dir / thumb_name
+                if thumb_src.exists():
+                    thumb_dst = dst_dir / f"{new_id}_thumb.jpg"
+                    try:
+                        shutil.copy2(thumb_src, thumb_dst)
+                        new_thumb_url = f"/uploads/{target_project}/{thumb_dst.name}"
+                    except Exception as exc:  # noqa: BLE001
+                        log.warning("[material/clone] thumb copy failed: %s", exc)
+
+        cloned = src.model_copy(update={
+            "material_id": new_id,
+            "file_url": new_file_url,
+            "thumbnail_url": new_thumb_url,
+            "sort_order": base_order + offset,
+        })
+        created.append(cloned)
+
+    if created:
+        material_store.put(target_project, created)
+        log.info("[material/clone] %s ← __system__ cloned=%d skipped=%d",
+                 target_project, len(created), len(skipped))
+
+    return MaterialCloneFromSystemResponse(
+        project_id=target_project,
+        materials=created,
+        skipped=skipped,
+    )

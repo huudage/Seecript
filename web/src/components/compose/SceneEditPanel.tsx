@@ -1,9 +1,10 @@
 import { useState } from 'react'
 
-import { patchPlanScene, swapSceneSource, type SceneSwapSourceRequest } from '@/api/plan'
+import { SwapSourceDialog, type SwapSourceMode } from './SwapSourceDialog'
+import { patchPlanScene } from '@/api/plan'
 import { SECTION_LABEL } from '@/lib/sections'
 import { cn } from '@/lib/utils'
-import type { PackagingItem, Plan, Scene, ShotPlan } from '@/types/schemas'
+import type { Material, PackagingItem, Plan, Scene, ShotPlan } from '@/types/schemas'
 
 const PKG_KIND_LABEL: Record<PackagingItem['kind'], string> = {
   subtitle: '字幕',
@@ -45,6 +46,8 @@ interface Props {
   selectedSceneId: string | null
   /** 当前包装轨选中的 PackagingItem（互斥于 scene）。 */
   selectedPackagingItem?: PackagingItem | null
+  /** 项目素材库（用于换源弹窗 user_material 模式）。 */
+  materials?: Material[]
   /** 保存成功后把最新 Plan 回灌父级 store。 */
   onSaved: (plan: Plan) => void
   /** 禁用（父级 busy 时）。 */
@@ -62,6 +65,7 @@ export function SceneEditPanel({
   plan,
   selectedSceneId,
   selectedPackagingItem = null,
+  materials = [],
   onSaved,
   disabled = false,
 }: Props) {
@@ -72,6 +76,7 @@ export function SceneEditPanel({
     <ScenePanel
       plan={plan}
       selectedSceneId={selectedSceneId}
+      materials={materials}
       onSaved={onSaved}
       disabled={disabled}
     />
@@ -81,11 +86,13 @@ export function SceneEditPanel({
 function ScenePanel({
   plan,
   selectedSceneId,
+  materials,
   onSaved,
   disabled,
 }: {
   plan: Plan
   selectedSceneId: string | null
+  materials: Material[]
   onSaved: (plan: Plan) => void
   disabled: boolean
 }) {
@@ -200,6 +207,7 @@ function ScenePanel({
                   shot={sh}
                   scene={sceneOfShot ?? null}
                   planId={plan.plan_id}
+                  materials={materials}
                   onSaved={onSaved}
                   disabled={busy}
                 />
@@ -288,60 +296,59 @@ function PackagingPanel({ item }: { item: PackagingItem }) {
 }
 
 /**
- * stage-26 PR-N.5：单镜行 + 换源面板。
+ * stage-26 PR-N.5 v2：单镜行 + 4 按钮换源（弹窗化）。
  *
- * 三档质量 chip + 「换源」按钮，点开展开三个换源动作：
- * - 字卡占位：直接装 TextCardSpec（瞬时，无外部调用）
- * - AI 生图：Seedream 同步出图（~6-15s）
- * - AI 视频：Seedance 同步轮询（最长 ~180s，超时返 504）
+ * 不再 inline 展开换源面板（可读性差）；改为 4 个按钮：
+ * 真实素材 / 字卡占位 / AI 生图 / AI 视频，每个点击都打开 SwapSourceDialog 落到对应 tab。
  *
- * 不提供 user_material 选择器（需要项目素材列表跨组件传参）——
- * 想换素材请用 ⌘K 对话编辑或在 step1 重新上传素材后重跑分析。
+ * targets（stage-25）显示在主体行下方——一镜可能多目标（人/物/字），
+ * 让用户看到 LLM 拆分意图，便于判断要不要换源。
  */
 function ShotRow({
   shot,
   scene,
   planId,
+  materials,
   onSaved,
   disabled,
 }: {
   shot: ShotPlan
   scene: Scene | null
   planId: string
+  materials: Material[]
   onSaved: (plan: Plan) => void
   disabled: boolean
 }) {
-  const [open, setOpen] = useState(false)
-  const [busy, setBusy] = useState(false)
-  const [err, setErr] = useState<string | null>(null)
-  const [hintText, setHintText] = useState('')
-  const [mainText, setMainText] = useState(shot.subject ?? '')
-  const [subText, setSubText] = useState('')
+  const [dialogMode, setDialogMode] = useState<SwapSourceMode | null>(null)
 
   const quality: 'good' | 'weak' | 'missing' =
     (shot.match_quality as 'good' | 'weak' | 'missing' | undefined) ?? 'good'
   const sceneId = scene?.scene_id
   const needsFill = scene?.needs_fill === true
-  const canSwap = !!sceneId && !disabled && !busy
+  const canSwap = !!sceneId && !disabled
 
-  const promptFallback = [shot.subject, shot.visual, shot.narration]
-    .filter((s) => s && s.trim())
-    .join('；')
-
-  const callSwap = async (body: SceneSwapSourceRequest) => {
-    if (!sceneId) return
-    setBusy(true)
-    setErr(null)
-    try {
-      const fresh = await swapSceneSource(planId, sceneId, body)
-      onSaved(fresh)
-      setOpen(false)
-    } catch (e) {
-      setErr(e instanceof Error ? e.message : '换源失败')
-    } finally {
-      setBusy(false)
-    }
-  }
+  const SWAP_BUTTONS: { mode: SwapSourceMode; label: string; tone: string }[] = [
+    {
+      mode: 'user_material',
+      label: '🎬 真实素材',
+      tone: 'border-sky-500/60 bg-sky-500/10 text-sky-700 hover:bg-sky-500/20 dark:text-sky-300',
+    },
+    {
+      mode: 'text_card',
+      label: '🅰 字卡占位',
+      tone: 'border-slate-500/60 bg-slate-500/10 text-slate-700 hover:bg-slate-500/20 dark:text-slate-300',
+    },
+    {
+      mode: 'aigc_image',
+      label: '🖼 AI 生图',
+      tone: 'border-emerald-500/60 bg-emerald-500/10 text-emerald-700 hover:bg-emerald-500/20 dark:text-emerald-300',
+    },
+    {
+      mode: 'aigc_t2v',
+      label: '🎞 AI 视频',
+      tone: 'border-primary/60 bg-primary/10 text-primary hover:bg-primary/20',
+    },
+  ]
 
   return (
     <li className="rounded bg-background/40 px-1.5 py-1 text-[10px]">
@@ -381,105 +388,54 @@ function ShotRow({
                 待修补
               </span>
             )}
-            {canSwap && (
-              <button
-                type="button"
-                onClick={() => {
-                  setOpen((v) => !v)
-                  setErr(null)
-                }}
-                className="ml-auto rounded border border-border bg-card px-1.5 py-0.5 text-[9px] hover:bg-secondary"
-              >
-                {open ? '收起' : '换源…'}
-              </button>
-            )}
           </div>
           {shot.visual && <div className="text-muted-foreground">画面：{shot.visual}</div>}
           {shot.narration && <div className="text-muted-foreground">口播：{shot.narration}</div>}
+          {shot.targets && shot.targets.length > 0 && (
+            <div className="flex flex-wrap items-center gap-1 pt-0.5">
+              <span className="text-[9px] text-muted-foreground">目标：</span>
+              {shot.targets.map((t, i) => (
+                <span
+                  key={i}
+                  className="rounded bg-violet-500/15 px-1 py-0.5 text-[9px] text-violet-700 dark:text-violet-300"
+                  title={t.visual_hint || undefined}
+                >
+                  <span className="font-mono opacity-60">{t.kind}</span> {t.name}
+                </span>
+              ))}
+            </div>
+          )}
+          {canSwap && (
+            <div className="flex flex-wrap items-center gap-1 pt-1">
+              {SWAP_BUTTONS.map((b) => (
+                <button
+                  key={b.mode}
+                  type="button"
+                  onClick={() => setDialogMode(b.mode)}
+                  className={cn(
+                    'rounded border px-1.5 py-0.5 text-[10px] font-medium transition-colors',
+                    b.tone,
+                  )}
+                >
+                  {b.label}
+                </button>
+              ))}
+            </div>
+          )}
         </div>
       </div>
 
-      {open && sceneId && (
-        <div className="mt-1.5 space-y-1.5 rounded border border-border bg-card/60 p-2">
-          <div className="text-[10px] font-semibold text-muted-foreground">
-            换素材来源 · scene <span className="font-mono">{sceneId}</span>
-          </div>
-          {/* 字卡占位 */}
-          <div className="grid gap-1 rounded border border-border/60 bg-background/50 p-1.5">
-            <div className="flex items-center justify-between">
-              <span className="text-[10px] font-semibold">字卡占位（瞬时）</span>
-              <button
-                type="button"
-                disabled={busy || !mainText.trim()}
-                title={
-                  !mainText.trim()
-                    ? '请先填主文案——空文案会落『（待补全）』占位字到画面'
-                    : '应用字卡占位'
-                }
-                onClick={() => void callSwap({ source: 'text_card', main_text: mainText, sub_text: subText })}
-                className={cn(
-                  'rounded px-2 py-0.5 text-[10px]',
-                  busy || !mainText.trim()
-                    ? 'cursor-not-allowed bg-secondary text-muted-foreground'
-                    : 'bg-primary text-primary-foreground',
-                )}
-              >
-                应用
-              </button>
-            </div>
-            <input
-              value={mainText}
-              maxLength={24}
-              disabled={busy}
-              onChange={(e) => setMainText(e.target.value)}
-              placeholder={shot.subject || '主文案（≤24 字）'}
-              className="w-full rounded border border-border bg-background px-1.5 py-0.5 text-[10px]"
-            />
-            <input
-              value={subText}
-              maxLength={40}
-              disabled={busy}
-              onChange={(e) => setSubText(e.target.value)}
-              placeholder="副文案（可空）"
-              className="w-full rounded border border-border bg-background px-1.5 py-0.5 text-[10px]"
-            />
-          </div>
-          {/* AI 生图 / 视频 共用一个 prompt_hint */}
-          <div className="grid gap-1 rounded border border-border/60 bg-background/50 p-1.5">
-            <span className="text-[10px] font-semibold">AI 生成（生图 ~10s / 视频 ~3min）</span>
-            <textarea
-              value={hintText}
-              rows={2}
-              maxLength={200}
-              disabled={busy}
-              onChange={(e) => setHintText(e.target.value)}
-              placeholder={`额外提示（可空，默认用：${promptFallback || '本镜主体+画面+口播'}）`}
-              className="w-full resize-y rounded border border-border bg-background px-1.5 py-0.5 text-[10px]"
-            />
-            <div className="flex gap-1">
-              <button
-                type="button"
-                disabled={busy}
-                onClick={() => void callSwap({ source: 'aigc_image', prompt_hint: hintText || undefined })}
-                className="flex-1 rounded border border-emerald-500/60 bg-emerald-500/10 px-2 py-0.5 text-[10px] text-emerald-700 hover:bg-emerald-500/20 disabled:opacity-50 dark:text-emerald-300"
-              >
-                {busy ? '生成中…' : '出 AI 图'}
-              </button>
-              <button
-                type="button"
-                disabled={busy}
-                onClick={() => void callSwap({ source: 'aigc_t2v', prompt_hint: hintText || undefined })}
-                className="flex-1 rounded border border-primary/60 bg-primary/10 px-2 py-0.5 text-[10px] text-primary hover:bg-primary/20 disabled:opacity-50"
-              >
-                {busy ? '生成中…' : '出 AI 视频'}
-              </button>
-            </div>
-          </div>
-          {err && <p className="text-[10px] text-destructive">{err}</p>}
-          <p className="text-[9px] text-muted-foreground">
-            AI 视频同步轮询最长 180s；卡住可关闭后用 ⌘K 让小助手帮忙换源。
-          </p>
-        </div>
+      {dialogMode && sceneId && (
+        <SwapSourceDialog
+          open={true}
+          initialMode={dialogMode}
+          shot={shot}
+          scene={scene}
+          planId={planId}
+          materials={materials}
+          onClose={() => setDialogMode(null)}
+          onSaved={onSaved}
+        />
       )}
     </li>
   )

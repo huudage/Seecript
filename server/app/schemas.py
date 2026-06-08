@@ -716,6 +716,26 @@ class MaterialUploadResponse(BaseModel):
     materials: list[Material]
 
 
+class MaterialCloneFromSystemRequest(BaseModel):
+    """从系统素材库克隆若干素材到当前项目素材库。
+
+    后端：每个 source_material_id 都从 project_id='__system__' 取，
+    复制底层文件 + 缩略图到目标 project 的 uploads 目录，铸新 material_id 落入目标 store。
+    返回新建的 Material 列表（前端 appendMaterials 即可）。
+    """
+    project_id: str = Field(..., min_length=1, description="目标项目 id（克隆终点）")
+    source_material_ids: list[str] = Field(
+        ..., min_length=1, max_length=20,
+        description="要克隆的系统素材 id 列表；单次最多 20 个，超出请分批",
+    )
+
+
+class MaterialCloneFromSystemResponse(BaseModel):
+    project_id: str
+    materials: list[Material] = Field(default_factory=list, description="克隆产生的新素材（带新 material_id）")
+    skipped: list[str] = Field(default_factory=list, description="未找到的源素材 id（不阻断）")
+
+
 # =========================================================================
 # Module 4 — 缺口识别与补全 (Gap)
 # =========================================================================

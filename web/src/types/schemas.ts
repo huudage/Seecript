@@ -352,6 +352,19 @@ export interface MaterialUploadResponse {
   materials: Material[]
 }
 
+/** 从系统素材库克隆到当前项目 —— 与 server schemas.py::MaterialCloneFromSystemRequest 镜像。 */
+export interface MaterialCloneFromSystemRequest {
+  project_id: string
+  source_material_ids: MaterialId[]
+}
+
+export interface MaterialCloneFromSystemResponse {
+  project_id: string
+  materials: Material[]
+  /** 未找到的源 material_id（不阻断），前端可在结果摘要里 hover 提示。 */
+  skipped: MaterialId[]
+}
+
 // =========================================================================
 // Module 4 — Gap
 // =========================================================================

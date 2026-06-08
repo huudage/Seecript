@@ -25,6 +25,7 @@ import { ReferencePicker } from '@/components/compose/ReferencePicker'
 import { SceneEditPanel } from '@/components/compose/SceneEditPanel'
 import { StructureMapPanel } from '@/components/compose/StructureMapPanel'
 import { SubtitleEditPopover } from '@/components/compose/SubtitleEditPopover'
+import { SystemLibraryPicker } from '@/components/compose/SystemLibraryPicker'
 import { TransitionStylePicker } from '@/components/compose/TransitionStylePicker'
 import { VersionMenu } from '@/components/compose/VersionMenu'
 import { PageShell } from '@/components/layout/PageShell'
@@ -285,6 +286,9 @@ export default function ComposePage() {
   // 另一个仍在跑用户即可进 step3。改为 Set<key>：两个按钮各持一个 key，任意非空都视为忙。
   const [batchBusyKeys, setBatchBusyKeys] = useState<Set<string>>(() => new Set())
   const batchFillBusy = batchBusyKeys.size > 0
+
+  // 系统素材库选择器开关。
+  const [systemLibraryOpen, setSystemLibraryOpen] = useState(false)
   const setBatchBusyFor = useCallback(
     (key: string) => (busy: boolean) => {
       setBatchBusyKeys((prev) => {
@@ -1450,7 +1454,18 @@ export default function ComposePage() {
             <div className="space-y-2">
               <div className="flex items-center justify-between">
                 <label className="text-xs font-semibold">素材库（拖拽可排序）</label>
-                <span className="text-[10px] text-muted-foreground">{sortedMaterials.length} 条</span>
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setSystemLibraryOpen(true)}
+                    disabled={!currentProjectId}
+                    className="rounded border border-border bg-background px-2 py-0.5 text-[10px] hover:bg-secondary disabled:opacity-50"
+                    title="从系统素材库选择补充"
+                  >
+                    + 从系统素材库
+                  </button>
+                  <span className="text-[10px] text-muted-foreground">{sortedMaterials.length} 条</span>
+                </div>
               </div>
               <MaterialGrid
                 materials={sortedMaterials}
@@ -1755,6 +1770,7 @@ export default function ComposePage() {
               plan={plan}
               selectedSceneId={effectiveSelectedSceneId}
               selectedPackagingItem={selectedPackagingItem}
+              materials={sortedMaterials}
               onSaved={setPlanAndPush}
               disabled={analyzing || anyGapBusy || trackBusy}
             />
@@ -2112,6 +2128,14 @@ export default function ComposePage() {
       )}
 
       {/* 样例截图弹窗已废弃：选中内容轨改为直接切换右侧编辑区，不再弹窗。 */}
+
+      {/* 系统素材库选择器 —— step1 素材库标题栏「+ 从系统素材库」按钮触发 */}
+      <SystemLibraryPicker
+        open={systemLibraryOpen}
+        projectId={currentProjectId}
+        onClose={() => setSystemLibraryOpen(false)}
+        onCloned={(materials) => appendMaterials(materials)}
+      />
 
       {/* BGM 选择 / 上传弹窗 */}
       {plan && currentProjectId && (
