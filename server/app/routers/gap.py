@@ -557,6 +557,7 @@ async def aigc_image_spec(req: AigcImageSpecRequest) -> AigcImageSpecResponse:
         gap, plan, section,
         user_hint=req.hint or "",
         default_ratio=default_ratio,
+        subjects_override=list(req.subjects or []),
     )
     return AigcImageSpecResponse(gap_id=gap.gap_id, specs=specs, thinking=thinking)
 
@@ -589,10 +590,25 @@ async def aigc_seedream(req: AigcSeedreamRequest) -> AigcSeedreamResponse:
     供 FillAigcPanel 的 image 阶段消费——用户对每个 ImageSpec 可选『上传 / Seedream』，
     选 Seedream 时调本接口。url 是 ARK 临时 CDN（豆包 1h-7d 有效），下游 Seedance
     立即消费即可，本期不落盘。
+
+    stage-26 PR-O：req.subject 非空时，**在调 Seedream 之前**把
+    `[必须画出且不可替换的主体：X]` 强制前缀注入 prompt——绕过上游 LLM 输出可能的
+    同义化/上位化漂移，保证最终送到 Seedream 的提示词里一定有用户编辑的具象主体词。
     """
+    final_prompt = req.prompt
+    subj = (req.subject or "").strip()
+    if subj and subj not in final_prompt:
+        final_prompt = (
+            f"[必须画出且不可替换的主体：{subj}（禁同义化/上位化/营销化）] "
+            + req.prompt
+        )[:1500]
+        log.info(
+            "[aigc-seedream] subject anchor 前缀注入：%s（原 prompt 不含主体）",
+            subj,
+        )
     try:
         results = await get_seedream_client().generate(
-            req.prompt, ratio=req.ratio, n=req.n,
+            final_prompt, ratio=req.ratio, n=req.n,
         )
     except SeedreamError as exc:
         raise HTTPException(

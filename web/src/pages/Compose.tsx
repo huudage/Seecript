@@ -1806,7 +1806,29 @@ export default function ComposePage() {
               <BatchCopyButton
                 planId={plan.plan_id}
                 pendingCount={pendingGapsCount}
-                skipGapIds={fills.filter((f) => f.status === 'ok').map((f) => f.gap_id)}
+                skipGapIds={(() => {
+                  // 痛报：『一键字卡生成会顶掉已经有内容的其他轨道的内容替换为字卡』
+                  // 修：skip 列表不止采纳过的 fill —— 但凡对应 scene 已有真内容
+                  // （user_material / aigc_image / aigc_t2v / 已选定 text_card），都不允许批量字卡覆盖。
+                  const adoptedFillGaps = new Set(
+                    fills.filter((f) => f.status === 'ok').map((f) => f.gap_id),
+                  )
+                  // section_id → 该段下是否有任何 scene 已有真内容
+                  const sectionHasRealContent = new Map<string, boolean>()
+                  for (const sc of plan.main_track ?? []) {
+                    const secId = sc.parent_section_id
+                    if (!secId) continue
+                    const isPlaceholder =
+                      sc.source === 'text_card' &&
+                      (sc.source_ref ?? '').startsWith('text-card-fill-empty')
+                    const hasReal = !isPlaceholder && sc.needs_fill !== true
+                    if (hasReal) sectionHasRealContent.set(secId, true)
+                  }
+                  const skipFromScenes = gaps
+                    .filter((g) => g.section_id && sectionHasRealContent.get(g.section_id))
+                    .map((g) => g.gap_id)
+                  return Array.from(new Set([...adoptedFillGaps, ...skipFromScenes]))
+                })()}
                 adoptedTextCardCount={
                   fills.filter((f) => f.status === 'ok' && f.action === 'copy').length
                 }

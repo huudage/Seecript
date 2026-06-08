@@ -451,6 +451,9 @@ export interface ImageSpec {
 export interface AigcImageSpecRequest {
   gap_id: GapId
   hint?: string | null
+  /** 主体锚点清单——前端从 plan.adapted_sections.shots[].subject 取出，
+   *  传给后端后会**强制**写进 LLM user prompt + post-validation 注入到每张 spec.prompt 前缀。 */
+  subjects?: string[]
 }
 
 export interface AigcImageSpecResponse {
@@ -530,6 +533,9 @@ export interface AigcSeedreamRequest {
   ratio: string
   /** 一次生成几张，1-4。 */
   n?: number
+  /** 主体锚点（具象名词）。后端会在调 Seedream 前把 [必须画出且不可替换的主体: X]
+   *  强制前缀注入 prompt——绕过 LLM 输出的同义化漂移。 */
+  subject?: string
 }
 
 export interface SeedreamImage {

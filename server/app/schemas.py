@@ -843,6 +843,14 @@ class AigcImageSpecRequest(BaseModel):
 
     gap_id: str
     hint: Optional[str] = Field(default=None, max_length=200)
+    subjects: list[str] = Field(
+        default_factory=list,
+        description=(
+            "主体锚点清单（用户在 ShotPlan.subject 改过的具象名词），"
+            "由前端从 plan.adapted_sections.shots[].subject 取出后传入；"
+            "LLM 必须在每张图的 prompt 里逐字保留这些主体词，禁同义化/上位化/营销化。"
+        ),
+    )
 
 
 class AigcImageSpecResponse(BaseModel):
@@ -860,6 +868,14 @@ class AigcSeedreamRequest(BaseModel):
     prompt: str = Field(..., min_length=2, max_length=1500)
     ratio: str = Field(default="16:9")
     n: int = Field(default=1, ge=1, le=4)
+    subject: str = Field(
+        default="",
+        max_length=40,
+        description=(
+            "主体锚点（具象名词）——本接口在调 Seedream 前会把 `[必须画出且不可替换的主体：X]` "
+            "强制前缀注入 prompt，绕过 LLM 输出可能的同义化/上位化漂移。"
+        ),
+    )
 
 
 class SeedreamImage(BaseModel):

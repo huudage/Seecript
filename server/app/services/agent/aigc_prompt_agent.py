@@ -251,12 +251,17 @@ async def generate_image_specs(
     *,
     user_hint: str = "",
     default_ratio: str = "16:9",
+    subjects_override: Optional[list[str]] = None,
 ) -> tuple[list[ImageSpec], list[str]]:
     """根据 gap + section + plan 让 LLM 给出 1-3 张参考图建议。
 
     返回 `(specs, thinking)`：
     - specs：参考图清单
     - thinking：Agent 思考链，2-4 条短句，用于前端可视化
+
+    `subjects_override`：前端从 plan.adapted_sections.shots[].subject 读出的具象名词清单。
+    传入后会**覆盖** section.shots 上的 subject（避免 plan_store 与前端编辑态不同步），
+    并在每张图返回前**强制注入** subject 锚点前缀——绕过 LLM 输出可能的同义化漂移。
 
     失败兜底：返回单张 `ImageSpec(slot-1, caption=段落主题, prompt=fallback)` + 兜底思考说明。
     """
@@ -299,6 +304,18 @@ async def generate_image_specs(
             user_lines.append("frame.md 设计系统：" + " | ".join(fd_parts) + "（参考图色调与质感需贴合）")
     if hint:
         user_lines.append(f"创作者额外提示：{hint}")
+    # stage-26 PR-O：前端从 plan.adapted_sections.shots[].subject 取出的主体清单是
+    # **最高优先级**——如果与 section.shots 落库版本不一致，以前端为准（避免编辑未同步）。
+    authoritative_subjects: list[str] = []
+    if subjects_override:
+        authoritative_subjects = [
+            str(s).strip()[:40] for s in subjects_override if str(s).strip()
+        ][:4]
+    if authoritative_subjects:
+        user_lines.append(
+            "—— 主体锚点清单（最高优先级，必须在每张图的 prompt 里逐字出现，禁同义化/上位化/营销化）——\n"
+            + "\n".join(f"  · 主体 #{i+1}：{s}" for i, s in enumerate(authoritative_subjects))
+        )
     # stage-24：若 plan_agent 已给出 ShotPlan 拆分，让 image-spec 一镜一图严格对齐
     # stage-25：若分镜带 targets，每个 target 一张图；caption 点明覆盖目标
     shots = getattr(section, "shots", None) or [] if section else []
@@ -313,8 +330,13 @@ async def generate_image_specs(
             shot_lines = [
                 f"本段已被拆为 {len(shots)} 个分镜，请按一镜一图输出（specs 数量等于 N，slot_id 与分镜序号对应）："
             ]
-        for sh in shots:
-            subj = (sh.subject or "").strip()
+        for i, sh in enumerate(shots):
+            # 前端 override 的主体优先（避免落库的 ShotPlan.subject 与编辑态不一致）
+            subj = (
+                authoritative_subjects[i]
+                if i < len(authoritative_subjects)
+                else (sh.subject or "").strip()
+            )
             base = (
                 f"  · 分镜 #{sh.order+1}（{sh.duration_seconds:.1f}s）"
                 f" 主体={subj or '—'}{'（锚点·原样写入 prompt）' if subj else ''} | 画面={sh.visual or '—'}"
@@ -353,6 +375,17 @@ async def generate_image_specs(
                 if not caption or not prompt:
                     continue
                 slot_id = str(raw.get("slot_id") or f"img-{i+1}").strip()[:32]
+                # 后处理硬锚点：第 i 张图按主体清单第 i 个匹配；若 prompt 里没逐字包含
+                # 该主体（LLM 同义化漂移），强制前缀注入。这一步是"在写入数据库前"的最后保险，
+                # 保证下游 Seedream 一定能在 prompt 里看到具象主体词。
+                target_subject = (
+                    authoritative_subjects[i] if i < len(authoritative_subjects) else ""
+                )
+                if target_subject and target_subject not in prompt:
+                    prompt = (
+                        f"[必须画出且不可替换的主体：{target_subject}（禁同义化/上位化/营销化）] "
+                        + prompt
+                    )[:300]
                 specs.append(ImageSpec(slot_id=slot_id, caption=caption, prompt=prompt, ratio=ratio))
             if specs:
                 log.info(

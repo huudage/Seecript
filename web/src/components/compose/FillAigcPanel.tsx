@@ -157,6 +157,10 @@ export function FillAigcPanel({
     try {
       const resp = await api.post<AigcImageSpecResponse>('/gap/aigc-image-spec', {
         gap_id: gap.gap_id,
+        // PR-O：把 ShotPlan.subject 清单作为强制锚点带过去，后端会用它覆盖
+        // section.shots 上的旧 subject（避免编辑未同步），并在 spec.prompt 上
+        // post-validation 注入前缀，保证下游 Seedream 不丢主体。
+        subjects: sceneInfo.plannedSubjects,
       })
       setSpecThinking(resp.thinking ?? [])
       setImageSpecs(resp.specs)
@@ -177,7 +181,7 @@ export function FillAigcPanel({
       setSpecErr(e instanceof Error ? e.message : '分析失败')
       setPhase('idle')
     }
-  }, [gap.gap_id])
+  }, [gap.gap_id, sceneInfo.plannedSubjects])
 
   // -- Step 2: spec → prompt --
   const handleEnterPromptStage = useCallback(async (auto = false) => {
@@ -249,6 +253,18 @@ export function FillAigcPanel({
     [plan?.project_id, gap.project_id],
   )
 
+  // 按 spec_id 顺序与 plannedSubjects 对齐：第 i 个 spec 配第 i 个主体（一镜一图原则）。
+  const subjectForSpec = useCallback(
+    (spec: ImageSpec): string => {
+      const idx = imageSpecs.findIndex((s) => s.slot_id === spec.slot_id)
+      if (idx >= 0 && idx < sceneInfo.plannedSubjects.length) {
+        return sceneInfo.plannedSubjects[idx]
+      }
+      return ''
+    },
+    [imageSpecs, sceneInfo.plannedSubjects],
+  )
+
   // -- spec 阶段：单张 Seedream 生图 --
   const handleSeedreamSlot = useCallback(
     async (spec: ImageSpec) => {
@@ -266,6 +282,7 @@ export function FillAigcPanel({
           prompt: promptText,
           ratio: spec.ratio,
           n: 1,
+          subject: subjectForSpec(spec),
         })
         const first = resp.images[0]
         if (!first) throw new Error('AI 出图未返回图片')
@@ -279,15 +296,17 @@ export function FillAigcPanel({
         setSlotBusy(null)
       }
     },
-    [slotPrompts],
+    [slotPrompts, subjectForSpec],
   )
 
-  // -- spec 阶段：一键 Seedream 生成所有未就绪 slot --
-  // 串行调避免同时打 Seedream 撞配额；已就绪 slot（上传 / 已生成）跳过；空 prompt 跳过并标错。
+  // -- spec 阶段：一键 Seedream 生成 slot --
+  // 串行调避免撞配额。force=true 时不跳过已就绪 slot——给「再渲染」按钮用，
+  // 因为用户明确要求"AI 生图再渲染不能跳过生图"。
   const [seedreamAllBusy, setSeedreamAllBusy] = useState(false)
-  const handleSeedreamAllSlots = useCallback(async () => {
+  const handleSeedreamAllSlots = useCallback(async (opts?: { force?: boolean }) => {
     if (seedreamAllBusy) return
-    const todo = imageSpecs.filter((s) => !imageSlots[s.slot_id])
+    const force = opts?.force === true
+    const todo = force ? imageSpecs : imageSpecs.filter((s) => !imageSlots[s.slot_id])
     if (todo.length === 0) return
     setSeedreamAllBusy(true)
     try {
@@ -305,6 +324,7 @@ export function FillAigcPanel({
             prompt: promptText,
             ratio: spec.ratio,
             n: 1,
+            subject: subjectForSpec(spec),
           })
           const first = resp.images[0]
           if (!first) throw new Error('AI 出图未返回图片')
@@ -320,7 +340,7 @@ export function FillAigcPanel({
       setSlotBusy(null)
       setSeedreamAllBusy(false)
     }
-  }, [imageSlots, imageSpecs, seedreamAllBusy, slotPrompts])
+  }, [imageSlots, imageSpecs, seedreamAllBusy, slotPrompts, subjectForSpec])
 
   // -- spec 阶段：把 Seedream 临时 CDN 图保存到素材库 --
   const handleSaveSlotToLibrary = useCallback(
@@ -761,7 +781,7 @@ function SpecStage({
   onSlotPromptChange: (slotId: string, value: string) => void
   onUpload: (slotId: string, file: File) => void
   onSeedream: (spec: ImageSpec) => void
-  onSeedreamAll: () => void
+  onSeedreamAll: (opts?: { force?: boolean }) => void
   onSaveToLibrary: (spec: ImageSpec) => void
   onClear: (slotId: string) => void
   onSkip: () => void
@@ -799,7 +819,7 @@ function SpecStage({
       {pendingCount > 0 && (
         <button
           type="button"
-          onClick={onSeedreamAll}
+          onClick={() => onSeedreamAll()}
           disabled={seedreamAllBusy}
           title={`串行调 Seedream 为剩余 ${pendingCount} 张未就绪的参考图出图（已上传 / 已生成的会跳过）`}
           className={cn(
@@ -810,6 +830,25 @@ function SpecStage({
           {seedreamAllBusy
             ? `🪄 一键出图中…（${pendingCount} 张待生成）`
             : `🪄 一键 AI 出图全部参考图（${pendingCount} 张）`}
+        </button>
+      )}
+
+      {/* 强制重渲染：所有 slot 已就绪后仍可点，覆盖现有图。
+          用户痛报：『AI 生图再渲染不能跳过生图』；改了 subject 后必须能逐 slot 重出。 */}
+      {pendingCount === 0 && specs.length > 0 && (
+        <button
+          type="button"
+          onClick={() => onSeedreamAll({ force: true })}
+          disabled={seedreamAllBusy}
+          title={`强制重新渲染全部 ${specs.length} 张参考图（覆盖现有；改了主体后必跑生图）`}
+          className={cn(
+            'flex w-full items-center justify-center gap-1 rounded-md border border-amber-500/60 bg-amber-500/10 px-2 py-1.5 text-xs font-medium text-amber-700 transition-colors hover:bg-amber-500/20 dark:text-amber-300',
+            seedreamAllBusy && 'cursor-not-allowed opacity-60',
+          )}
+        >
+          {seedreamAllBusy
+            ? `🔄 重渲染中…（${specs.length} 张）`
+            : `🔄 按当前主体强制重新生图（${specs.length} 张）`}
         </button>
       )}
 

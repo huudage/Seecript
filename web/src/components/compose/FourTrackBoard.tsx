@@ -1466,6 +1466,11 @@ function PackagingItemBlock({
     rowPx: number
     livePreview: { start: number; end: number }
   }>(null)
+  // 痛报：『包装轨的组件拖动完成之后会自动触发弹窗编辑』
+  // 修：mouseup 把 drag 置 null 后，浏览器仍会把 mousedown→mouseup 派发为 click，
+  // handleClick 那一刻 drag 已是 null 检测不到拖动 → 误开弹窗。
+  // 用 ref 显式标记『刚刚结束拖动且确实移动了』，让接下来的 click 直接吃掉。
+  const suppressNextClickRef = useRef(false)
 
   const beginDrag = (mode: 'left' | 'right' | 'move') => (e: React.MouseEvent) => {
     if (!canResize) return
@@ -1504,11 +1509,12 @@ function PackagingItemBlock({
     }
     const handleUp = () => {
       const { livePreview, origStart, origEnd } = drag
-      if (
+      const moved =
         Math.abs(livePreview.start - origStart) > 0.05 ||
         Math.abs(livePreview.end - origEnd) > 0.05
-      ) {
+      if (moved) {
         void onResizePackagingItem?.(item.item_id, livePreview.start, livePreview.end)
+        suppressNextClickRef.current = true
       }
       setDrag(null)
     }
@@ -1528,6 +1534,10 @@ function PackagingItemBlock({
 
   const handleClick = () => {
     if (drag) return
+    if (suppressNextClickRef.current) {
+      suppressNextClickRef.current = false
+      return
+    }
     if (canEdit) {
       onEditPackagingItem!(item)
     } else {

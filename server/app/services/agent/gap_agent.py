@@ -1189,10 +1189,21 @@ async def _fill_with_seedream_image(gap: Gap, params: dict[str, Any]) -> FillRes
     multi_prompts: list[str] = []
     if isinstance(explicit_prompts, list) and explicit_prompts:
         multi_prompts = [str(p).strip() for p in explicit_prompts if str(p).strip()]
+        # stage-26 PR-O：用户给了显式 prompts 但前端也带了 subjects → 检查每条 prompt 是否包含
+        # 对应主体；缺失则在前缀强制补一个锚点（绕过 LLM 可能的同义化漂移）。
+        if isinstance(subjects, list) and subjects:
+            anchored: list[str] = []
+            for i, p in enumerate(multi_prompts):
+                subj = (str(subjects[i]).strip() if i < len(subjects) else "")
+                if subj and subj not in p:
+                    p = f"[必须画出且不可替换的主体：{subj}（禁同义化/上位化/营销化）] {p}"
+                anchored.append(p)
+            multi_prompts = anchored
     elif isinstance(subjects, list) and subjects:
-        # subjects = ["主体 A 的描述", "主体 B 的描述", ...] → 拼上 base_prompt 主调
+        # subjects = ["主体 A", "主体 B", ...] → 每条 prompt 强制以主体锚点开头，
+        # 而不是把主体软性塞在『（聚焦主体：X）』后缀——后者 Seedream 可以忽视。
         multi_prompts = [
-            f"{base_prompt}（聚焦主体：{str(s).strip()}）"
+            f"[必须画出且不可替换的主体：{str(s).strip()}（禁同义化/上位化/营销化）] {base_prompt}"
             for s in subjects if str(s).strip()
         ]
     multi_prompts = multi_prompts[:4]
@@ -1212,7 +1223,17 @@ async def _fill_with_seedream_image(gap: Gap, params: dict[str, Any]) -> FillRes
                 multi_prompts, ratio=ratio, watermark=watermark,
             )
         else:
-            images = await seedream.generate(base_prompt, ratio=ratio, n=1, watermark=watermark)
+            # 单镜头也保住主体锚点：subjects 列表第一项作为强前缀（如果 base_prompt
+            # 里没逐字包含），保持与多镜头一致的"绕过 LLM 同义化"防线。
+            single_prompt = base_prompt
+            if isinstance(subjects, list) and subjects:
+                first_subj = str(subjects[0]).strip()
+                if first_subj and first_subj not in single_prompt:
+                    single_prompt = (
+                        f"[必须画出且不可替换的主体：{first_subj}"
+                        f"（禁同义化/上位化/营销化）] {single_prompt}"
+                    )
+            images = await seedream.generate(single_prompt, ratio=ratio, n=1, watermark=watermark)
     except SeedreamError as exc:
         log.warning("[gap-fill] %s seedream failed: %s", gap.gap_id, exc)
         return FillResult(
