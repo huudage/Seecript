@@ -705,16 +705,25 @@ async def run_pipeline(job_id: str, plan: Plan) -> RenderResult:
             and plan.packaging_track
         ):
             items_dict = [item.model_dump() for item in plan.packaging_track]
+            # frame.md typography_display → 字体文件路径；命中就让 drawtext 用差异化字体
+            # （服务器没装就 None，burn_packaging_track 自动回落 find_cjk_font()）
+            frame_typo = (
+                getattr(plan.settings.frame_design, "typography_display", "") or ""
+            )
+            font_path = ffmpeg_svc.resolve_typography_font(frame_typo)
             try:
                 await asyncio.to_thread(
                     ffmpeg_svc.burn_packaging_track,
                     extended_path,
                     items_dict,
                     overlaid_path,
+                    font_path=font_path,
                 )
                 kinds_used = sorted({str(it.get("kind")) for it in items_dict})
                 notes.append(
-                    f"packaging burned via drawtext ({len(items_dict)} items, kinds={kinds_used})"
+                    f"packaging burned via drawtext ({len(items_dict)} items, kinds={kinds_used}"
+                    + (f", font={Path(font_path).name}" if font_path else "")
+                    + ")"
                 )
             except ffmpeg_svc.FFmpegError as exc:
                 log.warning("[%s] drawtext burn failed: %s", job_id, exc)
@@ -732,6 +741,36 @@ async def run_pipeline(job_id: str, plan: Plan) -> RenderResult:
 
     timings["overlay_ms"] = int((time.time() - t0) * 1000)
 
+    # ---- Step 5a · frame.md 视觉风格化（grain / vignette）----
+    # frame_design.grain_overlay / vignette 在此之前都只是 LLM prompt 文本提示；
+    # 这里真烧到 ffmpeg 滤镜链：noise=alls + vignette=angle。下游 mix_voiceovers /
+    # mix_bgm 都是 -c:v copy，所以这一步是视频流唯一最后一次重编码点。
+    frame = getattr(plan.settings, "frame_design", None)
+    grain_on = bool(getattr(frame, "grain_overlay", False)) if frame else False
+    vignette_on = bool(getattr(frame, "vignette", False)) if frame else False
+    styled_path = overlaid_path
+    if (
+        (grain_on or vignette_on)
+        and ffmpeg_svc.ffmpeg_available()
+        and overlaid_path.exists() and overlaid_path.stat().st_size > 0
+    ):
+        styled_dst = out_dir / "styled.mp4"
+        t_style = time.time()
+        try:
+            await asyncio.to_thread(
+                ffmpeg_svc.apply_frame_styling,
+                overlaid_path, styled_dst,
+                grain=grain_on, vignette=vignette_on,
+            )
+            styled_path = styled_dst
+            notes.append(
+                f"frame styled: grain={grain_on} vignette={vignette_on}"
+            )
+        except ffmpeg_svc.FFmpegError as exc:
+            log.warning("[%s] apply_frame_styling failed: %s", job_id, exc)
+            notes.append(f"frame styling fallback: {exc}")
+        timings["frame_styling_ms"] = int((time.time() - t_style) * 1000)
+
     # ---- Step 5b · voice mix：把各 scene 的 TTS 口播按 scene.start 偏移混入主轨 ----
     # voiceover_enabled=False 时跳过（纯 BGM 视频）
     voice_clips: list[tuple[Path, float]] = []
@@ -748,22 +787,22 @@ async def run_pipeline(job_id: str, plan: Plan) -> RenderResult:
                 voice_clips.append((candidate, float(sc.start)))
             else:
                 log.warning("[%s] voiceover 文件不存在 url=%s", job_id, url)
-    voice_mixed_path = overlaid_path
+    voice_mixed_path = styled_path
     if (
         voice_clips
         and ffmpeg_svc.ffmpeg_available()
-        and overlaid_path.exists() and overlaid_path.stat().st_size > 0
+        and styled_path.exists() and styled_path.stat().st_size > 0
     ):
         voice_mixed_path = out_dir / "voiced.mp4"
         try:
             await asyncio.to_thread(
-                ffmpeg_svc.mix_voiceovers, overlaid_path, voice_clips, voice_mixed_path
+                ffmpeg_svc.mix_voiceovers, styled_path, voice_clips, voice_mixed_path
             )
             notes.append(f"voiceover mixed: {len(voice_clips)} clips")
         except ffmpeg_svc.FFmpegError as exc:
             log.warning("[%s] mix_voiceovers failed: %s", job_id, exc)
             notes.append(f"voiceover fallback: {exc}")
-            voice_mixed_path = overlaid_path
+            voice_mixed_path = styled_path
 
     # ---- Step 6 · finalize：BGM 混音 + 封面抽帧 ----
     t0 = time.time()

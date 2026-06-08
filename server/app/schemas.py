@@ -2252,6 +2252,20 @@ class PackagingItemPlaceRequest(BaseModel):
     item: PackagingItem
 
 
+class PackagingSceneRecommendRequest(BaseModel):
+    """场景级推荐：用户选定一个 scene + 自然语言 hint，让 AI 生成单个组件草稿。
+
+    后端复用 packaging_agent.recommend_packaging_for_scene，把 frame_design、
+    scene 时间窗、subject 锚点 一并喂进 LLM；返回一条 PackagingItem 草稿，
+    前端可直接 place 也可进 staging slot 调整。
+    """
+
+    plan_id: str
+    scene_id: str
+    kind: Literal["title_bar", "sticker", "cover"]
+    hint: str = Field(default="", max_length=300, description="自然语言诉求，如『加一个红色徽标，强调最大续航』")
+
+
 # =========================================================================
 # Module 5c — Plan 命名快照（用户主动保存的版本点；与 editStore 撤销栈互补）
 # =========================================================================

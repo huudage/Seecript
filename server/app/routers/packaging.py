@@ -25,13 +25,16 @@ from ..schemas import (
     PackagingItemPlaceRequest,
     PackagingRecommendationV2,
     PackagingRecommendRequest,
+    PackagingSceneRecommendRequest,
     PackagingSelection,
     Plan,
 )
 from ..services.agent.packaging_agent import (
     apply_selection_to_plan,
+    recommend_packaging_for_scene,
     recommend_packaging_v2,
 )
+from ..services.llm_client import LLMError
 from ..services.plans import plan_store
 
 log = logging.getLogger("seecript.packaging")
@@ -223,3 +226,28 @@ async def delete_item(plan_id: str, item_id: str) -> Plan:
     plan_store.replace(plan)
     log.info("[packaging] delete plan=%s item=%s", plan_id, item_id)
     return plan
+
+
+@router.post("/packaging/recommend-for-scene", response_model=PackagingItemDraftResponse)
+async def recommend_for_scene(req: PackagingSceneRecommendRequest) -> PackagingItemDraftResponse:
+    """单 scene + 自然语言 hint → 单个 PackagingItem 草稿。
+
+    前端拿到后可直接调 /packaging/items/place 落进 plan.packaging_track；
+    或先放进 staging slot 让用户调整文字/时间再 place。
+    """
+    plan = plan_store.get(req.plan_id)
+    if plan is None:
+        raise HTTPException(status_code=404, detail=f"plan_id 不存在：{req.plan_id}")
+    try:
+        item, rationale = await recommend_packaging_for_scene(
+            plan, scene_id=req.scene_id, kind=req.kind, hint=req.hint,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except LLMError as exc:
+        raise HTTPException(status_code=502, detail=f"AI 暂时给不出建议：{exc}")
+    log.info(
+        "[packaging] scene-recommend plan=%s scene=%s kind=%s item=%s",
+        plan.plan_id, req.scene_id, req.kind, item.item_id,
+    )
+    return PackagingItemDraftResponse(item=item, rationale=rationale)

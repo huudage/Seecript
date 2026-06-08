@@ -653,6 +653,116 @@ def find_cjk_font() -> str | None:
     return None
 
 
+# frame.md typography_display → 本机字体文件路径。
+# packaging_agent 给的 typography_display 通常是 'Bebas Neue' / 'Lato' / '思源黑体' 等英文/中文家族名，
+# Linux 服务器上不一定装。这里只兜底中文家族名 → 已知 CJK 路径；找不到时返回 None，
+# burn_packaging_track 会再走 find_cjk_font() 通用兜底。命中就拿到带『黑体感』『宋体感』的差别字。
+_TYPO_FAMILY_TO_FONT: dict[str, tuple[str, ...]] = {
+    "黑体": (r"C:\Windows\Fonts\simhei.ttf",
+             r"/usr/share/fonts/opentype/noto/NotoSansCJK-Bold.ttc",
+             r"/usr/share/fonts/truetype/wqy/wqy-zenhei.ttc"),
+    "微软雅黑": (r"C:\Windows\Fonts\msyh.ttc",
+                  r"/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc"),
+    "雅黑": (r"C:\Windows\Fonts\msyh.ttc",
+             r"/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc"),
+    "宋体": (r"C:\Windows\Fonts\simsun.ttc",
+             r"/usr/share/fonts/opentype/noto/NotoSerifCJK-Regular.ttc"),
+    "思源黑体": (r"/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
+                  r"C:\Windows\Fonts\msyh.ttc"),
+    "思源宋体": (r"/usr/share/fonts/opentype/noto/NotoSerifCJK-Regular.ttc",
+                  r"C:\Windows\Fonts\simsun.ttc"),
+    "PingFang": (r"/System/Library/Fonts/PingFang.ttc",
+                 r"C:\Windows\Fonts\msyh.ttc"),
+    "Bebas Neue": (r"/usr/share/fonts/truetype/Bebas/BebasNeue-Regular.ttf",),
+    "Lato": (r"/usr/share/fonts/truetype/lato/Lato-Regular.ttf",),
+    "JetBrains Mono": (r"/usr/share/fonts/truetype/jetbrains-mono/JetBrainsMono-Regular.ttf",
+                       r"C:\Windows\Fonts\Consola.ttf"),
+}
+
+
+def resolve_typography_font(family: str | None) -> str | None:
+    """把 frame.md typography_display 家族名翻成本机字体文件路径。
+
+    服务器上没有对应字体文件时返回 None，让 caller 走 find_cjk_font() 通用兜底。
+    匹配策略：先按家族名整体精确查表，命中后返回第一个存在的文件；否则按前缀部分匹配
+    （避免 LLM 给『微软雅黑 Bold』这类带后缀的版本时漏掉）。
+    """
+    if not family:
+        return None
+    name = family.strip()
+    if not name:
+        return None
+    # 整体精确
+    if name in _TYPO_FAMILY_TO_FONT:
+        for candidate in _TYPO_FAMILY_TO_FONT[name]:
+            if Path(candidate).is_file():
+                return candidate
+    # 前缀部分匹配（『微软雅黑 Bold』包含『微软雅黑』）
+    for key, candidates in _TYPO_FAMILY_TO_FONT.items():
+        if key in name:
+            for candidate in candidates:
+                if Path(candidate).is_file():
+                    return candidate
+    return None
+
+
+def apply_frame_styling(
+    src: str | Path,
+    dst: str | Path,
+    *,
+    grain: bool = False,
+    vignette: bool = False,
+    grain_strength: int = 12,
+    vignette_angle: float = 0.4,
+) -> Path:
+    """把 frame.md 的 grain_overlay / vignette 真烧到滤镜链。
+
+    - grain：`noise=alls=N:allf=t` 加胶片颗粒；t=temporal，每帧噪点不同避免静态网纹。
+      strength 12 在 1080p 上刚好能感受到颗粒感又不糊画面；超过 20 像 90 年代 VHS。
+    - vignette：`vignette=angle=PI*X` 暗角；angle 越小越深。0.4 ≈ PI/2.5 是『电影感』
+      档位，明显但不抢主体。
+
+    都为 False 时直接拷贝（不重编码也不报错；caller 不必预判）。
+
+    重编码用 libx264 + crf 22，与 trim/concat 链路一致；下游 mix_voiceovers/mix_bgm
+    都是 -c:v copy，所以本步是滤镜唯一注入点，再往后视频流不变。
+    """
+    if not ffmpeg_available():
+        raise FFmpegError("ffmpeg not found in PATH")
+    src_p = Path(src)
+    if not src_p.exists():
+        raise FileNotFoundError(src_p)
+    out = Path(dst)
+    out.parent.mkdir(parents=True, exist_ok=True)
+
+    filters: list[str] = []
+    if grain:
+        s = max(1, min(40, int(grain_strength)))
+        filters.append(f"noise=alls={s}:allf=t")
+    if vignette:
+        a = max(0.1, min(1.4, float(vignette_angle)))
+        filters.append(f"vignette=angle=PI*{a:.3f}")
+
+    if not filters:
+        # 都没开 → 直接拷贝（不烧任何滤镜）
+        out.write_bytes(src_p.read_bytes())
+        return out
+
+    cmd = [
+        "ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
+        "-i", str(src_p),
+        "-vf", ",".join(filters),
+        "-c:v", "libx264", "-preset", "veryfast", "-crf", "22",
+        "-pix_fmt", "yuv420p",
+        "-c:a", "copy",
+        str(out),
+    ]
+    proc = subprocess.run(cmd, capture_output=True, text=True, check=False)
+    if proc.returncode != 0:
+        raise FFmpegError(f"apply_frame_styling failed: {proc.stderr.strip()[:500]}")
+    return out
+
+
 def _escape_drawtext_text(text: str) -> str:
     """drawtext text= 字段内的特殊字符转义。
     转义顺序很关键：先反斜杠再其它，否则二次转义把单引号吃掉。"""

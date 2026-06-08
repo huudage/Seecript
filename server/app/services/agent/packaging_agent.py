@@ -1123,6 +1123,249 @@ async def recommend_packaging_v2(
     )
 
 
+# ---------------------------------------------------------------------------
+# 场景级推荐：单 scene + 自然语言 hint → 单个 PackagingItem
+# ---------------------------------------------------------------------------
+
+def _build_scene_scoped_system_prompt(
+    kind: str,
+    prefs: PackagingPreferences,
+    frame: Optional[FrameDesignSystem],
+) -> str:
+    """单 scene + 单 kind 的系统提示，只要一条候选。"""
+    common_head = (
+        "你是短视频包装设计师。创作者已经选定了**一个分镜片段**，并给出了自然语言诉求。\n"
+        "请只为这一个分镜生成 1 条最贴合的包装组件，类型固定为「{kind}」。\n"
+        f"{_frame_design_block(frame)}"
+        f"{_catalog_hint_block()}\n"
+        "**严禁** mutate 别的 scene；**严禁**给多个候选；**严禁**返回 markdown 包裹。\n"
+        "**严禁**忽略创作者诉求——若诉求与 frame 冲突，以创作者诉求为先；若诉求与画面/口播无关也要尊重。\n"
+    ).format(kind=kind)
+    if kind == "title_bar":
+        body = (
+            "返回 JSON：\n"
+            "{\n"
+            "  \"text\": str(≤16字, 强卖点/概念词，禁口播原文),\n"
+            "  \"start\": number, \"end\": number,  // 必须落在 scene 时间窗内\n"
+            "  \"font_size\": one of [small,medium,large],\n"
+            "  \"color\": hex, \"background_color\": hex,\n"
+            "  \"position\": one of [top,middle],\n"
+            "  \"rationale\": str(≤30字，告诉创作者为什么这样设计)\n"
+            "}\n"
+            "时长建议 1.0-1.8s。颜色应贴合 frame 主色板。"
+        )
+    elif kind == "sticker":
+        body = (
+            "返回 JSON：\n"
+            "{\n"
+            "  \"text\": str(≤8字, CTA/强调短语, 如『立即购买』『颜值在线』),\n"
+            "  \"start\": number, \"end\": number,  // 必须落在 scene 时间窗内\n"
+            "  \"color\": hex, \"background_color\": hex,\n"
+            "  \"position\": one of [bottom-center,top-right,bottom-right,middle],\n"
+            "  \"rationale\": str(≤30字)\n"
+            "}\n"
+            "时长建议 0.6-1.2s。颜色突出但不喧宾夺主。"
+        )
+    elif kind == "cover":
+        body = (
+            "返回 JSON：\n"
+            "{\n"
+            "  \"title\": str(≤12字, 钩子标题),\n"
+            "  \"subtitle\": str(≤18字, 可空),\n"
+            "  \"palette\": [hex, hex, hex],\n"
+            "  \"layout\": one of [center,left,split,stacked],\n"
+            "  \"catalog_block\": str|null,\n"
+            "  \"style_note\": str(≤30字, 设计描述),\n"
+            "  \"rationale\": str(≤30字)\n"
+            "}\n"
+            f"封面只占片头 0~{prefs.cover_duration:.2f}s。palette 优先来自 frame 主色板。"
+        )
+    else:
+        body = "返回 JSON 对象，字段语义参见前文规则。"
+    return common_head + body
+
+
+def _build_scene_scoped_user_prompt(
+    plan: Plan,
+    scene: Scene,
+    hint: str,
+) -> str:
+    brief = plan.brief or "(创作者未提供主题文本)"
+    goal = plan.video_goal or "(创作者未提供 video_goal)"
+    scene_window = (
+        f"scene_id={scene.scene_id} role={scene.section} "
+        f"窗口 {scene.start:.2f}-{scene.start + scene.duration:.2f}s "
+        f"(时长 {scene.duration:.2f}s)"
+    )
+    narration = (scene.narration or "(无口播)").strip()
+    subject = (scene.shot_subject or "").strip()
+    user_hint = hint.strip() or "(创作者未给出额外诉求，按场景与 frame 自由发挥)"
+    return (
+        f"创作者主题：{brief}\n"
+        f"video_goal：{goal}\n"
+        f"plan_id：{plan.plan_id}\n"
+        f"目标分镜：{scene_window}\n"
+        f"分镜口播：{narration}\n"
+        f"分镜主体（subject 锚点，不可同义化）：{subject or '(未指定)'}\n"
+        f"创作者自然语言诉求：{user_hint}\n"
+    )
+
+
+def _next_unique_item_id(plan: Plan, kind: str) -> str:
+    prefix = {"title_bar": "pkg-tb", "sticker": "pkg-st", "cover": "pkg-cv"}.get(kind, f"pkg-{kind}")
+    used = {it.item_id for it in plan.packaging_track}
+    i = 1
+    while f"{prefix}-r{i}" in used:
+        i += 1
+    return f"{prefix}-r{i}"
+
+
+def _scene_scoped_dict_to_item(
+    plan: Plan,
+    scene: Scene,
+    kind: str,
+    raw: Any,
+    prefs: PackagingPreferences,
+) -> Optional[tuple[PackagingItem, str]]:
+    if not isinstance(raw, dict):
+        return None
+    rationale = str(raw.get("rationale", "") or "")[:60]
+    if kind == "title_bar":
+        text = str(raw.get("text", "")).strip()[:20]
+        if not text:
+            return None
+        try:
+            start = float(raw.get("start", scene.start))
+            end = float(raw.get("end", scene.start + min(1.5, scene.duration)))
+        except (TypeError, ValueError):
+            start, end = scene.start, scene.start + min(1.5, scene.duration)
+        start = max(scene.start, start)
+        end = min(scene.start + scene.duration, max(start + 0.4, end))
+        if end <= start:
+            return None
+        fs = str(raw.get("font_size", "medium")).lower()
+        if fs not in _TITLE_BAR_FONT_SIZES:
+            fs = "medium"
+        pos = str(raw.get("position", "top")).lower()
+        if pos not in _TITLE_BAR_POSITIONS:
+            pos = "top"
+        item = PackagingItem(
+            item_id=_next_unique_item_id(plan, "title_bar"),
+            kind="title_bar",
+            start=start,
+            end=end,
+            text=text,
+            style={
+                "font_size": fs,
+                "color": _valid_hex(raw.get("color"), "#FFFFFF"),
+                "background_color": _valid_hex(raw.get("background_color"), "#14181F"),
+                "position": pos,
+            },
+        )
+        return item, rationale or "贴合分镜重点"
+    if kind == "sticker":
+        text = str(raw.get("text", "")).strip()[:10]
+        if not text:
+            return None
+        try:
+            start = float(raw.get("start", scene.start + max(0.0, scene.duration - 1.0)))
+            end = float(raw.get("end", scene.start + scene.duration))
+        except (TypeError, ValueError):
+            start = scene.start + max(0.0, scene.duration - 1.0)
+            end = scene.start + scene.duration
+        start = max(scene.start, start)
+        end = min(scene.start + scene.duration, max(start + 0.4, end))
+        if end <= start:
+            return None
+        pos = str(raw.get("position", "bottom-center")).lower()
+        if pos not in ("bottom-center", "top-right", "bottom-right", "middle"):
+            pos = "bottom-center"
+        item = PackagingItem(
+            item_id=_next_unique_item_id(plan, "sticker"),
+            kind="sticker",
+            start=start,
+            end=end,
+            text=text,
+            style={
+                "color": _valid_hex(raw.get("color"), "#FFE600"),
+                "background_color": _valid_hex(raw.get("background_color"), "#000000"),
+                "position": pos,
+            },
+        )
+        return item, rationale or "强化片段卖点"
+    if kind == "cover":
+        title = str(raw.get("title", "")).strip()[:16]
+        if not title:
+            return None
+        first_dur = plan.main_track[0].duration if plan.main_track else prefs.cover_duration
+        cover_end = max(0.6, min(prefs.cover_duration, first_dur))
+        layout = str(raw.get("layout", "center")).lower()
+        if layout not in _ALLOWED_LAYOUTS:
+            layout = "center"
+        palette = raw.get("palette") or []
+        if not isinstance(palette, list):
+            palette = []
+        clean_palette = [
+            _valid_hex(p, "#000000") for p in palette[:5]
+            if isinstance(p, str)
+        ]
+        item = PackagingItem(
+            item_id=_next_unique_item_id(plan, "cover"),
+            kind="cover",
+            start=0.0,
+            end=cover_end,
+            text=title,
+            style={
+                "subtitle": str(raw.get("subtitle", "") or "")[:24] or None,
+                "palette": clean_palette,
+                "layout": layout,
+                "style_note": str(raw.get("style_note", "") or "")[:60],
+            },
+        )
+        return item, rationale or "片头钩子"
+    return None
+
+
+async def recommend_packaging_for_scene(
+    plan: Plan,
+    *,
+    scene_id: str,
+    kind: str,
+    hint: str,
+) -> tuple[PackagingItem, str]:
+    """单 scene + 自然语言 hint → 单 PackagingItem（草稿，未写 plan）。
+
+    kind 仅支持 title_bar / sticker / cover；前端调用 /packaging/items/place 落盘。
+    """
+    if kind not in ("title_bar", "sticker", "cover"):
+        raise ValueError(f"unsupported kind: {kind}")
+    scene = next((s for s in plan.main_track if s.scene_id == scene_id), None)
+    if scene is None:
+        raise ValueError(f"scene_id 不存在：{scene_id}")
+    prefs = expand_preset(plan.settings.packaging_prefs)
+    frame = getattr(plan.settings, "frame_design", None)
+    system_prompt = _build_scene_scoped_system_prompt(kind, prefs, frame)
+    user_prompt = _build_scene_scoped_user_prompt(plan, scene, hint)
+    log.info(
+        "[packaging-scene] scene=%s kind=%s hint_len=%d",
+        scene_id, kind, len(hint or ""),
+    )
+
+    data: Any = None
+    try:
+        llm = get_llm_client()
+        data = await llm.complete_json(
+            system_prompt, user_prompt, temperature=prefs.llm_temperature,
+        )
+    except LLMError as exc:
+        log.warning("[packaging-scene] LLM failed: %s", exc)
+        raise
+    out = _scene_scoped_dict_to_item(plan, scene, kind, data, prefs)
+    if out is None:
+        raise LLMError(f"LLM 返回不合法，无法生成 {kind}")
+    return out
+
+
 def apply_selection_to_plan(
     plan: Plan,
     selection: "PackagingSelectionLike",
