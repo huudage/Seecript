@@ -1,0 +1,158 @@
+import type { Material } from '@/types/schemas'
+import { SECTION_BG, SECTION_SHORT } from '@/lib/sections'
+import { cn } from '@/lib/utils'
+
+/**
+ * 单张素材卡片：缩略图 + 文件名 + 时长 + AI 标签。
+ * - 视频走 `<video poster>`，图片走 `<img>`，音频用占位图标
+ * - dragHandleProps 由 MaterialGrid 透传（@dnd-kit useSortable 提供 listeners/attributes）
+ * - onRemove 触发 store.removeMaterial
+ */
+export function MaterialCard({
+  material,
+  dragHandleProps,
+  onRemove,
+}: {
+  material: Material
+  dragHandleProps?: Record<string, unknown>
+  onRemove?: (id: string) => void
+}) {
+  const thumb = material.thumbnail_url
+  return (
+    <div className="group relative flex flex-col overflow-hidden rounded-md border border-border bg-background/60 transition-shadow hover:shadow-md">
+      <div className="relative h-24 w-full bg-muted">
+        {material.media_type === 'video' && thumb ? (
+          <video
+            src={thumb}
+            poster={thumb}
+            className="h-full w-full object-cover"
+            muted
+            preload="metadata"
+          />
+        ) : material.media_type === 'image' && thumb ? (
+          <img src={thumb} alt={material.filename} className="h-full w-full object-cover" />
+        ) : (
+          <div className="flex h-full w-full items-center justify-center text-xs text-muted-foreground">
+            {material.media_type === 'audio' ? '🎵 音频' : '— 没有预览图'}
+          </div>
+        )}
+
+        {/* drag handle 浮在左上 */}
+        <button
+          {...(dragHandleProps ?? {})}
+          aria-label="拖拽排序"
+          className="absolute left-1 top-1 rounded bg-black/40 px-1.5 py-0.5 text-xs text-white opacity-0 transition-opacity group-hover:opacity-100 cursor-grab active:cursor-grabbing"
+        >
+          ⋮⋮
+        </button>
+
+        {/* 媒体类型 chip */}
+        <span className="absolute right-1 top-1 rounded bg-black/50 px-1.5 py-0.5 text-xs uppercase text-white">
+          {material.media_type}
+        </span>
+
+        {/* 高光评分 chip：≥0.75 金、≥0.5 银、低于 0.5 不显示。hover 显示理由。 */}
+        {material.highlight_score >= 0.5 && (
+          <span
+            className={cn(
+              'absolute right-1 bottom-7 rounded px-1.5 py-0.5 text-xs font-bold text-black',
+              material.highlight_score >= 0.75 ? 'bg-yellow-300' : 'bg-slate-200',
+            )}
+            title={material.highlight_reason ?? '高光评分（AI 判断）'}
+          >
+            {material.highlight_score >= 0.75 ? '⭐ ' : ''}
+            {Math.round(material.highlight_score * 100)}
+          </span>
+        )}
+
+        {/* 视频预处理状态 chip：左下角；ready 时不显示（避免遮挡） */}
+        {material.media_type === 'video'
+          && material.preprocess_status
+          && material.preprocess_status !== 'ready'
+          && material.preprocess_status !== 'skipped' && (
+          <span
+            className={cn(
+              'absolute bottom-7 left-1 rounded px-1.5 py-0.5 text-xs font-medium',
+              material.preprocess_status === 'failed'
+                ? 'bg-red-500/80 text-white'
+                : 'bg-black/60 text-white',
+            )}
+            title={
+              material.preprocess_status === 'failed'
+                ? (material.preprocess_error ?? '预处理失败')
+                : material.preprocess_status === 'running'
+                  ? 'AI 正在切片 + 镜头打标，约需 30-90s'
+                  : material.preprocess_status === 'pending'
+                    ? '等待 AI 切片排队'
+                    : ''
+            }
+          >
+            {material.preprocess_status === 'pending' && '⏳ 排队中'}
+            {material.preprocess_status === 'running' && '⚙️ AI 切片中…'}
+            {material.preprocess_status === 'failed' && '⚠ 预处理失败'}
+          </span>
+        )}
+        {material.media_type === 'video'
+          && material.preprocess_status === 'ready'
+          && material.shots
+          && material.shots.length > 0 && (
+          <span
+            className="absolute bottom-7 left-1 rounded bg-emerald-500/80 px-1.5 py-0.5 text-xs font-medium text-white"
+            title={`AI 已切出 ${material.shots.length} 个镜头`}
+          >
+            ✓ {material.shots.length} 镜头
+          </span>
+        )}
+
+        {/* 推荐段落色条 */}
+        {material.recommended_section && (
+          <span
+            className={cn(
+              'absolute bottom-0 left-0 right-0 px-1.5 py-0.5 text-xs font-medium text-white',
+              SECTION_BG[material.recommended_section],
+            )}
+          >
+            推荐 {SECTION_SHORT[material.recommended_section]}
+          </span>
+        )}
+      </div>
+
+      <div className="flex flex-1 flex-col gap-1 p-2 text-xs">
+        <div className="flex items-start justify-between gap-1">
+          <p className="min-w-0 flex-1 truncate font-medium" title={material.filename}>
+            {material.filename}
+          </p>
+          {onRemove && (
+            <button
+              onClick={() => onRemove(material.material_id)}
+              className="shrink-0 text-muted-foreground transition-colors hover:text-destructive"
+              title="移除"
+            >
+              ×
+            </button>
+          )}
+        </div>
+        {material.duration_seconds != null && (
+          <span className="font-mono text-xs text-muted-foreground">
+            {material.duration_seconds.toFixed(1)}s
+          </span>
+        )}
+        {material.tags.length > 0 && (
+          <div className="flex flex-wrap gap-1">
+            {material.tags.slice(0, 5).map((t) => (
+              <span
+                key={t}
+                className="rounded-sm bg-secondary px-1 py-px text-xs text-muted-foreground"
+              >
+                {t}
+              </span>
+            ))}
+            {material.tags.length > 5 && (
+              <span className="text-xs text-muted-foreground">+{material.tags.length - 5}</span>
+            )}
+          </div>
+        )}
+      </div>
+    </div>
+  )
+}

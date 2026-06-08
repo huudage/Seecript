@@ -1,0 +1,229 @@
+@import "tailwindcss";
+
+/* =====================================================================
+   Seecript Design System v4 — 暗黑科技风
+   参考：godly.website / React Bits 暗色精选
+   默认暗色，发光边框，玻璃态卡片，精细微交互
+   ===================================================================== */
+@theme inline {
+  /* 背景体系 */
+  --color-background: hsl(240 10% 4%);
+  --color-foreground: hsl(0 0% 94%);
+
+  --color-card: hsl(240 8% 9%);
+  --color-card-foreground: hsl(0 0% 94%);
+
+  --color-popover: hsl(240 8% 10%);
+  --color-popover-foreground: hsl(0 0% 94%);
+
+  /* 主色：电光青 → 青紫渐变 */
+  --color-primary: hsl(190 90% 50%);
+  --color-primary-foreground: hsl(0 0% 4%);
+  --color-primary-hover: hsl(190 90% 44%);
+  --color-primary-pressed: hsl(190 90% 38%);
+
+  /* 辅助 */
+  --color-secondary: hsl(240 5% 14%);
+  --color-secondary-foreground: hsl(0 0% 90%);
+
+  --color-muted: hsl(240 5% 13%);
+  --color-muted-foreground: hsl(240 4% 55%);
+
+  --color-accent: hsl(190 60% 14%);
+  --color-accent-foreground: hsl(190 90% 60%);
+
+  --color-destructive: hsl(0 70% 55%);
+  --color-destructive-foreground: hsl(0 0% 100%);
+
+  /* 边框：几乎不可见，hover 才亮 */
+  --color-border: hsl(240 5% 16%);
+  --color-input: hsl(240 5% 18%);
+  --color-ring: hsl(190 90% 50%);
+
+  /* 缺口状态 */
+  --color-gap-ok: hsl(142 55% 48%);
+  --color-gap-warn: hsl(38 90% 52%);
+  --color-gap-miss: hsl(0 70% 55%);
+
+  /* 选中态 */
+  --color-selected: hsl(190 60% 10%);
+  --color-selected-border: hsl(190 90% 48%);
+
+  --radius-lg: 0.75rem;
+  --radius-md: 0.5rem;
+  --radius-sm: 0.25rem;
+
+  --shadow-sm: 0 1px 2px rgba(0,0,0,0.3);
+  --shadow-md: 0 4px 16px rgba(0,0,0,0.4);
+  --shadow-glow: 0 0 24px hsl(190 90% 50% / 0.08);
+  --shadow-glow-lg: 0 0 40px hsl(190 90% 50% / 0.12);
+
+  --font-sans: "Inter", system-ui, "PingFang SC", "Microsoft YaHei", sans-serif;
+}
+
+/* =====================================================================
+   科技感背景纹理
+   ===================================================================== */
+.ai-particles {
+  background:
+    radial-gradient(ellipse at 30% 20%, hsl(190 90% 50% / 0.04) 0%, transparent 50%),
+    radial-gradient(ellipse at 70% 60%, hsl(260 80% 60% / 0.03) 0%, transparent 50%),
+    radial-gradient(ellipse at 50% 50%, hsl(190 90% 50% / 0.02) 0%, transparent 70%),
+    var(--color-background);
+}
+.ai-grid {
+  background-image:
+    linear-gradient(hsl(190 90% 50% / 0.03) 1px, transparent 1px),
+    linear-gradient(90deg, hsl(190 90% 50% / 0.03) 1px, transparent 1px);
+  background-size: 48px 48px;
+}
+
+/* 玻璃态 */
+.glass {
+  background: hsl(240 8% 11% / 0.7);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+  border: 1px solid hsl(240 5% 18%);
+}
+
+/* 发光边框（hover 显现） */
+.glow-border {
+  border: 1px solid var(--color-border);
+  transition: border-color 0.4s ease, box-shadow 0.4s ease;
+}
+.glow-border:hover {
+  border-color: hsl(190 90% 50% / 0.3);
+  box-shadow: var(--shadow-glow);
+}
+
+/* =====================================================================
+   动画
+   ===================================================================== */
+@keyframes fade-up {
+  from { opacity: 0; transform: translateY(8px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+@keyframes shimmer {
+  0%   { background-position: -200% center; }
+  100% { background-position: 200% center; }
+}
+@keyframes step-pulse {
+  0%, 100% { box-shadow: 0 0 0 0 hsl(190 90% 50% / 0.3); }
+  50%      { box-shadow: 0 0 0 8px hsl(190 90% 50% / 0); }
+}
+@keyframes progress-pulse {
+  0%, 100% { opacity: 0.3; }
+  50%      { opacity: 1; }
+}
+@keyframes glowFloat {
+  0%, 100% { transform: translate(-50%, -50%) scale(1); opacity: 0.3; }
+  50%      { transform: translate(-50%, -50%) scale(1.15); opacity: 0.6; }
+}
+@keyframes dot-bounce {
+  0%, 100% { transform: translateY(0); }
+  50%      { transform: translateY(-4px); }
+}
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+@keyframes particle-float {
+  0%, 100% { transform: translateY(0) scale(1); opacity: 0.4; }
+  50%      { transform: translateY(-6px) scale(1.4); opacity: 0.9; }
+}
+@keyframes tech-pulse {
+  0%, 100% { box-shadow: 0 0 0 0 hsl(190 90% 50% / 0.25); }
+  50%      { box-shadow: 0 0 0 8px hsl(190 90% 50% / 0); }
+}
+@keyframes border-glow {
+  0%, 100% { border-color: hsl(190 90% 50% / 0.15); }
+  50%      { border-color: hsl(190 90% 50% / 0.4); }
+}
+
+.animate-fade-up    { animation: fade-up 250ms ease-out forwards; }
+.animate-step-pulse { animation: step-pulse 2s ease-in-out infinite; }
+.animate-tech-pulse { animation: tech-pulse 3s ease-in-out infinite; }
+.animate-border-glow { animation: border-glow 3s ease-in-out infinite; }
+.animate-shimmer {
+  background-image: linear-gradient(90deg, transparent 25%, hsl(190 90% 50% / 0.07) 50%, transparent 75%);
+  background-size: 200% 100%;
+  animation: shimmer 2.2s ease-in-out infinite;
+}
+.dot-bounce-0 { animation: dot-bounce 1s ease-in-out infinite; }
+.dot-bounce-1 { animation: dot-bounce 1s ease-in-out infinite 0.15s; }
+.dot-bounce-2 { animation: dot-bounce 1s ease-in-out infinite 0.3s; }
+.particle-float-0 { animation: particle-float 3s ease-in-out infinite; }
+.particle-float-1 { animation: particle-float 3.2s ease-in-out infinite 0.5s; }
+.particle-float-2 { animation: particle-float 2.8s ease-in-out infinite 1s; }
+
+/* =====================================================================
+   基础
+   ===================================================================== */
+html, body, #root { height: 100%; }
+body {
+  margin: 0;
+  font-family: var(--font-sans);
+  background-color: var(--color-background);
+  color: var(--color-foreground);
+  -webkit-font-smoothing: antialiased;
+}
+
+/* =====================================================================
+   组件预设
+   ===================================================================== */
+@layer components {
+  .btn-primary {
+    @apply inline-flex items-center justify-center rounded-lg text-sm font-medium
+           bg-primary text-primary-foreground
+           transition-all duration-300 cursor-pointer select-none
+           hover:shadow-[var(--shadow-glow)] hover:-translate-y-px
+           active:scale-[0.98]
+           disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:translate-y-0 disabled:hover:shadow-none;
+    padding: 0.5rem 1rem;
+  }
+  .btn-secondary {
+    @apply inline-flex items-center justify-center rounded-lg text-sm font-medium
+           border border-border bg-card text-foreground
+           transition-all duration-300 cursor-pointer select-none
+           hover:border-primary/30 hover:bg-accent/50 hover:-translate-y-px
+           active:scale-[0.98]
+           disabled:opacity-40 disabled:cursor-not-allowed;
+    padding: 0.5rem 1rem;
+  }
+  .btn-ghost {
+    @apply inline-flex items-center justify-center rounded-lg text-sm font-medium
+           text-muted-foreground
+           transition-all duration-200 cursor-pointer select-none
+           hover:bg-secondary hover:text-foreground
+           active:scale-[0.98];
+    padding: 0.5rem 0.75rem;
+  }
+  .btn-danger {
+    @apply inline-flex items-center justify-center rounded-lg text-sm font-medium
+           border border-destructive/50 text-destructive
+           transition-all duration-200 cursor-pointer select-none
+           hover:bg-destructive/10 active:scale-[0.98];
+    padding: 0.35rem 0.75rem;
+  }
+  .input-base {
+    @apply rounded-lg border border-input bg-background px-3 py-2 text-sm text-foreground
+           transition-all duration-200
+           focus:ring-2 focus:ring-primary/20 focus:border-primary/50 focus:outline-none;
+    &::placeholder { color: var(--color-muted-foreground); }
+  }
+  .card-interactive {
+    @apply rounded-xl bg-card border border-border
+           transition-all duration-300 cursor-pointer
+           hover:border-primary/20 hover:shadow-[var(--shadow-glow)] hover:-translate-y-0.5;
+  }
+  .card-readonly {
+    @apply rounded-xl bg-secondary/40 transition-colors duration-200;
+  }
+  .section-block {
+    @apply rounded-xl bg-card border border-border;
+  }
+  /* 选中态：青底 + 左边青色发光竖条 */
+  .selected-linear {
+    @apply bg-accent border-l-2 border-[var(--color-selected-border)]
+           shadow-[inset_0_0_20px_hsl(190_90%_50%_/_0.04)];
+  }
+}
