@@ -14,6 +14,7 @@ import { ClarifyPanel } from '@/components/compose/ClarifyPanel'
 import { ComposeCommandBar } from '@/components/compose/ComposeCommandBar'
 import { ComposeSettingsPanel } from '@/components/compose/ComposeSettingsPanel'
 import { DraggableCommandFab } from '@/components/compose/DraggableCommandFab'
+import { EmotionCurveCard } from '@/components/compose/EmotionCurveCard'
 import { FillAigcPanel } from '@/components/compose/FillAigcPanel'
 import { FillCopyPanel } from '@/components/compose/FillCopyPanel'
 import { FillRerankPanel } from '@/components/compose/FillRerankPanel'
@@ -2053,6 +2054,12 @@ export default function ComposePage() {
                 ← 返回第 2 步
               </button>
             </div>
+            <EmotionCurveCard
+              plan={plan}
+              playheadSeconds={playheadSeconds}
+              onPlanUpdate={setPlanAndPush}
+              className="mb-2"
+            />
             <div className="mb-3 grid gap-3 md:grid-cols-[minmax(0,280px)_1fr]">
               <div className="rounded-lg border border-border bg-card p-2">
                 <div className="mb-1.5 flex items-center justify-between px-1 text-[11px] text-muted-foreground">

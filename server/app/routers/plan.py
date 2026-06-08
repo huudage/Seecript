@@ -265,6 +265,84 @@ async def _attach_bgm_llm_analysis(
     return bgm
 
 
+def _adapted_sections_to_emotion_input(plan: Plan) -> list:
+    """把 plan.adapted_sections 包成 emotion_agent 能用的有 start/end 的 duck-type。
+
+    AdaptedSection 自身不带绝对时间——按 main_track 内的 Scene.parent_section_id 反推
+    每段在时间线上的实际 start/end。无 main_track 命中时按 order × duration_seconds 累加兜底。
+    """
+    if not plan.adapted_sections:
+        return []
+    # 按 parent_section_id 聚合 main_track scenes
+    by_parent: dict[str, list[Scene]] = {}
+    for sc in plan.main_track:
+        if sc.parent_section_id:
+            by_parent.setdefault(sc.parent_section_id, []).append(sc)
+
+    out = []
+    cursor = 0.0
+    for sec in sorted(plan.adapted_sections, key=lambda s: s.order):
+        scs = by_parent.get(sec.section_id, [])
+        if scs:
+            start = min(sc.start for sc in scs)
+            end = max(sc.start + sc.duration for sc in scs)
+        else:
+            start = cursor
+            end = cursor + sec.duration_seconds
+            cursor = end
+
+        # 用一个 Section-like 简单对象，含 emotion_agent 需要的全部字段
+        class _Sec:
+            pass
+
+        s = _Sec()
+        s.role = sec.role
+        s.theme = sec.theme
+        s.start = float(start)
+        s.end = float(end)
+        s.summary = sec.content_description  # emotion_agent 优先取 summary,缺时取 content_description
+        s.content_description = sec.content_description
+        s.shot_indices = []
+        out.append(s)
+    return out
+
+
+async def _compute_plan_emotion(plan: Plan) -> Optional["EmotionCurve"]:
+    """跑一次 LLM 多信号情绪曲线打分；失败回 None（不抛）。
+
+    被 build_plan 收尾、PATCH /plan/{id}/bgm（换曲后自动重算）、
+    POST /plan/{id}/recompute-emotion（手动重算）三处复用。
+    """
+    try:
+        from ..services.agent.emotion_agent import (
+            PlanIntent as _PlanIntent,
+            score_emotion as _score_emotion,
+        )
+        primary_manifest = None
+        if plan.reference_versions:
+            rv0 = plan.reference_versions[0]
+            primary_manifest = manifest_store.load_version(rv0.sample_id, rv0.slot_id)
+        intent = _PlanIntent(
+            brief=plan.brief,
+            video_goal=plan.video_goal,
+            migration_preference=plan.settings.migration_preference,
+        )
+        pseudo_sections = _adapted_sections_to_emotion_input(plan)
+        return await _score_emotion(
+            sections=pseudo_sections,
+            shots=plan.main_track,
+            total_duration=plan.duration_seconds,
+            bgm_analysis=plan.bgm.analysis if plan.bgm else None,
+            bgm_energy=None,
+            understanding=primary_manifest.understanding if primary_manifest else None,
+            sample_analysis=primary_manifest.analysis if primary_manifest else None,
+            intent=intent,
+        )
+    except Exception as exc:  # noqa: BLE001
+        log.warning("[plan] emotion 计算失败 plan=%s: %s", plan.plan_id, exc)
+        return None
+
+
 @router.post("/plan/build", response_model=Plan)
 async def build_plan(req: PlanBuildRequest) -> Plan:
     plan_id = f"plan-{uuid.uuid4().hex[:10]}"
@@ -812,6 +890,16 @@ async def build_plan(req: PlanBuildRequest) -> Plan:
         plan.initial_snapshot = _profile_to_snapshot(plan)
     except Exception as exc:  # noqa: BLE001
         log.warning("[plan] 写 initial_snapshot 失败 plan=%s: %s", plan_id, exc)
+
+    # stage-28 LLM 多信号情绪曲线 ----
+    plan.emotion_curve = await _compute_plan_emotion(plan)
+    if plan.emotion_curve:
+        log.info(
+            "[plan] emotion_curve plan=%s backend=%s anchors=%d peaks=%d",
+            plan_id, plan.emotion_curve.backend,
+            len(plan.emotion_curve.anchors), len(plan.emotion_curve.peaks),
+        )
+
     plan_store.put(plan)
 
     # 回写到 Project，让首页/项目详情能拿到 last_plan_id
@@ -884,6 +972,9 @@ async def patch_plan_bgm(plan_id: str, body: PlanBgmPatch) -> Plan:
             setattr(bgm, field, patch[field])
 
     plan.bgm = bgm
+    # BGM 切换 / 锚点改变 → 情绪曲线过期，自动重算（失败回 None 不阻塞）
+    if "bgm_asset_id" in patch:
+        plan.emotion_curve = await _compute_plan_emotion(plan)
     plan_store.put(plan)
     log.info(
         "[plan] bgm patched plan=%s asset=%s anchor=%.2fs vol=%.2f duck=%s",
@@ -901,6 +992,26 @@ async def delete_plan_bgm(plan_id: str) -> Plan:
     plan.bgm = BGMConfig()
     plan_store.put(plan)
     log.info("[plan] bgm cleared plan=%s", plan_id)
+    return plan
+
+
+@router.post("/plan/{plan_id}/recompute-emotion", response_model=Plan)
+async def recompute_emotion(plan_id: str) -> Plan:
+    """手动重算情绪曲线——前端 EmotionCurveCard 的 ↻ 重算按钮。
+
+    BGM 切换走 PATCH /plan/{id}/bgm 自动重算；本接口用于：
+    - main_track 编辑后用户主动刷新
+    - migration_preference 切到 amp_emotion 后想立即看到曲线整体抬高
+    """
+    plan = plan_store.get(plan_id)
+    if plan is None:
+        raise HTTPException(status_code=404, detail=f"plan_id 不存在：{plan_id}")
+    plan.emotion_curve = await _compute_plan_emotion(plan)
+    plan_store.put(plan)
+    log.info(
+        "[plan] emotion 手动重算 plan=%s backend=%s",
+        plan_id, plan.emotion_curve.backend if plan.emotion_curve else "-",
+    )
     return plan
 
 

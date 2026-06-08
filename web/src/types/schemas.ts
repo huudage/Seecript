@@ -177,6 +177,38 @@ export interface RhythmCurve {
   bgm_fit_score?: number | null
   /** R1：一句话评注 BGM 是否服务结构。 */
   bgm_fit_note?: string | null
+  /** stage-28：LLM 多信号情绪曲线；优先级高于 mood_curve；老 manifest 为 null。 */
+  emotion?: EmotionCurve | null
+}
+
+/** stage-28 情绪曲线相关 4 个 schema —— 镜像 server.app.schemas.EmotionCurve 等。 */
+export interface EmotionAnchor {
+  section_idx: number
+  intensity: number
+  reason?: string
+}
+
+export interface EmotionPeak {
+  t: number
+  intensity: number
+  reason?: string
+}
+
+export interface EmotionPoint {
+  t: number
+  intensity: number
+}
+
+export interface EmotionCurve {
+  points: EmotionPoint[]
+  anchors: EmotionAnchor[]
+  peaks: EmotionPeak[]
+  valleys: EmotionPeak[]
+  summary?: string
+  backend?: 'llm' | 'rule_fallback'
+  signals_used?: string[]
+  /** unix epoch 秒；前端用来判断曲线是否相对 main_track 编辑过期 */
+  computed_at?: number | null
 }
 
 /**
@@ -977,6 +1009,8 @@ export interface Plan {
   settings: ComposeSettings
   /** 本次 plan/build 注入的个性知识库规则总数（0 = 默认库以外没有命中项目级规则）。 */
   kb_rules_applied?: number
+  /** stage-28 LLM 多信号情绪曲线；老 plan 为 null（Compose EmotionCurveCard 时 fallback 不画）。 */
+  emotion_curve?: EmotionCurve | null
 }
 
 export interface PlanBuildRequest {

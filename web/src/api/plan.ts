@@ -75,3 +75,16 @@ export async function swapSceneSource(
 ): Promise<Plan> {
   return await api.post<Plan>(`/plan/${planId}/scene/${sceneId}/swap-source`, body)
 }
+
+/**
+ * stage-28：手动触发情绪曲线重算。
+ *
+ * BGM 切换会自动重算（PATCH /plan/{id}/bgm 内部已 hook）；本接口用于：
+ * - main_track 编辑后用户主动刷新
+ * - migration_preference 切到 amp_emotion 后立即看到曲线整体抬高
+ *
+ * 后端跑 LLM 多信号打分；失败回落规则版（curve.backend === 'rule_fallback'）。
+ */
+export async function recomputeEmotion(planId: PlanId): Promise<Plan> {
+  return await api.post<Plan>(`/plan/${planId}/recompute-emotion`, {})
+}

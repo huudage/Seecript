@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
-import { LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid, ReferenceLine } from 'recharts'
+import { LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid, ReferenceLine, ReferenceDot } from 'recharts'
 
 import { api, ApiError } from '@/api/client'
 import { commitStep, getStepSnapshot } from '@/api/steps'
@@ -1243,16 +1243,43 @@ function ProgressPanel({ step, percent, note }: { step: string; percent: number;
   )
 }
 
+function nearestIndex(times: number[], t: number): number {
+  if (!times.length) return -1
+  let best = 0
+  let bestD = Math.abs(times[0] - t)
+  for (let i = 1; i < times.length; i++) {
+    const d = Math.abs(times[i] - t)
+    if (d < bestD) {
+      bestD = d
+      best = i
+    }
+  }
+  return best
+}
+
 function ManifestView({ manifest, compact = false }: { manifest: SampleManifest; compact?: boolean }) {
+  const emotion = manifest.rhythm.emotion ?? null
   const moodCurve = manifest.rhythm.mood_curve ?? []
-  const rhythmData = manifest.rhythm.times.map((t, i) => ({
-    t,
-    mood: moodCurve[i] ?? 0,
-    bgm: manifest.rhythm.bgm_energy[i] ?? 0,
-  }))
+  // 优先用 stage-28 LLM emotion.points；fallback mood_curve（老 manifest 兼容）
+  const useEmotion = emotion && emotion.points.length > 0
+  const rhythmData = useEmotion
+    ? emotion!.points.map((pt) => {
+        // 按 t 在 rhythm.times 里近邻找一根 bgm 能量参考
+        const i = nearestIndex(manifest.rhythm.times, pt.t)
+        return {
+          t: pt.t,
+          mood: pt.intensity,
+          bgm: i >= 0 ? manifest.rhythm.bgm_energy[i] ?? 0 : 0,
+        }
+      })
+    : manifest.rhythm.times.map((t, i) => ({
+        t,
+        mood: moodCurve[i] ?? 0,
+        bgm: manifest.rhythm.bgm_energy[i] ?? 0,
+      }))
   const fitScore = manifest.rhythm.bgm_fit_score
   const fitNote = manifest.rhythm.bgm_fit_note ?? ''
-  const hasMood = moodCurve.length > 0
+  const hasMood = useEmotion || moodCurve.length > 0
 
   return (
     <div className="space-y-6">
@@ -1333,9 +1360,9 @@ function ManifestView({ manifest, compact = false }: { manifest: SampleManifest;
                     type="monotone"
                     dataKey="mood"
                     name="mood"
-                    stroke="hsl(217 91% 60%)"
+                    stroke={useEmotion ? 'hsl(265 87% 56%)' : 'hsl(217 91% 60%)'}
                     dot={false}
-                    strokeWidth={2.5}
+                    strokeWidth={useEmotion ? 3 : 2.5}
                     isAnimationActive={false}
                   />
                 )}
@@ -1347,6 +1374,7 @@ function ManifestView({ manifest, compact = false }: { manifest: SampleManifest;
                   dot={false}
                   strokeWidth={1.5}
                   strokeOpacity={0.6}
+                  strokeDasharray={useEmotion ? '4 3' : undefined}
                   isAnimationActive={false}
                 />
                 {manifest.climax_position != null && (
@@ -1357,17 +1385,84 @@ function ManifestView({ manifest, compact = false }: { manifest: SampleManifest;
                     label={{ value: `高潮 ${manifest.climax_position.toFixed(1)}s`, position: 'top', fill: 'hsl(0 84% 60%)', fontSize: 10 }}
                   />
                 )}
+                {useEmotion &&
+                  emotion!.peaks.map((pk, i) => (
+                    <ReferenceDot
+                      key={`peak-${i}`}
+                      x={pk.t}
+                      y={pk.intensity}
+                      r={5}
+                      fill="hsl(0 84% 55%)"
+                      stroke="white"
+                      strokeWidth={1.5}
+                    >
+                      <title>{`高潮 t=${pk.t.toFixed(1)}s · ${(pk.intensity * 100).toFixed(0)}%${pk.reason ? ` · ${pk.reason}` : ''}`}</title>
+                    </ReferenceDot>
+                  ))}
+                {useEmotion &&
+                  emotion!.valleys.map((vy, i) => (
+                    <ReferenceDot
+                      key={`valley-${i}`}
+                      x={vy.t}
+                      y={vy.intensity}
+                      r={4}
+                      fill="hsl(240 5% 50%)"
+                      stroke="white"
+                      strokeWidth={1.5}
+                    >
+                      <title>{`低谷 t=${vy.t.toFixed(1)}s · ${(vy.intensity * 100).toFixed(0)}%${vy.reason ? ` · ${vy.reason}` : ''}`}</title>
+                    </ReferenceDot>
+                  ))}
               </LineChart>
             </ResponsiveContainer>
           </div>
           <div className="mt-2 flex flex-wrap items-center gap-3 text-[11px] text-muted-foreground">
             <span className="inline-flex items-center gap-1">
-              <span className="inline-block h-0.5 w-4 bg-blue-500" /> 情绪走势（按段落结构低频平滑）
+              <span
+                className={cn(
+                  'inline-block h-0.5 w-4',
+                  useEmotion ? 'bg-violet-600' : 'bg-blue-500',
+                )}
+              />
+              {useEmotion ? '综合情绪强度（LLM 多信号打分）' : '情绪走势（按段落结构低频平滑）'}
             </span>
             <span className="inline-flex items-center gap-1">
-              <span className="inline-block h-0.5 w-4 bg-slate-400/70" /> BGM 能量（参考）
+              <span className={cn('inline-block h-0.5 w-4 bg-slate-400/70', useEmotion && 'border-b border-dashed')} /> BGM 能量（参考）
             </span>
+            {useEmotion && emotion!.peaks.length > 0 && (
+              <span className="inline-flex items-center gap-1">
+                <span className="inline-block h-2 w-2 rounded-full bg-rose-600" /> 高潮 ×{emotion!.peaks.length}
+              </span>
+            )}
+            {useEmotion && emotion!.valleys.length > 0 && (
+              <span className="inline-flex items-center gap-1">
+                <span className="inline-block h-2 w-2 rounded-full bg-slate-500" /> 低谷 ×{emotion!.valleys.length}
+              </span>
+            )}
           </div>
+          {useEmotion && emotion!.summary && (
+            <p className="mt-2 rounded-md bg-violet-500/10 px-2 py-1.5 text-xs leading-relaxed text-violet-900 dark:text-violet-200">
+              {emotion!.summary}
+            </p>
+          )}
+          {useEmotion && (emotion!.signals_used?.length ?? 0) > 0 && (
+            <div className="mt-2 flex flex-wrap items-center gap-1">
+              <span className="text-[10px] text-muted-foreground">参与打分信号：</span>
+              {emotion!.signals_used!.map((s) => (
+                <span
+                  key={s}
+                  className="rounded-full bg-secondary/60 px-1.5 py-0.5 text-[10px] text-muted-foreground"
+                >
+                  {s}
+                </span>
+              ))}
+              {emotion!.backend === 'rule_fallback' && (
+                <span className="rounded-full bg-amber-500/15 px-1.5 py-0.5 text-[10px] text-amber-700 dark:text-amber-300">
+                  规则兜底
+                </span>
+              )}
+            </div>
+          )}
           {fitNote && (
             <p className="mt-2 rounded-md bg-secondary/40 px-2 py-1.5 text-xs leading-relaxed text-muted-foreground">
               {fitNote}

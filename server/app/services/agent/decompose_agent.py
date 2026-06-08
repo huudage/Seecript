@@ -382,6 +382,31 @@ async def decompose(
         "overall_score": analysis.overall_score,
     })
 
+    # ---- 6d. stage-28 LLM 多信号情绪曲线：综合段落 + 镜头 + BGM + 全片复盘 ----
+    push("emotion_curve", 98, {"note": "LLM 综合打分情绪曲线"})
+    try:
+        from .emotion_agent import score_emotion as _score_emotion
+        emotion = await _score_emotion(
+            sections=sections,
+            shots=shots,
+            total_duration=total_duration,
+            bgm_analysis=audio_understanding,
+            bgm_energy=rhythm.bgm_energy,
+            bgm_times=rhythm.times,
+            understanding=understanding,
+            sample_analysis=analysis,
+            intent=None,  # 拆解阶段无用户意图
+        )
+        rhythm = rhythm.model_copy(update={"emotion": emotion})
+        push("emotion_curve", 99, {
+            "backend": emotion.backend,
+            "anchors": len(emotion.anchors),
+            "peaks": len(emotion.peaks),
+            "valleys": len(emotion.valleys),
+        })
+    except Exception as exc:  # noqa: BLE001
+        log.warning("[decompose] emotion scoring outer failure: %s", exc)
+
     # ---- 7. 打包 PackagingProfile（video_type 仍驱动包装风格）----
     subtitle_styles = [s for sh in shots for s in (sh.tags or []) if isinstance(s, str) and "字幕" in s]
     if subtitle_styles:

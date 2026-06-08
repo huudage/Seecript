@@ -390,6 +390,56 @@ class Utterance(BaseModel):
     end: float
 
 
+class EmotionAnchor(BaseModel):
+    """LLM 给某段落的情绪强度锚点（一段一条）。"""
+
+    section_idx: int = Field(..., ge=0, description="对应 sections 里的下标")
+    intensity: float = Field(..., ge=0.0, le=1.0, description="情绪强度 0..1")
+    reason: str = Field(default="", max_length=80, description="为什么是这个强度")
+
+
+class EmotionPeak(BaseModel):
+    """LLM 标记的情绪极值时刻（peaks/valleys 共用）。"""
+
+    t: float = Field(..., ge=0.0, description="时间点（秒），路由层会 clamp 到 [0, total_duration]")
+    intensity: float = Field(..., ge=0.0, le=1.0)
+    reason: str = Field(default="", max_length=80)
+
+
+class EmotionPoint(BaseModel):
+    """规则插值后的等距时间点（默认 60 个）。"""
+
+    t: float
+    intensity: float
+
+
+class EmotionCurve(BaseModel):
+    """LLM 多信号情绪曲线（拆解 + Plan 阶段都用）。
+
+    设计：LLM 输出 anchors（每段 1 个）+ peaks/valleys（≤2+2 个时刻），
+    规则层做线性插值 + peaks 凸包 + 滑动平均，得到 60 点等距曲线。
+    LLM 调用挂时回落到 `decompose_agent._build_mood_curve` 规则版（backend="rule_fallback"）。
+    """
+
+    points: list[EmotionPoint] = Field(default_factory=list, description="规则插值后的 60 点等距曲线")
+    anchors: list[EmotionAnchor] = Field(default_factory=list, description="LLM 段落锚点")
+    peaks: list[EmotionPeak] = Field(default_factory=list, description="LLM 标记的高潮（≤2 个）")
+    valleys: list[EmotionPeak] = Field(default_factory=list, description="LLM 标记的低谷（≤2 个）")
+    summary: str = Field(default="", max_length=200, description="一句话曲线总结，前端展示")
+    backend: Literal["llm", "rule_fallback"] = Field(
+        default="llm",
+        description="生成来源：llm 正常打分 / rule_fallback LLM 挂时回落",
+    )
+    signals_used: list[str] = Field(
+        default_factory=list,
+        description="参与打分的信号：role/bgm/cut/script/climax/intent/highlight 等。fallback 时只含 'role'。",
+    )
+    computed_at: Optional[float] = Field(
+        default=None,
+        description="生成时间（unix epoch 秒）；前端用来判断曲线是否相对 main_track 编辑过期",
+    )
+
+
 class RhythmCurve(BaseModel):
     """节奏 / 情绪走势曲线——前端拿来画"BGM 与视频结构契合度"图。
 
@@ -397,6 +447,7 @@ class RhythmCurve(BaseModel):
     - mood_curve / bgm_fit_score / bgm_fit_note 是主用字段;前端只画 mood_curve + bgm_energy 两条平滑线
       + 一个契合度评分文案,不再展示 cut_density / tempo_bpm。
     - cut_density / tempo_bpm 保留为兼容字段(老 manifest 可能携带,前端忽略);新数据写空列表 / None。
+    - emotion 是 stage-28 LLM 多信号情绪曲线,优先级高于 mood_curve;前端 fallback emotion → mood_curve。
     """
 
     times: list[float] = Field(..., description="采样时间点（秒）")
@@ -414,6 +465,10 @@ class RhythmCurve(BaseModel):
     bgm_fit_note: Optional[str] = Field(
         default=None,
         description="一句话说明 BGM 是否服务于视频结构（命中 / 错位 / 平稳 / 过度起伏 等）",
+    )
+    emotion: Optional[EmotionCurve] = Field(
+        default=None,
+        description="stage-28 LLM 多信号情绪曲线；老 manifest 缓存为 None，前端按 None fallback mood_curve。",
     )
 
 
@@ -1893,6 +1948,14 @@ class Plan(BaseModel):
         description=(
             "本次 plan/build 注入的个性知识库规则总数（top-10 最近完成项目 + 用户额外启用项目）。"
             "前端 Compose 生成完成 modal 上 \"已应用 N 条 / 去管理\" 徽标读这个数。"
+        ),
+    )
+    emotion_curve: Optional[EmotionCurve] = Field(
+        default=None,
+        description=(
+            "stage-28 LLM 多信号情绪曲线（基于 plan 自身的 main_track + bgm + ref_manifest + 用户意图）。"
+            "Compose 工作坊 EmotionCurveCard 读它；BGM 切换 / migration_preference 调整后由"
+            "/plan/{id}/recompute-emotion 或 bgm/attach 自动重算。None 表示未计算（老 plan 兼容）。"
         ),
     )
 
