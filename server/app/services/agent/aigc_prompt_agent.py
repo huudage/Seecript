@@ -111,14 +111,24 @@ async def generate_aigc_prompt(
     if hint:
         user_lines.append(f"创作者额外提示：{hint}")
     # stage-24：把 ShotPlan 显式告知 LLM，让它在 T2V prompt 里覆盖每个分镜的主体/画面
+    # stage-25：若分镜带 targets，按目标分布提示 T2V prompt 须覆盖每个目标
     shots = getattr(section, "shots", None) or [] if section else []
     if shots:
         shot_lines = ["本段分镜清单（请把每一镜的画面要素融进同一句 T2V prompt）："]
         for sh in shots:
-            shot_lines.append(
+            base = (
                 f"  · 分镜 #{sh.order+1}（{sh.duration_seconds:.1f}s）"
                 f" 主体={sh.subject or '—'} | 画面={sh.visual or '—'}"
             )
+            tgts = getattr(sh, "targets", None) or []
+            if tgts:
+                tgt_str = "; ".join(
+                    f"{t.kind}-{t.name}" + (f"({t.role})" if t.role else "")
+                    + (f"[{t.visual_hint}]" if t.visual_hint else "")
+                    for t in tgts
+                )
+                base += f" | 目标={tgt_str}"
+            shot_lines.append(base)
         user_lines.append("\n".join(shot_lines))
     user_lines.append("请输出一句完备的 t2v_prompt，覆盖主体/景别/机位/光线/质感/情绪。")
 
@@ -189,12 +199,15 @@ def _fallback_prompt(gap: Gap, section: Optional[AdaptedSection], hint: str) -> 
 # =========================================================================
 
 _IMAGE_SPEC_SYSTEM = (
-    "你是 Seedance 文生视频的『参考图策展人 Agent』。给定一个段落的角色 / 主题 / 内容 / 时长，"
-    "决定为这一段视频提前准备 1-3 张参考图（含首帧），让 Seedance 出片更稳。\n\n"
+    "你是 Seedance 文生视频的『参考图策展人 Agent』。给定一个段落的角色 / 主题 / 内容 / 时长 / 镜头目标，"
+    "决定为这一段视频提前准备 1-4 张参考图（含首帧），让 Seedance 出片更稳。\n\n"
     "—— 工作流 ——\n"
     "1. 先看段落主题与内容说明，识别画面里要出现的核心主体（人 / 物 / 场景）。\n"
-    "2. 判断段落信息密度：单主体情绪过场 1 张；主体+环境 2 张；多主体并列 3 张。\n"
-    "3. 为每张图设计互补构图：避免重复景别 / 机位 / 角度。\n\n"
+    "2. **如果分镜带 targets 字段（比如带货视频一镜里『人物+商品』）→ 必须为每个 target 单独出 1 张图**，"
+    "把目标个数作为参考图张数的下限：targets=2 至少 2 张图，targets=3 至少 3 张图。\n"
+    "3. 没有 targets 时按段落信息密度：单主体过场 1 张；主体+环境 2 张；多主体并列 3 张。\n"
+    "4. 为每张图设计互补构图：避免重复景别 / 机位 / 角度；多目标时每张图聚焦一个 target，"
+    "在 caption 里点明这张图覆盖的是哪个 target（『主体特写：青瓷瓶』『辅体：展柜环境』）。\n\n"
     "—— 绝对禁止 ——\n"
     "1. 不许在 prompt 里描述任何字幕 / 标题 / 文案 / 大字 / 弹幕 / 角标 / Logo overlay——"
     "字幕由后端单独烧录，参考图只画纯画面。\n"
@@ -202,9 +215,10 @@ _IMAGE_SPEC_SYSTEM = (
     "3. 不许『本段』『第 X 段』等元数据自指。\n"
     "4. caption 不要写『参考图 1』『第一张』，要写人话（『展厅入口仰拍』『海报特写』）。\n\n"
     "—— 字段规范 ——\n"
-    "• slot_id：img-1 / img-2 / img-3，按出现顺序编号\n"
-    "• caption：≤30 字给创作者看的人话标签（『展厅入口仰拍』）\n"
-    "• prompt：60-120 字一句中文，给 Seedream 文生图直接消费——必须覆盖 [主体动作 · 镜头语言 · 视觉风格 · 氛围] 四块\n"
+    "• slot_id：img-1 / img-2 / img-3 / img-4，按出现顺序编号\n"
+    "• caption：≤30 字给创作者看的人话标签（『展厅入口仰拍』；多 target 时点明覆盖哪个 target）\n"
+    "• prompt：60-120 字一句中文，给 Seedream 文生图直接消费——必须覆盖 [主体动作 · 镜头语言 · 视觉风格 · 氛围] 四块；"
+    "若是 per-target 图，prompt 必须以该 target 的 name + visual_hint 为绝对主体\n"
     "• ratio：竖屏/抖音用 9:16，横屏/B 站用 16:9，方版用 1:1（按用户给的 default_ratio 兜底）\n\n"
     "—— 输出 JSON ——\n"
     "{\"specs\": [{\"slot_id\": \"img-1\", \"caption\": \"...\", \"prompt\": \"...\", \"ratio\": \"16:9\"}], "
@@ -270,18 +284,35 @@ async def generate_image_specs(
     if hint:
         user_lines.append(f"创作者额外提示：{hint}")
     # stage-24：若 plan_agent 已给出 ShotPlan 拆分，让 image-spec 一镜一图严格对齐
+    # stage-25：若分镜带 targets，每个 target 一张图；caption 点明覆盖目标
     shots = getattr(section, "shots", None) or [] if section else []
     if shots:
-        shot_lines = [
-            f"本段已被拆为 {len(shots)} 个分镜，请按一镜一图输出（specs 数量等于 N，slot_id 与分镜序号对应）："
-        ]
+        total_targets = sum(len(getattr(sh, "targets", None) or []) for sh in shots)
+        if total_targets > 0:
+            shot_lines = [
+                f"本段已被拆为 {len(shots)} 个分镜，共 {total_targets} 个 target。"
+                f"请按【每个 target 一张图】输出（specs 数量 ≥ target 总数，上限 4）："
+            ]
+        else:
+            shot_lines = [
+                f"本段已被拆为 {len(shots)} 个分镜，请按一镜一图输出（specs 数量等于 N，slot_id 与分镜序号对应）："
+            ]
         for sh in shots:
-            shot_lines.append(
+            base = (
                 f"  · 分镜 #{sh.order+1}（{sh.duration_seconds:.1f}s）"
                 f" 主体={sh.subject or '—'} | 画面={sh.visual or '—'}"
             )
+            tgts = getattr(sh, "targets", None) or []
+            if tgts:
+                tgt_str = "; ".join(
+                    f"{t.kind}-{t.name}" + (f"({t.role})" if t.role else "")
+                    + (f"[{t.visual_hint}]" if t.visual_hint else "")
+                    for t in tgts
+                )
+                base += f" | 目标={tgt_str}"
+            shot_lines.append(base)
         user_lines.append("\n".join(shot_lines))
-    user_lines.append("请输出 1-3 张参考图的 specs JSON。")
+    user_lines.append("请输出 1-4 张参考图的 specs JSON（带 targets 时按 target 个数出图）。")
 
     user = "\n".join(user_lines)
 
@@ -296,7 +327,7 @@ async def generate_image_specs(
                 thinking = [str(x).strip()[:60] for x in raw_thinking if str(x).strip()][:4]
         if isinstance(data, dict) and isinstance(data.get("specs"), list):
             specs: list[ImageSpec] = []
-            for i, raw in enumerate(data["specs"][:3]):
+            for i, raw in enumerate(data["specs"][:4]):
                 if not isinstance(raw, dict):
                     continue
                 caption = str(raw.get("caption") or "").strip()[:80]

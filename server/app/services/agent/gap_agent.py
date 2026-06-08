@@ -1016,15 +1016,34 @@ def _extract_subjects_from_section(section: "AdaptedSection | None") -> list[str
     if section is None:
         return []
     # stage-24: 优先吃 plan_agent 给的分镜
+    # stage-25: 若分镜带 targets（人/物/场景目标），按 target 展开——每个 target 一张图
     shots = getattr(section, "shots", None) or []
     if shots:
         subs: list[str] = []
-        for sh in shots[:4]:  # gap_agent 多图最多 4 张
-            label = (sh.subject or "").strip() or (sh.visual or "").strip()
-            if label:
-                subs.append(label[:30])
+        for sh in shots:
+            tgts = getattr(sh, "targets", None) or []
+            if tgts:
+                # 每个 target 单独成一张图：以 target.name + visual_hint 为主体
+                shot_subj = (sh.subject or "").strip()
+                for t in tgts:
+                    name = (t.name or "").strip()
+                    if not name:
+                        continue
+                    hint = (t.visual_hint or "").strip()
+                    label = f"{name}（{hint}）" if hint else name
+                    if shot_subj and shot_subj not in label:
+                        label = f"{shot_subj} - {label}"
+                    subs.append(label[:30])
+                    if len(subs) >= 4:
+                        break
+            else:
+                label = (sh.subject or "").strip() or (sh.visual or "").strip()
+                if label:
+                    subs.append(label[:30])
+            if len(subs) >= 4:  # gap_agent 多图最多 4 张
+                break
         if subs:
-            return subs
+            return subs[:4]
 
     text = (section.content_description or "").strip()
     if not text:

@@ -144,6 +144,21 @@ export interface Shot {
   script?: string
   /** stage-23：语义合并保留——被并入的原 shot indices；length>1 表示「N 镜合 1」。 */
   merged_from?: number[]
+  /** stage-25：本镜的目标分布（0-4 个，可空）。样例 Shot.targets 仅作为 plan_agent 节奏参考，
+   *  graphic 类的具体动效图形（如莫比乌斯环）绝不会被原样迁移到目标主题。 */
+  targets?: ShotTarget[]
+}
+
+export type ShotTargetKind = 'person' | 'object' | 'scene' | 'text' | 'graphic' | 'other'
+
+export interface ShotTarget {
+  kind: ShotTargetKind
+  /** 目标的简短名（≤12 中文字），如『主播』『青铜鼎』『展厅全景』『品牌字』 */
+  name: string
+  /** primary=主体 / secondary=陪体 / background=背景。空等价 primary。 */
+  role?: 'primary' | 'secondary' | 'background' | null
+  /** 该目标的视觉特征/动作（≤40 字），辅助 Seedream 出图 */
+  visual_hint?: string | null
 }
 
 export interface RhythmCurve {
@@ -547,6 +562,9 @@ export interface ShotPlan {
   source_hint?: 'sample' | 'user_material' | 'aigc_t2v' | 'aigc_image' | 'text_card' | null
   matched_material_id?: string | null
   matched_material_shot_index?: number | null
+  /** stage-25：本镜要呈现的目标列表（0-4 个）。空 = 单目标按 visual 整段出图（老路）；
+   *  非空 = aigc 多图合成（N 张 Seedream → 喂 T2V）。 */
+  targets?: ShotTarget[]
 }
 
 export interface AdaptedSection {

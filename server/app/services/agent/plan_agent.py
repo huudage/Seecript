@@ -28,6 +28,7 @@ from ...schemas import (
     Section,
     SectionRole,
     ShotPlan,
+    ShotTarget,
     STRUCTURAL_PATTERNS,
     allowed_roles_for,
     role_is_closing,
@@ -42,6 +43,19 @@ log = logging.getLogger("seecript.agent.plan")
 _ADAPT_SYSTEM = (
     "你是短视频结构改编师。给定 1-2 个参考样例视频的真实段落结构、视频画像（含 structural_pattern 与 tempo），"
     "以及创作者的主题、视频目的与创作设置，请把这些样例的『骨架』改编为本次新视频的段落结构。\n\n"
+    "【stage-25 核心铁律 · 迁移结构 ≠ 抄内容】\n"
+    "你要迁移的是样例的【结构】（段落角色 / 节奏 / 钩子-推进-高潮-收束的分配 / 镜头长度比例），"
+    "**不是样例的具体视觉内容**。下面这些是『内容』，绝不可原样搬到新主题：\n"
+    "- 样例里出现的具体物品（如『紫色莫比乌斯环』『毕业海报』『紫灰撞色背景』『某 logo』）\n"
+    "- 样例的具体场景（如『毕业典礼现场』『校园』『画展』）\n"
+    "- 样例特定的颜色配方 / 字体 / 动效图形（视为 graphic 类目标，需在新主题下重新设计）\n"
+    "- 样例口播里的具体词汇 / 人名 / 校名 / 品牌名\n"
+    "正确做法：从样例 Shot.targets 里只读『目标的类型分布与角色』——\n"
+    "  · 样例镜头 = `[graphic: 紫色莫比乌斯环 primary, text: 展览大字 secondary]` →\n"
+    "    结构特征 = 『1 个动态主图形 + 1 个主题大字』，可迁移；\n"
+    "    迁移到『国家文物展』后应变成 `[object: 镇馆文物 primary, text: 展览大字 secondary]`，\n"
+    "    **绝不允许保留紫色莫比乌斯环或紫灰撞色**。\n"
+    "  · 样例的钩子节奏（如『开篇 2s 强动效拉眼球』）可迁移，但里面填什么必须按 brief 重写。\n\n"
     "若给了 2 个参考样例，请将它们作为对等的灵感来源，不必偏向某一份；可借用任一份的"
     "节奏、卡点与段落创意，但不要把两份段落简单拼接（最终段数仍受硬约束）。\n\n"
     "允许：增加段落、删除冗余段落、合并相邻段落、调整顺序。\n\n"
@@ -60,7 +74,8 @@ _ADAPT_SYSTEM = (
     "尽量自然融入；若给了 CTA，收尾段口播须体现。"
     "**重要**：必须明确指出本段画面的『主体』（人物/物品/场景），"
     "若有多个并列主体（如『青铜器、玉器、瓷器』）须显式列出，"
-    "下游会据此自动拆成多个分镜——一个主体 = 一个分镜。\n"
+    "下游会据此自动拆成多个分镜——一个主体 = 一个分镜。"
+    "**禁止**保留样例的具体物体/颜色名（『莫比乌斯环』『紫灰撞色』等），按 brief 重写。\n"
     "**分镜数量硬约束（stage-23 / E-PR 收敛）**：\n"
     "- 开场段（opening / intro / hook / establish / intro_scene / title_card）"
     "和收尾段（closing / recap / closer / resolve / wrap_up / payoff）："
@@ -82,11 +97,17 @@ _ADAPT_SYSTEM = (
     "narration（≤80 字本镜口播或字幕，纯画面镜头可空。**严禁为了凑时长复述同一个意思**——"
     "宁可短不许水；step3 阶段会按段长再做一次精确重写，所以这里给个简短初版即可）、"
     "duration_seconds（本镜时长，所有 shot 之和应等于本段 duration_seconds，"
-    "单镜 1-15s）。\n\n"
+    "单镜 1-15s）、"
+    "**targets（stage-25 新增）**：本镜要呈现的目标分布数组（0-4 个，可空）。"
+    "每个目标 = {kind: person/object/scene/text/graphic/other, name: ≤12 字短名, "
+    "role: primary/secondary/background（可空，主体留 primary）, visual_hint: ≤40 字视觉特征（可空）}。"
+    "**多目标镜必须分开列**（如带货镜含 `[人物-主播, 物品-商品]`，文物展含 `[物品-文物, 文字-展名]`）。"
+    "下游 aigc 补齐会按 targets 数量并行出 N 张图再喂 T2V，单目标镜走老路。\n\n"
     "返回 JSON：{\"adapted_sections\": [{\"role\": str, \"theme\": str, "
     "\"content_description\": str, \"adaptation_note\": str, \"tempo\": str|null, "
     "\"duration_seconds\": number, \"source_section_indices\": [int], "
-    "\"shots\": [{\"subject\": str, \"visual\": str, \"narration\": str, \"duration_seconds\": number}]}]}"
+    "\"shots\": [{\"subject\": str, \"visual\": str, \"narration\": str, \"duration_seconds\": number, "
+    "\"targets\": [{\"kind\": str, \"name\": str, \"role\": str|null, \"visual_hint\": str|null}]}]}]}"
 )
 
 
@@ -215,6 +236,21 @@ async def adapt_structure(
             f"[{global_idx}] {tag}role={sec.role} | theme={theme} | shots={shots} | summary={summary}"
         )
 
+    # stage-25：样例 Shot.targets 频次摘要——只给 LLM 看『结构成分』（多少个 graphic/object/text 镜头），
+    # 不传具体 name（避免 LLM 把『紫色莫比乌斯环』这种内容直接搬过来当结构）。
+    target_kind_summary: list[str] = []
+    for mi, manifest in enumerate(manifests):
+        kind_counts: dict[str, int] = {}
+        for sh in manifest.shots:
+            for t in (sh.targets or []):
+                kind_counts[t.kind] = kind_counts.get(t.kind, 0) + 1
+        if not kind_counts:
+            continue
+        prefix = f"样例{chr(ord('A') + mi)} " if multi else ""
+        parts = [f"{k}×{v}" for k, v in sorted(kind_counts.items(), key=lambda kv: -kv[1])]
+        target_kind_summary.append(f"{prefix}样例镜头目标分布（结构成分参考，不含具体内容）：{', '.join(parts)}")
+    target_summary_text = "\n".join(target_kind_summary) if target_kind_summary else ""
+
     # understanding：每份样例独立一段；缺失跳过
     understanding_blocks: list[str] = []
     for mi, manifest in enumerate(manifests):
@@ -249,7 +285,11 @@ async def adapt_structure(
         f"- 必须出现的关键词：{kw_text}\n\n"
         f"{pattern_hint}\n\n"
         f"原样例共 {n_src} 段：\n" + "\n".join(sample_lines) + "\n\n"
-        f"请基于以上信息改编段落结构（"
+        + (f"{target_summary_text}\n（注意：上述 graphic 类目标是样例的【动效形式特征】，"
+           f"必须按本次 brief 的目标域重新设计——比如样例的『紫色莫比乌斯环』在文物展主题下"
+           f"应替换为『镇馆文物的环绕展示』之类的同节奏图形，而不是搬同一个图形/同一个颜色。）\n\n"
+           if target_summary_text else "")
+        + f"请基于以上信息改编段落结构（"
         f"{'2-8' if pattern == 'listicle' else '3-7'} 段，遵守硬约束，"
         f"所有段时长之和贴近 {target_total:.0f}s）。"
     )
@@ -552,12 +592,36 @@ def _normalize_shot_durations(shots_raw: list[dict], section_total: float) -> li
 
     out: list[ShotPlan] = []
     for order, s in enumerate(shots_raw):
+        # stage-25：解析 LLM 给的 targets（可空）
+        raw_targets = s.get("targets") or []
+        parsed_targets: list[ShotTarget] = []
+        if isinstance(raw_targets, list):
+            for t in raw_targets[:4]:
+                if not isinstance(t, dict):
+                    continue
+                name = str(t.get("name") or "").strip()[:24]
+                if not name:
+                    continue
+                kind = str(t.get("kind") or "object").strip().lower()
+                if kind not in ("person", "object", "scene", "text", "graphic", "other"):
+                    kind = "other"
+                role_val = t.get("role")
+                tgt_role: Optional[str] = None
+                if isinstance(role_val, str) and role_val in ("primary", "secondary", "background"):
+                    tgt_role = role_val
+                hint = t.get("visual_hint")
+                hint = str(hint).strip()[:80] if isinstance(hint, str) and hint.strip() else None
+                try:
+                    parsed_targets.append(ShotTarget(kind=kind, name=name, role=tgt_role, visual_hint=hint))  # type: ignore[arg-type]
+                except Exception:  # noqa: BLE001
+                    continue
         out.append(ShotPlan(
             order=order,
             subject=s.get("subject", "") or "",
             visual=s.get("visual", "") or "",
             narration=s.get("narration", "") or "",
             duration_seconds=round(float(s.get("duration_seconds") or 2.5), 2),
+            targets=parsed_targets,
         ))
     return out
 

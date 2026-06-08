@@ -302,6 +302,42 @@ class LibraryItem(BaseModel):
     )
 
 
+class ShotTarget(BaseModel):
+    """stage-25：分镜内的"目标"——一个分镜可能聚焦多个目标（人/物/场景/字）。
+
+    设计动机：
+    - 带货视频一镜常含 主播+商品 两个目标
+    - 文物展一镜常含 文物+解说字幕 两个目标
+    - 现状缺这个层级 → AIGC 补齐时只能"按整段画面描述"出图，丢失目标分布
+    - decompose_agent 给样例 Shot 标 targets（用于"结构迁移参考"，不直接搬主体）
+    - plan_agent 给 ShotPlan 写 targets（声明本镜要呈现哪些目标，gap_agent 据此多图合成）
+    - aigc_prompt_agent 多目标拆 N 个 Seedream prompt → 各出 1 张 → 合成给 T2V
+    """
+
+    kind: Literal[
+        "person",      # 人物（主播/客户/路人）
+        "object",      # 物品（商品/道具/文物/食物）
+        "scene",       # 场景（展厅/街景/室内/景观）
+        "text",        # 字幕/标题/字卡（仅作为目标声明，不是画面元素）
+        "graphic",     # 动效图形（仅样例参考，迁移时 plan_agent 必须替换为目标域）
+        "other",
+    ] = Field(default="object", description="目标类型，决定下游图像生成的 prompt 模板")
+    name: str = Field(
+        ...,
+        max_length=24,
+        description="目标的简短名（≤12 中文字），如『主播』『青铜鼎』『展厅全景』『品牌字』",
+    )
+    role: Optional[Literal["primary", "secondary", "background"]] = Field(
+        default=None,
+        description="目标在本镜中的位置：primary=主体 / secondary=陪体 / background=背景。None 等价 primary。",
+    )
+    visual_hint: Optional[str] = Field(
+        default=None,
+        max_length=80,
+        description="可选：该目标的视觉特征/动作/构图（≤40 字），辅助 Seedream 出图",
+    )
+
+
 class Shot(BaseModel):
     """PySceneDetect 输出的镜头切片（stage-23 起作为「分镜」最小表达单元）。"""
 
@@ -311,7 +347,7 @@ class Shot(BaseModel):
     duration: float
     thumbnail_url: Optional[str] = None
     transcript: Optional[str] = Field(default=None, description="本镜头对应的 ASR 口播片段（原始）")
-    tags: list[str] = Field(default_factory=list, description="VLM 帧打标（封面风格/转场/字幕样式等）")
+    tags: list[str] = Field(default_factory=list, description="VLM 帧打标（封面风格/转场/字幕样式等)")
     visual_summary: str = Field(
         default="",
         max_length=120,
@@ -325,6 +361,13 @@ class Shot(BaseModel):
     merged_from: list[int] = Field(
         default_factory=list,
         description="语义合并保留：被并入的原 shot indices；len>1 表示「N 镜合 1」",
+    )
+    targets: list[ShotTarget] = Field(
+        default_factory=list,
+        max_length=4,
+        description="stage-25：本镜的目标分布（可空，老 manifest 默认 [])。"
+                    "样例 Shot 的 targets 仅作为 plan_agent 节奏参考——「graphic 类的莫比乌斯环」"
+                    "等具体视觉物体绝不会被原样迁移到目标主题。",
     )
 
 
@@ -1118,6 +1161,14 @@ class ShotPlan(BaseModel):
     matched_material_shot_index: Optional[int] = Field(
         default=None,
         description="匹配上的用户素材内分镜 index（MaterialShot.index）",
+    )
+    targets: list[ShotTarget] = Field(
+        default_factory=list,
+        max_length=4,
+        description="stage-25：本镜要呈现的目标列表（0-4 个）。"
+                    "plan_agent 在改编时按目标域（target_brief）声明，"
+                    "下游 aigc_prompt_agent 按 N 个目标各拼 N 个 Seedream prompt → N 张图 → 合成给 T2V。"
+                    "空列表 = 单目标（按 visual 整段出 1 张图，老路）。",
     )
 
 

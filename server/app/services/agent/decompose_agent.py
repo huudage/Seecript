@@ -40,6 +40,7 @@ from ...schemas import (
     Section,
     SectionRole,
     Shot,
+    ShotTarget,
     Utterance,
     VideoUnderstanding,
     VideoType,
@@ -728,12 +729,20 @@ def _merge_similar_shots(shots: list[Shot]) -> list[Shot]:
 # stage-23 prompts: 画面描述 + 脚本清洗
 _VISUAL_SCRIPT_SYSTEM = (
     "你是短视频拆解助手。给定一组按时间排序的镜头（含缩略图、tags、可能的口播片段），"
-    "为**每个镜头**生成两个字段：\n"
+    "为**每个镜头**生成三个字段：\n"
     "- visual：≤60 中文字，描述这一镜的画面主体/动作/构图；不要照抄 tags，要写画面在演什么\n"
     "- script：≤80 中文字，本镜的口播或代字幕文案。\n"
     "    · 有 transcript 时：清洗（去 'emm/啊/呃' 这类口语停顿、修标点）后填进去\n"
     "    · 无 transcript 时（纯 BGM 视频）：根据画面 + 整片调性写一句『代字幕』参考文案，不要瞎编台词\n"
-    "返回 JSON：{\"items\": [{\"shot_index\": int, \"visual\": str, \"script\": str}, ...]}\n"
+    "- targets：本镜的目标分布（数组，0-4 个；可空数组）。每个目标 = {\n"
+    "    kind: person/object/scene/text/graphic/other,\n"
+    "    name: 简短名（≤12 中文字，如『主播』『青铜鼎』『展厅全景』『品牌字』『莫比乌斯环』），\n"
+    "    role: primary/secondary/background（可空，主体留 primary）,\n"
+    "    visual_hint: 视觉特征（≤40 字，可空）}\n"
+    "  · 多目标场景必须分开列：带货镜常含 `[人物-主播, 物品-商品]`；文物展常含 `[物品-文物, 文字-展名]`\n"
+    "  · graphic 类用于纯动效图形（如莫比乌斯环、几何形状），下游 plan_agent 会**重写**为目标域\n"
+    "  · 单纯空镜 / 转场 / 抽象图形的镜头可以返 [] 空数组\n"
+    "返回 JSON：{\"items\": [{\"shot_index\": int, \"visual\": str, \"script\": str, \"targets\": [...]}, ...]}\n"
     "items 长度等于镜头数，按 shot_index 升序。"
 )
 
@@ -795,6 +804,30 @@ async def _attach_visual_and_script(shots: list[Shot], has_voice: bool, tone_hin
             script = (sh.transcript or "")[:200]
         sh.visual_summary = visual
         sh.script = script
+        # stage-25：解析 targets 字段。失败 / 缺字段 → 留空 list（"可以没有"）
+        raw_targets = item.get("targets") or []
+        parsed: list[ShotTarget] = []
+        if isinstance(raw_targets, list):
+            for t in raw_targets[:4]:
+                if not isinstance(t, dict):
+                    continue
+                name = str(t.get("name") or "").strip()[:24]
+                if not name:
+                    continue
+                kind = str(t.get("kind") or "object").strip().lower()
+                if kind not in ("person", "object", "scene", "text", "graphic", "other"):
+                    kind = "other"
+                role_val = t.get("role")
+                role: Optional[str] = None
+                if isinstance(role_val, str) and role_val in ("primary", "secondary", "background"):
+                    role = role_val
+                hint = t.get("visual_hint")
+                hint = str(hint).strip()[:80] if isinstance(hint, str) and hint.strip() else None
+                try:
+                    parsed.append(ShotTarget(kind=kind, name=name, role=role, visual_hint=hint))  # type: ignore[arg-type]
+                except Exception:  # noqa: BLE001
+                    continue
+        sh.targets = parsed
 
 
 # stage-23 全片复盘 prompt

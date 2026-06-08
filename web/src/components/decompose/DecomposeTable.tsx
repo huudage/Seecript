@@ -5,15 +5,36 @@
  * 全部纵向铺开，结构列按 section 合并相邻行（rowspan），让用户一眼能把"哪段
  * 对应哪个分镜、画面在演什么、口播说什么"看穿。
  *
+ * stage-25：内容列额外渲染 targets chip（人/物/场景目标），样例拆解时直观
+ * 看到每镜要保留的"结构成分"，给后续多目标补图提供参考。
+ *
  * 编辑能力：当前版本只读；ManifestEditor 里的字段编辑走另一条路（沿用
  * Decompose.tsx 已有的 shots sub-form），表格本身不接管 onChange。
  */
-import type { SampleManifest, Shot, Section } from '@/types/schemas'
+import type { SampleManifest, Shot, Section, ShotTargetKind } from '@/types/schemas'
 import { SECTION_BG, SECTION_LABEL } from '@/lib/sections'
 import { cn } from '@/lib/utils'
 
 interface Props {
   manifest: SampleManifest
+}
+
+const TARGET_KIND_STYLE: Record<ShotTargetKind, string> = {
+  person: 'bg-blue-500/15 text-blue-700 dark:text-blue-300',
+  object: 'bg-emerald-500/15 text-emerald-700 dark:text-emerald-300',
+  scene: 'bg-amber-500/15 text-amber-700 dark:text-amber-300',
+  text: 'bg-rose-500/15 text-rose-700 dark:text-rose-300',
+  graphic: 'bg-purple-500/15 text-purple-700 dark:text-purple-300',
+  other: 'bg-slate-500/15 text-slate-700 dark:text-slate-300',
+}
+
+const TARGET_KIND_LABEL: Record<ShotTargetKind, string> = {
+  person: '人物',
+  object: '物品',
+  scene: '场景',
+  text: '文字',
+  graphic: '图形',
+  other: '其他',
 }
 
 function formatTime(s: number): string {
@@ -137,6 +158,29 @@ export function DecomposeTable({ manifest }: Props) {
                     <p className="text-[11px] italic text-muted-foreground">
                       （未生成画面描述）
                     </p>
+                  )}
+                  {shot.targets && shot.targets.length > 0 && (
+                    <div className="mt-1.5 flex flex-wrap gap-1">
+                      {shot.targets.map((t, ti) => (
+                        <span
+                          key={ti}
+                          title={
+                            t.visual_hint
+                              ? `${TARGET_KIND_LABEL[t.kind]} · ${t.visual_hint}`
+                              : TARGET_KIND_LABEL[t.kind]
+                          }
+                          className={cn(
+                            'inline-flex items-center gap-0.5 rounded px-1.5 py-0.5 text-[9px] font-medium',
+                            TARGET_KIND_STYLE[t.kind],
+                          )}
+                        >
+                          <span className="opacity-70">{TARGET_KIND_LABEL[t.kind]}</span>
+                          <span>·</span>
+                          <span>{t.name}</span>
+                          {t.role === 'primary' && <span className="opacity-70">★</span>}
+                        </span>
+                      ))}
+                    </div>
                   )}
                   {shot.tags && shot.tags.length > 0 && (
                     <div className="mt-1.5 flex flex-wrap gap-1">
