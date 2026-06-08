@@ -135,11 +135,23 @@ async def synthesize_all(req: VoiceSynthesizeAllRequest) -> VoiceSynthesizeAllRe
     truncated_ids: list[str] = []
     failures: list[dict] = []
 
+    # 段映射，给空 narration 兜底用
+    sec_by_id = {sec.section_id: sec for sec in (plan.adapted_sections or [])}
+
     for scene in plan.main_track:
         text = (scene.narration or "").strip()
         if not text:
-            skipped.append(scene.scene_id)
-            continue
+            # 防御性兜底：narration_agent 应已填好，但万一手工清空也要给一句话避免音轨空缺
+            sec = sec_by_id.get(scene.parent_section_id or "")
+            subj = (scene.shot_subject or "").strip()
+            theme = (sec.theme if sec else "").strip() if sec else ""
+            content = (sec.content_description if sec else "").strip() if sec else ""
+            text = (subj or theme or content or "画面定格")[:24]
+            if len(text) < 3:
+                text = "画面定格"
+            scene.narration = text
+            log.warning("[voice] synthesize_all plan=%s scene=%s narration 空 → 兜底填 %r",
+                        req.plan_id, scene.scene_id, text)
         try:
             wav_bytes, truncated = await asyncio.to_thread(
                 synthesize_with_alignment,

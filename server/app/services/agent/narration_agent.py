@@ -40,14 +40,15 @@ _NARRATION_SYSTEM = (
     "• 普通话播报均速约 5 字/秒；每段口播字数 = 段时长 × 5（向下取整）。\n"
     "• 字数请控制在『目标字数 -30%』到『目标字数』之间——宁可短一点留白，也不要超时。\n"
     "• 钩子/开场段建议比目标字数再短 10-20%，让画面留出呼吸；高潮/收尾段尽量贴近目标。\n"
-    "• 纯画面镜头（plan 里 visual 描述偏静态、subject 是物品特写或无人物动作）允许 narration 为空字符串。\n\n"
+    "• **每个分镜都必须给一句不少于 3 个字的口播**——不允许返回空字符串。即使是纯画面/物品特写，"
+    "也用一句简短的『画面解说 / 旁白点评 / 状态说明』来填，给观众一个停留点。\n\n"
     "—— 风格 ——\n"
     "• 口语化、有节奏感；动词优先；少用形容词堆砌。\n"
     "• 把『你 / 我们 / 来 / 看 / 试试』这类对话感词放在合适处（不是每段都用）。\n"
     "• 整片串起来念应当像一个人在讲故事，而不是一段段独立旁白。\n\n"
     "—— 输出 JSON ——\n"
-    "{\"narrations\": [{\"scene_id\": \"sc-0\", \"text\": \"...\"}, {\"scene_id\": \"sc-1-shot-1\", \"text\": \"\"}, ...]}\n"
-    "scene_id 必须与输入的 scene_id 一一对应；缺漏的 scene 视为空文案。\n"
+    "{\"narrations\": [{\"scene_id\": \"sc-0\", \"text\": \"...\"}, {\"scene_id\": \"sc-1-shot-1\", \"text\": \"...\"}, ...]}\n"
+    "scene_id 必须与输入的 scene_id 一一对应；**每条 text 都必须 ≥ 3 字，不允许空字符串**。\n"
     "text 严格遵守上面的字数与禁复述约束。"
 )
 
@@ -103,7 +104,7 @@ async def regenerate_narrations(plan: Plan) -> dict[str, str]:
     user_lines.extend(scene_table)
     user_lines.append(
         "请输出 JSON：{\"narrations\":[{\"scene_id\":..., \"text\":...}]}\n"
-        "严格执行字数上限与禁复述约束；纯画面镜头允许 text 为空字符串。"
+        "严格执行字数上限与禁复述约束；**每个 scene 都必须给一句 ≥ 3 字的 text，不允许返回空**。"
     )
 
     user = "\n".join(user_lines)
@@ -135,13 +136,45 @@ async def regenerate_narrations(plan: Plan) -> dict[str, str]:
         cap = int(target * 1.2)
         if len(txt) > cap:
             txt = _truncate_at_punct(txt, cap)
+        # 空/过短回退：用 shot_subject + section theme 拼一句兜底，避免 voice/synthesize-all 跳过
+        if len(txt) < 3:
+            txt = _fallback_narration(sc, sec_by_id, target)
         out[sid] = txt
+
+    # LLM 漏给某些 scene → 也用兜底填上（synthesize_all 不能再有空缺）
+    for sc in scenes:
+        if sc.scene_id not in out:
+            target = max(1, int(sc.duration * _CHARS_PER_SECOND))
+            out[sc.scene_id] = _fallback_narration(sc, sec_by_id, target)
 
     log.info(
         "[narration] plan=%s ok %d/%d scenes covered, %d non-empty",
         plan.plan_id, len(out), len(scenes), sum(1 for v in out.values() if v),
     )
     return out
+
+
+def _fallback_narration(scene, sec_by_id: dict, target_chars: int) -> str:
+    """LLM 没给/给了空 时的兜底文案。
+
+    优先级：shot_subject → section.theme → section.content_description 截断 → "画面定格"。
+    保证 ≥3 字、≤target_chars*1.2。
+    """
+    sec = sec_by_id.get(scene.parent_section_id or "") if scene.parent_section_id else None
+    subject = (scene.shot_subject or "").strip()
+    theme = (sec.theme if sec else "") or ""
+    content = (sec.content_description if sec else "") or ""
+
+    cap = max(6, int(target_chars * 1.2))
+    if subject:
+        text = f"{subject}定格" if len(subject) <= 6 else subject[:cap]
+    elif theme:
+        text = theme[:cap]
+    elif content:
+        text = content[:cap]
+    else:
+        text = "画面定格"
+    return text[:cap] if len(text) >= 3 else (text + "登场")
 
 
 def _sanitize(text: str) -> str:

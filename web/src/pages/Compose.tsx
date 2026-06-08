@@ -995,22 +995,13 @@ export default function ComposePage() {
           setError(ttsErr instanceof Error ? `配音失败：${ttsErr.message}` : '配音失败')
         }
       }
-      // 3) 自动包装推荐 + apply（包装轨没东西时才跑——避免覆盖用户已经手挑过的方案）
-      const hasPackaging = (plan.packaging_track ?? []).some((it) => it.kind !== 'subtitle')
-      if (!hasPackaging) {
-        try {
-          await handleRecommendPackaging()
-        } catch (pkgErr) {
-          // 包装失败不阻塞，用户可以在包装轨手动 +组件
-          console.warn('[step3] auto packaging recommend failed', pkgErr)
-        }
-      }
+      // 包装推荐由用户在 step3 手动触发（点击包装轨「打开方案 ⤢」），避免一进 step3 就吃一次大模型
     } catch (err) {
       setError(err instanceof Error ? err.message : '进入 step3 准备失败')
     } finally {
       setTrackBusy(false)
     }
-  }, [plan, refetchPlan, setPlanAndPush, handleRecommendPackaging])
+  }, [plan, refetchPlan, setPlanAndPush])
 
   const handleBgmAnchorChange = useCallback(
     async (newAnchor: number) => {

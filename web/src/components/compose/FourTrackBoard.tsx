@@ -510,7 +510,7 @@ export function FourTrackBoard({
   }
 
   return (
-    <div className="relative space-y-2 overflow-hidden rounded-lg border border-border bg-card p-4">
+    <div className="relative space-y-2 rounded-lg border border-border bg-card p-4">
       {/* ===================== 时间标尺 ===================== */}
       <div className="grid grid-cols-[88px_1fr] items-center">
         <span className="text-[10px] font-semibold text-muted-foreground">时间轴</span>
@@ -840,34 +840,41 @@ export function FourTrackBoard({
           )
         })}
 
-        {/* 转场徽章层：钉在相邻片段之间的接缝上（scene.start 即上一段的 end）。
-            渲染顺序在所有 scene <button> 之后，z-index 高于片段，不被 overflow 裁切；
-            pointer-events-none 不抢点击，每个徽章下方还会画 1px 高亮竖线方便识别。 */}
-        {scenes.map((scene) => {
-          if (!(scene.start > 0 && scene.transition_in && scene.transition_in.style !== 'hard_cut')) {
-            return null
-          }
-          const trans = scene.transition_in
-          const leftPct = pctOf(scene.start, total)
+        {/* 转场交互层：钉在相邻分镜的接缝上（scene.start = 上一段的 end）。
+            stage-26：从包装轨迁来——把转场操作放回内容轨分镜之间，更直观。
+            点击徽章 → 父级唤起 TransitionEditDialog；hard_cut/null 显示「硬切」灰色基线。
+            z-30 保证在 scene 按钮（z-10 selected）和 display-only 徽章之上。 */}
+        {scenes.length > 1 && scenes.slice(1).map((sc, idx) => {
+          const at = sc.start
+          const left = pctOf(at, total)
+          const trans = sc.transition_in ?? null
+          const styleLabel = trans ? TRANSITION_LABEL[trans.style] : '硬切'
+          const tone = trans ? TRANSITION_TONE[trans.style] : 'bg-slate-300/80 text-slate-900'
+          const interactive = !!onEditTransition && !readOnly
           return (
-            <div
-              key={`trans-${scene.scene_id}`}
-              className="pointer-events-none absolute top-0 bottom-0 z-20"
-              style={{ left: `${leftPct}%` }}
-              title={`转场：${TRANSITION_LABEL[trans.style]} · ${trans.duration.toFixed(1)}s（${scene.scene_id} 与上一段衔接）`}
+            <button
+              type="button"
+              key={`transition-${sc.scene_id}-${idx}`}
+              disabled={!interactive}
+              onClick={(e) => {
+                e.stopPropagation()
+                onEditTransition?.(sc.scene_id, trans?.style ?? null)
+              }}
+              title={
+                interactive
+                  ? `转场到「${sc.scene_id}」：${styleLabel}\n点击：选择转场样式`
+                  : `转场到「${sc.scene_id}」：${styleLabel}`
+              }
+              className={cn(
+                'absolute top-1/2 z-30 inline-flex h-5 -translate-x-1/2 -translate-y-1/2 select-none items-center gap-0.5 rounded-full border border-white/70 px-1.5 text-[9px] font-semibold shadow-md',
+                tone,
+                interactive ? 'cursor-pointer hover:scale-110 hover:brightness-110' : 'cursor-default opacity-80',
+              )}
+              style={{ left: `${left}%` }}
             >
-              {/* 中线：让用户一眼看见"两段在这里接住" */}
-              <div className="absolute inset-y-1 left-0 w-px -translate-x-px bg-white/70 shadow-[0_0_4px_rgba(255,255,255,0.6)]" />
-              {/* 徽章：横跨接缝居中，y 居中 */}
-              <span
-                className={cn(
-                  'absolute top-1/2 left-0 -translate-x-1/2 -translate-y-1/2 rounded-md border border-white/40 px-1 py-px text-[8px] font-semibold leading-none shadow-md',
-                  TRANSITION_TONE[trans.style],
-                )}
-              >
-                {TRANSITION_LABEL[trans.style]}
-              </span>
-            </div>
+              <span>⇆</span>
+              <span className="max-w-[44px] truncate">{styleLabel}</span>
+            </button>
           )
         })}
       </TrackRow>
@@ -1145,7 +1152,7 @@ export function FourTrackBoard({
                     {busy ? '⏳…' : '+组件 ▾'}
                   </button>
                   {addMenuOpen && (
-                    <div className="absolute right-0 top-full z-20 mt-1 w-32 overflow-hidden rounded-md border border-border bg-card shadow-lg">
+                    <div className="absolute right-0 top-full z-50 mt-1 w-32 overflow-hidden rounded-md border border-border bg-card shadow-lg">
                       {([
                         { kind: 'title_bar', label: '标题条' },
                         { kind: 'sticker', label: '贴纸' },
@@ -1170,48 +1177,12 @@ export function FourTrackBoard({
           ) : null
         }
       >
-        {nonSubtitleItems.length === 0 && scenes.length < 2 ? (
+        {nonSubtitleItems.length === 0 ? (
           <div className="absolute inset-1 flex items-center justify-center rounded-md border border-dashed border-border bg-background/30 text-center text-[10px] text-muted-foreground">
-            还没生成包装项（标题 / 转场 / 封面 / 贴纸）
+            还没生成包装项（标题 / 封面 / 贴纸）——点上方「+ 组件」加入
           </div>
         ) : (
           <>
-            {/* 转场节点：每两镜之间一个不可拖动的 ⇆ 占位，点击 → 父级唤起转场样式弹窗 */}
-            {scenes.length > 1 &&
-              scenes.slice(1).map((sc, idx) => {
-                // 节点定位在两镜衔接点（sc.start，即上镜末 / 下镜首）
-                const at = sc.start
-                const left = pctOf(at, total)
-                const trans = sc.transition_in ?? null
-                const styleLabel = trans ? TRANSITION_LABEL[trans.style] : '硬切'
-                const tone = trans ? TRANSITION_TONE[trans.style] : 'bg-slate-300/70 text-slate-900'
-                const interactive = !!onEditTransition && !readOnly
-                return (
-                  <button
-                    type="button"
-                    key={`transition-${sc.scene_id}-${idx}`}
-                    disabled={!interactive}
-                    onClick={(e) => {
-                      e.stopPropagation()
-                      onEditTransition?.(sc.scene_id, trans?.style ?? null)
-                    }}
-                    title={
-                      interactive
-                        ? `转场到「${sc.scene_id}」：${styleLabel}\n点击：选择转场样式`
-                        : `转场到「${sc.scene_id}」：${styleLabel}`
-                    }
-                    className={cn(
-                      'absolute top-1 z-10 inline-flex h-6 -translate-x-1/2 select-none items-center gap-0.5 rounded-full border border-white/60 px-1.5 text-[9px] font-semibold shadow-sm',
-                      tone,
-                      interactive ? 'cursor-pointer hover:scale-110 hover:brightness-110' : 'cursor-default opacity-80',
-                    )}
-                    style={{ left: `${left}%` }}
-                  >
-                    <span>⇆</span>
-                    <span className="max-w-[44px] truncate">{styleLabel}</span>
-                  </button>
-                )
-              })}
             {nonSubtitleItems.map((it, i) => {
               const left = pctOf(it.start, total)
               const span = Math.max(0.6, pctOf(it.end - it.start, total))
