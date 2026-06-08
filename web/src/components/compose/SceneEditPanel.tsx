@@ -1,7 +1,7 @@
 import { useState } from 'react'
 
 import { SwapSourceDialog, type SwapSourceMode } from './SwapSourceDialog'
-import { patchPlanScene } from '@/api/plan'
+import { patchPlanScene, patchShotSubject } from '@/api/plan'
 import { SECTION_LABEL } from '@/lib/sections'
 import { cn } from '@/lib/utils'
 import type { Material, PackagingItem, Plan, Scene, ShotPlan } from '@/types/schemas'
@@ -320,12 +320,32 @@ function ShotRow({
   disabled: boolean
 }) {
   const [dialogMode, setDialogMode] = useState<SwapSourceMode | null>(null)
+  const [subjectDraft, setSubjectDraft] = useState(shot.subject || '')
+  const [subjectSaving, setSubjectSaving] = useState(false)
+  const [subjectError, setSubjectError] = useState<string | null>(null)
 
   const quality: 'good' | 'weak' | 'missing' =
     (shot.match_quality as 'good' | 'weak' | 'missing' | undefined) ?? 'good'
   const sceneId = scene?.scene_id
   const needsFill = scene?.needs_fill === true
   const canSwap = !!sceneId && !disabled
+  const canEditSubject = !!sceneId && !disabled
+
+  const commitSubject = async () => {
+    if (!sceneId) return
+    const next = subjectDraft.trim().slice(0, 40)
+    if (next === (shot.subject || '').trim()) return
+    setSubjectSaving(true)
+    setSubjectError(null)
+    try {
+      const updated = await patchShotSubject(planId, sceneId, next)
+      onSaved(updated)
+    } catch (err) {
+      setSubjectError(err instanceof Error ? err.message : '保存失败')
+    } finally {
+      setSubjectSaving(false)
+    }
+  }
 
   const SWAP_BUTTONS: { mode: SwapSourceMode; label: string; tone: string }[] = [
     {
@@ -358,7 +378,33 @@ function ShotRow({
         </span>
         <div className="flex-1 space-y-0.5">
           <div className="flex flex-wrap items-center gap-1.5">
-            <span className="font-semibold text-foreground">{shot.subject || '（无主体）'}</span>
+            {canEditSubject ? (
+              <input
+                type="text"
+                value={subjectDraft}
+                onChange={(e) => setSubjectDraft(e.target.value.slice(0, 40))}
+                onBlur={commitSubject}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') {
+                    e.preventDefault()
+                    ;(e.target as HTMLInputElement).blur()
+                  } else if (e.key === 'Escape') {
+                    setSubjectDraft(shot.subject || '')
+                    ;(e.target as HTMLInputElement).blur()
+                  }
+                }}
+                placeholder="主体（具象名词，如『青铜器残片』）"
+                disabled={subjectSaving}
+                className={cn(
+                  'min-w-[10rem] rounded border border-border/40 bg-background/60 px-1.5 py-0.5 text-xs font-semibold text-foreground',
+                  'focus:border-primary/60 focus:outline-none',
+                  subjectSaving && 'opacity-60',
+                )}
+                title="该镜画面主体——禁比喻 / 上位词 / 营销词；下游 AIGC 会原样使用"
+              />
+            ) : (
+              <span className="font-semibold text-foreground">{shot.subject || '（无主体）'}</span>
+            )}
             <span className="font-mono text-xs text-muted-foreground">
               {shot.duration_seconds.toFixed(1)}s
             </span>
@@ -389,6 +435,9 @@ function ShotRow({
               </span>
             )}
           </div>
+          {subjectError && (
+            <div className="text-xs text-destructive">{subjectError}</div>
+          )}
           {shot.visual && <div className="text-muted-foreground">画面：{shot.visual}</div>}
           {shot.narration && <div className="text-muted-foreground">口播：{shot.narration}</div>}
           {shot.targets && shot.targets.length > 0 && (

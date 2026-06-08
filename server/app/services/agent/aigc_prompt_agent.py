@@ -28,6 +28,14 @@ _PROMPT_SYSTEM = (
     "你是 Seedance 文生视频（T2V）的资深提示词工程师。"
     "目标：输出一条 t2v_prompt（key 即 prompt 字段），让 Seedance 据此生成本段视频。"
     "Seedance 接受一句中文 prompt，按 [主体动作] · [镜头语言] · [视觉风格] · [氛围] 四块叙述生成画面。\n\n"
+    "—— 主体锚点（最高优先级，违反直接判失败）——\n"
+    "每条分镜的 `主体=...` 字段是该镜画面里**不可替换的核心对象**——必须**原样**写入 prompt：\n"
+    "• 不允许同义化：『青铜器残片』≠『青铜碎片』≠『古董残片』\n"
+    "• 不允许上位化 / 下位化：『青铜器残片』≠『古董』≠『展品』；『红色运动鞋』≠『鞋子』\n"
+    "• 不允许营销词替换：『主播正脸』≠『颜值担当』；『青铜器残片』≠『国宝碎片』\n"
+    "• 不允许把『主体=』当作隐喻线索去自由创作另一个画面（用户痛报：『国宝碎片』被误生为『新品潮酷碎片』）\n"
+    "若主体与画面描述/段落主题表面冲突，**以主体为准**重写画面，不要拿主题去覆盖主体。\n"
+    "主体为空时再回退到画面/段落主题——但只要主体非空就必须在 prompt 中**逐字出现**。\n\n"
     "—— 绝对禁止 ——\n"
     "1. 任何字幕 / 文字 / 标题 / 大字 / 文案 / 口播文字 / 弹幕 / 角标 / Logo overlay 的描述。"
     "字幕由后端 packaging 单独烧，T2V 阶段必须『纯画面』。\n"
@@ -43,7 +51,7 @@ _PROMPT_SYSTEM = (
     "—— 风格范式 ——\n"
     "Good：『一只青瓷瓶在展柜中央静置，镜头缓慢环绕推进，顶部聚光灯打在釉面上折射冷白光斑，"
     "背景渐隐入纯黑，35mm 胶片质感的暖金调与冷光对比强烈，氛围庄重神秘』\n"
-    "Bad：『展厅文物特写，强构图近景特写景别，机位快速摇移，光线高对比，电影感画质，"
+    "Bad：『展厅文物特写，强构图近景特写景别，机位快速摇移，光线高对比,电影感画质，"
     "冲击力强』（要素罗列、空动词、缺主体、空泛形容词堆砌）\n\n"
     "—— 输出 ——\n"
     "返回 JSON：{\"prompt\": \"...60-120 字一句完整自然中文...\", \"thinking\": "
@@ -116,9 +124,10 @@ async def generate_aigc_prompt(
     if shots:
         shot_lines = ["本段分镜清单（请把每一镜的画面要素融进同一句 T2V prompt）："]
         for sh in shots:
+            subj = (sh.subject or "").strip()
             base = (
                 f"  · 分镜 #{sh.order+1}（{sh.duration_seconds:.1f}s）"
-                f" 主体={sh.subject or '—'} | 画面={sh.visual or '—'}"
+                f" 主体={subj or '—'}{'（锚点·原样写入 prompt）' if subj else ''} | 画面={sh.visual or '—'}"
             )
             tgts = getattr(sh, "targets", None) or []
             if tgts:
@@ -201,6 +210,12 @@ def _fallback_prompt(gap: Gap, section: Optional[AdaptedSection], hint: str) -> 
 _IMAGE_SPEC_SYSTEM = (
     "你是 Seedance 文生视频的『参考图策展人 Agent』。给定一个段落的角色 / 主题 / 内容 / 时长 / 镜头目标，"
     "决定为这一段视频提前准备 1-4 张参考图（含首帧），让 Seedance 出片更稳。\n\n"
+    "—— 主体锚点（最高优先级，违反直接判失败）——\n"
+    "每条分镜的 `主体=...` 字段是该镜画面里**不可替换的核心对象**——必须**原样**写入对应参考图的 prompt：\n"
+    "• 不允许同义化（『青铜器残片』≠『青铜碎片』）/ 上位化（『青铜器残片』≠『古董』）/ 营销化（『主播正脸』≠『颜值担当』）\n"
+    "• 不允许把『主体』当作隐喻自由发挥（用户痛报：『国宝碎片』被误生成『新品潮酷碎片』）\n"
+    "• 主体与画面/段落主题冲突时，**以主体为准**重写画面\n"
+    "• caption 里也要点明主体的具象名词，不能用比喻\n\n"
     "—— 工作流 ——\n"
     "1. 先看段落主题与内容说明，识别画面里要出现的核心主体（人 / 物 / 场景）。\n"
     "2. **如果分镜带 targets 字段（比如带货视频一镜里『人物+商品』）→ 必须为每个 target 单独出 1 张图**，"
@@ -218,7 +233,8 @@ _IMAGE_SPEC_SYSTEM = (
     "• slot_id：img-1 / img-2 / img-3 / img-4，按出现顺序编号\n"
     "• caption：≤30 字给创作者看的人话标签（『展厅入口仰拍』；多 target 时点明覆盖哪个 target）\n"
     "• prompt：60-120 字一句中文，给 Seedream 文生图直接消费——必须覆盖 [主体动作 · 镜头语言 · 视觉风格 · 氛围] 四块；"
-    "若是 per-target 图，prompt 必须以该 target 的 name + visual_hint 为绝对主体\n"
+    "若是 per-target 图，prompt 必须以该 target 的 name + visual_hint 为绝对主体；"
+    "**对应分镜的『主体=』字段必须逐字出现在 prompt 中**\n"
     "• ratio：竖屏/抖音用 9:16，横屏/B 站用 16:9，方版用 1:1（按用户给的 default_ratio 兜底）\n\n"
     "—— 输出 JSON ——\n"
     "{\"specs\": [{\"slot_id\": \"img-1\", \"caption\": \"...\", \"prompt\": \"...\", \"ratio\": \"16:9\"}], "
@@ -298,9 +314,10 @@ async def generate_image_specs(
                 f"本段已被拆为 {len(shots)} 个分镜，请按一镜一图输出（specs 数量等于 N，slot_id 与分镜序号对应）："
             ]
         for sh in shots:
+            subj = (sh.subject or "").strip()
             base = (
                 f"  · 分镜 #{sh.order+1}（{sh.duration_seconds:.1f}s）"
-                f" 主体={sh.subject or '—'} | 画面={sh.visual or '—'}"
+                f" 主体={subj or '—'}{'（锚点·原样写入 prompt）' if subj else ''} | 画面={sh.visual or '—'}"
             )
             tgts = getattr(sh, "targets", None) or []
             if tgts:

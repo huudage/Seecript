@@ -127,6 +127,8 @@ interface Props {
   fills?: FillResult[]
   /** @deprecated 拖动会触发 step 跳回 step2，且与 click-to-edit 弹窗模型语义重叠；保留 prop 仅供老调用方编译通过。 */
   onMovePackagingItem?: (itemId: string, newStartSeconds: number) => void | Promise<void>
+  /** 拉伸包装项时长（剪映式拖手柄）：传 newStart 和 newEnd（秒），父级走 update_packaging_item_time op 落盘。 */
+  onResizePackagingItem?: (itemId: string, newStart: number, newEnd: number) => void | Promise<void>
   /** 打开"包装方案"侧抽屉——配合 actions 区"打开方案 ⤢"按钮。 */
   onOpenPackagingDrawer?: () => void
   /** 点击包装组件 → 父级唤起编辑弹窗（PR-I.2：替代拖动平移与重生按钮）。 */
@@ -181,6 +183,41 @@ const VOICE_OPTIONS: { value: TTSVoice; label: string }[] = [
 function pctOf(seconds: number, total: number): number {
   if (!Number.isFinite(seconds) || total <= 0) return 0
   return Math.max(0, Math.min(100, (seconds / total) * 100))
+}
+
+/**
+ * 包装轨 3 轨道分配——贪心算法，按 start 升序遍历，每一项放进第一条不冲突的 lane（0/1/2）。
+ * 第 4 条及以后超出的项目会回退到 lane 0（视觉上仍可见但叠在底层）。
+ *
+ * 之所以做：用户反馈一条轨道不好调整；多个 packaging item 时间窗重叠时挤一行看不清，
+ * 也无法精准点中下面那一项。3 轨够用，超出概率极低。
+ */
+function assignPackagingLanes(items: PackagingItem[]): Map<string, number> {
+  const sorted = [...items].sort((a, b) => a.start - b.start)
+  const lanes: number[] = [0, 0, 0] // 每条 lane 当前已占到的 end 时间
+  const result = new Map<string, number>()
+  for (const it of sorted) {
+    let placed = false
+    for (let i = 0; i < lanes.length; i++) {
+      if (it.start >= lanes[i] - 1e-3) {
+        lanes[i] = it.end
+        result.set(it.item_id, i)
+        placed = true
+        break
+      }
+    }
+    if (!placed) {
+      // 4+ 重叠：放进当前最早结束的 lane（仍重叠但视觉上次之）
+      let minEnd = lanes[0]
+      let minIdx = 0
+      for (let i = 1; i < lanes.length; i++) {
+        if (lanes[i] < minEnd) { minEnd = lanes[i]; minIdx = i }
+      }
+      lanes[minIdx] = Math.max(lanes[minIdx], it.end)
+      result.set(it.item_id, minIdx)
+    }
+  }
+  return result
 }
 
 /**
@@ -301,6 +338,7 @@ export function FourTrackBoard({
   fills,
   onEditPackagingItem,
   onEditTransition,
+  onResizePackagingItem,
 }: Props) {
   const total = plan.duration_seconds || 0
   const scenes = plan.main_track
@@ -363,6 +401,8 @@ export function FourTrackBoard({
     () => packaging.filter((it) => it.kind !== 'subtitle' && it.kind !== 'transition'),
     [packaging],
   )
+  /** 3 轨道分配——避免重叠包装项挤一行难选中。 */
+  const packagingLanes = useMemo(() => assignPackagingLanes(nonSubtitleItems), [nonSubtitleItems])
 
   // scene_id → 对应 gap（按 section_id 同段最早未补的）；用作内容轨点击关联
   const sceneToGap = useMemo(() => {
@@ -842,9 +882,11 @@ export function FourTrackBoard({
 
         {/* 转场交互层：钉在相邻分镜的接缝上（scene.start = 上一段的 end）。
             stage-26：从包装轨迁来——把转场操作放回内容轨分镜之间，更直观。
+            step2 不显示——转场属于「最后一公里」决策，与字幕/口播/包装/BGM 同 step3 解锁；
+            进入 step3 时由 handleEnterStep3 自动跑一次 packaging/recommend → apply（只取 transitions）。
             点击徽章 → 父级唤起 TransitionEditDialog；hard_cut/null 显示「硬切」灰色基线。
             z-30 保证在 scene 按钮（z-10 selected）和 display-only 徽章之上。 */}
-        {scenes.length > 1 && scenes.slice(1).map((sc, idx) => {
+        {showSecondaryTracks && scenes.length > 1 && scenes.slice(1).map((sc, idx) => {
           const at = sc.start
           const left = pctOf(at, total)
           const trans = sc.transition_in ?? null
@@ -1136,8 +1178,9 @@ export function FourTrackBoard({
       {showSecondaryTracks && (
       <TrackRow
         label="包装轨"
-        hint={`${nonSubtitleItems.length} 项${subtitleItems.length > 0 ? `（字幕 ${subtitleItems.length} 项展示在字幕轨）` : ''}`}
+        hint={`${nonSubtitleItems.length} 项 · 3 轨${subtitleItems.length > 0 ? ` · 字幕 ${subtitleItems.length} 项见字幕轨` : ''}`}
         rowRef={packagingRowRef}
+        tall
         actions={
           !readOnly ? (
             <div className="flex flex-nowrap items-center gap-1 whitespace-nowrap">
@@ -1183,63 +1226,38 @@ export function FourTrackBoard({
           </div>
         ) : (
           <>
+            {/* 3 lane 分隔虚线（视觉提示） */}
+            <div className="pointer-events-none absolute inset-x-0 top-1/3 h-px bg-border/30" />
+            <div className="pointer-events-none absolute inset-x-0 top-2/3 h-px bg-border/30" />
             {nonSubtitleItems.map((it, i) => {
               const left = pctOf(it.start, total)
               const span = Math.max(0.6, pctOf(it.end - it.start, total))
               const pkgSelected = selectedPackagingItemId === it.item_id
               const canEdit = !!onEditPackagingItem && !readOnly && !busy
               const canDelete = !!onDeletePackagingItem && !readOnly && !busy
+              const canResize = !!onResizePackagingItem && !readOnly && !busy
+              const lane = packagingLanes.get(it.item_id) ?? 0
+              // h-24 = 6rem = 96px，3 lane 每条 32px，留 1px 间隙
+              const laneTop = lane * 32 + 2
               return (
-                <button
+                <PackagingItemBlock
                   key={`${it.item_id}-${i}`}
-                  type="button"
-                  onClick={() => {
-                    if (canEdit) {
-                      onEditPackagingItem!(it)
-                    } else {
-                      onSelectPackaging?.(it)
-                    }
-                  }}
-                  className={cn(
-                    'group absolute top-1 bottom-1 flex items-center justify-center overflow-hidden rounded text-[10px] font-medium shadow transition',
-                    PACKAGING_KIND_COLOR[it.kind],
-                    (canEdit || onSelectPackaging) && 'cursor-pointer',
-                    pkgSelected ? 'ring-2 ring-primary ring-offset-1 ring-offset-card' : 'hover:brightness-110',
-                  )}
-                  style={{ left: `${left}%`, width: `calc(${span}% - 1px)` }}
-                  title={
-                    (it.text
-                      ? `${PACKAGING_KIND_LABEL[it.kind]} · ${it.text}`
-                      : `${PACKAGING_KIND_LABEL[it.kind]} · ${(it.end - it.start).toFixed(1)}s`) +
-                    '\n点击：打开编辑弹窗（文案 / 时间 / 样式）'
-                  }
-                >
-                  <span className="truncate px-1">{it.text || PACKAGING_KIND_LABEL[it.kind]}</span>
-                  {canDelete && (
-                    <span
-                      role="button"
-                      tabIndex={0}
-                      onClick={(e) => {
-                        e.stopPropagation()
-                        void onDeletePackagingItem(it.item_id)
-                      }}
-                      onKeyDown={(e) => {
-                        if (e.key === 'Enter' || e.key === ' ') {
-                          e.preventDefault()
-                          e.stopPropagation()
-                          void onDeletePackagingItem(it.item_id)
-                        }
-                      }}
-                      title="删除该包装项"
-                      className={cn(
-                        'absolute right-0.5 top-0.5 inline-flex h-3.5 w-3.5 cursor-pointer items-center justify-center rounded-full bg-black/40 text-[9px] font-bold text-white opacity-0 transition-opacity hover:bg-rose-500 group-hover:opacity-100',
-                        pkgSelected && 'opacity-100',
-                      )}
-                    >
-                      ×
-                    </span>
-                  )}
-                </button>
+                  item={it}
+                  index={i}
+                  left={left}
+                  width={span}
+                  laneTopPx={laneTop}
+                  pkgSelected={pkgSelected}
+                  canEdit={canEdit}
+                  canDelete={canDelete}
+                  canResize={canResize}
+                  total={total}
+                  rowRef={packagingRowRef}
+                  onEditPackagingItem={onEditPackagingItem}
+                  onSelectPackaging={onSelectPackaging}
+                  onDeletePackagingItem={onDeletePackagingItem}
+                  onResizePackagingItem={onResizePackagingItem}
+                />
               )
             })}
           </>
@@ -1357,6 +1375,7 @@ function TrackRow({
   children,
   rowRef,
   thick,
+  tall,
   onDragOver,
   onDrop,
 }: {
@@ -1367,6 +1386,8 @@ function TrackRow({
   children: React.ReactNode
   rowRef?: React.RefObject<HTMLDivElement | null>
   thick?: boolean
+  /** 比 thick 还高，用于 3 lane 包装轨。 */
+  tall?: boolean
   onDragOver?: React.DragEventHandler<HTMLDivElement>
   onDrop?: React.DragEventHandler<HTMLDivElement>
 }) {
@@ -1386,11 +1407,209 @@ function TrackRow({
         onDrop={onDrop}
         className={cn(
           'relative rounded-md border border-border bg-background/40',
-          thick ? 'h-16' : 'h-12',
+          tall ? 'h-24' : thick ? 'h-16' : 'h-12',
         )}
       >
         {children}
       </div>
+    </div>
+  )
+}
+
+/**
+ * 包装项单条——支持点击编辑 / 左右手柄拖拽改时长（剪映式）。
+ *
+ * 拖手柄落地：onmousemove 在像素级算 dx，按 (rowWidth / total) 折算回秒，松手时调
+ * onResizePackagingItem(itemId, newStart, newEnd)。clamp 到 [0, total]，最短 0.3s。
+ *
+ * 平移整条：抓内部主体（非手柄）拖动会平移 start/end（保持 duration），松手调
+ * onResizePackagingItem 一并落盘。
+ */
+function PackagingItemBlock({
+  item,
+  index,
+  left,
+  width,
+  laneTopPx,
+  pkgSelected,
+  canEdit,
+  canDelete,
+  canResize,
+  total,
+  rowRef,
+  onEditPackagingItem,
+  onSelectPackaging,
+  onDeletePackagingItem,
+  onResizePackagingItem,
+}: {
+  item: PackagingItem
+  index: number
+  left: number
+  width: number
+  laneTopPx: number
+  pkgSelected: boolean
+  canEdit: boolean
+  canDelete: boolean
+  canResize: boolean
+  total: number
+  rowRef: React.RefObject<HTMLDivElement | null>
+  onEditPackagingItem?: (it: PackagingItem) => void
+  onSelectPackaging?: (it: PackagingItem) => void
+  onDeletePackagingItem?: (id: string) => void | Promise<void>
+  onResizePackagingItem?: (id: string, newStart: number, newEnd: number) => void | Promise<void>
+}) {
+  const [drag, setDrag] = useState<null | {
+    mode: 'left' | 'right' | 'move'
+    startX: number
+    origStart: number
+    origEnd: number
+    rowPx: number
+    livePreview: { start: number; end: number }
+  }>(null)
+
+  const beginDrag = (mode: 'left' | 'right' | 'move') => (e: React.MouseEvent) => {
+    if (!canResize) return
+    e.preventDefault()
+    e.stopPropagation()
+    const row = rowRef.current
+    if (!row || total <= 0) return
+    const rowPx = row.getBoundingClientRect().width
+    setDrag({
+      mode,
+      startX: e.clientX,
+      origStart: item.start,
+      origEnd: item.end,
+      rowPx,
+      livePreview: { start: item.start, end: item.end },
+    })
+  }
+
+  useEffect(() => {
+    if (!drag) return
+    const handleMove = (e: MouseEvent) => {
+      const dx = e.clientX - drag.startX
+      const dt = (dx / drag.rowPx) * total
+      let newStart = drag.origStart
+      let newEnd = drag.origEnd
+      if (drag.mode === 'left') {
+        newStart = Math.max(0, Math.min(drag.origEnd - 0.3, drag.origStart + dt))
+      } else if (drag.mode === 'right') {
+        newEnd = Math.min(total, Math.max(drag.origStart + 0.3, drag.origEnd + dt))
+      } else {
+        const dur = drag.origEnd - drag.origStart
+        newStart = Math.max(0, Math.min(total - dur, drag.origStart + dt))
+        newEnd = newStart + dur
+      }
+      setDrag({ ...drag, livePreview: { start: newStart, end: newEnd } })
+    }
+    const handleUp = () => {
+      const { livePreview, origStart, origEnd } = drag
+      if (
+        Math.abs(livePreview.start - origStart) > 0.05 ||
+        Math.abs(livePreview.end - origEnd) > 0.05
+      ) {
+        void onResizePackagingItem?.(item.item_id, livePreview.start, livePreview.end)
+      }
+      setDrag(null)
+    }
+    window.addEventListener('mousemove', handleMove)
+    window.addEventListener('mouseup', handleUp)
+    return () => {
+      window.removeEventListener('mousemove', handleMove)
+      window.removeEventListener('mouseup', handleUp)
+    }
+  }, [drag, total, item.item_id, onResizePackagingItem])
+
+  // 拖动时按 livePreview 渲染（实时反馈）；否则按 props
+  const renderLeft = drag ? pctOf(drag.livePreview.start, total) : left
+  const renderWidth = drag
+    ? Math.max(0.6, pctOf(drag.livePreview.end - drag.livePreview.start, total))
+    : width
+
+  const handleClick = () => {
+    if (drag) return
+    if (canEdit) {
+      onEditPackagingItem!(item)
+    } else {
+      onSelectPackaging?.(item)
+    }
+  }
+
+  return (
+    <div
+      key={`${item.item_id}-${index}`}
+      onClick={handleClick}
+      className={cn(
+        'group absolute flex h-7 select-none items-center justify-center overflow-hidden rounded text-[10px] font-medium shadow transition',
+        PACKAGING_KIND_COLOR[item.kind],
+        (canEdit || onSelectPackaging) && 'cursor-pointer',
+        pkgSelected ? 'ring-2 ring-primary ring-offset-1 ring-offset-card' : 'hover:brightness-110',
+      )}
+      style={{
+        left: `${renderLeft}%`,
+        width: `calc(${renderWidth}% - 1px)`,
+        top: `${laneTopPx}px`,
+      }}
+      title={
+        (item.text
+          ? `${PACKAGING_KIND_LABEL[item.kind]} · ${item.text}`
+          : `${PACKAGING_KIND_LABEL[item.kind]} · ${(item.end - item.start).toFixed(1)}s`) +
+        '\n点击：打开编辑弹窗 · 拖动两端：改时长 · 拖中间：整体平移'
+      }
+    >
+      {/* 左手柄 */}
+      {canResize && (
+        <div
+          onMouseDown={beginDrag('left')}
+          onClick={(e) => e.stopPropagation()}
+          className="absolute left-0 top-0 z-10 h-full w-1.5 cursor-ew-resize bg-black/30 opacity-0 transition-opacity hover:bg-black/50 group-hover:opacity-100"
+          title="拖动改起始时间"
+        />
+      )}
+      {/* 主体（点击 + 平移） */}
+      <div
+        onMouseDown={canResize ? beginDrag('move') : undefined}
+        className="flex h-full w-full items-center justify-center px-2"
+      >
+        <span className="truncate">
+          {drag
+            ? `${drag.livePreview.start.toFixed(1)}–${drag.livePreview.end.toFixed(1)}s`
+            : (item.text || PACKAGING_KIND_LABEL[item.kind])}
+        </span>
+      </div>
+      {/* 右手柄 */}
+      {canResize && (
+        <div
+          onMouseDown={beginDrag('right')}
+          onClick={(e) => e.stopPropagation()}
+          className="absolute right-0 top-0 z-10 h-full w-1.5 cursor-ew-resize bg-black/30 opacity-0 transition-opacity hover:bg-black/50 group-hover:opacity-100"
+          title="拖动改结束时间"
+        />
+      )}
+      {canDelete && (
+        <span
+          role="button"
+          tabIndex={0}
+          onClick={(e) => {
+            e.stopPropagation()
+            void onDeletePackagingItem!(item.item_id)
+          }}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter' || e.key === ' ') {
+              e.preventDefault()
+              e.stopPropagation()
+              void onDeletePackagingItem!(item.item_id)
+            }
+          }}
+          title="删除该包装项"
+          className={cn(
+            'absolute right-2 top-0.5 z-20 inline-flex h-3.5 w-3.5 cursor-pointer items-center justify-center rounded-full bg-black/40 text-[9px] font-bold text-white opacity-0 transition-opacity hover:bg-rose-500 group-hover:opacity-100',
+            pkgSelected && 'opacity-100',
+          )}
+        >
+          ×
+        </span>
+      )}
     </div>
   )
 }

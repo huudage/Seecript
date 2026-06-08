@@ -1161,6 +1161,63 @@ async def patch_scene_transition(plan_id: str, scene_id: str, body: SceneTransit
     return plan
 
 
+class ShotSubjectPatch(BaseModel):
+    """PATCH /plan/{plan_id}/scene/{scene_id}/shot-subject：用户编辑分镜「对象」字段。
+
+    会同步写两处：
+    - Scene.shot_subject（直接显示 / 文字卡兜底用）
+    - 父 AdaptedSection.shots[shot_order].subject（plan_agent / aigc_prompt_agent 读这里）
+
+    禁比喻、上位词——前端 placeholder 已提示用户写具象名词，后端只做长度校验，不做语义判断。
+    """
+    subject: str = Field(default="", max_length=40)
+
+
+@router.patch("/plan/{plan_id}/scene/{scene_id}/shot-subject", response_model=Plan)
+async def patch_shot_subject(plan_id: str, scene_id: str, body: ShotSubjectPatch) -> Plan:
+    """单镜「对象/主体」编辑：双写 Scene.shot_subject + parent_section.shots[order].subject。
+
+    设计动机：用户在 Compose 分镜清单里发现 LLM 给的 subject 是比喻词（『国宝碎片』）→
+    生图阶段被同义化成『新品潮酷碎片』，需要直接改成具象名词（『青铜器残片』）。
+    改完下游 aigc_prompt_agent 重读 plan，subject 锚点立即生效，下次 swap-source 出图就准了。
+    """
+    plan = plan_store.get(plan_id)
+    if plan is None:
+        raise HTTPException(status_code=404, detail=f"plan_id 不存在：{plan_id}")
+    scene_idx = next((i for i, s in enumerate(plan.main_track) if s.scene_id == scene_id), None)
+    if scene_idx is None:
+        raise HTTPException(status_code=404, detail=f"scene_id 不存在：{scene_id}")
+    scene = plan.main_track[scene_idx]
+    new_subject = (body.subject or "").strip()[:40]
+
+    plan.main_track[scene_idx] = scene.model_copy(update={"shot_subject": new_subject})
+
+    # 同步父 AdaptedSection.shots[order].subject——下游 aigc_prompt_agent 读这里
+    if scene.parent_section_id:
+        sec_idx = next(
+            (i for i, sec in enumerate(plan.adapted_sections) if sec.section_id == scene.parent_section_id),
+            None,
+        )
+        if sec_idx is not None:
+            sec = plan.adapted_sections[sec_idx]
+            if sec.shots:
+                shot_idx = next(
+                    (i for i, sh in enumerate(sec.shots) if sh.order == scene.shot_order),
+                    None,
+                )
+                if shot_idx is not None:
+                    new_shots = list(sec.shots)
+                    new_shots[shot_idx] = sec.shots[shot_idx].model_copy(update={"subject": new_subject})
+                    plan.adapted_sections[sec_idx] = sec.model_copy(update={"shots": new_shots})
+
+    plan_store.put(plan)
+    log.info(
+        "[plan] shot subject patched plan=%s scene=%s subject=%r",
+        plan_id, scene_id, new_subject[:32],
+    )
+    return plan
+
+
 @router.get("/plan", response_model=list[Plan])
 async def list_plans(project_id: str) -> list[Plan]:
     """按 project_id 列出该项目所有 plans。前端进 Compose 时根据 step snapshot

@@ -348,6 +348,13 @@ class Shot(BaseModel):
     thumbnail_url: Optional[str] = None
     transcript: Optional[str] = Field(default=None, description="本镜头对应的 ASR 口播片段（原始）")
     tags: list[str] = Field(default_factory=list, description="VLM 帧打标（封面风格/转场/字幕样式等)")
+    subject: str = Field(
+        default="",
+        max_length=40,
+        description="本镜画面主体（具象名词，禁比喻/上位词/营销修饰）。"
+                    "如『青铜器残片特写』『主播正脸』『展厅长廊』；"
+                    "禁『国宝碎片』『颜值担当』这类比喻或营销词——下游 AIGC prompt 会原样使用。",
+    )
     visual_summary: str = Field(
         default="",
         max_length=120,

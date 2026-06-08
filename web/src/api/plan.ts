@@ -38,6 +38,19 @@ export async function patchSceneTransition(
 }
 
 /**
+ * stage-26：编辑某分镜的画面主体（subject）。
+ * 双写 Scene.shot_subject + 父 AdaptedSection.shots[shot_order].subject，
+ * 让下游 AIGC prompt（aigc_prompt_agent）原样消费。
+ */
+export async function patchShotSubject(
+  planId: PlanId,
+  sceneId: string,
+  subject: string,
+): Promise<Plan> {
+  return await api.patch<Plan>(`/plan/${planId}/scene/${sceneId}/shot-subject`, { subject })
+}
+
+/**
  * stage-26 PR-N.4 / N.5：单镜换源。把某 Scene 的 source 切到
  * user_material / aigc_image / aigc_t2v / text_card；后端会同步调
  * Seedream / Seedance / 切素材入出点 / 装 TextCardSpec，成功后清掉 needs_fill。

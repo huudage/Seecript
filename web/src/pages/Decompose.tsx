@@ -1667,6 +1667,13 @@ function ManifestEditor({
                   <span>#{shot.index + 1}</span>
                   <span>{shot.duration.toFixed(1)}s</span>
                 </div>
+                <input
+                  placeholder="对象（具象名词，如『青铜器残片』）"
+                  value={shot.subject ?? ''}
+                  onChange={(e) => updateShot(idx, { subject: e.target.value.slice(0, 40) })}
+                  className="w-full rounded-md border border-sky-500/40 bg-background px-2 py-1 text-[11px] font-semibold focus:border-sky-500 focus:outline-none"
+                  title="本镜画面主体——禁比喻 / 上位词 / 营销词；下游 AIGC 会原样使用"
+                />
                 <textarea
                   placeholder="口播文本（无口播留空）"
                   value={shot.transcript ?? ''}

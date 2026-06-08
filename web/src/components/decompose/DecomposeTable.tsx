@@ -82,10 +82,11 @@ export function DecomposeTable({ manifest }: Props) {
       <table className="w-full border-collapse text-xs">
         <thead className="bg-muted/50 text-left text-xs font-semibold text-muted-foreground">
           <tr>
-            <th className="w-[14%] border-b border-border px-3 py-2">结构</th>
-            <th className="w-[18%] border-b border-border px-3 py-2">分镜</th>
-            <th className="w-[34%] border-b border-border px-3 py-2">内容（画面）</th>
-            <th className="w-[34%] border-b border-border px-3 py-2">脚本（口播 / 字幕）</th>
+            <th className="w-[12%] border-b border-border px-3 py-2">结构</th>
+            <th className="w-[16%] border-b border-border px-3 py-2">分镜</th>
+            <th className="w-[12%] border-b border-border px-3 py-2">对象</th>
+            <th className="w-[30%] border-b border-border px-3 py-2">内容（画面）</th>
+            <th className="w-[30%] border-b border-border px-3 py-2">脚本（口播 / 字幕）</th>
           </tr>
         </thead>
         <tbody>
@@ -150,6 +151,15 @@ export function DecomposeTable({ manifest }: Props) {
                       </div>
                     </div>
                   </div>
+                </td>
+                <td className="border-r border-border px-3 py-2">
+                  {shot.subject ? (
+                    <span className="inline-flex rounded bg-sky-500/15 px-1.5 py-0.5 text-xs font-semibold text-sky-700 dark:text-sky-300">
+                      {shot.subject}
+                    </span>
+                  ) : (
+                    <span className="text-xs italic text-muted-foreground/60">（未识别）</span>
+                  )}
                 </td>
                 <td className="border-r border-border px-3 py-2">
                   {shot.visual_summary ? (

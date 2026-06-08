@@ -354,6 +354,8 @@ async def decompose(
                 sh.visual_summary = ("/".join((sh.tags or [])[:3]))[:120]
             if not sh.script:
                 sh.script = (sh.transcript or "")[:200]
+            if not sh.subject and sh.tags:
+                sh.subject = "·".join(sh.tags[:2])[:40]
 
     # ---- 6. LLM 角色+主题切段（v2 重构）----
     push("llm_section", 93, {"note": f"LLM 段落分析 · 基于画像（{understanding.structural_pattern}）切 {understanding.estimated_segments} 段"})
@@ -729,8 +731,14 @@ def _merge_similar_shots(shots: list[Shot]) -> list[Shot]:
 # stage-23 prompts: 画面描述 + 脚本清洗
 _VISUAL_SCRIPT_SYSTEM = (
     "你是短视频拆解助手。给定一组按时间排序的镜头（含缩略图、tags、可能的口播片段），"
-    "为**每个镜头**生成三个字段：\n"
+    "为**每个镜头**生成四个字段：\n"
+    "- subject：本镜画面**主体对象**——必须是具象名词（人/物/场景），≤14 中文字。\n"
+    "    · ✅ 写法：『青铜器残片特写』『主播正脸』『展厅长廊』『红色运动鞋』\n"
+    "    · ❌ 严禁比喻 / 上位词 / 营销修饰：『国宝碎片』(改→『青铜器残片特写』)、"
+    "『潮品』(改→『红色运动鞋』)、『颜值担当』(改→『主播正脸』)\n"
+    "    · 这个字段会**原样**喂给下游 AI 生图 prompt 作为锚点，**不允许使用任何会被同义化、误读的词**\n"
     "- visual：≤60 中文字，描述这一镜的画面主体/动作/构图；不要照抄 tags，要写画面在演什么\n"
+    "    · 同样要用具象表达，subject 出现的词要原样保留，不要换成同义词\n"
     "- script：≤80 中文字，本镜的口播或代字幕文案。\n"
     "    · 有 transcript 时：清洗（去 'emm/啊/呃' 这类口语停顿、修标点）后填进去\n"
     "    · 无 transcript 时（纯 BGM 视频）：根据画面 + 整片调性写一句『代字幕』参考文案，不要瞎编台词\n"
@@ -742,7 +750,7 @@ _VISUAL_SCRIPT_SYSTEM = (
     "  · 多目标场景必须分开列：带货镜常含 `[人物-主播, 物品-商品]`；文物展常含 `[物品-文物, 文字-展名]`\n"
     "  · graphic 类用于纯动效图形（如莫比乌斯环、几何形状），下游 plan_agent 会**重写**为目标域\n"
     "  · 单纯空镜 / 转场 / 抽象图形的镜头可以返 [] 空数组\n"
-    "返回 JSON：{\"items\": [{\"shot_index\": int, \"visual\": str, \"script\": str, \"targets\": [...]}, ...]}\n"
+    "返回 JSON：{\"items\": [{\"shot_index\": int, \"subject\": str, \"visual\": str, \"script\": str, \"targets\": [...]}, ...]}\n"
     "items 长度等于镜头数，按 shot_index 升序。"
 )
 
@@ -796,12 +804,14 @@ async def _attach_visual_and_script(shots: list[Shot], has_voice: bool, tone_hin
 
     for sh in shots:
         item = by_index.get(sh.index, {})
+        subject = str(item.get("subject", "") or "").strip()[:40]
         visual = str(item.get("visual", "") or "").strip()[:120]
         script = str(item.get("script", "") or "").strip()[:200]
         if not visual:
             visual = ("/".join((sh.tags or [])[:3]))[:120]
         if not script:
             script = (sh.transcript or "")[:200]
+        sh.subject = subject  # 失败时落空，下游 AIGC prompt 会回退到 visual + tags 拼接
         sh.visual_summary = visual
         sh.script = script
         # stage-25：解析 targets 字段。失败 / 缺字段 → 留空 list（"可以没有"）
@@ -828,6 +838,13 @@ async def _attach_visual_and_script(shots: list[Shot], has_voice: bool, tone_hin
                 except Exception:  # noqa: BLE001
                     continue
         sh.targets = parsed
+        # subject fallback：解析失败时从 targets[primary] / tags 兜底
+        if not sh.subject:
+            primary = next((t for t in sh.targets if t.role == "primary"), None) or (sh.targets[0] if sh.targets else None)
+            if primary is not None:
+                sh.subject = primary.name[:40]
+            elif sh.tags:
+                sh.subject = "·".join(sh.tags[:2])[:40]
 
 
 # stage-23 全片复盘 prompt

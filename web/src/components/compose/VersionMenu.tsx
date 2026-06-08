@@ -113,7 +113,20 @@ export function VersionMenu({
   }
 
   return (
-    <div ref={wrapRef} className="relative inline-block">
+    <div ref={wrapRef} className="relative inline-flex items-center gap-1">
+      <button
+        type="button"
+        onClick={() => void handleSave()}
+        className="inline-flex items-center gap-1 rounded-md border border-emerald-500/60 bg-emerald-500/10 px-2.5 py-1 text-xs font-medium text-emerald-700 hover:bg-emerald-500/20 dark:text-emerald-300"
+        title="保存当前版本——给当前 plan 起个名字、入快照库"
+      >
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} className="h-3.5 w-3.5">
+          <path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z" />
+          <polyline points="17 21 17 13 7 13 7 21" />
+          <polyline points="7 3 7 8 15 8" />
+        </svg>
+        保存
+      </button>
       <button
         type="button"
         onClick={() => setOpen((v) => !v)}
@@ -121,7 +134,7 @@ export function VersionMenu({
           'inline-flex items-center gap-1 rounded-md border border-border bg-background px-2.5 py-1 text-xs font-medium text-foreground hover:bg-secondary',
           open && 'border-primary bg-primary/10',
         )}
-        title="版本管理：保存当前版本 / 切回历史版本"
+        title="历史版本：切回之前保存的版本"
       >
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} className="h-3.5 w-3.5">
           <circle cx="12" cy="12" r="9" />

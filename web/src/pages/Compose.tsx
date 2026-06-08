@@ -433,6 +433,18 @@ export default function ComposePage() {
     [pushEdit, setPlan],
   )
 
+  // 切版本（VersionMenu 还原快照）专用：重置撤销栈再以新 plan 为基线 push 一帧。
+  // 否则切完版本按一下 ⌘Z 会"撤回切版本"，把用户拉回上一帧，UX 反直觉。
+  const setPlanAfterRestore = useCallback(
+    (next: Plan) => {
+      setPlan(next)
+      useEditStore.getState().reset()
+      pushEdit(next)
+      lastPushedPlanIdRef.current = next.plan_id
+    },
+    [pushEdit, setPlan],
+  )
+
   const sortedMaterials = useMemo(
     () => materials.slice().sort((a, b) => a.sort_order - b.sort_order),
     [materials],
@@ -961,12 +973,12 @@ export default function ComposePage() {
    * 进入 step3 时的一次性筹备：
    * 1. 综合段长 + 内容重写每段口播（禁复述凑时长）
    * 2. 若开了配音，自动一键 TTS 全片
-   * 3. 自动跑一次包装 AI 推荐 + apply
+   * 3. 自动转场推荐（仅写 scene.transition_in，不动其余包装项）
    *
    * 审计修 B2：原本 setStep3Unlocked(true) + setActiveStep(3) 在 try 之前就执行——
    * 若 regenerateNarrations 抛错，用户已经被推到 step3 看到没口播的轨。
    * 改为：先在 try 内跑完关键路径（regenerateNarrations 是必须项），
-   * 再 setStep3Unlocked(true) + setActiveStep(3)。TTS 与包装失败仍走子 try-catch 不阻塞。
+   * 再 setStep3Unlocked(true) + setActiveStep(3)。TTS / 转场失败仍走子 try-catch 不阻塞。
    */
   const handleEnterStep3 = useCallback(async () => {
     if (!plan) return
@@ -976,7 +988,7 @@ export default function ComposePage() {
       // 1) 重写口播（关键路径：失败就不进 step3）
       const ren = await regenerateNarrations(plan.plan_id)
       setPlanAndPush(ren.plan)
-      // 关键路径成功 → 解锁 step3 并切过去；后续 TTS / 包装失败仅设 error 不阻塞
+      // 关键路径成功 → 解锁 step3 并切过去；后续 TTS / 转场失败仅设 error 不阻塞
       setStep3Unlocked(true)
       setActiveStep(3)
       // 2) 自动 TTS（若启用了配音 + 有更新的段落）
@@ -995,7 +1007,36 @@ export default function ComposePage() {
           setError(ttsErr instanceof Error ? `配音失败：${ttsErr.message}` : '配音失败')
         }
       }
-      // 包装推荐由用户在 step3 手动触发（点击包装轨「打开方案 ⤢」），避免一进 step3 就吃一次大模型
+      // 3) 自动转场推荐：进 step3 即给每个段切换点挑首选样式落到 scene.transition_in。
+      //    之前关掉的「自动整套包装」与此不同——这里只动转场，不动 title_bar/sticker/cover。
+      //    apply 时 title_bar_ids/sticker_ids/cover_id 全空，packaging_track 重建后只剩字幕（受 settings.subtitle_enabled 控制），
+      //    与刚进 step3 时的空白状态一致；用户后续手动加包装组件不会被 wipe。
+      if (plan.main_track.length > 1) {
+        try {
+          const recBody: PackagingRecommendRequest = { plan_id: plan.plan_id }
+          const rec = await api.post<PackagingRecommendationV2>('/packaging/recommend', recBody)
+          const transition_selections: Record<string, TransitionStyle> = {}
+          for (const b of rec.transition_bundles) {
+            if (b.options[0]) transition_selections[b.candidate_id] = b.options[0].style
+          }
+          if (Object.keys(transition_selections).length > 0) {
+            const selection: PackagingSelection = {
+              plan_id: plan.plan_id,
+              subtitle_style_id: null,
+              title_bar_ids: [],
+              sticker_ids: [],
+              transition_selections,
+              cover_id: null,
+              recommendation: rec,
+            }
+            const fresh = await api.post<Plan>('/packaging/apply', selection)
+            setPlanAndPush(fresh)
+          }
+        } catch (transErr) {
+          // 转场推荐失败不阻塞——用户在内容轨缝隙仍可手动点徽章选择
+          console.warn('[step3] 自动转场推荐失败，可手动在内容轨缝隙切换样式', transErr)
+        }
+      }
     } catch (err) {
       setError(err instanceof Error ? err.message : '进入 step3 准备失败')
     } finally {
@@ -1064,6 +1105,35 @@ export default function ComposePage() {
         if (resp.plan) setPlanAndPush(resp.plan)
       } catch (err) {
         setError(err instanceof Error ? err.message : '包装项移动失败')
+      }
+    },
+    [plan, setPlanAndPush],
+  )
+
+  /** 包装项剪映式拉伸：start/end 同时改（move 时也走这条路径，保持单 op 落盘）。 */
+  const handleResizePackagingItem = useCallback(
+    async (itemId: string, newStart: number, newEnd: number) => {
+      if (!plan) return
+      setError(null)
+      try {
+        const body = {
+          plan_id: plan.plan_id,
+          step: 'step3' as const,
+          instruction: `拉伸包装项 ${itemId} 到 [${newStart.toFixed(1)},${newEnd.toFixed(1)}]s`,
+          apply: true,
+          confirmed_ops: [
+            {
+              op: 'update_packaging_item_time',
+              item_id: itemId,
+              start: newStart,
+              end: newEnd,
+            },
+          ],
+        }
+        const resp = await api.post<{ plan?: Plan }>('/edit/compose', body)
+        if (resp.plan) setPlanAndPush(resp.plan)
+      } catch (err) {
+        setError(err instanceof Error ? err.message : '包装项调整时长失败')
       }
     },
     [plan, setPlanAndPush],
@@ -1350,7 +1420,7 @@ export default function ComposePage() {
         />
         {plan && (
           <div className="shrink-0 pt-1">
-            <VersionMenu plan={plan} onPlanRestored={setPlanAndPush} />
+            <VersionMenu plan={plan} onPlanRestored={setPlanAfterRestore} />
           </div>
         )}
       </div>
@@ -1669,6 +1739,7 @@ export default function ComposePage() {
               contentTrackMode="sections"
               playheadSeconds={0}
               onMovePackagingItem={handleMovePackagingItem}
+              onResizePackagingItem={handleResizePackagingItem}
               onOpenPackagingDrawer={() => setPackagingDrawerOpen(true)}
               onEditPackagingItem={(item) => {
                 setEditingPackagingItem(item)
@@ -1998,6 +2069,7 @@ export default function ComposePage() {
                 playheadSeconds={playheadSeconds}
                 onSeek={seekPlayer}
                 onMovePackagingItem={handleMovePackagingItem}
+                onResizePackagingItem={handleResizePackagingItem}
                 onOpenPackagingDrawer={() => setPackagingDrawerOpen(true)}
                 onEditPackagingItem={(item) => {
                   setEditingPackagingItem(item)

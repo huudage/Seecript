@@ -138,6 +138,8 @@ export interface Shot {
   thumbnail_url?: string | null
   transcript?: string | null
   tags: string[]
+  /** stage-26：本镜画面主体（具象名词，禁比喻/上位词/营销词）。下游 AIGC prompt 会原样使用。 */
+  subject?: string
   /** stage-23：画面内容描述（≤60 中文字）。LLM 看缩略图 + tags 写出来的画面在演什么。 */
   visual_summary?: string
   /** stage-23：本镜口播 / 代字幕脚本。有口播时清洗自 transcript；无口播时 LLM 写代字幕参考文案。 */
