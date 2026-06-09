@@ -118,11 +118,13 @@ export default function ComposePage() {
   const gaps = usePlanStore((s) => s.gaps)
   const fills = usePlanStore((s) => s.fills)
   const selectedGapId = usePlanStore((s) => s.selectedGapId)
+  const selectedSectionId = usePlanStore((s) => s.selectedSectionId)
   const setPlan = usePlanStore((s) => s.setPlan)
   const setGaps = usePlanStore((s) => s.setGaps)
   const setFills = usePlanStore((s) => s.setFills)
   const upsertFill = usePlanStore((s) => s.upsertFill)
   const setSelectedGapId = usePlanStore((s) => s.setSelectedGapId)
+  const setSelectedSectionId = usePlanStore((s) => s.setSelectedSectionId)
   const variant = usePlanStore((s) => s.variant)
   // setVariant 之前用于 A/B 切换；现已统一用 VersionMenu 管理版本，不再需要写 variant。
 
@@ -493,19 +495,45 @@ export default function ComposePage() {
   // (它只列已落版本槽的 sample × slot,空仓库时会引导用户去 Decompose)
 
   // 选中 gap → 拿对应的 fill（如果已经做过）
+  // stage-36：selectedSectionId 是稳定主键（section_id 跨 silent rebuild 不变）。
+  // selectedGap 由 section_id 反查；老 gap_id 作为兜底（dialog / 老组件可能仍按 gap_id 传）。
   const selectedGap = useMemo(
-    () => gaps.find((g) => g.gap_id === selectedGapId) ?? null,
-    [gaps, selectedGapId],
+    () => {
+      if (selectedSectionId) {
+        const bySec = gaps.find((g) => g.section_id === selectedSectionId)
+        if (bySec) return bySec
+      }
+      return gaps.find((g) => g.gap_id === selectedGapId) ?? null
+    },
+    [gaps, selectedSectionId, selectedGapId],
   )
+  // selectedFill 也按 section_id 优先：silent rebuild 后端会重写 gap_id，
+  // 但 fill 对象保留的是 fill 时的旧 gap_id；通过 section_id 反查才能稳定锚定。
   const selectedFill = useMemo(
-    () => fills.find((f) => f.gap_id === selectedGapId) ?? null,
-    [fills, selectedGapId],
+    () => {
+      const secId = selectedGap?.section_id ?? selectedSectionId
+      if (secId) {
+        const bySec = fills.find((f) => f.section_id === secId)
+        if (bySec) return bySec
+      }
+      return fills.find((f) => f.gap_id === selectedGapId) ?? null
+    },
+    [fills, selectedGap, selectedSectionId, selectedGapId],
   )
   const filledGapIds = useMemo(() => new Set(fills.map((f) => f.gap_id)), [fills])
   // 当前选中那条 gap 的 busy 状态——按 section_id 查（gap_id 在 silent rebuild 后会变）。
   // 仅用于左侧补全面板的 disabled / loading 标记。
   const gapBusy = selectedGap?.section_id ? busySectionIds.has(selectedGap.section_id) : false
   const anyGapBusy = busySectionIds.size > 0
+
+  // selectedSectionId 变化或 gaps 重建后，把 selectedGapId 同步到当前 section 对应的真 gap_id——
+  // FourTrackBoard / dialog 等下游仍按 gap_id 标记高亮。
+  useEffect(() => {
+    const target = selectedGap?.gap_id ?? null
+    if (target !== selectedGapId) {
+      setSelectedGapId(target)
+    }
+  }, [selectedGap, selectedGapId, setSelectedGapId])
 
   // 用户切到任何 section × (copy|aigc|aigc_image) → 推进 visitedFillKeys，加入 keepalive 池。
   // 用 selectedGap 直接 derive section_id（在它定义后才能跑，所以 useEffect 放这里）。
@@ -521,16 +549,23 @@ export default function ComposePage() {
     })
   }, [selectedGap?.section_id, activeAction])
 
-  // gap 列表换了之后，自动选第一个 miss/warn
+  // gap 列表换了之后，自动选第一个 miss/warn——但**只看 selectedSectionId 是否仍在 gaps 里**。
+  // 不能看 selectedGapId 是否存在，因为后端每次 detect 都会重写 gap_id，
+  // 那样会触发不必要的"重选第一段"，把用户当前选中的 section 跳走。
   useEffect(() => {
     if (gaps.length === 0) {
-      setSelectedGapId(null)
+      setSelectedSectionId(null)
       return
     }
-    if (selectedGapId && gaps.some((g) => g.gap_id === selectedGapId)) return
+    if (
+      selectedSectionId &&
+      gaps.some((g) => g.section_id === selectedSectionId)
+    ) {
+      return
+    }
     const first = gaps.find((g) => g.status !== 'ok') ?? gaps[0]
-    setSelectedGapId(first.gap_id)
-  }, [gaps, selectedGapId, setSelectedGapId])
+    setSelectedSectionId(first.section_id ?? null)
+  }, [gaps, selectedSectionId, setSelectedSectionId])
 
   // 内容轨选段：用户没点过、或选的段在新 plan 里已不存在 → 回落到 sc-0；
   // 用 derive-during-render 避免 setState-in-effect 级联渲染。
@@ -1815,11 +1850,9 @@ export default function ComposePage() {
                 onSelectScene={(scene, gap) => {
                   setSelectedSceneId(scene.scene_id)
                   setSelectedPackagingItemId(null)
-                  // 关键：无论是否有 gap 都更新 selectedGapId——没 gap 时置 null，
-                  // 否则右侧 keepalive 还会显示上一段正在生成的 panel（用户切到本段
-                  // 但看到的是别段的「生成中」状态）。已生成段的 keepalive 仍在 DOM 里
-                  // 不丢，下次切回时仍能恢复（display:none 不卸载）。
-                  setSelectedGapId(gap?.gap_id ?? null)
+                  // stage-36：用 section_id（跨 silent rebuild 稳定）作为选段主键。
+                  // selectedGapId 由 sync useEffect 自动跟随，避免与 silent rebuild 抢写。
+                  setSelectedSectionId(gap?.section_id ?? null)
                   seekPlayer(scene.start)
                 }}
                 onSelectVoice={(scene) => {
@@ -1862,13 +1895,12 @@ export default function ComposePage() {
                   setEditingTransition({ sceneId, currentStyle })
                 }
               />
-            </div>
-          </div>
 
-          {/* v34：缺口补全工作台直接挂在 FourTrackBoard 下方（全宽）。
-              用户在上方轨道点哪段，这里就显示哪段的「挑素材 / 字卡画面 / AI 视频 /
-              AI 生图再渲染」四个 tab；keepalive 多实例 display:none 切换，跨段后台跑。 */}
-          <div className="space-y-2 border-t border-border pt-3">
+          {/* stage-36：缺口补全工作台移到右列 FourTrackBoard 正下方。
+              这样左侧实时预览 sticky 不滚走，用户切段后视线在 [选段 → 工作台 → 预览]
+              一条短弧上，不用全宽来回滚——也避免了"切几次就找不到当前段在跑什么"。
+              keepalive 多实例 display:none 切换，跨段后台跑。 */}
+          <div className="mt-3 space-y-2 border-t border-border pt-3">
             <p className="rounded-md border border-primary/30 bg-primary/5 px-2 py-1.5 text-[11px] leading-relaxed text-foreground">
               💡 这里只关心<strong>画面 + 字幕</strong>——三种方式都是给本段生成画面（挑素材 / 字卡画面 / AI 视频）；字幕轨开关默认关闭，开启后 AI 自动按段落生成可编辑字幕。口播留到第 3 步再切换音色合成。
             </p>
@@ -1993,6 +2025,8 @@ export default function ComposePage() {
                 点上方内容轨任意一段——这里出现「挑素材 / 字卡画面 / AI 视频 / AI 生图再渲染」四个画面补全选项。
               </p>
             )}
+          </div>
+            </div>
           </div>
 
           {/* 素材库（提升到中段，提升上传感受）：上传 / 拖拽排序 / 删除 → 自动重排并刷新缺口 */}
@@ -2217,11 +2251,8 @@ export default function ComposePage() {
                 onSelectScene={(scene, gap) => {
                   setSelectedSceneId(scene.scene_id)
                   setSelectedPackagingItemId(null)
-                  // 关键：无论是否有 gap 都更新 selectedGapId——没 gap 时置 null，
-                  // 否则右侧 keepalive 还会显示上一段正在生成的 panel（用户切到本段
-                  // 但看到的是别段的「生成中」状态）。已生成段的 keepalive 仍在 DOM 里
-                  // 不丢，下次切回时仍能恢复（display:none 不卸载）。
-                  setSelectedGapId(gap?.gap_id ?? null)
+                  // stage-36：用 section_id 作为选段主键，selectedGapId 由 sync useEffect 跟随。
+                  setSelectedSectionId(gap?.section_id ?? null)
                   seekPlayer(scene.start)
                 }}
                 onSelectVoice={(scene) => {

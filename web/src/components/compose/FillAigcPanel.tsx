@@ -95,6 +95,9 @@ export function FillAigcPanel({
   const [tailFrameErr, setTailFrameErr] = useState<string | null>(null)
 
   // -- gap 切换：重置一切，回到 idle --
+  // stage-36：依赖 section_id 而非 gap_id。后端 silent /gap/detect 会重写 gap_id（plan-scoped
+  // 唯一性），但同一段的 section_id 跨 silent rebuild 稳定；这里若依赖 gap_id，会被无关重算
+  // 误触发，清掉正在跑的 Seedance 任务/已生成图片选择/口播。
   useEffect(() => {
     setPhase('idle')
     setImageSpecs([])
@@ -111,7 +114,7 @@ export function FillAigcPanel({
     setTailFrameDataUrl(null)
     setTailFrameErr(null)
     setErr(null)
-  }, [gap.gap_id])
+  }, [gap.section_id])
 
   // gap.section_id → plan.main_track 的 scene_id + 本段已规划分镜清单
   const sceneInfo = useMemo(() => {

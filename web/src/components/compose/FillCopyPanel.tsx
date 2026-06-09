@@ -188,6 +188,7 @@ export function FillCopyPanel({
   // 受控 spec（outline 阶段实时修改）
   const [spec, setSpec] = useState<TextCardSpec>(fill?.text_card_spec ?? DEFAULT_SPEC)
 
+  // stage-36：依赖 section_id + text_card_spec 引用本身，避免 silent rebuild 改 gap_id 触发清空。
   useEffect(() => {
     if (fill && fill.action === 'copy' && fill.text_card_spec) {
       setPhase('result')
@@ -200,7 +201,7 @@ export function FillCopyPanel({
     setGenError(null)
     setOutline(null)
     setThinking([])
-  }, [gap.gap_id, fill])
+  }, [gap.section_id, fill?.text_card_spec])
 
   const globalKeywords = useMemo(
     () => plan?.settings?.keywords ?? [],

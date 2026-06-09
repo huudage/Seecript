@@ -11,8 +11,16 @@ interface PlanState {
   gaps: Gap[]
   fills: FillResult[]
   variant: Variant
-  /** Compose 页右栏点击的 gap_id；驱动 GapPreviewDialog + 补全面板的目标。 */
+  /** Compose 页右栏点击的 gap_id；驱动 GapPreviewDialog + 补全面板的目标。
+   *  注意：每次 silent runAnalyze 后端会重写 gap_id（plan-scoped 唯一性），
+   *  这个字段会被对应 useEffect 重置到第一个 miss gap。**真正的选段持久化用
+   *  selectedSectionId**——它跨 silent rebuild 稳定。selectedGapId 是 selectedSectionId
+   *  在当前 gaps 数组里反查出来的 gap_id 快照，仅供需要真 gap_id 的下游用（如 dialog/board）。 */
   selectedGapId: string | null
+  /** stage-36：选段的稳定主键——AdaptedSection.section_id（sec-N 形式），跨 silent rebuild 不变。
+   *  selectedGap = gaps.find(g => g.section_id === selectedSectionId)。Fill 工作台
+   *  按它 keepalive，FillCopyPanel/FillAigcPanel 的 reset useEffect 也依赖它。 */
+  selectedSectionId: string | null
 
   setPlan: (plan: Plan | null) => void
   setGaps: (gaps: Gap[]) => void
@@ -22,6 +30,7 @@ interface PlanState {
   removeFill: (gapId: string) => void
   setVariant: (variant: Variant) => void
   setSelectedGapId: (gapId: string | null) => void
+  setSelectedSectionId: (sectionId: string | null) => void
   reset: () => void
 }
 
@@ -31,6 +40,7 @@ export const usePlanStore = create<PlanState>((set) => ({
   fills: [],
   variant: 'A',
   selectedGapId: null,
+  selectedSectionId: null,
 
   setPlan: (plan) => set({ plan }),
   setGaps: (gaps) => set({ gaps }),
@@ -47,8 +57,16 @@ export const usePlanStore = create<PlanState>((set) => ({
     set((state) => ({ fills: state.fills.filter((f) => f.gap_id !== gapId) })),
   setVariant: (variant) => set({ variant }),
   setSelectedGapId: (gapId) => set({ selectedGapId: gapId }),
+  setSelectedSectionId: (sectionId) => set({ selectedSectionId: sectionId }),
   reset: () =>
-    set({ plan: null, gaps: [], fills: [], variant: 'A', selectedGapId: null }),
+    set({
+      plan: null,
+      gaps: [],
+      fills: [],
+      variant: 'A',
+      selectedGapId: null,
+      selectedSectionId: null,
+    }),
 }))
 
 export type PlanIdOrNull = PlanId | null
