@@ -594,9 +594,14 @@ export default function ComposePage() {
   // gap 列表换了之后，自动选第一个 miss/warn——但**只看 selectedSectionId 是否仍在 gaps 里**。
   // 不能看 selectedGapId 是否存在，因为后端每次 detect 都会重写 gap_id，
   // 那样会触发不必要的"重选第一段"，把用户当前选中的 section 跳走。
+  //
+  // stage-40：增加一条规则——若 selectedSectionId 指向 plan.adapted_sections 里**实际存在**
+  // 但当前没 gap 的段（已填好），同样保留，不跳走。这样用户点已填好的「字卡画面」/「素材填好的段」
+  // 工作台仍停在他点的段，不会被自动 fallback 推到下一个未填段。
   useEffect(() => {
     if (gaps.length === 0) {
-      setSelectedSectionId(null)
+      // 没 gap：plan 还没好；保留当前选段（plan adapted_sections 校验在下面 effect 里），
+      // 不再清成 null——避免用户在 step3 浏览已完工 plan 时被清掉选段。
       return
     }
     if (
@@ -605,9 +610,16 @@ export default function ComposePage() {
     ) {
       return
     }
+    // selectedSectionId 已指向 plan 里实际存在的段（即使没 gap，例如已填好）——保留
+    if (
+      selectedSectionId &&
+      plan?.adapted_sections.some((s) => s.section_id === selectedSectionId)
+    ) {
+      return
+    }
     const first = gaps.find((g) => g.status !== 'ok') ?? gaps[0]
     setSelectedSectionId(first.section_id ?? null)
-  }, [gaps, selectedSectionId, setSelectedSectionId])
+  }, [gaps, plan, selectedSectionId, setSelectedSectionId])
 
   // 内容轨选段：用户没点过、或选的段在新 plan 里已不存在 → 回落到 sc-0；
   // 用 derive-during-render 避免 setState-in-effect 级联渲染。
@@ -1882,7 +1894,13 @@ export default function ComposePage() {
                   setSelectedPackagingItemId(null)
                   // stage-36：用 section_id（跨 silent rebuild 稳定）作为选段主键。
                   // selectedGapId 由 sync useEffect 自动跟随，避免与 silent rebuild 抢写。
-                  setSelectedSectionId(gap?.section_id ?? null)
+                  // stage-40：用 scene.parent_section_id 作为主键源——填好的段（如字卡画面
+                  // 或已采纳的素材）没 gap，gap?.section_id 会是 undefined→null，再被 L597
+                  // 的自动 fallback 误推到「第一个 miss/warn 段」，导致用户感觉点这段、
+                  // 工作台显示别的段。
+                  setSelectedSectionId(
+                    scene.parent_section_id ?? gap?.section_id ?? null,
+                  )
                   seekPlayer(scene.start)
                 }}
                 onSelectVoice={(scene) => {
@@ -1999,9 +2017,19 @@ export default function ComposePage() {
                 最新 gaps 拿到最新 gap_id——这样 silent rebuild 重写 gap_id
                 后，panel 不会因为 find 失败而卸载（→ AI 出图 polling 不丢）。
                 stage-38：lastSeenGapBySectionRef 兜底——`gaps.find` 临时未命中也仍能渲染。 */}
-            {visitedFillKeys.size === 0 && !selectedGap && (
+            {visitedFillKeys.size === 0 && !selectedGap && !selectedSectionId && (
               <p className="rounded-md border border-dashed border-border bg-background/30 px-3 py-2 text-[11px] text-muted-foreground">
                 点上方内容轨任意一段——这里出现「挑素材 / 字卡画面 / AI 视频 / AI 生图再渲染」四个画面补全选项。
+              </p>
+            )}
+            {selectedSectionId && !selectedGap && (
+              <p className="rounded-md border border-dashed border-emerald-500/30 bg-emerald-500/5 px-3 py-2 text-[11px] leading-relaxed text-foreground">
+                ✅ <strong>本段已填好</strong>——内容轨这一段没有空缺，不需要再用工作台补画面。
+                <br />
+                <span className="text-muted-foreground">
+                  想替换本段画面？点上方内容轨该段的小镜（▾ 展开）打开「单镜编辑」弹窗，
+                  里面可改 subject/visual/narration，或<strong>换源</strong>到用户素材 / AI 单图 / AI 视频 / 字卡。
+                </span>
               </p>
             )}
             {Array.from(visitedFillKeys).map((key) => {
@@ -2266,7 +2294,10 @@ export default function ComposePage() {
                   setSelectedSceneId(scene.scene_id)
                   setSelectedPackagingItemId(null)
                   // stage-36：用 section_id 作为选段主键，selectedGapId 由 sync useEffect 跟随。
-                  setSelectedSectionId(gap?.section_id ?? null)
+                  // stage-40：parent_section_id 优先——填好的段没 gap，避免落到 null 被 fallback 推走。
+                  setSelectedSectionId(
+                    scene.parent_section_id ?? gap?.section_id ?? null,
+                  )
                   seekPlayer(scene.start)
                 }}
                 onSelectVoice={(scene) => {

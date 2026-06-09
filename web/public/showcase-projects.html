@@ -1,0 +1,141 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>我的项目 · Seecript</title>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&family=Noto+Sans+SC&display=swap" rel="stylesheet">
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:'Inter','Noto Sans SC',sans-serif;background:#030014;color:#f4f0ff;-webkit-font-smoothing:antialiased}
+/* === NAV === */
+nav{position:fixed;top:0;left:0;right:0;z-index:100;padding:0 24px;backdrop-filter:blur(20px);-webkit-backdrop-filter:blur(20px);background:rgba(3,0,20,.7);border-bottom:1px solid rgba(255,255,255,.04)}
+nav .inner{display:flex;align-items:center;justify-content:space-between;padding:14px 0}
+.logo{font-size:17px;font-weight:800;letter-spacing:-.02em;background:linear-gradient(135deg,#a78bfa,#818cf8);-webkit-background-clip:text;-webkit-text-fill-color:transparent;background-clip:text;text-decoration:none}
+.nav-links{display:flex;align-items:center;gap:6px;padding:4px 6px;border-radius:999px;border:1px solid rgba(255,255,255,.06);background:rgba(255,255,255,.02)}
+.nav-links a{font-size:12px;font-weight:500;color:rgba(255,255,255,.45);text-decoration:none;padding:6px 14px;border-radius:999px;transition:all .25s;white-space:nowrap}
+.nav-links a:hover{color:rgba(255,255,255,.8);background:rgba(255,255,255,.03)}
+.nav-links a.active{color:#fff;background:rgba(167,139,250,.12)}
+.nav-cta{font-size:12px;font-weight:600;color:#fff;text-decoration:none;padding:7px 16px;border-radius:8px;background:linear-gradient(135deg,rgba(167,139,250,.2),rgba(129,140,248,.15));border:1px solid rgba(167,139,250,.15);transition:all .3s}
+.nav-cta:hover{box-shadow:0 0 20px rgba(167,139,250,.15)}
+
+.content{max-width:1248px;margin:0 auto;padding:80px 24px 80px}
+.page-header{margin-bottom:32px}
+.page-header h1{font-size:28px;font-weight:800;letter-spacing:-.02em}
+.page-header p{font-size:14px;color:rgba(255,255,255,.35);margin-top:6px}
+
+/* Project cards */
+.toolbar{display:flex;align-items:center;justify-content:space-between;margin-bottom:24px}
+.toolbar .count{font-size:13px;color:rgba(255,255,255,.3)}
+.btn-new{padding:9px 20px;border-radius:8px;font-size:13px;font-weight:600;color:#fff;border:1px solid rgba(167,139,250,.2);background:linear-gradient(135deg,rgba(167,139,250,.2),rgba(129,140,248,.12));cursor:pointer;font-family:inherit;transition:all .3s}
+.btn-new:hover{box-shadow:0 0 20px rgba(167,139,250,.15)}
+.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(240px,1fr));gap:14px}
+.card{border-radius:14px;overflow:hidden;border:1px solid rgba(255,255,255,.04);background:rgba(255,255,255,.01);transition:all .35s;cursor:pointer}
+.card:hover{transform:translateY(-3px);border-color:rgba(167,139,250,.15);box-shadow:0 8px 32px rgba(167,139,250,.06)}
+.card-thumb{height:120px;background:linear-gradient(135deg,rgba(167,139,250,.06),rgba(129,140,248,.03));display:flex;align-items:center;justify-content:center;position:relative}
+.card-status{position:absolute;top:10px;right:10px;padding:3px 10px;border-radius:999px;font-size:10px;font-weight:600}
+.card-status.draft{background:rgba(255,255,255,.04);color:rgba(255,255,255,.3)}
+.card-status.planned{background:rgba(99,102,241,.12);color:rgba(129,140,248,.8)}
+.card-status.rendered{background:rgba(52,211,153,.1);color:#34d399}
+.card-body{padding:14px}
+.card-name{font-size:14px;font-weight:700;margin-bottom:6px}
+.card-meta{font-size:11px;color:rgba(255,255,255,.25);display:flex;gap:12px;margin-bottom:8px}
+.card-brief{font-size:11px;color:rgba(255,255,255,.2);line-height:1.5;overflow:hidden;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical}
+.card-actions{display:flex;gap:6px;margin-top:12px}
+.card-actions button{padding:6px 14px;border-radius:6px;font-size:11px;font-weight:600;border:none;cursor:pointer;font-family:inherit;transition:all .2s}
+.btn-open{background:linear-gradient(135deg,rgba(167,139,250,.2),rgba(129,140,248,.12));color:#fff;border:1px solid rgba(167,139,250,.15);flex:1}
+.btn-open:hover{background:linear-gradient(135deg,rgba(167,139,250,.35),rgba(129,140,248,.2))}
+.btn-rename{background:rgba(255,255,255,.02);color:rgba(255,255,255,.4);border:1px solid rgba(255,255,255,.04)}
+.btn-rename:hover{background:rgba(255,255,255,.05);color:#fff}
+.btn-delete{background:transparent;color:rgba(239,68,68,.4);border:1px solid rgba(239,68,68,.1)}
+.btn-delete:hover{background:rgba(239,68,68,.06);color:#ef4444}
+
+/* Empty state */
+.empty{padding:80px 20px;text-align:center;border:2px dashed rgba(255,255,255,.04);border-radius:16px}
+.empty-icon{font-size:40px;margin-bottom:12px;opacity:.3}
+.empty h3{font-size:18px;font-weight:700;margin-bottom:8px}
+.empty p{font-size:13px;color:rgba(255,255,255,.3);max-width:400px;margin:0 auto 20px;line-height:1.6}
+</style>
+</head>
+<body>
+
+<nav>
+  <div class="inner">
+    <a href="showcase.html" class="logo">Seecript</a>
+    <div class="nav-links">
+      <a href="showcase.html">首页</a>
+      <a href="showcase-projects.html" class="active">我的项目</a>
+      <a href="showcase-library.html">素材与灵感</a>
+      <a href="showcase-decompose.html">分析热门结构</a>
+      <a href="showcase-workspace.html">创作工作台</a>
+      <a href="showcase-knowledge.html">创作偏好</a>
+    </div>
+    
+  </div>
+</nav>
+
+<div class="content">
+  <div class="page-header">
+    <h1>我的项目</h1>
+    <p>从这里开始创作。打开已有项目继续编辑，或新建一个项目。</p>
+  </div>
+
+  <div class="toolbar">
+    <span class="count">共 3 个项目</span>
+    <button class="btn-new" onclick="alert('新建项目弹窗：输入项目名称 → 选择视频类型 → 创建')">+ 新建项目</button>
+  </div>
+
+  <div class="grid">
+    <div class="card" onclick="alert('打开项目 → 进入工作台')">
+      <div class="card-thumb">
+        <span class="card-status rendered">已出片</span>
+        <span style="font-size:24px;opacity:.1">🎬</span>
+      </div>
+      <div class="card-body">
+        <div class="card-name">智能手表开箱</div>
+        <div class="card-meta"><span>营销</span><span>参考：数码产品开箱</span></div>
+        <div class="card-brief">30 秒介绍新款智能手表：从开箱惊喜到上手体验，节奏明快有冲击力</div>
+        <div class="card-actions">
+          <button class="btn-open">打开</button>
+          <button class="btn-rename" onclick="event.stopPropagation();alert('重命名')">改名</button>
+          <button class="btn-delete" onclick="event.stopPropagation();alert('确认删除？')">删除</button>
+        </div>
+      </div>
+    </div>
+
+    <div class="card" onclick="alert('打开项目 → 进入工作台')">
+      <div class="card-thumb">
+        <span class="card-status planned">方案已生成</span>
+        <span style="font-size:24px;opacity:.1">☕</span>
+      </div>
+      <div class="card-body">
+        <div class="card-name">咖啡店日常 Vlog</div>
+        <div class="card-meta"><span>Vlog</span><span>参考：咖啡店日常</span></div>
+        <div class="card-brief">用温暖治愈的调性记录一家独立咖啡店的日常，从清晨到黄昏。</div>
+        <div class="card-actions">
+          <button class="btn-open">打开</button>
+          <button class="btn-rename" onclick="event.stopPropagation();alert('重命名')">改名</button>
+          <button class="btn-delete" onclick="event.stopPropagation();alert('确认删除？')">删除</button>
+        </div>
+      </div>
+    </div>
+
+    <div class="card" onclick="alert('打开项目 → 进入分析')">
+      <div class="card-thumb">
+        <span class="card-status draft">草稿</span>
+        <span style="font-size:24px;opacity:.1">📱</span>
+      </div>
+      <div class="card-body">
+        <div class="card-name">新品牌发布片</div>
+        <div class="card-meta"><span>动效</span><span>还没选参考</span></div>
+        <div class="card-brief">科技品牌新品发布——信息密度高，快节奏动效为主。</div>
+        <div class="card-actions">
+          <button class="btn-open">打开</button>
+          <button class="btn-rename" onclick="event.stopPropagation();alert('重命名')">改名</button>
+          <button class="btn-delete" onclick="event.stopPropagation();alert('确认删除？')">删除</button>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+</body>
+</html>
