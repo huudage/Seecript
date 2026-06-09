@@ -199,7 +199,26 @@ export default function ComposePage() {
       cancelled = true
     }
   }, [secondaryRef])
-  const [activeAction, setActiveAction] = useState<FillAction>('rerank')
+  // stage-39：activeAction 改为按 section 隔离。原先单一 page-level state 会让用户
+  // 在 A 段切到「字卡画面」、再点 B 段后 B 段顶部 tab 显示成「字卡画面」——用户感知
+  // 上 N 段共享同一个工作台。改成 Map<section_id, FillAction>：每段记忆自己的 tab。
+  const [actionBySection, setActionBySection] = useState<ReadonlyMap<string, FillAction>>(
+    () => new Map(),
+  )
+  const activeAction: FillAction =
+    (selectedSectionId && actionBySection.get(selectedSectionId)) || 'rerank'
+  const setActiveAction = useCallback(
+    (next: FillAction) => {
+      if (!selectedSectionId) return
+      setActionBySection((prev) => {
+        if (prev.get(selectedSectionId) === next) return prev
+        const map = new Map(prev)
+        map.set(selectedSectionId, next)
+        return map
+      })
+    },
+    [selectedSectionId],
+  )
   // 每条 (section_id, action) 独立工作台：切段或切动作时，旧 panel 只 display:none，
   // 本地 useState（form/思考态/seedance polling）不丢；切回时还在原现场。
   //
@@ -2481,6 +2500,7 @@ export default function ComposePage() {
           plan={plan}
           scene={editingShot?.scene ?? null}
           section={editingShot?.section ?? null}
+          materials={sortedMaterials}
           onClose={() => setEditingShot(null)}
           onSaved={(fresh) => {
             setPlanAndPush(fresh)
