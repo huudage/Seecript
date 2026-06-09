@@ -321,7 +321,7 @@ export function ClarifyPanel({
         <div className="rounded-md border border-dashed border-emerald-500/30 bg-emerald-50/40 px-2 py-1.5 text-[10px] dark:bg-emerald-950/20">
           {briefSubjects.length > 0 ? (
             <div className="flex flex-wrap items-center gap-1">
-              <span className="text-muted-foreground">主题识别 {briefSubjects.length}：</span>
+              <span className="text-muted-foreground">推断可拍物体 {briefSubjects.length}：</span>
               {briefSubjects.map((s) => (
                 <span
                   key={`b-${s}`}
@@ -330,11 +330,11 @@ export function ClarifyPanel({
                   {s}
                 </span>
               ))}
-              <span className="text-muted-foreground">· AI 从你的主题里挑出的具象锚点</span>
+              <span className="text-muted-foreground">· AI 反推你最可能拍到的具体实物（非主题词）</span>
             </div>
           ) : (
             <span className="text-muted-foreground">
-              主题识别：等待 AI 澄清——点上方按钮跑一轮后会出现具象锚点。
+              推断可拍物体：等待 AI 跑澄清——会反推「纸巾/瑜伽垫」这种镜头能拍到的具体实物。
             </span>
           )}
         </div>
