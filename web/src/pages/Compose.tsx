@@ -23,7 +23,6 @@ import { PackagingItemEditDialog } from '@/components/compose/PackagingItemEditD
 import { PackagingPanel } from '@/components/compose/PackagingPanel'
 import { ReferencePicker } from '@/components/compose/ReferencePicker'
 import { SceneEditPanel } from '@/components/compose/SceneEditPanel'
-import { SectionPreviewCard } from '@/components/compose/SectionPreviewCard'
 import { StructureMapPanel } from '@/components/compose/StructureMapPanel'
 import { SubtitleEditPopover } from '@/components/compose/SubtitleEditPopover'
 import { SystemLibraryPicker } from '@/components/compose/SystemLibraryPicker'
@@ -196,33 +195,33 @@ export default function ComposePage() {
     }
   }, [secondaryRef])
   const [activeAction, setActiveAction] = useState<FillAction>('rerank')
-  // 每条 (gap_id, action) 独立工作台：用户切到别的段或别的动作时，旧 panel 留在 DOM
-  // 里只 display:none，本地 useState（form/思考态/seedance polling）不丢。回到该组合
-  // 看到的就是离开时的现场。rerank 不进 keepalive——它没有用户输入，重渲染廉价。
+  // 每条 (section_id, action) 独立工作台：切段或切动作时，旧 panel 只 display:none，
+  // 本地 useState（form/思考态/seedance polling）不丢；切回时还在原现场。
+  //
+  // 关键：键用 section_id 而非 gap_id——gap_id 每次 silent rebuild 都会被后端
+  // 加 plan_suffix 重写，旧 key 命中不到新 gaps 列表会导致 panel 卸载 → 进行中
+  // 的 AI 出图状态全废。section_id 跨 rebuild 稳定（`sec-${order}` 不变）。
+  //
+  // rerank 不进 keepalive——它没有用户输入，重渲染廉价。
   const [visitedFillKeys, setVisitedFillKeys] = useState<ReadonlySet<string>>(() => new Set())
-  useEffect(() => {
-    if (!selectedGapId) return
-    if (activeAction === 'rerank') return
-    const key = `${selectedGapId}::${activeAction}`
-    setVisitedFillKeys((prev) => {
-      if (prev.has(key)) return prev
-      const next = new Set(prev)
-      next.add(key)
-      return next
-    })
-  }, [selectedGapId, activeAction])
-  // 每条 gap 独立的 busy 锁：切到别的 gap 不会还显示上一段的 loading 态。
-  // 选用 Set<gap_id> 而非全局 boolean——AIGC 链式生成可能 >3 分钟，用户在等待期间
-  // 完全有理由切到别的段先写文案、看分镜，不该被全局 spinner 锁死。
-  const [busyGapIds, setBusyGapIds] = useState<ReadonlySet<string>>(() => new Set())
-  const markBusy = useCallback((gapId: string, busy: boolean) => {
-    setBusyGapIds((prev) => {
-      const has = prev.has(gapId)
+  // 每条 section 独立的 busy 锁：切到别的段不会还显示上一段的 loading 态。
+  // 选用 Set<section_id> 而非 gap_id（gap_id 不稳）；用户在 A 段等 AI 出图（3 min+）
+  // 期间应能切到 B 段并行做字卡/AI 出图，A 段完成后自动应用到内容轨。
+  const [busySectionIds, setBusySectionIds] = useState<ReadonlySet<string>>(() => new Set())
+  // 左侧段编辑面板 keepalive：每条 visited scene_id 都保留一份 SceneEditPanel 实例，
+  // display:none 切换。这样用户在 A 段输入草稿（theme/content/subject）→ 切到 B 段
+  // 做补全 → 切回 A，草稿仍在原现场。键用 scene_id（sc-{order}），保证多次 rebuild
+  // 时只要 shot 顺序不变就还能命中。
+  const [visitedSceneIds, setVisitedSceneIds] = useState<ReadonlySet<string>>(() => new Set())
+  const markBusy = useCallback((sectionId: string, busy: boolean) => {
+    if (!sectionId) return
+    setBusySectionIds((prev) => {
+      const has = prev.has(sectionId)
       if (busy && has) return prev
       if (!busy && !has) return prev
       const next = new Set(prev)
-      if (busy) next.add(gapId)
-      else next.delete(gapId)
+      if (busy) next.add(sectionId)
+      else next.delete(sectionId)
       return next
     })
   }, [])
@@ -503,10 +502,24 @@ export default function ComposePage() {
     [fills, selectedGapId],
   )
   const filledGapIds = useMemo(() => new Set(fills.map((f) => f.gap_id)), [fills])
-  // 当前选中那条 gap 的 busy 状态——仅用于左侧补全面板的 disabled / loading 标记。
-  // 全局动作锁还是用 analyzing（plan/build 是单例不并发）。
-  const gapBusy = selectedGap ? busyGapIds.has(selectedGap.gap_id) : false
-  const anyGapBusy = busyGapIds.size > 0
+  // 当前选中那条 gap 的 busy 状态——按 section_id 查（gap_id 在 silent rebuild 后会变）。
+  // 仅用于左侧补全面板的 disabled / loading 标记。
+  const gapBusy = selectedGap?.section_id ? busySectionIds.has(selectedGap.section_id) : false
+  const anyGapBusy = busySectionIds.size > 0
+
+  // 用户切到任何 section × (copy|aigc|aigc_image) → 推进 visitedFillKeys，加入 keepalive 池。
+  // 用 selectedGap 直接 derive section_id（在它定义后才能跑，所以 useEffect 放这里）。
+  useEffect(() => {
+    if (!selectedGap?.section_id) return
+    if (activeAction === 'rerank') return
+    const key = `${selectedGap.section_id}::${activeAction}`
+    setVisitedFillKeys((prev) => {
+      if (prev.has(key)) return prev
+      const next = new Set(prev)
+      next.add(key)
+      return next
+    })
+  }, [selectedGap?.section_id, activeAction])
 
   // gap 列表换了之后，自动选第一个 miss/warn
   useEffect(() => {
@@ -537,6 +550,20 @@ export default function ComposePage() {
         : null,
     [plan, selectedPackagingItemId],
   )
+
+  // 用户点了任意 scene（内容 / 字幕 / 口播轨）→ 推进 visitedSceneIds，
+  // 让 SceneEditPanel 当前段的 useState 草稿在切段后仍保留（display:none keepalive）。
+  // 包装段单独走 PackagingPanel（read-only），不进 keepalive 池。
+  useEffect(() => {
+    if (!effectiveSelectedSceneId) return
+    if (selectedPackagingItemId) return
+    setVisitedSceneIds((prev) => {
+      if (prev.has(effectiveSelectedSceneId)) return prev
+      const next = new Set(prev)
+      next.add(effectiveSelectedSceneId)
+      return next
+    })
+  }, [effectiveSelectedSceneId, selectedPackagingItemId])
 
   // 渲染流水线衍生态：jobId 存在 + 未 done + 无错误 = 进行中
   const isRendering = jobId !== null && !renderDone && !renderError
@@ -845,7 +872,8 @@ export default function ComposePage() {
 
   const runFill = useCallback(
     async (gap: Gap, action: FillAction, params: Record<string, unknown> = {}) => {
-      markBusy(gap.gap_id, true)
+      const sectionId = gap.section_id ?? gap.gap_id  // 老 gap 没 section_id 兜底
+      markBusy(sectionId, true)
       setError(null)
       try {
         const body: GapFillRequest = { gap_id: gap.gap_id, action, params }
@@ -857,15 +885,15 @@ export default function ComposePage() {
         // 改用 getState 在 await 后取最新 snapshot（已含 upsertFill 写入的 A、B）。
         const latest = usePlanStore.getState().fills
         const nextFills = [...latest.filter((f) => f.gap_id !== gap.gap_id), result]
-        // silent=true：本次重建不触发全局 analyzing 锁，其它 gap 工作台保持可操作
-        // （每段 busyGapIds 单独锁就够了，真正的并发补全在这里实现）。
+        // silent=true：本次重建不触发全局 analyzing 锁，其它 section 工作台保持可操作
+        // （每段 busySectionIds 单独锁就够了，真正的并发补全在这里实现）。
         await runAnalyze(nextFills, { silent: true })
         return result
       } catch (err) {
         setError(err instanceof Error ? err.message : '补全失败')
         return null
       } finally {
-        markBusy(gap.gap_id, false)
+        markBusy(sectionId, false)
       }
     },
     [markBusy, runAnalyze, upsertFill],
@@ -1749,68 +1777,90 @@ export default function ComposePage() {
       {/* ============ Row 2：步骤 2 = 样例 ↔ 新内容轨（顶部）+ 适配概要 + 补缺口 + 段落编辑 + 素材库（底） ============ */}
       {activeStep === 2 && plan && (
         <section className="mt-4 space-y-3 rounded-lg border border-border bg-card p-4">
-          {/* 顶部：样例视频轨道 + 新内容轨（phase=content-only，不展示口播 / 包装 / BGM 三轨） */}
-          <div className="space-y-1.5">
-            <div className="flex items-center justify-between">
-              <h2 className="text-sm font-semibold">样例视频轨道 ↔ 新内容轨</h2>
-              <span className="text-[10px] text-muted-foreground">{videoType}</span>
+          {/* 顶部：左 sticky 实时预览 + 右 内容轨（step3 同款布局）
+              用户在 step2 也能边补缺口边看整片预览；选中片段后会自动 seek 到段首。
+              phase=content-only：只展示内容轨，口播 / 包装 / BGM 留到 step3 解锁。 */}
+          <div className="grid items-start gap-3 md:grid-cols-[minmax(0,300px)_1fr]">
+            <div className="rounded-lg border border-border bg-card p-2 md:sticky md:top-4 md:self-start">
+              <div className="mb-1.5 flex items-center justify-between px-1 text-[11px] text-muted-foreground">
+                <span className="font-medium">实时预览</span>
+                <span className="font-mono">
+                  {playheadSeconds.toFixed(1)}s / {plan.duration_seconds.toFixed(1)}s
+                </span>
+              </div>
+              <PlanPlayer
+                ref={playerRef}
+                plan={plan}
+                materials={sortedMaterials}
+                onTimeUpdate={setPlayheadSeconds}
+              />
             </div>
-            <FourTrackBoard
-              plan={plan}
-              gaps={gaps}
-              filledGapIds={filledGapIds}
-              selectedGapId={selectedGapId}
-              selectedSceneId={effectiveSelectedSceneId}
-              selectedPackagingItemId={selectedPackagingItemId}
-              materials={sortedMaterials}
-              fills={fills}
-              referenceManifests={[effectiveManifest, secondaryManifest].filter(
-                (m): m is SampleManifest => !!m,
-              )}
-              onSelectScene={(scene, gap) => {
-                setSelectedSceneId(scene.scene_id)
-                setSelectedPackagingItemId(null)
-                if (gap) {
-                  setSelectedGapId(gap.gap_id)
+            <div className="space-y-1.5">
+              <div className="flex items-center justify-between">
+                <h2 className="text-sm font-semibold">样例视频轨道 ↔ 新内容轨</h2>
+                <span className="text-[10px] text-muted-foreground">{videoType}</span>
+              </div>
+              <FourTrackBoard
+                plan={plan}
+                gaps={gaps}
+                filledGapIds={filledGapIds}
+                selectedGapId={selectedGapId}
+                selectedSceneId={effectiveSelectedSceneId}
+                selectedPackagingItemId={selectedPackagingItemId}
+                materials={sortedMaterials}
+                fills={fills}
+                referenceManifests={[effectiveManifest, secondaryManifest].filter(
+                  (m): m is SampleManifest => !!m,
+                )}
+                onSelectScene={(scene, gap) => {
+                  setSelectedSceneId(scene.scene_id)
+                  setSelectedPackagingItemId(null)
+                  if (gap) {
+                    setSelectedGapId(gap.gap_id)
+                  }
+                  seekPlayer(scene.start)
+                }}
+                onSelectVoice={(scene) => {
+                  setSelectedSceneId(scene.scene_id)
+                  setSelectedPackagingItemId(null)
+                  seekPlayer(scene.start)
+                }}
+                onSelectPackaging={(item) => {
+                  setSelectedPackagingItemId(item.item_id)
+                  setSelectedSceneId(null)
+                  seekPlayer(item.start)
+                }}
+                onSynthesizeScene={handleSynthesizeScene}
+                onSynthesizeAll={handleSynthesizeAll}
+                onClearVoice={handleClearVoice}
+                onRecommendPackaging={handleRecommendPackaging}
+                onAddPackagingItem={handleAddPackagingItem}
+                onRecommendPackagingForScene={handleRecommendPackagingForScene}
+                onDeletePackagingItem={handleDeletePackagingItem}
+                onPickBgm={() => setBgmPickerOpen(true)}
+                onBgmAnchorChange={handleBgmAnchorChange}
+                onClearBgm={handleClearBgm}
+                onBgmVolumeChange={handleBgmVolumeChange}
+                onToggleSubtitle={handleToggleSubtitle}
+                onToggleVoiceover={handleToggleVoiceover}
+                onChangeTtsVoice={handleChangeTtsVoice}
+                busy={trackBusy}
+                phase="content-only"
+                contentTrackMode="sections"
+                playheadSeconds={playheadSeconds}
+                onSeek={seekPlayer}
+                onMovePackagingItem={handleMovePackagingItem}
+                onResizePackagingItem={handleResizePackagingItem}
+                onOpenPackagingDrawer={() => setPackagingDrawerOpen(true)}
+                onEditPackagingItem={(item) => {
+                  setEditingPackagingItem(item)
+                  setSelectedPackagingItemId(item.item_id)
+                }}
+                onEditTransition={(sceneId, currentStyle) =>
+                  setEditingTransition({ sceneId, currentStyle })
                 }
-              }}
-              onSelectVoice={(scene) => {
-                setSelectedSceneId(scene.scene_id)
-                setSelectedPackagingItemId(null)
-              }}
-              onSelectPackaging={(item) => {
-                setSelectedPackagingItemId(item.item_id)
-                setSelectedSceneId(null)
-              }}
-              onSynthesizeScene={handleSynthesizeScene}
-              onSynthesizeAll={handleSynthesizeAll}
-              onClearVoice={handleClearVoice}
-              onRecommendPackaging={handleRecommendPackaging}
-              onAddPackagingItem={handleAddPackagingItem}
-              onRecommendPackagingForScene={handleRecommendPackagingForScene}
-              onDeletePackagingItem={handleDeletePackagingItem}
-              onPickBgm={() => setBgmPickerOpen(true)}
-              onBgmAnchorChange={handleBgmAnchorChange}
-              onClearBgm={handleClearBgm}
-              onBgmVolumeChange={handleBgmVolumeChange}
-              onToggleSubtitle={handleToggleSubtitle}
-              onToggleVoiceover={handleToggleVoiceover}
-              onChangeTtsVoice={handleChangeTtsVoice}
-              busy={trackBusy}
-              phase="content-only"
-              contentTrackMode="sections"
-              playheadSeconds={playheadSeconds}
-              onMovePackagingItem={handleMovePackagingItem}
-              onResizePackagingItem={handleResizePackagingItem}
-              onOpenPackagingDrawer={() => setPackagingDrawerOpen(true)}
-              onEditPackagingItem={(item) => {
-                setEditingPackagingItem(item)
-                setSelectedPackagingItemId(item.item_id)
-              }}
-              onEditTransition={(sceneId, currentStyle) =>
-                setEditingTransition({ sceneId, currentStyle })
-              }
-            />
+              />
+            </div>
           </div>
 
           {/* 素材库（提升到中段，提升上传感受）：上传 / 拖拽排序 / 删除 → 自动重排并刷新缺口 */}
@@ -1871,52 +1921,59 @@ export default function ComposePage() {
           {/* 两栏：左 段落编辑（补全的依据） / 右 缺口补全 tabs。
               把段落编辑放左是因为补全永远基于段落实时内容——先在左边把段落写顺，再来右边补。 */}
           <div className="grid gap-3 lg:grid-cols-[1fr_1.2fr]">
-            {/* 左 · 段落/包装段编辑（按 selection 自动切换） */}
-            <SceneEditPanel
-              key={
-                selectedPackagingItem
-                  ? `pkg-${selectedPackagingItem.item_id}`
-                  : `scene-${effectiveSelectedSceneId ?? 'none'}`
-              }
-              plan={plan}
-              selectedSceneId={effectiveSelectedSceneId}
-              selectedPackagingItem={selectedPackagingItem}
-              materials={sortedMaterials}
-              onSaved={setPlanAndPush}
-              disabled={analyzing || anyGapBusy || trackBusy}
-            />
+            {/* 左 · 段落/包装段编辑（按 selection 自动切换）
+                keepalive：包装项独立渲染（read-only）；scene 走多实例堆栈，每条 visited
+                scene_id 一份 SceneEditPanel，display:none 切换，本地 useState（theme/content/
+                subject 草稿）跨段切换不丢——和右侧 fill 工作台一致。 */}
+            {selectedPackagingItem ? (
+              <SceneEditPanel
+                key={`pkg-${selectedPackagingItem.item_id}`}
+                plan={plan}
+                selectedSceneId={effectiveSelectedSceneId}
+                selectedPackagingItem={selectedPackagingItem}
+                materials={sortedMaterials}
+                onSaved={setPlanAndPush}
+                disabled={analyzing || anyGapBusy || trackBusy}
+              />
+            ) : (
+              <div>
+                {Array.from(visitedSceneIds).map((sceneId) => {
+                  // plan rebuild 后老 scene_id 可能不存在（shot 数变了），命中不到就跳过。
+                  if (!plan.main_track.some((s) => s.scene_id === sceneId)) return null
+                  const isActive = sceneId === effectiveSelectedSceneId
+                  return (
+                    <div
+                      key={`scene-${sceneId}`}
+                      style={{ display: isActive ? 'block' : 'none' }}
+                      aria-hidden={!isActive}
+                    >
+                      <SceneEditPanel
+                        plan={plan}
+                        selectedSceneId={sceneId}
+                        materials={sortedMaterials}
+                        onSaved={setPlanAndPush}
+                        disabled={analyzing || anyGapBusy || trackBusy}
+                      />
+                    </div>
+                  )
+                })}
+                {visitedSceneIds.size === 0 && (
+                  <SceneEditPanel
+                    plan={plan}
+                    selectedSceneId={effectiveSelectedSceneId}
+                    materials={sortedMaterials}
+                    onSaved={setPlanAndPush}
+                    disabled={analyzing || anyGapBusy || trackBusy}
+                  />
+                )}
+              </div>
+            )}
 
             {/* 右 · 缺口补全（依赖选中 gap） */}
             <div className="space-y-2">
               <p className="rounded-md border border-primary/30 bg-primary/5 px-2 py-1.5 text-[11px] leading-relaxed text-foreground">
               💡 这里只关心<strong>画面 + 字幕</strong>——三种方式都是给本段生成画面（挑素材 / 字卡画面 / AI 视频）；字幕轨开关默认关闭，开启后 AI 自动按段落生成可编辑字幕。口播留到第 3 步再切换音色合成。
               </p>
-              {/* 段落预览：用户选中 gap 后立即看到本段当前画面+字幕+包装的实时效果，
-                  填了素材后会自动反映新结果——避免在 step2 盲填。 */}
-              {selectedGap && (() => {
-                const idx = plan.adapted_sections.findIndex(
-                  (s) => s.section_id === selectedGap.section_id,
-                )
-                if (idx < 0) return null
-                const sec = plan.adapted_sections[idx]
-                // adapted_sections 没有显式 start/end，按累计 duration 算段首；段尾=段首+本段时长。
-                let start = 0
-                for (let i = 0; i < idx; i += 1) {
-                  start += plan.adapted_sections[i].duration_seconds || 0
-                }
-                const end = start + (sec.duration_seconds || 0)
-                if (end <= start) return null
-                return (
-                  <SectionPreviewCard
-                    plan={plan}
-                    materials={sortedMaterials}
-                    sectionStart={start}
-                    sectionEnd={end}
-                    label={`段 #${idx + 1} · ${sec.role}`}
-                    onTimeUpdate={setPlayheadSeconds}
-                  />
-                )
-              })()}
               {selectedGap ? (
                 <>
                   <div className="flex flex-wrap items-center gap-1 text-xs">
@@ -1963,21 +2020,30 @@ export default function ComposePage() {
                     </>
                   )}
 
-                  {/* keepalive 工作台：每个 (gap_id, action) 一份 panel，留在 DOM
+                  {/* keepalive 工作台：每个 (section_id, action) 一份 panel，留在 DOM
                       不卸载。切段或切动作只切 display；本地 useState（生成阶段、
-                      seedance polling、表单草稿）跨切换不丢。 */}
+                      seedance polling、表单草稿）跨切换不丢。
+                      关键：键用 section_id（rebuild 后稳定），运行时按 section_id 反查
+                      最新 gaps 拿到最新 gap_id——这样 silent rebuild 重写 gap_id
+                      后，panel 不会因为 find 失败而卸载（→ AI 出图 polling 不丢）。 */}
                   {Array.from(visitedFillKeys).map((key) => {
-                    const [gapId, action] = key.split('::') as [string, FillAction]
-                    const gapForKey = gaps.find((g) => g.gap_id === gapId)
+                    const [sectionId, action] = key.split('::') as [string, FillAction]
+                    const gapForKey =
+                      gaps.find((g) => g.section_id === sectionId) ??
+                      gaps.find((g) => g.gap_id === sectionId)  // 老 gap 兜底（没 section_id）
                     if (!gapForKey) return null
                     const isActive =
-                      selectedGap?.gap_id === gapId && activeAction === action
+                      selectedGap?.section_id === sectionId && activeAction === action
                     const fillForKey =
-                      fills.find((f) => f.gap_id === gapId && f.action === action) ?? null
+                      fills.find(
+                        (f) =>
+                          (f.section_id === sectionId || f.gap_id === gapForKey.gap_id) &&
+                          f.action === action,
+                      ) ?? null
                     const onResult = async (f: FillResult) => {
-                      // 标记本段 busy，让 anyGapBusy 在重建完成前保持 true——避免用户
-                      // 在 silent rebuild 期间直接跳到 step3 拿到陈旧 plan。
-                      markBusy(f.gap_id, true)
+                      // 标记本段 busy（用 section_id 而非 gap_id，rebuild 后仍能定位）
+                      const sid = f.section_id ?? gapForKey.section_id ?? gapForKey.gap_id
+                      markBusy(sid, true)
                       upsertFill(f)
                       // 取 store 最新 snapshot（含其它并发面板刚 upsert 的 fill），避免
                       // 用 closure 中的 stale `fills` 把别的段的成果覆盖掉。
@@ -1986,7 +2052,7 @@ export default function ComposePage() {
                       try {
                         await runAnalyze(nextFills, { silent: true })
                       } finally {
-                        markBusy(f.gap_id, false)
+                        markBusy(sid, false)
                       }
                     }
                     return (

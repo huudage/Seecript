@@ -117,6 +117,9 @@ export function ClarifyPanel({
   const [phase, setPhase] = useState<Phase>('idle')
   const [error, setError] = useState('')
   const [snapshotBrief, setSnapshotBrief] = useState('')
+  /** LLM 从 INITIAL_BRIEF + outline.content 自抽的具象名词（≤6）；与 detectedSubjects
+   *  平行，UI 分两组 chip 显示。即使用户没上传素材也能看到「主题里识别到了 X、Y」。 */
+  const [briefSubjects, setBriefSubjects] = useState<string[]>([])
   const sseRef = useRef<SSEHandle | null>(null)
 
   const round = transcript.length + 1
@@ -137,6 +140,7 @@ export function ClarifyPanel({
     setSupplement('')
     setPhase('idle')
     setError('')
+    setBriefSubjects([])
   }
 
   const startRound = (forceFinalize = false, baseBrief?: string, baseTranscript?: Turn[]) => {
@@ -169,6 +173,9 @@ export function ClarifyPanel({
             setStreaming((prev) => prev + (ev.payload?.delta ?? ''))
           } else if (ev.step === 'outline_ready' && ev.payload?.outline) {
             setOutline({ ...EMPTY_OUTLINE, ...ev.payload.outline })
+            if (Array.isArray(ev.payload.brief_subjects)) {
+              setBriefSubjects(ev.payload.brief_subjects.slice(0, 6))
+            }
             if (ev.payload.thinking) {
               setStreaming((prev) =>
                 prev ? prev + '\n' + (ev.payload!.thinking || '') : ev.payload!.thinking || '',
@@ -306,28 +313,51 @@ export function ClarifyPanel({
         </button>
       </div>
 
-      {/* 已识别主体 chips：让用户看到「我们已经知道你上传了 X、Y、Z」，
-          配合服务端的「必须把这些写进 content」规则形成闭环——避免用户上传纸巾
-          却看到 outline 没纸巾时的疑惑。空时显示提示让用户去上传素材。 */}
-      <div className="rounded-md border border-dashed border-border bg-card/50 px-2 py-1.5 text-[10px]">
-        {detectedSubjects.length > 0 ? (
-          <div className="flex flex-wrap items-center gap-1">
-            <span className="text-muted-foreground">已从素材识别 {detectedSubjects.length}：</span>
-            {detectedSubjects.map((s) => (
-              <span
-                key={s}
-                className="rounded bg-emerald-500/10 px-1.5 py-0.5 text-emerald-700 dark:text-emerald-400"
-              >
-                {s}
-              </span>
-            ))}
-            <span className="text-muted-foreground">· 这些主体一定会出现在 content</span>
-          </div>
-        ) : (
-          <span className="text-muted-foreground">
-            尚未识别到素材主体——上传图片/视频后，VLM 标会自动加入并写进 content。
-          </span>
-        )}
+      {/* 双路 subject 识别 chips：
+          - 主题识别 (briefSubjects)：LLM 从 brief/outline.content 自抽的具象名词，没上传素材也有
+          - 素材识别 (detectedSubjects)：VLM 从用户已上传的图片/视频里识别的对象
+          两路 union 在脚本生成时一起作为锚点，配合服务端的 enforce_subjects_in_content 闭环。 */}
+      <div className="space-y-1.5">
+        <div className="rounded-md border border-dashed border-emerald-500/30 bg-emerald-50/40 px-2 py-1.5 text-[10px] dark:bg-emerald-950/20">
+          {briefSubjects.length > 0 ? (
+            <div className="flex flex-wrap items-center gap-1">
+              <span className="text-muted-foreground">主题识别 {briefSubjects.length}：</span>
+              {briefSubjects.map((s) => (
+                <span
+                  key={`b-${s}`}
+                  className="rounded bg-emerald-500/15 px-1.5 py-0.5 text-emerald-700 dark:text-emerald-300"
+                >
+                  {s}
+                </span>
+              ))}
+              <span className="text-muted-foreground">· AI 从你的主题里挑出的具象锚点</span>
+            </div>
+          ) : (
+            <span className="text-muted-foreground">
+              主题识别：等待 AI 澄清——点上方按钮跑一轮后会出现具象锚点。
+            </span>
+          )}
+        </div>
+        <div className="rounded-md border border-dashed border-border bg-card/50 px-2 py-1.5 text-[10px]">
+          {detectedSubjects.length > 0 ? (
+            <div className="flex flex-wrap items-center gap-1">
+              <span className="text-muted-foreground">素材识别 {detectedSubjects.length}：</span>
+              {detectedSubjects.map((s) => (
+                <span
+                  key={`m-${s}`}
+                  className="rounded bg-sky-500/10 px-1.5 py-0.5 text-sky-700 dark:text-sky-300"
+                >
+                  {s}
+                </span>
+              ))}
+              <span className="text-muted-foreground">· 一定会出现在 content</span>
+            </div>
+          ) : (
+            <span className="text-muted-foreground">
+              素材识别：尚未识别到——上传图片/视频后，VLM 标会自动加入并写进 content。
+            </span>
+          )}
+        </div>
       </div>
 
       {transcript.length > 0 && (

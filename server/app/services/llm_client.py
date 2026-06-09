@@ -878,6 +878,7 @@ def _build_mock_clarify_text(user_text: str) -> str:
             f"先按五件套结构填字段，最不确定的位置留作追问。"
         ),
         "outline": outline,
+        "brief_subjects": ["mock主体A", "mock主体B"],
         "question": question,
     }
     return _json.dumps(payload, ensure_ascii=False, indent=2)

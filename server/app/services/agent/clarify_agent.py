@@ -65,8 +65,15 @@ _CLARIFY_SYSTEM = (
     '    "goal":     "<目的：卖货/种草/教程/娱乐/品牌 等>",\n'
     '    "tone":     "<语气风格：温柔/高能/沙雕/严肃 等>"\n'
     "  },\n"
+    '  "brief_subjects": ["<从 INITIAL_BRIEF + outline.content 抽出的具象名词，≤6 个>"],\n'
     '  "question": "<向用户求证你做的假设；够清楚或最终轮请给 null；≤40 字>"\n'
     "}\n\n"
+    "brief_subjects 抽取规则（核心）：\n"
+    "- 只抽**可拍可拿可显示**的具象名词：物体、产品、人物角色、地点、场景。\n"
+    "- 严禁抽：感受/情绪/形容词/动作/上位词/营销词（如「氛围」「干净」「使用」「日用品」「好物」「品质」「生活方式」「场景」「体验」均不要）。\n"
+    "- 优先 2–6 个字的实词；超过 12 字的短语丢弃。\n"
+    "- 与 DETECTED_SUBJECTS 去重——已在 DETECTED_SUBJECTS 出现的不要重复。\n"
+    "- 若 brief 太抽象抽不出，给空数组 []，不要硬凑。\n\n"
     "重要约束：\n"
     "- 输出**纯 JSON**，禁止三重反引号或任何前后缀。\n"
     "- 历史轮 TRANSCRIPT 已经包含用户补充信息，不要重复假设、不要忽略用户已澄清的字段。\n"
@@ -90,10 +97,15 @@ class ThinkingDelta:
 
 @dataclass
 class OutlineReady:
-    """LLM 完整输出已解析成五件套结构。"""
+    """LLM 完整输出已解析成五件套结构。
+
+    brief_subjects 是 LLM 从 INITIAL_BRIEF + outline.content 自抽的具象名词（≤6 个），
+    与 detected_subjects（VLM 素材路径）平行，前端分两组显示让用户检查。
+    """
 
     outline: ClarifyOutline
     thinking: str
+    brief_subjects: list[str]
 
 
 @dataclass
@@ -223,6 +235,53 @@ def _coerce_question(v: Any) -> Optional[str]:
     return first_line[:200]
 
 
+# LLM 经常会把这些抽象词当 subject 输出——前端拿来当具象锚点会误导（Seedream 没法
+# 画「氛围」「品质」）。后端做最后一道过滤。
+_SUBJECT_BLACKLIST: frozenset[str] = frozenset({
+    "氛围", "品质", "感受", "感觉", "体验", "效果", "细节", "情绪",
+    "场景", "画面", "镜头", "风格", "状态", "生活", "日常", "日用品",
+    "好物", "好处", "亮点", "卖点", "特点", "优势", "价值", "意义",
+    "故事", "内容", "主题", "想法", "概念", "理念",
+    "使用", "用法", "用途", "干净", "整洁", "舒适", "简洁",
+    "用户", "目标", "受众", "人群", "客户",
+})
+
+
+def _coerce_brief_subjects(raw: Any, detected: list[str] | None) -> list[str]:
+    """规整 LLM 自抽的 brief_subjects：去空 / 去黑名单 / 去重（含与 detected_subjects 互斥）/ 限 6。
+
+    长度卡 2–12 字，过短/过长一律丢——保护前端 chip 排版。
+    """
+    if not raw:
+        return []
+    if isinstance(raw, str):
+        # 容错：LLM 偶尔会输出顿号串
+        items = [x.strip() for x in re.split(r"[、,，\n;；]", raw)]
+    elif isinstance(raw, (list, tuple)):
+        items = [str(x).strip() for x in raw]
+    else:
+        return []
+    detected_set = {s.strip() for s in (detected or []) if s and s.strip()}
+    seen: set[str] = set()
+    out: list[str] = []
+    for s in items:
+        if not s:
+            continue
+        if len(s) < 2 or len(s) > 12:
+            continue
+        if s in _SUBJECT_BLACKLIST:
+            continue
+        if s in detected_set:
+            continue
+        if s in seen:
+            continue
+        seen.add(s)
+        out.append(s)
+        if len(out) >= 6:
+            break
+    return out
+
+
 async def run_clarify_round(
     *,
     initial_brief: str,
@@ -293,10 +352,12 @@ async def run_clarify_round(
         outline = ClarifyOutline(topic=full.strip()[:200] or None)
         thinking = ""
         question_raw: Any = None
+        brief_subjects_raw: Any = None
     else:
         outline = _coerce_outline(parsed.get("outline") or {})
         thinking = str(parsed.get("thinking") or "").strip()
         question_raw = parsed.get("question")
+        brief_subjects_raw = parsed.get("brief_subjects")
 
     # detected_subjects 兜底：LLM 经常会忘把这些对象点名进 content。在 yield 前
     # 机械补回去——把缺的对象用顿号串拼到 content 末尾，括号注「（涉及 X、Y、Z）」。
@@ -304,7 +365,8 @@ async def run_clarify_round(
     if detected_subjects:
         outline = _enforce_subjects_in_content(outline, detected_subjects)
 
-    yield OutlineReady(outline=outline, thinking=thinking)
+    brief_subjects = _coerce_brief_subjects(brief_subjects_raw, detected_subjects)
+    yield OutlineReady(outline=outline, thinking=thinking, brief_subjects=brief_subjects)
 
     question_out: Optional[str] = None if is_final else _coerce_question(question_raw)
     yield RoundDone(outline=outline, question=question_out, is_final=is_final)

@@ -1634,6 +1634,9 @@ export interface ClarifyRoundProgress {
   /** outline_ready 阶段的完整 outline 与思考流摘要 */
   outline?: ClarifyOutline
   thinking?: string
+  /** outline_ready 阶段：LLM 从 brief/outline.content 抽出的具象名词（≤6 个），
+   *  与 VLM detected_subjects 平行——前端分两组 chip 显示让用户检查。 */
+  brief_subjects?: string[]
 }
 
 export interface ClarifyFinalizeRequest {

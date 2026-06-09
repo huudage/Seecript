@@ -116,6 +116,7 @@ async def clarify_round(p: str = Query(..., description="base64(JSON) 的 Clarif
                         "payload": {
                             "outline": ev.outline.model_dump(),
                             "thinking": ev.thinking,
+                            "brief_subjects": ev.brief_subjects,
                         },
                     })
                 elif isinstance(ev, RoundDone):
