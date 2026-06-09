@@ -569,21 +569,16 @@ export function FourTrackBoard({
     return () => window.removeEventListener('click', close)
   }, [addMenuOpen])
 
-  // 包装轨「推荐生成」浮层：先选 kind，再填自然语言 hint，提交对当前选中 scene 调 LLM 生成单个组件
-  const [recommendOpen, setRecommendOpen] = useState(false)
-  const [recommendKind, setRecommendKind] = useState<'title_bar' | 'sticker' | 'cover'>('title_bar')
-  const [recommendHint, setRecommendHint] = useState('')
+  // 包装轨「推荐生成」下拉菜单：点 kind 直接对当前选中 scene 调 LLM 生成单个组件（时长 = scene 时长）
+  // 创作者后续若要改文案/位置/颜色，点轨道上的组件块进编辑面板调整。
+  const [recommendMenuOpen, setRecommendMenuOpen] = useState(false)
   const [recommendBusy, setRecommendBusy] = useState(false)
-  const recommendPanelRef = useRef<HTMLDivElement | null>(null)
   useEffect(() => {
-    if (!recommendOpen) return
-    const close = (e: MouseEvent) => {
-      if (recommendPanelRef.current && recommendPanelRef.current.contains(e.target as Node)) return
-      setRecommendOpen(false)
-    }
-    window.addEventListener('mousedown', close)
-    return () => window.removeEventListener('mousedown', close)
-  }, [recommendOpen])
+    if (!recommendMenuOpen) return
+    const close = () => setRecommendMenuOpen(false)
+    window.addEventListener('click', close)
+    return () => window.removeEventListener('click', close)
+  }, [recommendMenuOpen])
   const targetSceneForRecommend = useMemo(() => {
     if (!selectedSceneId) return null
     return plan.main_track.find((s) => s.scene_id === selectedSceneId) ?? null
@@ -1439,107 +1434,52 @@ export function FourTrackBoard({
                 <div className="relative" onClick={(e) => e.stopPropagation()}>
                   <button
                     onClick={() => {
-                      setRecommendOpen((v) => !v)
+                      setRecommendMenuOpen((v) => !v)
                       setAddMenuOpen(false)
                     }}
-                    disabled={busy || recommendBusy}
+                    disabled={busy || recommendBusy || !targetSceneForRecommend}
                     title={
                       targetSceneForRecommend
-                        ? `按当前选中片段（${targetSceneForRecommend.scene_id}）+ 自然语言诉求生成包装组件`
+                        ? `按当前选中片段（${targetSceneForRecommend.scene_id}）生成包装组件——时长跟随该镜，AI 自动出文案/颜色/位置，落轨后可点击改`
                         : '请先在内容轨点选一个片段，再用「推荐生成」生成针对该片段的包装组件'
                     }
                     className="rounded border border-amber-300/40 bg-amber-50/10 px-1.5 py-0.5 text-[10px] text-amber-200 hover:bg-amber-50/20 hover:text-amber-100 disabled:opacity-50"
                   >
-                    {recommendBusy ? '🤖 生成中…' : '✨ 推荐生成'}
+                    {recommendBusy ? '🤖 生成中…' : '✨ 推荐生成 ▾'}
                   </button>
-                  {recommendOpen && (
-                    <div
-                      ref={recommendPanelRef}
-                      className="absolute right-0 top-full z-50 mt-1 w-72 overflow-hidden rounded-md border border-border bg-card p-2 shadow-lg"
-                    >
-                      <div className="mb-1.5 text-[10px] font-medium text-foreground">
-                        AI 推荐生成 · 当前片段：
-                        <span className="ml-1 rounded bg-secondary px-1 py-px text-[10px] text-muted-foreground">
-                          {targetSceneForRecommend
-                            ? `${targetSceneForRecommend.scene_id}（${targetSceneForRecommend.start.toFixed(1)}-${(targetSceneForRecommend.start + targetSceneForRecommend.duration).toFixed(1)}s）`
-                            : '未选中'}
-                        </span>
+                  {recommendMenuOpen && targetSceneForRecommend && (
+                    <div className="absolute right-0 top-full z-50 mt-1 w-36 overflow-hidden rounded-md border border-border bg-card shadow-lg">
+                      <div className="border-b border-border bg-background/40 px-2 py-1 text-[10px] text-muted-foreground">
+                        基于 <span className="font-mono">{targetSceneForRecommend.scene_id}</span> · 时长 {targetSceneForRecommend.duration.toFixed(1)}s
                       </div>
-                      <div className="mb-1.5 flex gap-1">
-                        {(
-                          [
-                            { kind: 'title_bar', label: '标题条' },
-                            { kind: 'sticker', label: '贴纸' },
-                            { kind: 'cover', label: '封面' },
-                          ] as const
-                        ).map((opt) => (
-                          <button
-                            key={opt.kind}
-                            onClick={() => setRecommendKind(opt.kind)}
-                            className={cn(
-                              'flex-1 rounded border px-1.5 py-0.5 text-[10px]',
-                              recommendKind === opt.kind
-                                ? 'border-amber-400/60 bg-amber-50/15 text-amber-100'
-                                : 'border-border bg-background/60 text-muted-foreground hover:bg-secondary',
-                            )}
-                          >
-                            {opt.label}
-                          </button>
-                        ))}
-                      </div>
-                      <textarea
-                        value={recommendHint}
-                        onChange={(e) => setRecommendHint(e.target.value.slice(0, 300))}
-                        placeholder={
-                          recommendKind === 'title_bar'
-                            ? '示例：用主色板红做底，强调"史上最强续航"'
-                            : recommendKind === 'sticker'
-                              ? '示例：closing 段加一颗黄色"立即购买"圆贴'
-                              : '示例：钩子标题"3 秒看懂"，深蓝渐变 + 居中排版'
-                        }
-                        rows={3}
-                        className="block w-full resize-none rounded border border-border bg-background/60 px-1.5 py-1 text-[11px] text-foreground placeholder:text-muted-foreground/60 focus:border-amber-400/60 focus:outline-none"
-                      />
-                      <div className="mt-1.5 flex items-center justify-between gap-1">
-                        <span className="text-[10px] text-muted-foreground">{recommendHint.length}/300</span>
-                        <div className="flex gap-1">
-                          <button
-                            onClick={() => {
-                              setRecommendOpen(false)
-                              setRecommendHint('')
-                            }}
-                            className="rounded border border-border px-1.5 py-0.5 text-[10px] text-muted-foreground hover:bg-secondary"
-                          >
-                            取消
-                          </button>
-                          <button
-                            onClick={async () => {
-                              if (!targetSceneForRecommend) return
-                              setRecommendBusy(true)
-                              try {
-                                await onRecommendPackagingForScene(
-                                  targetSceneForRecommend.scene_id,
-                                  recommendKind,
-                                  recommendHint.trim(),
-                                )
-                                setRecommendOpen(false)
-                                setRecommendHint('')
-                              } finally {
-                                setRecommendBusy(false)
-                              }
-                            }}
-                            disabled={!targetSceneForRecommend || recommendBusy}
-                            className="rounded bg-amber-400/80 px-2 py-0.5 text-[10px] font-medium text-amber-950 hover:bg-amber-300/90 disabled:opacity-50"
-                          >
-                            {recommendBusy ? '生成中…' : '生成'}
-                          </button>
-                        </div>
-                      </div>
-                      {!targetSceneForRecommend && (
-                        <div className="mt-1 text-[10px] text-amber-200/80">
-                          请先在内容轨点选一个片段，再触发推荐生成。
-                        </div>
-                      )}
+                      {(
+                        [
+                          { kind: 'title_bar', label: '标题条' },
+                          { kind: 'sticker', label: '贴纸' },
+                          { kind: 'cover', label: '封面' },
+                        ] as const
+                      ).map((opt) => (
+                        <button
+                          key={opt.kind}
+                          onClick={async () => {
+                            setRecommendMenuOpen(false)
+                            setRecommendBusy(true)
+                            try {
+                              await onRecommendPackagingForScene(
+                                targetSceneForRecommend.scene_id,
+                                opt.kind,
+                                '',
+                              )
+                            } finally {
+                              setRecommendBusy(false)
+                            }
+                          }}
+                          disabled={recommendBusy}
+                          className="block w-full px-2 py-1 text-left text-[10px] hover:bg-secondary disabled:opacity-50"
+                        >
+                          ✨ {opt.label}
+                        </button>
+                      ))}
                     </div>
                   )}
                 </div>

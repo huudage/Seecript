@@ -1146,25 +1146,23 @@ def _build_scene_scoped_system_prompt(
             "返回 JSON：\n"
             "{\n"
             "  \"text\": str(≤16字, 强卖点/概念词，禁口播原文),\n"
-            "  \"start\": number, \"end\": number,  // 必须落在 scene 时间窗内\n"
             "  \"font_size\": one of [small,medium,large],\n"
             "  \"color\": hex, \"background_color\": hex,\n"
             "  \"position\": one of [top,middle],\n"
             "  \"rationale\": str(≤30字，告诉创作者为什么这样设计)\n"
             "}\n"
-            "时长建议 1.0-1.8s。颜色应贴合 frame 主色板。"
+            "时长由系统自动取本镜全段（创作者会在落轨后手动拉短）。颜色应贴合 frame 主色板。"
         )
     elif kind == "sticker":
         body = (
             "返回 JSON：\n"
             "{\n"
             "  \"text\": str(≤8字, CTA/强调短语, 如『立即购买』『颜值在线』),\n"
-            "  \"start\": number, \"end\": number,  // 必须落在 scene 时间窗内\n"
             "  \"color\": hex, \"background_color\": hex,\n"
             "  \"position\": one of [bottom-center,top-right,bottom-right,middle],\n"
             "  \"rationale\": str(≤30字)\n"
             "}\n"
-            "时长建议 0.6-1.2s。颜色突出但不喧宾夺主。"
+            "时长由系统自动取本镜全段。颜色突出但不喧宾夺主。"
         )
     elif kind == "cover":
         body = (
@@ -1234,13 +1232,9 @@ def _scene_scoped_dict_to_item(
         text = str(raw.get("text", "")).strip()[:20]
         if not text:
             return None
-        try:
-            start = float(raw.get("start", scene.start))
-            end = float(raw.get("end", scene.start + min(1.5, scene.duration)))
-        except (TypeError, ValueError):
-            start, end = scene.start, scene.start + min(1.5, scene.duration)
-        start = max(scene.start, start)
-        end = min(scene.start + scene.duration, max(start + 0.4, end))
+        # 创作者明确要求：包装组件时长与本镜一致，覆盖整段；后续可点击组件块手动改时间。
+        start = scene.start
+        end = scene.start + scene.duration
         if end <= start:
             return None
         fs = str(raw.get("font_size", "medium")).lower()
@@ -1267,14 +1261,9 @@ def _scene_scoped_dict_to_item(
         text = str(raw.get("text", "")).strip()[:10]
         if not text:
             return None
-        try:
-            start = float(raw.get("start", scene.start + max(0.0, scene.duration - 1.0)))
-            end = float(raw.get("end", scene.start + scene.duration))
-        except (TypeError, ValueError):
-            start = scene.start + max(0.0, scene.duration - 1.0)
-            end = scene.start + scene.duration
-        start = max(scene.start, start)
-        end = min(scene.start + scene.duration, max(start + 0.4, end))
+        # 同 title_bar：贴纸默认贴满本镜全段，让创作者后续自己拉短。
+        start = scene.start
+        end = scene.start + scene.duration
         if end <= start:
             return None
         pos = str(raw.get("position", "bottom-center")).lower()
