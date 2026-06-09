@@ -278,11 +278,15 @@ export function FillAigcPanel({
       setSlotErr((m) => ({ ...m, [slotId]: null }))
       setSlotSaveOk((m) => ({ ...m, [slotId]: false }))
       try {
+        // 已存在 slot.url → 这是「换一张」/「再渲染」单图：把它作为视觉参考传给 Seedream，
+        // 让二次出图延续用户已确认画面的主体/构图/色调，而不是凭空重抽。
+        const prevUrl = imageSlots[slotId]?.url
         const resp = await api.post<AigcSeedreamResponse>('/gap/aigc-seedream', {
           prompt: promptText,
           ratio: spec.ratio,
           n: 1,
           subject: subjectForSpec(spec),
+          ...(prevUrl ? { reference_image_url: prevUrl } : {}),
         })
         const first = resp.images[0]
         if (!first) throw new Error('AI 出图未返回图片')
@@ -296,12 +300,13 @@ export function FillAigcPanel({
         setSlotBusy(null)
       }
     },
-    [slotPrompts, subjectForSpec],
+    [imageSlots, slotPrompts, subjectForSpec],
   )
 
   // -- spec 阶段：一键 Seedream 生成 slot --
   // 串行调避免撞配额。force=true 时不跳过已就绪 slot——给「再渲染」按钮用，
-  // 因为用户明确要求"AI 生图再渲染不能跳过生图"。
+  // 因为用户明确要求"AI 生图再渲染不能跳过生图"。再渲染时把已有 slot.url 作为
+  // Seedream 的 reference_image_url 传入，保持视觉一致性。
   const [seedreamAllBusy, setSeedreamAllBusy] = useState(false)
   const handleSeedreamAllSlots = useCallback(async (opts?: { force?: boolean }) => {
     if (seedreamAllBusy) return
@@ -320,11 +325,14 @@ export function FillAigcPanel({
         setSlotBusy(slotId)
         setSlotErr((m) => ({ ...m, [slotId]: null }))
         try {
+          // 已有 slot.url → 用它作为视觉参考（再渲染场景），从已确认画面延续
+          const prevUrl = imageSlots[slotId]?.url
           const resp = await api.post<AigcSeedreamResponse>('/gap/aigc-seedream', {
             prompt: promptText,
             ratio: spec.ratio,
             n: 1,
             subject: subjectForSpec(spec),
+            ...(prevUrl ? { reference_image_url: prevUrl } : {}),
           })
           const first = resp.images[0]
           if (!first) throw new Error('AI 出图未返回图片')

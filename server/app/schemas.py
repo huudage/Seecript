@@ -727,6 +727,14 @@ class Material(BaseModel):
         ),
     )
     tags: list[str] = Field(default_factory=list, description="多模态 LLM 打标：物体/场景/风格")
+    subjects: list[str] = Field(
+        default_factory=list,
+        description=(
+            "**有画面感的具象名词**——可被指着说的实物（例：青铜鼎/红色保温杯/金毛犬），"
+            "不是类别词（文物/杯子/狗）。VLM 看图打标时单独要求；与 tags 的关键词区分开。"
+            "用于 ClarifyPanel 的 detectedSubjects → outline.content 强制注入，让 outline 必含用户素材里的具象对象。"
+        ),
+    )
     recommended_section: Optional[SectionRole] = Field(
         default=None, description="LLM 推荐它适合放在样例的哪种 role 段（opening/development/climax/closing）"
     )
@@ -929,6 +937,14 @@ class AigcSeedreamRequest(BaseModel):
         description=(
             "主体锚点（具象名词）——本接口在调 Seedream 前会把 `[必须画出且不可替换的主体：X]` "
             "强制前缀注入 prompt，绕过 LLM 输出可能的同义化/上位化漂移。"
+        ),
+    )
+    reference_image_url: Optional[str] = Field(
+        default=None,
+        description=(
+            "已确认的上一张图 URL（一般是 Seedream 上一次返回的 CDN 链接）。非空时走 img2img："
+            "Seedream 把该图作为视觉参考（构图/色调/主体一致性），按新 prompt 改写。"
+            "用于「AI 生图再渲染」二次出图：不再凭空生成，而是从上次用户已确认的画面延续。"
         ),
     )
 

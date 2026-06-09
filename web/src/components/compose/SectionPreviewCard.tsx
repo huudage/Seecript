@@ -17,6 +17,11 @@ interface Props {
   sectionEnd: number
   /** 顶部小字标签（例如 "段 #2 · 3.4–8.1s"）。 */
   label?: string
+  /** Player 每帧回调当前时间（秒）。父级用来驱动 FourTrackBoard 时间轴游标，
+   *  这是 step2 与 step3 预览一致性的关键——step3 通过 PlanPlayer.onTimeUpdate 喂
+   *  playheadSeconds，step2 也用同一个 state，于是上面的 FourTrackBoard 会画出红
+   *  色播放头帧线，跟 step3 完全一致的视觉/交互体验。 */
+  onTimeUpdate?: (seconds: number) => void
 }
 
 /**
@@ -25,6 +30,8 @@ interface Props {
  *  - 完整体验：BGM / 字幕 / 包装 / 转场都按 plan 现状渲染，与 step3 全片预览一致
  *  - 不重写 Composition：直接 reuse PlanComposition，零代码分支
  *  - section 变化时 key 变化导致 Player 重新挂载，inFrame seek 到段首
+ *  - onTimeUpdate 同 PlanPlayer：父级拿到秒级游标后传给 FourTrackBoard 画播放头
+ *    （步骤 2 与步骤 3 共享一条「红色播放头」体验）
  *
  * 注意 inFrame/outFrame 是 Remotion 的硬限制：超出 outFrame 后停止，回到开头时
  * 会 seek 到 inFrame。这正是我们想要的「只看这一段」体验。
@@ -35,6 +42,7 @@ export function SectionPreviewCard({
   sectionStart,
   sectionEnd,
   label,
+  onTimeUpdate,
 }: Props) {
   const playerRef = useRef<PlayerRef>(null)
   const [hint, setHint] = useState<string>('')
@@ -54,6 +62,21 @@ export function SectionPreviewCard({
       /* player 还没 ready，忽略 */
     }
   }, [inFrame])
+
+  // 把 Player 当前帧实时回传父级——父级用同一条 playheadSeconds 驱动 FourTrackBoard
+  // 的播放头红线（step2 与 step3 共享视觉体验）。组件卸载/section 切换时 remove。
+  useEffect(() => {
+    if (!onTimeUpdate) return
+    const p = playerRef.current
+    if (!p) return
+    const handler = (e: { detail: { frame: number } }) => {
+      onTimeUpdate(e.detail.frame / FPS)
+    }
+    p.addEventListener('frameupdate', handler)
+    return () => {
+      p.removeEventListener('frameupdate', handler)
+    }
+  }, [onTimeUpdate, inFrame, outFrame])
 
   const previewKey = useMemo(
     () => `${plan.plan_id}-${inFrame}-${outFrame}`,

@@ -496,6 +496,7 @@ async def aigc_seedream(req: AigcSeedreamRequest) -> AigcSeedreamResponse:
     try:
         results = await get_seedream_client().generate(
             final_prompt, ratio=req.ratio, n=req.n,
+            reference_image=req.reference_image_url or None,
         )
     except SeedreamError as exc:
         raise HTTPException(

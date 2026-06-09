@@ -368,6 +368,10 @@ export interface Material {
   /** 原文件 URL，如 /uploads/<sid>/<material_id>_<filename>，Remotion Player 直接喂 <Video src>。 */
   file_url?: string | null
   tags: string[]
+  /** **具象名词**（青铜鼎/红色保温杯/金毛犬）——VLM 单独打标，不是 tags 那种泛关键词。
+   *  Compose.tsx 聚合后作为 detectedSubjects 喂给 ClarifyPanel → 强制写进 outline.content。
+   *  老 Material（schema 升级前）此字段为空数组，Compose 端 fallback 到 tags。 */
+  subjects?: string[]
   recommended_section?: SectionRole | null
   /** 高光评分 0-1：0.7+ 适合开头/高潮，0.4-0.7 中段铺陈，<0.4 仅 B-roll。 */
   highlight_score: number
@@ -570,6 +574,9 @@ export interface AigcSeedreamRequest {
   /** 主体锚点（具象名词）。后端会在调 Seedream 前把 [必须画出且不可替换的主体: X]
    *  强制前缀注入 prompt——绕过 LLM 输出的同义化漂移。 */
   subject?: string
+  /** 「AI 生图再渲染」二次出图时传入：上一张已确认图的 URL（Seedream CDN）。
+   *  非空时后端走 img2img，把它作为视觉参考（构图/色调/主体一致性），按新 prompt 改写。 */
+  reference_image_url?: string
 }
 
 export interface SeedreamImage {

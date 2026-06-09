@@ -55,6 +55,11 @@ _ALLOWED_ROLES: tuple[str, ...] = tuple(all_role_names())
 _MATERIAL_TAG_SYSTEM = (
     "你是短视频素材打标 Agent。看一帧画面，返回 JSON：\n"
     "{\"tags\": [string]（3-5 个，物体/场景/构图/风格关键词），"
+    "\"subjects\": [string]（1-4 个**有画面感的具象名词**，专指可被指着说的实物——\n"
+    "  ✅ 对：青铜鼎 / 红色保温杯 / 金毛犬 / 老北京胡同 / 黑色 MacBook / 长城烽火台 / 草莓蛋糕\n"
+    "  ❌ 错：文物 / 杯子 / 狗 / 城市 / 笔记本 / 古建筑 / 食物 ← 这些都是类别词，禁止用\n"
+    "  规则：宁可写得具体到型号/材质/颜色，也不要写类别。看不准就只写 1 个，\n"
+    "  实在无可识别画面则给 [] 空数组——绝不写「无」「未识别」之类）, "
     "\"recommended_section\": string（必须从 allowed_sections 里选一个 role；"
     "若 allowed_sections 含动态后缀如 step_*/item_*，可输出 step_1/item_2 这种带序号形式；"
     "若不确定使用第一个 target_role 作为默认值），"
@@ -65,14 +70,15 @@ _MATERIAL_TAG_SYSTEM = (
 )
 
 
-def _placeholder_tags(media_type: str) -> tuple[list[str], SectionRole, float, str]:
-    """LLM 不可用 / audio / 调用失败 时的兜底标。返回 (tags, role, highlight_score, highlight_reason).
+def _placeholder_tags(media_type: str) -> tuple[list[str], list[str], SectionRole, float, str]:
+    """LLM 不可用 / audio / 调用失败 时的兜底标。返回 (tags, subjects, role, highlight_score, highlight_reason).
 
-    role 默认 development（主体段）。
+    role 默认 development（主体段）。subjects 始终空——兜底场景没法靠瞎猜给具象名词，
+    宁可空也别污染 outline.content（[[clarify_agent.py]] 会按这些名词做强制注入）。
     """
     if media_type == "audio":
-        return ["[auto] 音频素材", "[auto] 口播/BGM 候选"], "development", 0.3, "[auto] 音频无画面评分"
-    return ["[auto] 待打标", "[auto] 通用素材"], "development", 0.5, "[auto] LLM 不可用，给中位分"
+        return ["[auto] 音频素材", "[auto] 口播/BGM 候选"], [], "development", 0.3, "[auto] 音频无画面评分"
+    return ["[auto] 待打标", "[auto] 通用素材"], [], "development", 0.5, "[auto] LLM 不可用，给中位分"
 
 
 class MaterialUploadService:
@@ -123,13 +129,18 @@ class MaterialUploadService:
         self,
         image_path: Path,
         media_type: str,
-    ) -> tuple[list[str], SectionRole, float, str]:
-        """单帧 → LLM 多模态打标。失败回落 placeholder。"""
+    ) -> tuple[list[str], list[str], SectionRole, float, str]:
+        """单帧 → LLM 多模态打标。失败回落 placeholder。
+
+        返回 (tags, subjects, role, highlight_score, highlight_reason)：
+        - tags：3-5 个泛关键词（物体/场景/构图/风格），向后兼容旧消费者
+        - subjects：1-4 个**具象名词**（青铜鼎/红色保温杯），ClarifyPanel 强制注入 outline.content
+        """
         user_text = (
             f"video_type={self.video_type}\n"
             f"allowed_sections={list(_ALLOWED_ROLES)}\n"
             f"media_type={media_type}\n"
-            "请按 system 中的 schema 返回 JSON，highlight_score 必须给一个 0.0-1.0 的数。"
+            "请按 system 中的 schema 返回 JSON,highlight_score 必须给一个 0.0-1.0 的数。"
         )
         try:
             client = get_llm_client()
@@ -150,13 +161,15 @@ class MaterialUploadService:
         if not isinstance(data, dict):
             return _placeholder_tags(media_type)
 
-        # 兼容两种形态：{tags, recommended_section, ...} 或 mock 的 {frame_tags: [{...}]}
+        # 兼容两种形态：{tags, subjects, recommended_section, ...} 或 mock 的 {frame_tags: [{...}]}
         raw_tags: list = []
+        raw_subjects: list = []
         raw_section: Optional[str] = None
         raw_score: Any = None
         raw_reason: Optional[str] = None
         if isinstance(data.get("tags"), list):
             raw_tags = data["tags"]
+            raw_subjects = data.get("subjects") or []
             raw_section = data.get("recommended_section")
             raw_score = data.get("highlight_score")
             raw_reason = data.get("highlight_reason")
@@ -164,6 +177,7 @@ class MaterialUploadService:
             first = data["frame_tags"][0]
             if isinstance(first, dict):
                 raw_tags = first.get("tags") or []
+                raw_subjects = first.get("subjects") or []
                 raw_section = first.get("recommended_section")
                 raw_score = first.get("highlight_score")
                 raw_reason = first.get("highlight_reason")
@@ -171,6 +185,23 @@ class MaterialUploadService:
         tags = [str(t)[:30] for t in raw_tags if t][:5]
         if not tags:
             return _placeholder_tags(media_type)
+
+        # subjects 清洗：必须是非空字符串、不在「类别词黑名单」、不是「无/未识别」之类的废话
+        _CATEGORY_BLACKLIST = {
+            "文物", "杯子", "狗", "猫", "城市", "笔记本", "电脑", "古建筑", "食物",
+            "动物", "植物", "建筑", "物品", "人物", "风景", "饮料", "家具",
+            "无", "未识别", "暂无", "无法识别", "看不清",
+        }
+        subjects: list[str] = []
+        for s in raw_subjects:
+            if not isinstance(s, (str, int, float)):
+                continue
+            ss = str(s).strip()
+            if not ss or ss in _CATEGORY_BLACKLIST or ss.lower() in {"null", "none", "n/a"}:
+                continue
+            subjects.append(ss[:20])
+            if len(subjects) >= 4:
+                break
 
         # role 校验：必须是 17 个静态 role 之一或 step_N/item_N 形式；否则回落 development
         role: SectionRole = "development"
@@ -185,7 +216,7 @@ class MaterialUploadService:
             score = 0.5
         score = max(0.0, min(1.0, score))
         reason = str(raw_reason)[:60] if isinstance(raw_reason, str) and raw_reason.strip() else "LLM 未给理由"
-        return tags, role, score, reason
+        return tags, subjects, role, score, reason
 
     # --- 单文件流水线 ---
     async def _save_file(self, file: UploadFile, media_type: str) -> tuple[str, str, Path]:
@@ -231,9 +262,9 @@ class MaterialUploadService:
         thumbnail_path, thumbnail_url = await self._make_thumbnail(dest, material_id, media_type)
 
         if thumbnail_path is not None and media_type in ("image", "video"):
-            tags, role, score, reason = await self._tag_with_llm(thumbnail_path, media_type)
+            tags, subjects, role, score, reason = await self._tag_with_llm(thumbnail_path, media_type)
         else:
-            tags, role, score, reason = _placeholder_tags(media_type)
+            tags, subjects, role, score, reason = _placeholder_tags(media_type)
 
         return Material(
             material_id=material_id,
@@ -243,6 +274,7 @@ class MaterialUploadService:
             thumbnail_url=thumbnail_url,
             file_url=f"/uploads/{self.project_id}/{dest.name}",
             tags=tags,
+            subjects=subjects,
             recommended_section=role,
             highlight_score=score,
             highlight_reason=reason,

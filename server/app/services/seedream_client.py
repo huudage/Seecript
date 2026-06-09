@@ -90,6 +90,7 @@ class SeedreamClient(ABC):
         ratio: str = "16:9",
         n: int = 1,
         watermark: bool = False,
+        reference_image: Optional[str] = None,
     ) -> List[ImageResult]: ...
 
     async def generate_sequence(
@@ -128,6 +129,7 @@ class MockSeedreamClient(SeedreamClient):
         ratio: str = "16:9",
         n: int = 1,
         watermark: bool = False,
+        reference_image: Optional[str] = None,
     ) -> List[ImageResult]:
         started = time.perf_counter()
         await asyncio.sleep(self._latency)
@@ -135,7 +137,9 @@ class MockSeedreamClient(SeedreamClient):
         out: List[ImageResult] = []
         for i in range(max(1, n)):
             label = quote((prompt[:24] or "mock-image"), safe="")
-            url = f"https://placehold.co/{w}x{h}/png?text={label}-{i+1}"
+            # mock 模式下 reference_image 仅打日志区分，URL 上加 ref 标签便于前端调试时识别
+            ref_tag = "ref-" if reference_image else ""
+            url = f"https://placehold.co/{w}x{h}/png?text={ref_tag}{label}-{i+1}"
             out.append(ImageResult(
                 url=url, width=w, height=h, provider=self.name,
                 elapsed_ms=int((time.perf_counter() - started) * 1000),
@@ -182,6 +186,7 @@ class DoubaoArkSeedreamClient(SeedreamClient):
         ratio: str = "16:9",
         n: int = 1,
         watermark: bool = False,
+        reference_image: Optional[str] = None,
     ) -> List[ImageResult]:
         started = time.perf_counter()
         w, h = _ratio_to_size(ratio)
@@ -200,6 +205,13 @@ class DoubaoArkSeedreamClient(SeedreamClient):
             "stream": False,
             "watermark": watermark,
         }
+        # reference_image：「AI 生图再渲染」二次出图时把上一张已确认图作为视觉参考。
+        # 豆包 Seedream 4.0+ 支持 image 字段（URL 或 base64 data URL），server 会以
+        # img2img 模式跑——保持主体/构图/色调连续性，按新 prompt 改写细节。
+        # （4.x 单图模式下 image 字段为可选 string；ARK 控制台示例 curl 兼容这种用法。）
+        if reference_image:
+            body["image"] = reference_image
+            log.info("[seedream] img2img mode (reference set, %d chars)", len(reference_image))
         # n>1 才传，单图时省略（5.0 单图模式 + n 同时传可能 400）
         if n and n > 1:
             body["n"] = max(1, min(4, n))

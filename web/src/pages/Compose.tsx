@@ -448,26 +448,43 @@ export default function ComposePage() {
   // 把素材库里 VLM 识别出的对象聚合成「已知主体」清单，传给 ClarifyPanel：
   // 用户上传素材后立刻能拉动 outline.content（典型：上传纸巾 → 澄清 LLM 必须在 content
   // 里点名「纸巾」）。dedupe + 长度限制 + 黑名单兜底，避免把噪声标签塞给 LLM。
+  //
+  // 优先级：material.subjects（VLM 单独要求的「具象名词」——青铜鼎/红色保温杯）
+  // 用尽再 fallback 到 material.tags（旧素材没 subjects 字段，且 tags 里也藏着一些泛词）。
   const detectedSubjects = useMemo(() => {
-    // VLM 失败兜底标 / 抽象描述词：扔进去除帮倒忙没别的；过滤掉。
+    // VLM 失败兜底标 / 抽象类别词：扔进去除帮倒忙没别的；过滤掉。
+    // 注意：subjects 字段在后端已经过黑名单清洗，这里二次过滤兜住 tags fallback 路径。
     const stop = new Set([
       '人', '物体', '场景', '画面', '视频', '图片', '素材', '内容', '主体',
       '构图', '光线', '风格', '氛围', '色彩', '色调', '镜头', '特写', '广角',
       '白色', '黑色', '红色', '蓝色', '绿色', '黄色',
+      // 类别词（与后端 _CATEGORY_BLACKLIST 同步）：宁可空也别让「文物/杯子/狗」污染 outline。
+      '文物', '杯子', '狗', '猫', '城市', '笔记本', '电脑', '古建筑', '食物',
+      '动物', '植物', '建筑', '人物', '风景', '饮料', '家具',
     ])
     const seen = new Set<string>()
     const out: string[] = []
+    const push = (raw: string): boolean => {
+      const t = raw.trim()
+      if (!t) return false
+      if (t.startsWith('[auto]')) return false
+      if (t.length < 2 || t.length > 12) return false
+      if (stop.has(t)) return false
+      if (seen.has(t)) return false
+      seen.add(t)
+      out.push(t)
+      return out.length >= 20
+    }
+    // 先全 subjects 走一遍——质量最高
+    for (const m of sortedMaterials) {
+      for (const s of m.subjects ?? []) {
+        if (push(s)) return out
+      }
+    }
+    // 再 tags 兜底——旧素材 / VLM 未给 subjects 时仍能跑出一些粗略对象
     for (const m of sortedMaterials) {
       for (const tag of m.tags ?? []) {
-        const t = tag.trim()
-        if (!t) continue
-        if (t.startsWith('[auto]')) continue // VLM 调用失败的兜底占位标
-        if (t.length < 2 || t.length > 12) continue
-        if (stop.has(t)) continue
-        if (seen.has(t)) continue
-        seen.add(t)
-        out.push(t)
-        if (out.length >= 20) return out
+        if (push(tag)) return out
       }
     }
     return out
@@ -630,7 +647,15 @@ export default function ComposePage() {
   }, [currentProjectId, setMaterials])
 
   // forward-ref for runAnalyze:handlePickFiles 在 runAnalyze 之前定义,但需要在上传完成后触发它
-  const runAnalyzeRef = useRef<((extra?: FillResult[]) => Promise<Plan | null>) | null>(null)
+  const runAnalyzeRef = useRef<
+    ((extra?: FillResult[], opts?: { silent?: boolean }) => Promise<Plan | null>) | null
+  >(null)
+  /** 并发 plan/build 防串号：每次 runAnalyze 拿一个 epoch；返回前比对 latest，
+   *  若已被更新的请求覆盖（用户连点多段补全），本次结果直接丢弃。 */
+  const analyzeEpochRef = useRef(0)
+  /** 并发 plan/build 序列化：所有 runAnalyze 通过这个 promise 链排队，
+   *  避免后端拿到两次 effectiveFills 不同的 plan/build 请求引起 plan 抖动。 */
+  const analyzeChainRef = useRef<Promise<Plan | null>>(Promise.resolve(null))
 
   /* ------------------------------ 上传 ------------------------------ */
 
@@ -668,7 +693,7 @@ export default function ComposePage() {
   /* -------------------- 智能分析（plan/build + gap/detect） -------------------- */
 
   const runAnalyze = useCallback(
-    async (extraFills?: FillResult[]) => {
+    async (extraFills?: FillResult[], opts?: { silent?: boolean }) => {
       if (!selectedSampleId) {
         setError('请先在素材库挑一个样例')
         return null
@@ -682,112 +707,133 @@ export default function ComposePage() {
         setError('请先输入主题——AI 需要它作为方向锚点，否则段落推断会偏。')
         return null
       }
-      setError(null)
-      setAnalyzing(true)
-      try {
-        // 「重新分析」（无 extraFills）→ 旧 plan 的 fills 对新 plan_id 不再有效，整体清空
-        // 避免后端 fill_by_section 路由把上一版的 narration / aigc_video_urls 错塞进新段落。
-        const effectiveFills: FillResult[] = extraFills ?? []
-        const isIncremental = extraFills !== undefined
-        if (extraFills === undefined) {
-          setFills([])
+      // silent=true：补全工作台触发的增量重建，不动全局 analyzing —— 让用户继续操作
+      // 其它段的工作台，实现真正的并行补全（每段独立 busyGapIds 锁即可）。
+      const silent = opts?.silent ?? false
+      // 序列化：concurrent 调用排队（plan/build 是单例后端，并发请求会互相覆盖 plan 状态）
+      const prev = analyzeChainRef.current
+      const job = (async (): Promise<Plan | null> => {
+        try {
+          await prev
+        } catch {
+          /* 上一次失败不应阻塞这次 */
         }
-        const planReq: PlanBuildRequest = {
-          reference_versions: selectedReferences,
-          project_id: currentProjectId,
-          session_id: currentProjectId,
-          brief: brief.trim() || null,
-          video_goal: null,
-          settings,
-          selected_materials: sortedMaterials.map((m) => m.material_id),
-          fills: effectiveFills,
-          // 增量重建：fill 触发的 runAnalyze 不应让 LLM 重排段落（5→4 抖动 bug）。
-          // 仅当 plan 已存在 & 是 incremental rebuild 时透传旧 sections。
-          reuse_sections: isIncremental && plan?.adapted_sections ? plan.adapted_sections : undefined,
-          variant: 'A',
-        }
-        const builtPlan = await api.post<Plan>('/plan/build', planReq)
-        setPlan(builtPlan)
-
-        const detectReq: GapDetectRequest = {
-          plan_id: builtPlan.plan_id,
-          project_id: currentProjectId,
-          session_id: currentProjectId,
-        }
-        const detected = await api.post<Gap[]>('/gap/detect', detectReq)
-        // 把已采纳的 fill 叠加到 gap 状态上：后端 detect 只看 materials，不知道
-        // 用户刚采纳的 copy/aigc/rerank。这里在前端做合并，让红色 ❌ 立刻变 ✅。
-        //
-        // Bug 修复：后端每次 detect 会用新 plan_id 后缀重写 gap_id（plan-scoped 唯一性需要），
-        // 老 fill 的 gap_id 与新 detect 的 gap_id 永远对不上，merge 用 gap_id 必失败 → 看似"应用失败"。
-        // 改用 section_id（稳定）作为兜底匹配键；同时把 fills 的 gap_id 改写成新的，
-        // 下一轮 runAnalyze 透传时不再积累陈旧记录。
-        const fillByGapId = new Map(effectiveFills.map((f) => [f.gap_id, f]))
-        const fillBySection = new Map<string, FillResult>()
-        for (const f of effectiveFills) {
-          if (f.section_id) fillBySection.set(f.section_id, f)
-        }
-        const merged = detected.map((g): Gap => {
-          const f =
-            fillByGapId.get(g.gap_id) ??
-            (g.section_id ? fillBySection.get(g.section_id) : undefined)
-          if (!f || f.status !== 'ok') return g
-          const label =
-            f.action === 'copy'
-              ? '字卡画面'
-              : f.action === 'aigc'
-                ? 'AI 视频'
-                : f.action === 'aigc_image'
-                  ? 'AI 生图再渲染'
-                  : '已挑素材'
-          return {
-            ...g,
-            status: 'ok',
-            note: f.note ?? `已采纳 ${label}`,
-            matched_material_id: f.new_material_id ?? g.matched_material_id,
+        const myEpoch = ++analyzeEpochRef.current
+        setError(null)
+        if (!silent) setAnalyzing(true)
+        try {
+          // 「重新分析」（无 extraFills）→ 旧 plan 的 fills 对新 plan_id 不再有效，整体清空
+          // 避免后端 fill_by_section 路由把上一版的 narration / aigc_video_urls 错塞进新段落。
+          const effectiveFills: FillResult[] = extraFills ?? []
+          const isIncremental = extraFills !== undefined
+          if (extraFills === undefined) {
+            setFills([])
           }
-        })
-        setGaps(merged)
-
-        // 把 store 里的 fills 重新映射到本轮 detect 给出的新 gap_id 上：
-        // 否则下次 handleCopyAdopt / runFill 透传时 fillMap 还是用老 gap_id，永远命中不了。
-        if (effectiveFills.length > 0) {
-          const sectionToNewGapId = new Map<string, string>()
-          for (const g of detected) {
-            if (g.section_id) sectionToNewGapId.set(g.section_id, g.gap_id)
-          }
-          const remapped = effectiveFills.map((f) => {
-            if (!f.section_id) return f
-            const newGapId = sectionToNewGapId.get(f.section_id)
-            return newGapId && newGapId !== f.gap_id ? { ...f, gap_id: newGapId } : f
-          })
-          // 仅当真的有重写时才 setFills，避免不必要的 re-render 触发本组件 effect
-          if (remapped.some((f, i) => f.gap_id !== effectiveFills[i].gap_id)) {
-            setFills(remapped)
-          }
-        }
-
-        // brief/goal/settings 回写到后端 Project（首页卡片显示 + 重进项目恢复上下文）；
-        // plan 状态由后端 plan/build 内部 mark_planned 自动更新，前端不再手动 upsert。
-        void api
-          .patch('/project/' + currentProjectId, {
+          const planReq: PlanBuildRequest = {
+            reference_versions: selectedReferences,
+            project_id: currentProjectId,
+            session_id: currentProjectId,
             brief: brief.trim() || null,
             video_goal: null,
             settings,
-          })
-          .catch(() => {
-            /* 回写失败不阻塞分析主流程 */
-          })
+            selected_materials: sortedMaterials.map((m) => m.material_id),
+            fills: effectiveFills,
+            // 增量重建：fill 触发的 runAnalyze 不应让 LLM 重排段落（5→4 抖动 bug）。
+            // 仅当 plan 已存在 & 是 incremental rebuild 时透传旧 sections。
+            reuse_sections: isIncremental && plan?.adapted_sections ? plan.adapted_sections : undefined,
+            variant: 'A',
+          }
+          const builtPlan = await api.post<Plan>('/plan/build', planReq)
+          // 并发守卫：若本次响应回来时已有更新的 runAnalyze 在跑，丢弃本次的应用，
+          // 让最新一次的结果落地（最后赢家原则，避免老结果覆盖新结果）。
+          if (myEpoch !== analyzeEpochRef.current) return null
+          setPlan(builtPlan)
 
-        return builtPlan
-      } catch (err) {
-        setError(err instanceof Error ? err.message : '智能分析失败')
-        return null
-      } finally {
-        setAnalyzing(false)
-      }
+          const detectReq: GapDetectRequest = {
+            plan_id: builtPlan.plan_id,
+            project_id: currentProjectId,
+            session_id: currentProjectId,
+          }
+          const detected = await api.post<Gap[]>('/gap/detect', detectReq)
+          if (myEpoch !== analyzeEpochRef.current) return null
+          // 把已采纳的 fill 叠加到 gap 状态上：后端 detect 只看 materials，不知道
+          // 用户刚采纳的 copy/aigc/rerank。这里在前端做合并，让红色 ❌ 立刻变 ✅。
+          //
+          // Bug 修复：后端每次 detect 会用新 plan_id 后缀重写 gap_id（plan-scoped 唯一性需要），
+          // 老 fill 的 gap_id 与新 detect 的 gap_id 永远对不上，merge 用 gap_id 必失败 → 看似"应用失败"。
+          // 改用 section_id（稳定）作为兜底匹配键；同时把 fills 的 gap_id 改写成新的，
+          // 下一轮 runAnalyze 透传时不再积累陈旧记录。
+          const fillByGapId = new Map(effectiveFills.map((f) => [f.gap_id, f]))
+          const fillBySection = new Map<string, FillResult>()
+          for (const f of effectiveFills) {
+            if (f.section_id) fillBySection.set(f.section_id, f)
+          }
+          const merged = detected.map((g): Gap => {
+            const f =
+              fillByGapId.get(g.gap_id) ??
+              (g.section_id ? fillBySection.get(g.section_id) : undefined)
+            if (!f || f.status !== 'ok') return g
+            const label =
+              f.action === 'copy'
+                ? '字卡画面'
+                : f.action === 'aigc'
+                  ? 'AI 视频'
+                  : f.action === 'aigc_image'
+                    ? 'AI 生图再渲染'
+                    : '已挑素材'
+            return {
+              ...g,
+              status: 'ok',
+              note: f.note ?? `已采纳 ${label}`,
+              matched_material_id: f.new_material_id ?? g.matched_material_id,
+            }
+          })
+          setGaps(merged)
+
+          // 把 store 里的 fills 重新映射到本轮 detect 给出的新 gap_id 上：
+          // 否则下次 handleCopyAdopt / runFill 透传时 fillMap 还是用老 gap_id，永远命中不了。
+          if (effectiveFills.length > 0) {
+            const sectionToNewGapId = new Map<string, string>()
+            for (const g of detected) {
+              if (g.section_id) sectionToNewGapId.set(g.section_id, g.gap_id)
+            }
+            const remapped = effectiveFills.map((f) => {
+              if (!f.section_id) return f
+              const newGapId = sectionToNewGapId.get(f.section_id)
+              return newGapId && newGapId !== f.gap_id ? { ...f, gap_id: newGapId } : f
+            })
+            // 仅当真的有重写时才 setFills，避免不必要的 re-render 触发本组件 effect
+            if (remapped.some((f, i) => f.gap_id !== effectiveFills[i].gap_id)) {
+              setFills(remapped)
+            }
+          }
+
+          // brief/goal/settings 回写到后端 Project（首页卡片显示 + 重进项目恢复上下文）；
+          // plan 状态由后端 plan/build 内部 mark_planned 自动更新，前端不再手动 upsert。
+          void api
+            .patch('/project/' + currentProjectId, {
+              brief: brief.trim() || null,
+              video_goal: null,
+              settings,
+            })
+            .catch(() => {
+              /* 回写失败不阻塞分析主流程 */
+            })
+
+          return builtPlan
+        } catch (err) {
+          if (myEpoch === analyzeEpochRef.current) {
+            setError(err instanceof Error ? err.message : '智能分析失败')
+          }
+          return null
+        } finally {
+          if (!silent) setAnalyzing(false)
+        }
+      })()
+      analyzeChainRef.current = job
+      return job
     },
-    [brief, currentProjectId, selectedReferences, selectedSampleId, setFills, setGaps, setPlan, settings, sortedMaterials],
+    [brief, currentProjectId, selectedReferences, selectedSampleId, setFills, setGaps, setPlan, settings, sortedMaterials, plan],
   )
 
   // 把 runAnalyze 挂到 ref:supports handlePickFiles 在 step 2 上传后自动重排
@@ -805,9 +851,15 @@ export default function ComposePage() {
         const body: GapFillRequest = { gap_id: gap.gap_id, action, params }
         const result = await api.post<FillResult>('/gap/fill', body)
         upsertFill(result)
-        // 自动用最新 fills 重发 plan/build + gap/detect → 刷新右侧 + 底部
-        const nextFills = [...fills.filter((f) => f.gap_id !== gap.gap_id), result]
-        await runAnalyze(nextFills)
+        // 关键：从 store 拿最新 fills 而非 closure 中的 stale 快照。
+        // 并行补全场景（A、B 两段同时点 fill）下，closure 里的 fills 只包含本次发起
+        // 时的状态，B 提交时已不含 A 的结果——`[...fills.filter, B] 把 A 抹掉了`。
+        // 改用 getState 在 await 后取最新 snapshot（已含 upsertFill 写入的 A、B）。
+        const latest = usePlanStore.getState().fills
+        const nextFills = [...latest.filter((f) => f.gap_id !== gap.gap_id), result]
+        // silent=true：本次重建不触发全局 analyzing 锁，其它 gap 工作台保持可操作
+        // （每段 busyGapIds 单独锁就够了，真正的并发补全在这里实现）。
+        await runAnalyze(nextFills, { silent: true })
         return result
       } catch (err) {
         setError(err instanceof Error ? err.message : '补全失败')
@@ -816,7 +868,7 @@ export default function ComposePage() {
         markBusy(gap.gap_id, false)
       }
     },
-    [fills, markBusy, runAnalyze, upsertFill],
+    [markBusy, runAnalyze, upsertFill],
   )
 
   const handleRerankApply = useCallback(async () => {
@@ -1747,7 +1799,7 @@ export default function ComposePage() {
               busy={trackBusy}
               phase="content-only"
               contentTrackMode="sections"
-              playheadSeconds={0}
+              playheadSeconds={playheadSeconds}
               onMovePackagingItem={handleMovePackagingItem}
               onResizePackagingItem={handleResizePackagingItem}
               onOpenPackagingDrawer={() => setPackagingDrawerOpen(true)}
@@ -1861,6 +1913,7 @@ export default function ComposePage() {
                     sectionStart={start}
                     sectionEnd={end}
                     label={`段 #${idx + 1} · ${sec.role}`}
+                    onTimeUpdate={setPlayheadSeconds}
                   />
                 )
               })()}
@@ -1921,10 +1974,20 @@ export default function ComposePage() {
                       selectedGap?.gap_id === gapId && activeAction === action
                     const fillForKey =
                       fills.find((f) => f.gap_id === gapId && f.action === action) ?? null
-                    const onResult = (f: FillResult) => {
+                    const onResult = async (f: FillResult) => {
+                      // 标记本段 busy，让 anyGapBusy 在重建完成前保持 true——避免用户
+                      // 在 silent rebuild 期间直接跳到 step3 拿到陈旧 plan。
+                      markBusy(f.gap_id, true)
                       upsertFill(f)
-                      const nextFills = [...fills.filter((x) => x.gap_id !== f.gap_id), f]
-                      void runAnalyze(nextFills)
+                      // 取 store 最新 snapshot（含其它并发面板刚 upsert 的 fill），避免
+                      // 用 closure 中的 stale `fills` 把别的段的成果覆盖掉。
+                      const latest = usePlanStore.getState().fills
+                      const nextFills = [...latest.filter((x) => x.gap_id !== f.gap_id), f]
+                      try {
+                        await runAnalyze(nextFills, { silent: true })
+                      } finally {
+                        markBusy(f.gap_id, false)
+                      }
                     }
                     return (
                       <div
