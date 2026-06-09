@@ -58,6 +58,8 @@ export interface ShotFieldsPatch {
   subject?: string
   visual?: string
   narration?: string
+  /** stage-43：运镜手法（≤30 字）。改完同时影响 Seedance 提示词 & Remotion 动效推荐。 */
+  camera_technique?: string
 }
 
 export async function patchShotFields(

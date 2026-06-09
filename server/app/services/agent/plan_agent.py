@@ -108,11 +108,22 @@ _ADAPT_SYSTEM = (
     "每个目标 = {kind: person/object/scene/text/graphic/other, name: ≤12 字短名, "
     "role: primary/secondary/background（可空，主体留 primary）, visual_hint: ≤40 字视觉特征（可空）}。"
     "**多目标镜必须分开列**（如带货镜含 `[人物-主播, 物品-商品]`，文物展含 `[物品-文物, 文字-展名]`）。"
-    "下游 aigc 补齐会按 targets 数量并行出 N 张图再喂 T2V，单目标镜走老路。\n\n"
+    "下游 aigc 补齐会按 targets 数量并行出 N 张图再喂 T2V，单目标镜走老路。\n"
+    "**camera_technique（stage-43 新增）**：本镜运镜手法（≤30 字中文）。**所有 shot 都要给**——"
+    "这是下游 Seedance 视频提示词、Seedream 生图后 Remotion 动画、AI 工作台展示的统一参数源。"
+    "选词要具体可执行，写运镜动作或镜头动态，不写情绪/质感：\n"
+    "  • 静态类：『固定特写』『正面平视固定』；\n"
+    "  • 推拉类：『缓慢推近』『快速拉远』；\n"
+    "  • 横纵摇：『左向横摇』『俯拍下移』；\n"
+    "  • 跟随类：『跟随主体侧移』『焦点过渡：主体→背景』；\n"
+    "  • 转场类：『匹配剪辑入画』『甩镜切入』。\n"
+    "对应规则：opening/hook 偏推近/特写抓眼；development 偏横摇/跟随交代；"
+    "climax/peak 偏快推/快摇/抖动放大冲击；resolve/closing 偏拉远/静止收尾。\n\n"
     "返回 JSON：{\"adapted_sections\": [{\"role\": str, \"theme\": str, "
     "\"content_description\": str, \"adaptation_note\": str, \"tempo\": str|null, "
     "\"duration_seconds\": number, \"source_section_indices\": [int], "
     "\"shots\": [{\"subject\": str, \"visual\": str, \"narration\": str, \"duration_seconds\": number, "
+    "\"camera_technique\": str, "
     "\"targets\": [{\"kind\": str, \"name\": str, \"role\": str|null, \"visual_hint\": str|null}]}]}]}"
 )
 
@@ -489,11 +500,16 @@ def _parse_raw_items(raw: list, pattern: str = "dramatic") -> list[dict]:
                 if sh_dur <= 0:
                     sh_dur = 2.5
                 sh_dur = max(1.0, min(15.0, sh_dur))
+                # stage-43：camera_technique 透传到下游 _normalize_shot_durations
+                camera_raw = sh.get("camera_technique") or ""
+                camera_clean = str(camera_raw).strip()[:80] if isinstance(camera_raw, str) else ""
                 shots_clean.append({
                     "subject": subject,
                     "visual": visual,
                     "narration": narration,
                     "duration_seconds": round(sh_dur, 2),
+                    "targets": sh.get("targets") or [],
+                    "camera_technique": camera_clean,
                 })
 
         out.append({
@@ -689,6 +705,11 @@ def _normalize_shot_durations(shots_raw: list[dict], section_total: float) -> li
                     parsed_targets.append(ShotTarget(kind=kind, name=name, role=tgt_role, visual_hint=hint))  # type: ignore[arg-type]
                 except Exception:  # noqa: BLE001
                     continue
+        # stage-43：解析 LLM 给的 camera_technique（运镜手法，可空）
+        cam_raw = s.get("camera_technique") or ""
+        camera_technique = ""
+        if isinstance(cam_raw, str):
+            camera_technique = cam_raw.strip()[:80]
         out.append(ShotPlan(
             order=order,
             subject=s.get("subject", "") or "",
@@ -696,6 +717,7 @@ def _normalize_shot_durations(shots_raw: list[dict], section_total: float) -> li
             narration=s.get("narration", "") or "",
             duration_seconds=round(float(s.get("duration_seconds") or 2.5), 2),
             targets=parsed_targets,
+            camera_technique=camera_technique,
         ))
     return out
 

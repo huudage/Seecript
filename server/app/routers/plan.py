@@ -100,6 +100,52 @@ def _narration_from_content(content: str, *, limit: int = 60) -> str:
     return text[:limit]
 
 
+def _rebuild_subtitle_packaging(plan: Plan) -> None:
+    """同步刷新 plan.packaging_track 中 kind="subtitle" 的 PackagingItem。
+
+    用户痛报（2026-06-10）："字幕轨有内容但是预览视频中没字幕"——
+    根因：scene.narration / scene.duration 在 step2 改了之后，step3 的 packaging_track
+    上一批 subtitle item 还是旧 text / 旧时间窗，前端 PackagingLayer 按旧 PackagingItem.start
+    绝对定位，时长错位导致字幕落在静默场景外、被画面盖住或干脆 0 duration。
+
+    本函数 in-place 重建 subtitle 列表（与 plan/build & packaging.apply 同源逻辑）：
+    - subtitle_enabled=False → 清空所有 subtitle，保留其他包装项
+    - 每个 scene 一条 subtitle，沿用 settings.packaging_prefs 展开后的样式
+    - scene.text_card_spec 非空跳过（字卡画面已有主副标）
+    - narration 空字符串跳过
+    其他 kind（cover/title_bar/sticker/transition）原样保留。
+    """
+    from ..services.agent.packaging_agent import expand_preset
+
+    non_sub = [it for it in plan.packaging_track if it.kind != "subtitle"]
+    if not plan.settings.subtitle_enabled:
+        plan.packaging_track = non_sub
+        return
+    prefs_eff = expand_preset(plan.settings.packaging_prefs)
+    subs: list[PackagingItem] = []
+    for idx, sc in enumerate(plan.main_track):
+        if sc.text_card_spec is not None:
+            continue
+        text = (sc.narration or "").strip()
+        if not text:
+            continue
+        subs.append(PackagingItem(
+            item_id=f"pkg-sub-{idx}",
+            kind="subtitle",
+            start=sc.start,
+            end=sc.start + sc.duration,
+            text=text,
+            style={
+                "font_size": prefs_eff.subtitle_font_size,
+                "position": prefs_eff.subtitle_position,
+                "background": prefs_eff.subtitle_background,
+                "bilingual": prefs_eff.subtitle_bilingual,
+                "stroke": "#000",
+            },
+        ))
+    plan.packaging_track = subs + non_sub
+
+
 def _fill_section_lookup(fills: list[FillResult]) -> dict[str, FillResult]:
     """把 FillResult 按其所属 section_id 索引——多段同 role 时不再被压扁。
 
@@ -129,7 +175,9 @@ def _fill_section_lookup(fills: list[FillResult]) -> dict[str, FillResult]:
         has_intent = f.action in ("aigc", "aigc_image", "copy")
         if not has_output and not has_intent:
             continue
-        out.setdefault(sid, f)
+        # stage-43：last-write-wins。原来 setdefault 让旧 rerank fill 永远压制后写的 aigc_image fill，
+        # 用户重新选了「AI 生图」却看到旧素材——直接覆盖即可（FillResult 列表本身是按写入顺序的）。
+        out[sid] = f
     if dropped:
         log.warning(
             "[plan] %d fill 因无法定位 section_id 被丢弃：%s（fill 来自旧版本或 gap_store 进程内存已失效）",
@@ -1053,16 +1101,14 @@ async def patch_plan_settings(plan_id: str, body: PlanSettingsPatch) -> Plan:
     current = plan.settings.model_dump()
     current.update(patch)
     plan.settings = ComposeSettings(**current)
-    # 翻到 subtitle_enabled=False 时，把已经烧好的字幕 PackagingItem 清掉——
-    # 不然 render 还会把字幕画进画面，与"无字幕"语义打架。
-    # 翻到 True 时不自动重生成 subtitle（让用户去 PackagingPanel 主动选样式），
-    # 老 plan 兼容：plan.packaging_track 里如已有 subtitle 项保留不动。
-    if patch.get("subtitle_enabled") is False:
+    # 字幕开关翻转：False → 清空字幕项；True → 按当前 narration / 时间窗 重建字幕项。
+    # 用户痛报：开关切到 True 时不自动建 subtitle，预览看不到字幕——只能依赖 PackagingPanel
+    # 二次点击。这里直接重建，让"打开 = 立刻看见"成为默认行为。
+    if "subtitle_enabled" in patch:
         before = len(plan.packaging_track)
-        plan.packaging_track = [it for it in plan.packaging_track if it.kind != "subtitle"]
-        if before != len(plan.packaging_track):
-            log.info("[plan] settings subtitle off → 移除字幕项 %d→%d",
-                     before, len(plan.packaging_track))
+        _rebuild_subtitle_packaging(plan)
+        log.info("[plan] settings subtitle=%s → 字幕项 %d→%d",
+                 patch["subtitle_enabled"], before, len(plan.packaging_track))
     plan_store.put(plan)
     log.info("[plan] settings patched plan=%s keys=%s", plan_id, list(patch.keys()))
     return plan
@@ -1114,6 +1160,10 @@ async def regenerate_plan_narrations(plan_id: str) -> RegenerateNarrationsRespon
             "voiceover_url": None,
         })
         updated.append(sc.scene_id)
+
+    # 字幕轨同步：批量改完口播后，所有 PackagingItem(subtitle) 必须按新 narration 重建
+    if updated:
+        _rebuild_subtitle_packaging(plan)
 
     plan_store.put(plan)
     log.info(
@@ -1187,7 +1237,12 @@ async def patch_plan_scene(plan_id: str, scene_id: str, body: SceneEditPatch) ->
     }
 
     if "narration" in patch:
-        plan.main_track[scene_idx] = scene.model_copy(update={"narration": patch["narration"]})
+        # narration 改了 → 旧 voiceover_url 指向的 wav 是旧文案合成的，必须废弃；
+        # step3 PlanPlayer 才不会播放对不上嘴的旧音频。下次 /voice/synthesize 会按新 narration 重合。
+        plan.main_track[scene_idx] = scene.model_copy(update={
+            "narration": patch["narration"],
+            "voiceover_url": None,
+        })
 
     if section_idx is not None and any(k in patch for k in ("theme", "content_description")):
         sec = plan.adapted_sections[section_idx]
@@ -1197,6 +1252,11 @@ async def patch_plan_scene(plan_id: str, scene_id: str, body: SceneEditPatch) ->
         if "content_description" in patch:
             update["content_description"] = patch["content_description"]
         plan.adapted_sections[section_idx] = sec.model_copy(update=update)
+
+    # 字幕轨同步刷新：narration / duration 变更后，packaging_track 上的 subtitle 必须重生
+    # 否则 step3 预览仍按旧 text + 旧时间窗 渲染，用户看到画面有字幕条但内容对不上
+    if "narration" in patch:
+        _rebuild_subtitle_packaging(plan)
 
     plan_store.put(plan)
     log.info(
@@ -1350,6 +1410,7 @@ class ShotFieldsPatch(BaseModel):
     subject: Optional[str] = Field(default=None, max_length=40)
     visual: Optional[str] = Field(default=None, max_length=200)
     narration: Optional[str] = Field(default=None, max_length=200)
+    camera_technique: Optional[str] = Field(default=None, max_length=80)
 
 
 @router.patch("/plan/{plan_id}/scene/{scene_id}/shot-fields", response_model=Plan)
@@ -1378,6 +1439,9 @@ async def patch_shot_fields(plan_id: str, scene_id: str, body: ShotFieldsPatch) 
         # Scene.narration 可空——纯画面镜头允许无口播
         new_narr = (patch["narration"] or "").strip()
         scene_update["narration"] = new_narr or None
+        # narration 改了 → 旧 voiceover_url 指向的 wav 是旧文案合成的，必须废弃；
+        # 不清掉 step3 PlanPlayer 会用旧音频对不上新字幕，用户报『改了文案 step3 没刷』就是这个。
+        scene_update["voiceover_url"] = None
     if scene_update:
         plan.main_track[scene_idx] = scene.model_copy(update=scene_update)
 
@@ -1402,10 +1466,16 @@ async def patch_shot_fields(plan_id: str, scene_id: str, body: ShotFieldsPatch) 
                         shot_update["visual"] = (patch["visual"] or "").strip()[:200]
                     if "narration" in patch:
                         shot_update["narration"] = (patch["narration"] or "").strip()[:200]
+                    if "camera_technique" in patch:
+                        shot_update["camera_technique"] = (patch["camera_technique"] or "").strip()[:80]
                     if shot_update:
                         new_shots = list(sec.shots)
                         new_shots[shot_idx] = sec.shots[shot_idx].model_copy(update=shot_update)
                         plan.adapted_sections[sec_idx] = sec.model_copy(update={"shots": new_shots})
+
+    # narration 改了 → step3 字幕轨同步重建（否则预览/渲染都还按旧 text）
+    if "narration" in patch:
+        _rebuild_subtitle_packaging(plan)
 
     plan_store.put(plan)
     log.info(
@@ -1542,7 +1612,7 @@ async def swap_scene_source(
     elif body.source == "aigc_image":
         # 同步走 Seedream 单图：用 shot 主题 + 用户 hint
         from ..services.agent.aigc_prompt_agent import _fallback_prompt
-        from ..services.agent.gap_agent import _persist_aigc_image
+        from ..services.agent.gap_agent import _persist_aigc_image, _suggest_animation_spec
         from ..services.seedream_client import SeedreamError, get_seedream_client
         from ..schemas import Gap
         # 拼 prompt：优先用 shot.visual / subject，hint 拼到尾巴
@@ -1567,6 +1637,17 @@ async def swap_scene_source(
             raise HTTPException(status_code=502, detail="Seedream 返回 0 张图")
         persisted = await _persist_aigc_image(images[0].url, scene_id)
         final_url = persisted or images[0].url
+        # stage-43：单图换源同样要 Remotion 动效（否则 step3 渲染只看到静态贴图）。
+        # 走 _suggest_animation_spec 让 shot.camera_technique 决定推/拉/横摇等运镜。
+        try:
+            anim_spec = _suggest_animation_spec(section, 1, None)
+        except Exception as exc:  # noqa: BLE001
+            log.warning("[scene-swap] %s aigc_image 推荐动效失败 → 走 ken-burns 兜底：%s", scene_id, exc)
+            anim_spec = AnimationSpec(
+                engine="remotion", animation_type="ken-burns",
+                motion_direction="in", intensity=0.35,
+                transition="cross-fade", transition_duration=0.4,
+            )
         new_scene = scene.model_copy(update={
             "source": "aigc_image",
             "source_ref": f"img-swap-{scene_id}",
@@ -1575,12 +1656,13 @@ async def swap_scene_source(
             "aigc_video_urls": [],
             "aigc_image_url": final_url,
             "text_card_spec": None,
-            "animation_spec": None,
+            "animation_spec": anim_spec,
             "needs_fill": False,
         })
         log.info(
-            "[scene-swap] %s → aigc_image url=%s prompt='%s'",
+            "[scene-swap] %s → aigc_image url=%s prompt='%s' anim=%s/%s",
             scene_id, final_url[:80], prompt[:60],
+            anim_spec.animation_type, anim_spec.motion_direction,
         )
     elif body.source == "aigc_t2v":
         # 同步走 Seedance 单段（per scene 时长 ≤ 12s 时 1 次提交即可，超过则切链；本接口不切链，直接最长 12s）
@@ -1645,6 +1727,10 @@ async def swap_scene_source(
         raise HTTPException(status_code=400, detail=f"不支持的 source 类型：{body.source}")
 
     plan.main_track[scene_idx] = new_scene
+    # 字幕轨同步：swap 到 text_card 时该段不该再叠字幕；从 text_card 换回视频/AIGC 时
+    # 又要把字幕加回来。统一走 _rebuild_subtitle_packaging（按 narration / text_card_spec
+    # 重新判定每段是否出字幕），避免 source 变了但 subtitle 残留导致字幕错位。
+    _rebuild_subtitle_packaging(plan)
     plan_store.put(plan)
     log.info(
         "[plan] scene source swapped plan=%s scene=%s %s → %s",

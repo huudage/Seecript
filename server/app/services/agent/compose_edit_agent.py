@@ -4,9 +4,9 @@
 - 那一组是渲染态的"改片"，作用对象是 Plan.main_track / packaging_track / 口播 wav
 - 本模块是 Compose 态的"改稿"
 
-作用域（v2，按用户最新需求收窄/扩张）：
-- step2 (拆解-改编态)：**只改内容轨** — 段落文案 / 段落时长 / 删段 / 重排顺序
-- step3 (包装-渲染态)：**禁内容轨**，其余全开 — 字卡 / 包装项 / BGM 偏移 / BGM 音量 / compose 设置
+作用域（stage-44，按用户最新需求重排）：
+- step2 (拆解-改编态)：内容轨 + 渲染/包装/全局 全部开放；**唯独 AI 生图（aigc_image）/ AI 视频（aigc_t2v）禁通过对话改**——走 AIGC 面板
+- step3 (包装-渲染态)：**禁内容轨**（段文案/段时长/删段/重排/分镜文本）；渲染/包装/全局/素材重排/字卡重出/AI 生图都开放
 
 设计：
 1. LLM tool-call 提取意图 → 调度到本地 mutator
@@ -41,12 +41,12 @@ log = logging.getLogger("seecript.compose_edit")
 
 _QA_RULES = (
     "你有三类回应方式：\n"
-    "A) **编辑**（tool_calls）：用户**明确说了要改什么 + 改成什么**才用。例如：『把 sec-1 改成 5 秒』『删除 sec-2』。\n"
+    "A) **编辑**（tool_calls）：用户**明确说了要改什么 + 改成什么**才用。例如：『把第 1 段改成 5 秒』『删除第 2 段』。\n"
     "B) **讲解**（不要 tool_calls，直接 1-3 句中文）：用户在问或聊本项目。答案必须建立在系统消息提供的『当前 Plan 概览』之上。\n"
     "C) **追问**（不要 tool_calls，直接 1 句反问）：用户的编辑意图**模糊或不全**时——\n"
     "   - 指了对象但没说怎么改：『调整一下第二段』『改一下 BGM』 → 反问『你想调时长 / 改文案 / 删段？要的话告诉我目标值』。\n"
-    "   - 说了动作但没说目标：『删掉那段』『重排』 → 反问『指的是哪个 section_id？现在有 sec-0/1/2…』。\n"
-    "   - 给了模糊量词没数值：『稍微短一点 sec-1』 → **允许执行**（按 ×0.85 惯例），但只能落『一项』时长变更，不要额外编『改文案』。\n"
+    "   - 说了动作但没说目标：『删掉那段』『重排』 → 反问『指的是第几段？本片现在有 N 段，按顺序数』。\n"
+    "   - 给了模糊量词没数值：『稍微短一点第 2 段』 → **允许执行**（按 ×0.85 惯例），但只能落『一项』时长变更，不要额外编『改文案』。\n"
     "讲解能覆盖：项目主题/目标、段落结构（每段角色/主题/时长/描述）、结构空缺（没有 scene 或时长占比异常的段）、"
     "素材选择建议（基于段角色 + 全局调性 / 平台 / 关键词推断要找什么样素材）、"
     "BGM / 包装 / 调性 / 比例当前是什么、本 step 能改什么、为什么改不了。\n"
@@ -56,8 +56,9 @@ _QA_RULES = (
 )
 
 _SYSTEM_STEP2 = (
-    "你是 Compose 拆解-改编态的对话编辑小助手。当前作用域 step2，**只能改内容轨**。"
-    "可调用编辑工具："
+    "你是 Compose 拆解-改编态的对话编辑小助手。当前作用域 step2，**所有渲染/包装/全局设置都开放编辑，唯独 AI 生图与 AI 视频不能通过对话改**（要去 AIGC 面板手动改提示词）。\n"
+    "可调用编辑工具：\n"
+    "—— 内容轨 ——\n"
     "update_section_narration（改某段文案）、"
     "update_section_duration（调某段时长，2-30 秒）、"
     "delete_section（删除某段）、"
@@ -65,11 +66,20 @@ _SYSTEM_STEP2 = (
     "update_shot_visual（改某段下第 N 个分镜的画面描述）、"
     "update_shot_subject（改某段下第 N 个分镜的主体词 ≤40 字）、"
     "update_shot_narration（改某分镜的口播/字幕，同步主轨 scene）、"
-    "update_shot_duration（改某分镜的时长 1-12 秒，自动缩放段总时长与对应 scene）、"
-    "regenerate_fill（重新生成某段已有 fill，仅 rerank/copy/aigc_image；aigc 视频不允许通过对话重生成）、"
-    "regenerate_all_fills（按 action+hint 批量重生成所有段，仅 copy/aigc_image/rerank）。"
-    "用户表达模糊时按惯例：『稍短=×0.85 / 更短=×0.7 / 更长=×1.25 / 长很多=×1.5』，"
-    "时长统一钳制 [2, 30] 秒。\n"
+    "update_shot_duration（改某分镜的时长 1-12 秒，自动缩放段总时长与对应 scene）。\n"
+    "—— 渲染/包装/全局（与 step3 完全相同）——\n"
+    "update_text_card_spec（改字卡文案 / 字号）、"
+    "update_packaging_text（改包装项文字）、"
+    "update_packaging_item_time（沿时间轴平移/改时长）、"
+    "update_scene_transition（改入场转场风格 hard_cut/dissolve/slide/zoom/whip/wipe + 时长 0.1-1.5 秒）、"
+    "regenerate_narrations_all（按 hint 整体重写所有段落口播）、"
+    "update_bgm_offset（BGM 起点对齐）、"
+    "update_bgm_volume（BGM 音量 0-1.5）、"
+    "update_compose_setting（target_platform/aspect_ratio/target_duration_seconds/migration_preference/subtitle_enabled/voiceover_enabled/tts_voice/frame_design_preset/packaging_preset）。\n"
+    "—— 素材重排 / 字卡重出（仅 rerank 与 copy；aigc_image 在 step2 禁用）——\n"
+    "regenerate_fill（重新生成某段 fill，action ∈ rerank/copy）、"
+    "regenerate_all_fills（批量重生成所有段，action ∈ rerank/copy）。\n"
+    "用户表达模糊时按惯例：『稍短=×0.85 / 更短=×0.7 / 更长=×1.25 / 长很多=×1.5』，时长统一钳制 [2, 30] 秒。\n"
     "**段落识别（很重要）**：用户**不会**说 section_id（『sec-0 / sec-1』），他们会说自然语言。请**严格**按下表把自然语言映射到上文【段落结构】里列出的 section_id：\n"
     "  · 『第 1 段 / 第一段 / 头一段 / 开头 / 开头段 / 开场 / 开场段 / 片头』 → 列表里**第 1 个段**的 section_id（通常 role=opening）。\n"
     "  · 『第 2 段 / 第二段 / 中间段』 → 列表里第 2 个段的 section_id。\n"
@@ -77,21 +87,19 @@ _SYSTEM_STEP2 = (
     "  · 『最后一段 / 末段 / 收尾 / 收束 / 收束段 / 结尾 / 片尾』 → 列表里**最后一个段**的 section_id（通常 role=closing）。\n"
     "  · 『高潮段 / 高潮部分 / 炸点 / 炸点段』 → 列表里 role=climax 的那段 section_id（若没有 climax 段，明确告诉用户『本片没有高潮段』而不是瞎选）。\n"
     "  · 『发展段 / 推进段 / 正文段』 → 列表里第一个 role=development 的段 section_id。\n"
-    "用户若**直接**说 sec-0/sec-1 也照旧支持。**禁止**自己造 sec-id（例如不能凭空说 sec-5 但实际只有 4 段）。\n"
+    "**对外**只用『第 N 段』『开头段』『高潮段』『最后一段』这种说法——**不要**在回答里写 sec-0/sec-1 / sc-0/sc-1 这种内部 id，保持人话。\n"
+    "用户若**直接**说 sec-0/sec-1 也照旧支持识别。**禁止**自己造 sec-id（例如不能凭空说 sec-5 但实际只有 4 段）。\n"
     "**分镜级编辑**：用户说『第 1 段第 2 镜画面改成…』『开头段第 1 镜口播改成…』『高潮段第 3 镜短一点』时，"
     "先按上面规则定段，再用 update_shot_visual / update_shot_subject / update_shot_narration / update_shot_duration；shot_order 从 0 起（用户说『第 1 镜』即 shot_order=0）。\n"
-    "若用户说『换一张图 / 重新生图 第 N 段』『换文案』『重新挑素材』→ regenerate_fill。"
-    "若用户说『把所有段重新生图』『全部重出字卡』『所有段重排』→ regenerate_all_fills。"
-    "若用户说『重新生成视频』『重做 AI 视频』→ **不要 tool_calls**，直接讲解："
-    "『AI 视频成本高，请在 AIGC 面板手动改提示词后点重新生成。』"
-    "用户若说『改字卡』『改 BGM』『改调性/比例』等非内容轨指令，"
-    "**不要 tool_calls**，直接讲解：『这些要到 step3 包装编辑再调，先把结构定下来』。\n\n"
+    "若用户说『换一张图 / 重新生图 第 N 段』『换 AI 视频』『重做 AI 视频』→ **不要 tool_calls**，直接讲解："
+    "『step2 不通过对话改 AI 生图 / 视频，请到 AIGC 面板手动改提示词后再点重新生成。』\n"
+    "若用户说『重新挑素材』『重新生成字卡』『把 N 段重排』『所有段重排素材』『所有段重出字卡』→ regenerate_fill 或 regenerate_all_fills（action=rerank 或 copy）。\n\n"
     + _QA_RULES
 )
 
 _SYSTEM_STEP3 = (
-    "你是 Compose 包装态的对话编辑小助手。当前作用域 step3，**禁止改内容轨**。"
-    "可调用编辑工具："
+    "你是 Compose 包装态的对话编辑小助手。当前作用域 step3，**禁止改内容轨**（段落文案/段时长/删段/重排/分镜画面/分镜口播/分镜主体/分镜时长），其余全部开放。\n"
+    "可调用编辑工具：\n"
     "update_text_card_spec（改字卡文案/字号）、"
     "update_packaging_text（改包装项 item 的文字）、"
     "update_packaging_item_time（沿时间轴平移包装项 / 改时长，单位秒）、"
@@ -100,10 +108,14 @@ _SYSTEM_STEP3 = (
     "update_bgm_offset（BGM 起点对齐到视频第几秒，可负）、"
     "update_bgm_volume（BGM 音量 0-1.5）、"
     "update_compose_setting（改 target_platform/aspect_ratio/target_duration_seconds/migration_preference"
-    "/subtitle_enabled/voiceover_enabled/tts_voice/frame_design_preset/packaging_preset）。"
+    "/subtitle_enabled/voiceover_enabled/tts_voice/frame_design_preset/packaging_preset）、"
+    "regenerate_fill（重新生成某段 fill，action ∈ rerank/copy/aigc_image）、"
+    "regenerate_all_fills（批量重生成所有段，action ∈ rerank/copy/aigc_image）。\n"
+    "**段落识别**：用户**只用『第 N 段』/『开头段』/『高潮段』/『最后一段』这类人话**——按列表顺序定位 section_id；"
+    "**对外**也只回『第 N 段』，不要在回答里写 sec-0/sec-1 这种内部 id。\n"
     "用户若说『改第 2 段文案』『把这段删掉』『重排段落』『改某分镜画面/口播』等内容轨指令，"
     "**不要 tool_calls**，直接讲解：『step3 不可改内容轨，请回 step2 调整结构』。\n"
-    "用户若说『改调性』『改关键词』→ 也讲解：『调性/关键词在新版本已经从 UI 移除，整体口播风格请用 regenerate_narrations_all + hint 整体重写』。\n\n"
+    "用户若说『重新生成 AI 视频』→ 讲解：『AI 视频请到 AIGC 面板手动改提示词后重生成。』\n\n"
     + _QA_RULES
 )
 
@@ -414,6 +426,33 @@ _TOOL_REGENERATE_ALL_FILLS = {
 }
 
 
+# stage-44：step2 用的批量重生成——禁 aigc_image
+_TOOL_REGENERATE_ALL_FILLS_NO_AIGC = {
+    "type": "function",
+    "function": {
+        "name": "regenerate_all_fills",
+        "description": (
+            "批量重生成所有段落的 fill。step2 仅支持 rerank/copy 两种；"
+            "AI 生图 / AI 视频请走 AIGC 面板。"
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "action": {
+                    "type": "string",
+                    "enum": ["rerank", "copy"],
+                },
+                "hint": {
+                    "type": "string",
+                    "description": "可选：批量重生成的额外指引（例『更紧凑』）",
+                },
+            },
+            "required": ["action"],
+        },
+    },
+}
+
+
 _TOOL_UPDATE_SHOT_VISUAL = {
     "type": "function",
     "function": {
@@ -495,7 +534,39 @@ _TOOL_REGENERATE_FILL = {
 }
 
 
+# stage-44：step2 用的 regenerate_fill 变体——禁 aigc_image
+# 因为 step2 不允许通过对话改 AI 生图（用户去 AIGC 面板手改 prompt）
+_TOOL_REGENERATE_FILL_NO_AIGC = {
+    "type": "function",
+    "function": {
+        "name": "regenerate_fill",
+        "description": (
+            "重新生成某段（section）已有的缺口补全（fill）。step2 仅支持 rerank/copy 两种；"
+            "AI 生图（aigc_image）与 AI 视频（aigc_t2v）请走 AIGC 面板手动改 prompt 再点重生。"
+            "hint 是用户给本次重生成的额外指引（可空），会作为 prompt_hint 透传给 fill_gap。"
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "section_id": {"type": "string", "description": "AdaptedSection.section_id，如 sec-0"},
+                "action": {
+                    "type": "string",
+                    "enum": ["rerank", "copy"],
+                    "description": "重生成的 fill 动作。rerank=结构重排；copy=字卡 LLM 文案。",
+                },
+                "hint": {
+                    "type": "string",
+                    "description": "可选：用户对本次重生成的要求（例如『更紧凑些』『字卡用反问句』）。",
+                },
+            },
+            "required": ["section_id", "action"],
+        },
+    },
+}
+
+
 _TOOLS_STEP2: list[dict] = [
+    # 内容轨（结构 / 文案 / 时长 / 顺序 / 分镜）
     _TOOL_UPDATE_NARRATION,
     _TOOL_UPDATE_DURATION,
     _TOOL_DELETE_SECTION,
@@ -504,11 +575,7 @@ _TOOLS_STEP2: list[dict] = [
     _TOOL_UPDATE_SHOT_SUBJECT,
     _TOOL_UPDATE_SHOT_NARRATION,
     _TOOL_UPDATE_SHOT_DURATION,
-    _TOOL_REGENERATE_FILL,
-    _TOOL_REGENERATE_ALL_FILLS,
-]
-
-_TOOLS_STEP3: list[dict] = [
+    # 渲染相关（除 AI 生图/视频外都开放）
     _TOOL_UPDATE_TEXT_CARD,
     _TOOL_UPDATE_PACKAGING_TEXT,
     _TOOL_UPDATE_PACKAGING_ITEM_TIME,
@@ -517,6 +584,24 @@ _TOOLS_STEP3: list[dict] = [
     _TOOL_UPDATE_BGM_OFFSET,
     _TOOL_UPDATE_BGM_VOLUME,
     _TOOL_UPDATE_COMPOSE_SETTING,
+    # 素材重排 / 字卡重出（禁 aigc_image，AI 生图走 AIGC 面板）
+    _TOOL_REGENERATE_FILL_NO_AIGC,
+    _TOOL_REGENERATE_ALL_FILLS_NO_AIGC,
+]
+
+_TOOLS_STEP3: list[dict] = [
+    # 包装与渲染
+    _TOOL_UPDATE_TEXT_CARD,
+    _TOOL_UPDATE_PACKAGING_TEXT,
+    _TOOL_UPDATE_PACKAGING_ITEM_TIME,
+    _TOOL_UPDATE_SCENE_TRANSITION,
+    _TOOL_REGENERATE_NARRATIONS_ALL,
+    _TOOL_UPDATE_BGM_OFFSET,
+    _TOOL_UPDATE_BGM_VOLUME,
+    _TOOL_UPDATE_COMPOSE_SETTING,
+    # 素材重排 / 字卡重出 / 静图重生（不含 aigc_t2v 因为本来就禁）
+    _TOOL_REGENERATE_FILL,
+    _TOOL_REGENERATE_ALL_FILLS,
 ]
 
 
@@ -1514,8 +1599,10 @@ _ASYNC_MUTATORS["regenerate_all_fills"] = _mut_regenerate_all_fills
 
 
 # step → 允许 mutator 集合（外部越界检测用）
+# stage-44：step2 = 内容轨 + 渲染（无 AI 生图/视频）；step3 = 渲染 + 素材重生（无内容轨）
 _STEP_ALLOWED_OPS: dict[ComposeEditStep, set[str]] = {
     "step2": {
+        # 内容轨
         "update_section_narration",
         "update_section_duration",
         "delete_section",
@@ -1524,6 +1611,16 @@ _STEP_ALLOWED_OPS: dict[ComposeEditStep, set[str]] = {
         "update_shot_subject",
         "update_shot_narration",
         "update_shot_duration",
+        # 渲染相关
+        "update_text_card_spec",
+        "update_packaging_text",
+        "update_packaging_item_time",
+        "update_scene_transition",
+        "regenerate_narrations_all",
+        "update_bgm_offset",
+        "update_bgm_volume",
+        "update_compose_setting",
+        # 素材重排 / 字卡重出（禁 aigc_image，由 mutator 内部校验 action）
         "regenerate_fill",
         "regenerate_all_fills",
     },
@@ -1536,10 +1633,13 @@ _STEP_ALLOWED_OPS: dict[ComposeEditStep, set[str]] = {
         "update_bgm_offset",
         "update_bgm_volume",
         "update_compose_setting",
+        "regenerate_fill",
+        "regenerate_all_fills",
     },
 }
 
 # 内容轨 ops（用于在 step3 提示用户回 step2）
+# stage-44：regenerate_fill / regenerate_all_fills 不算内容轨——step3 也能调
 _CONTENT_TRACK_OPS = {
     "update_section_narration",
     "update_section_duration",
@@ -1549,8 +1649,6 @@ _CONTENT_TRACK_OPS = {
     "update_shot_subject",
     "update_shot_narration",
     "update_shot_duration",
-    "regenerate_fill",
-    "regenerate_all_fills",
 }
 
 # 异步 mutator 集合：调外部 LLM / Seedream / fill_gap 链路；run_compose_edit 单独 await。
@@ -1858,16 +1956,17 @@ async def run_compose_edit(
     note: str | None = None
     if not diffs:
         if step == "step3" and any(op in _CONTENT_TRACK_OPS for op in out_of_scope_hits):
-            note = "step3 不可改内容轨（文案/段时长/删段/重排），请回 step2 调整结构。"
+            note = "step3 不可改内容轨（段落文案 / 段时长 / 删段 / 重排 / 分镜文本），请回 step2 调整结构。"
         elif step == "step2" and out_of_scope_hits:
-            note = "step2 只改内容轨；字卡 / BGM / 调性 / 比例等请到 step3 包装编辑再调。"
+            # stage-44：step2 现在开放了渲染/包装/全局；走到这里基本只剩 AI 生图/视频
+            note = "step2 不通过对话改 AI 生图 / 视频；请到 AIGC 面板手动改提示词后再点重新生成。"
         elif llm_text and not _looks_like_excuse(llm_text):
             # LLM 把指令理解成了讲解 / 问答 —— 把它说的话原样回给用户
             note = llm_text[:600]
         elif not cleaned:
             examples = {
-                "step2": "如『把 sec-1 改成 5 秒』『删除 sec-2』『把段落顺序改成 sec-0, sec-2, sec-1』『所有段重新生图』；也可以问『当前结构什么样？』『sec-1 这段时长够撑得起卖点吗？』",
-                "step3": "如『BGM 推迟 2 秒』『画面改方版』『把字卡 sc-3 文字改成…』『sc-2 转场改 zoom 0.5 秒』『所有口播重写得更紧凑』；也可以问『当前迁移倾向是什么？』『现在的字卡密度合适吗？』",
+                "step2": "如『把第 1 段改成 5 秒』『删除第 2 段』『把段落顺序改成 第 1 段、第 3 段、第 2 段』『所有段重新挑素材』；也可以问『当前结构什么样？』『第 1 段时长够撑得起卖点吗？』",
+                "step3": "如『BGM 推迟 2 秒』『画面改方版』『把第 3 段字卡文字改成…』『第 2 段转场改 zoom 0.5 秒』『所有口播重写得更紧凑』；也可以问『当前迁移倾向是什么？』『现在的字卡密度合适吗？』",
             }[step]
             note = f"我没识别出可执行的编辑动作，请试更具体的指令——{examples}。"
         else:

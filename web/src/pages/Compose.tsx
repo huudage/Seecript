@@ -47,7 +47,6 @@ import type {
   Material,
   MaterialUploadResponse,
   PackagingItem,
-  PackagingItemDraftRequest,
   PackagingItemDraftResponse,
   PackagingItemPlaceRequest,
   PackagingRecommendationV2,
@@ -683,7 +682,8 @@ export default function ComposePage() {
         }
         const hydrated: FillResult[] = []
         for (const scene of freshPlan.main_track ?? []) {
-          const m = scene.scene_id.match(/^sc-(\d+)$/)
+          // stage-43：scene_id 支持单镜 `sc-N` 与多分镜 `sc-N-sh-M`，两种都按 section index N 反查 section。
+          const m = scene.scene_id.match(/^sc-(\d+)(?:-sh-\d+)?$/)
           if (!m) continue
           const sectionId = sectionByOrder.get(Number(m[1]))
           if (!sectionId) continue
@@ -716,6 +716,24 @@ export default function ComposePage() {
               cover_url: scene.aigc_video_urls[0] ?? null,
               alternatives: [],
               chunks_count: scene.aigc_video_urls.length,
+              chunk_task_ids: [],
+              note: '已采纳（从历史 plan 恢复）',
+            })
+          } else if (scene.source === 'aigc_image' && scene.aigc_image_url) {
+            // stage-43：AI 单图换源也要让 step3 看到（否则前端从 plan 重建时丢掉这个 fill，
+            // step3 仍按旧 fill 渲染——用户痛报：『针对一个三分镜片段生成字卡后换源单镜 step3 还是字卡』）。
+            hydrated.push({
+              gap_id: gap.gap_id,
+              section_id: sectionId,
+              action: 'aigc_image',
+              status: 'ok',
+              narration: scene.narration ?? null,
+              voiceover_url: scene.voiceover_url ?? null,
+              aigc_image_url: scene.aigc_image_url,
+              animation_spec: scene.animation_spec ?? null,
+              alternatives: [],
+              video_urls: [],
+              chunks_count: 0,
               chunk_task_ids: [],
               note: '已采纳（从历史 plan 恢复）',
             })
@@ -1273,29 +1291,6 @@ export default function ComposePage() {
         if (resp.plan) setPlanAndPush(resp.plan)
       } catch (err) {
         setError(err instanceof Error ? err.message : '包装项调整时长失败')
-      }
-    },
-    [plan, setPlanAndPush],
-  )
-
-  // 单组件添加：先 /packaging/items/draft 拿 LLM 草稿，再 /packaging/items/place 直接落进 plan。
-  // 用户后续通过点击 item 走 ⌘K 自然语言改文字、拖动改位置。
-  const handleAddPackagingItem = useCallback(
-    async (kind: 'title_bar' | 'sticker' | 'cover') => {
-      if (!plan) return
-      setTrackBusy(true)
-      setError(null)
-      try {
-        const draftBody: PackagingItemDraftRequest = { plan_id: plan.plan_id, kind }
-        const draft = await api.post<PackagingItemDraftResponse>('/packaging/items/draft', draftBody)
-        const placeBody: PackagingItemPlaceRequest = { plan_id: plan.plan_id, item: draft.item }
-        const fresh = await api.post<Plan>('/packaging/items/place', placeBody)
-        setPlanAndPush(fresh)
-        setSelectedPackagingItemId(draft.item.item_id)
-      } catch (err) {
-        setError(err instanceof Error ? err.message : '添加包装组件失败')
-      } finally {
-        setTrackBusy(false)
       }
     },
     [plan, setPlanAndPush],
@@ -1917,7 +1912,6 @@ export default function ComposePage() {
                 onSynthesizeAll={handleSynthesizeAll}
                 onClearVoice={handleClearVoice}
                 onRecommendPackaging={handleRecommendPackaging}
-                onAddPackagingItem={handleAddPackagingItem}
                 onRecommendPackagingForScene={handleRecommendPackagingForScene}
                 onDeletePackagingItem={handleDeletePackagingItem}
                 onPickBgm={() => setBgmPickerOpen(true)}
@@ -2333,7 +2327,6 @@ export default function ComposePage() {
                 onSynthesizeAll={handleSynthesizeAll}
                 onClearVoice={handleClearVoice}
                 onRecommendPackaging={handleRecommendPackaging}
-                onAddPackagingItem={handleAddPackagingItem}
                 onRecommendPackagingForScene={handleRecommendPackagingForScene}
                 onDeletePackagingItem={handleDeletePackagingItem}
                 onPickBgm={() => setBgmPickerOpen(true)}

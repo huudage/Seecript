@@ -41,6 +41,58 @@ _ATEMPO_MIN = 0.75
 _ATEMPO_MAX = 1.30
 
 
+def _dedupe_repetition_for_tts(text: str) -> str:
+    """TTS 入口的最后一道防线：杜绝『把同一短语硬塞几遍凑时长』那种声音感。
+
+    与 narration_agent._dedupe_repetition 等价（这里独立实现避免双向依赖）。
+    - 单字 4+ 连续 → 压成 2 次
+    - 2-4 字短语连续重复 ≥2 次 → 只保留 1 次
+    - 同一句子（按 。！？；分割）出现 ≥2 次 → 只保留首次
+
+    用户体验底线：宁可 TTS 短于 scene.duration 留白，绝不让人听见『来来来来』『看看看看』。
+    """
+    if not text or len(text) < 4:
+        return text
+    import re as _re
+
+    s = text
+    s = _re.sub(r"(.)\1{3,}", r"\1\1", s)
+    for _ in range(3):
+        prev = s
+        s = _re.sub(r"(.{2,4}?)\1{2,}", r"\1", s)
+        if s == prev:
+            break
+
+    parts = _re.split(r"([。！？；])", s)
+    sentences: list[str] = []
+    buf = ""
+    for tok in parts:
+        if tok in "。！？；":
+            sentences.append((buf + tok).strip())
+            buf = ""
+        else:
+            buf += tok
+    if buf.strip():
+        sentences.append(buf.strip())
+    seen: set[str] = set()
+    dedup: list[str] = []
+    for sent in sentences:
+        key = _re.sub(r"\s+", "", sent)
+        if not key:
+            continue
+        core = key.rstrip("。！？；,，、;.!?")
+        if len(core) >= 3:
+            if key in seen:
+                continue
+            seen.add(key)
+        dedup.append(sent)
+    out = "".join(dedup) if dedup else s
+    cleaned = out.strip()
+    if cleaned != text.strip():
+        log.info("[tts] dedupe applied: %r → %r", text, cleaned)
+    return cleaned or text
+
+
 def _wav_duration_seconds(wav_bytes: bytes) -> float:
     try:
         with wave.open(io.BytesIO(wav_bytes), "rb") as wf:
@@ -110,8 +162,12 @@ def synthesize_with_alignment(
 
     overflows_target=True 表示音频最终时长仍然超过 target_seconds（atempo 区间外回退到 1.0x），
     渲染端据此决定是否扩展 scene 时长或允许跨段播放——**不再做截尾**。
+
+    text 在进 TTS 前会过一次 `_dedupe_repetition`：杜绝 LLM/手编/老 plan 残留的『把同一短语
+    连续读几遍凑时长』那种声音感——用户体验底线之一。
     """
-    wav = synthesize(text, voice=voice, sample_rate=sample_rate, speed_ratio=1.0)
+    safe_text = _dedupe_repetition_for_tts(text)
+    wav = synthesize(safe_text, voice=voice, sample_rate=sample_rate, speed_ratio=1.0)
     if target_seconds <= 0:
         return wav, False
     actual = _wav_duration_seconds(wav)

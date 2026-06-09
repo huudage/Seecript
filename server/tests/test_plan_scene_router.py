@@ -172,3 +172,29 @@ def test_patch_scene_empty_body_noop(client):
     body = resp.json()
     sc0 = next(s for s in body["main_track"] if s["scene_id"] == "sc-0")
     assert sc0["narration"] == "原口播0"
+
+
+def test_patch_scene_narration_clears_voiceover_and_rebuilds_subtitle(client):
+    """narration 改了：旧 voiceover_url 必须清掉（指向旧文案合成的 wav，再播就对不上嘴），
+    同时 packaging_track 上的 subtitle item 要按新 text 重生（否则 step3 预览还是旧字幕）。"""
+    plan = _make_plan(f"plan-scene-narr-{int(time.time() * 1000)}")
+    plan.settings.subtitle_enabled = True
+    # 模拟 step2 已经合过一次 TTS：sc-0 上挂了一个 voiceover_url
+    plan.main_track[0].voiceover_url = "/voiceovers/legacy/sc-0.wav"
+    _TEST_PLAN_IDS.append(plan.plan_id)
+    plan_store.put(plan)
+
+    resp = client.patch(
+        f"/api/plan/{plan.plan_id}/scene/sc-0",
+        json={"narration": "改后的口播"},
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    sc0 = next(s for s in body["main_track"] if s["scene_id"] == "sc-0")
+    assert sc0["narration"] == "改后的口播"
+    assert sc0["voiceover_url"] is None, "narration 改了 voiceover_url 必须清空，避免播放旧音频"
+
+    # subtitle item 已重建，text 是新 narration
+    subs = [it for it in body["packaging_track"] if it["kind"] == "subtitle"]
+    assert any(it["text"] == "改后的口播" for it in subs), \
+        f"subtitle 应按新 narration 重建，实际：{[it['text'] for it in subs]}"

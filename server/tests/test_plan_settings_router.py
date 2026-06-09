@@ -118,3 +118,45 @@ def test_patch_settings_unknown_plan_404(client):
         json={"voiceover_enabled": False},
     )
     assert resp.status_code == 404
+
+
+def test_patch_settings_subtitle_on_rebuilds_subtitle_items(client):
+    """开关从 False → True：必须按 main_track narration 自动生成 subtitle PackagingItem，
+    不能像旧版那样『翻 True 但不重生』导致 step3 看不到字幕。"""
+    plan = _make_plan(f"plan-set-sub-on-{int(time.time() * 1000)}")
+    plan.settings.subtitle_enabled = False
+    plan.packaging_track = []
+    _TEST_PLAN_IDS.append(plan.plan_id)
+    plan_store.put(plan)
+
+    resp = client.patch(
+        f"/api/plan/{plan.plan_id}/settings",
+        json={"subtitle_enabled": True},
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    subs = [it for it in body["packaging_track"] if it["kind"] == "subtitle"]
+    assert len(subs) >= 1, f"开关翻 True 后应有 subtitle 项，实际：{body['packaging_track']}"
+    assert subs[0]["text"] == "hi"
+
+
+def test_patch_settings_subtitle_off_clears_subtitle_items(client):
+    """开关从 True → False：清空 subtitle 项，其余包装项保留。"""
+    from app.schemas import PackagingItem
+    plan = _make_plan(f"plan-set-sub-off-{int(time.time() * 1000)}")
+    plan.settings.subtitle_enabled = True
+    plan.packaging_track = [
+        PackagingItem(item_id="pkg-sub-0", kind="subtitle", start=0.0, end=3.0, text="hi"),
+        PackagingItem(item_id="pkg-cover-0", kind="cover", start=0.0, end=2.0, text="封面"),
+    ]
+    _TEST_PLAN_IDS.append(plan.plan_id)
+    plan_store.put(plan)
+
+    resp = client.patch(
+        f"/api/plan/{plan.plan_id}/settings",
+        json={"subtitle_enabled": False},
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert not any(it["kind"] == "subtitle" for it in body["packaging_track"])
+    assert any(it["kind"] == "cover" for it in body["packaging_track"])

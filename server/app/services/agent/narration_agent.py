@@ -29,27 +29,28 @@ _CHARS_PER_SECOND = 5.0
 _NARRATION_SYSTEM = (
     "你是短视频口播脚本撰稿。给定全片 brief / 视频要求 / 段落清单（含每段角色 / 时长 / 内容描述 / 各分镜要表达的画面），"
     "为每个分镜（scene_id）输出一句口播。\n\n"
-    "—— 绝对禁止 ——\n"
-    "1. 不许为了凑够时长在文案里『复述、同义反复、把同一个意思换种说法说三次』。"
-    "宁可短不许水。如果一段时长 6 秒、内容只够说 5 个字，那就只写 5 个字。\n"
+    "—— 绝对禁止（违反 = 重写整段） ——\n"
+    "1. **严禁复述凑时长**——绝对不允许把同一个意思换种说法说两次／三次，不允许把同一短语连续重复（『来来来』『看看看』『一个一个又一个』全部违规），"
+    "也不允许同义反复（『非常好』+『相当棒』+『十分赞』）。\n"
+    "   口播字数应当严格由『内容能表达多少』决定，**与段时长无关**。"
+    "   如果一段时长 8 秒、内容只够说 4 个字，那就只写 4 个字，留 7.x 秒静默，比堆词强一百倍。\n"
     "2. 不许把『时长 Ns』『接下来 N 秒』之类元数据写进文案。\n"
     "3. 不许写 markdown / 引号 / 列表 / 分号清单 —— 必须是自然口语中文。\n"
     "4. 不许出现段落角色名（hook/opening/climax/closing/step_N/item_N）。\n"
-    "5. 同一个意思只允许在全片中出现一次，不允许跨段重复同一句关键卖点（除非该卖点是结尾 CTA 的回扣）。\n\n"
-    "—— 字数与节奏 ——\n"
-    "• 普通话播报均速约 5 字/秒；每段口播字数 = 段时长 × 5（向下取整）。\n"
-    "• 字数请控制在『目标字数 -30%』到『目标字数』之间——宁可短一点留白，也不要超时。\n"
-    "• 钩子/开场段建议比目标字数再短 10-20%，让画面留出呼吸；高潮/收尾段尽量贴近目标。\n"
-    "• **每个分镜都必须给一句不少于 3 个字的口播**——不允许返回空字符串。即使是纯画面/物品特写，"
-    "也用一句简短的『画面解说 / 旁白点评 / 状态说明』来填，给观众一个停留点。\n\n"
+    "5. 同一关键卖点跨段只允许出现一次（除非结尾 CTA 的合理回扣）。\n\n"
+    "—— 字数与节奏（只设上限，不设下限） ——\n"
+    "• 普通话播报均速约 5 字/秒；**字数上限 = 段时长 × 5**（向下取整），超了会被截断。\n"
+    "• 字数下限不设——一镜哪怕只需要 3 个字，就只写 3 个字，剩下让画面/字幕说话。\n"
+    "• **每个分镜都必须给一句 ≥3 字的口播**——不允许返回空字符串。即使是纯画面/物品特写，"
+    "用一句极简的『画面解说 / 旁白点评 / 状态说明』即可（如『咖啡冒热气』『齿轮咬合』），"
+    "**禁止把这句拉长复述**。\n\n"
     "—— 风格 ——\n"
     "• 口语化、有节奏感；动词优先；少用形容词堆砌。\n"
     "• 把『你 / 我们 / 来 / 看 / 试试』这类对话感词放在合适处（不是每段都用）。\n"
     "• 整片串起来念应当像一个人在讲故事，而不是一段段独立旁白。\n\n"
     "—— 输出 JSON ——\n"
     "{\"narrations\": [{\"scene_id\": \"sc-0\", \"text\": \"...\"}, {\"scene_id\": \"sc-1-shot-1\", \"text\": \"...\"}, ...]}\n"
-    "scene_id 必须与输入的 scene_id 一一对应；**每条 text 都必须 ≥ 3 字，不允许空字符串**。\n"
-    "text 严格遵守上面的字数与禁复述约束。"
+    "scene_id 必须与输入的 scene_id 一一对应；**每条 text 都必须 ≥ 3 字且 ≤ 段时长×5 字，不允许空字符串，不允许任何形式的重复凑数**。"
 )
 
 
@@ -130,6 +131,8 @@ async def regenerate_narrations(plan: Plan) -> dict[str, str]:
         if sid not in valid_scene_ids:
             continue
         txt = _sanitize(str(raw.get("text") or ""))
+        # 反复述：先压掉 LLM 可能漏过去的重复（连续短语 / 同义反复短句）
+        txt = _dedupe_repetition(txt)
         # 字数硬截断：超长时按目标字数+20% 截断（避免 LLM 越界把口播写飞）
         sc = next(s for s in scenes if s.scene_id == sid)
         target = max(1, int(sc.duration * _CHARS_PER_SECOND))
@@ -188,6 +191,62 @@ def _sanitize(text: str) -> str:
     s = _re.sub(r"\b(opening|hook|climax|closing|step[_\s]?\d+|item[_\s]?\d+)\b",
                 "", s, flags=_re.IGNORECASE)
     s = _re.sub(r"接下来.{0,3}\d+秒", "", s)
+    return s.strip()
+
+
+def _dedupe_repetition(text: str) -> str:
+    """压掉 LLM 偷塞的『复述凑时长』。
+
+    分三层处理（够用且不误伤）：
+    1. 连续单字重复 4 次以上 → 压成 2 次（『来来来来来』→『来来』）
+    2. 连续 2-4 字短语完全重复 ≥2 次 → 只保留 1 次（『看看看看』→『看看』、『一个一个一个』→『一个』）
+    3. 同一中文句子（按 。！？；分割）出现 ≥2 次 → 只保留首次出现位置
+
+    保守起见，不动『不知道 不知道 不知道』这种有节奏感的修辞——只有完全连续重复才算违规。
+    """
+    if not text or len(text) < 4:
+        return text
+    import re as _re
+
+    s = text
+    # Layer 1: single-char 4+ runs → 2
+    s = _re.sub(r"(.)\1{3,}", r"\1\1", s)
+
+    # Layer 2: 2-4 char phrase repeated >= 2 times → keep one copy
+    # 多次扫描覆盖嵌套场景
+    for _ in range(3):
+        prev = s
+        s = _re.sub(r"(.{2,4}?)\1{2,}", r"\1", s)
+        if s == prev:
+            break
+
+    # Layer 3: dedupe full sentences
+    parts = _re.split(r"([。！？；])", s)
+    sentences: list[str] = []
+    buf = ""
+    for token in parts:
+        if token in "。！？；":
+            sentences.append((buf + token).strip())
+            buf = ""
+        else:
+            buf += token
+    if buf.strip():
+        sentences.append(buf.strip())
+    seen: set[str] = set()
+    dedup: list[str] = []
+    for sent in sentences:
+        key = _re.sub(r"\s+", "", sent)
+        if not key:
+            continue
+        # 极短的 1-2 字句子（如『来。』）不去重——可能是节奏强调
+        core = key.rstrip("。！？；，、,.;!?")
+        if len(core) >= 3:
+            if key in seen:
+                continue
+            seen.add(key)
+        dedup.append(sent)
+    s = "".join(dedup) if dedup else s
+
     return s.strip()
 
 

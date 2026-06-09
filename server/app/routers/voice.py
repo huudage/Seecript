@@ -28,6 +28,7 @@ from pydantic import BaseModel, Field
 from ..schemas import Plan
 from ..services.plans import plan_store
 from ..services.tts import TTSError, backend_name, synthesize_with_alignment
+from ..services.tts import _dedupe_repetition_for_tts
 from ..services.tts import store as voice_store
 
 log = logging.getLogger("seecript.voice")
@@ -91,6 +92,9 @@ async def synthesize_one(req: VoiceSynthesizeRequest) -> VoiceSynthesizeResponse
         raise HTTPException(status_code=400, detail="scene 没有 narration 也未提供 text")
 
     voice = (req.voice or plan.settings.tts_voice).strip()
+    # 防御性 dedupe：⌘K 改文案 / 用户手编 / 老 plan 残留 可能让重复字符走到这里——
+    # 在落 plan + 进 TTS 之前压一遍，保证显示的 narration 与音频完全一致。
+    text = _dedupe_repetition_for_tts(text)
     try:
         wav_bytes, truncated = await asyncio.to_thread(
             synthesize_with_alignment,
@@ -103,8 +107,11 @@ async def synthesize_one(req: VoiceSynthesizeRequest) -> VoiceSynthesizeResponse
 
     url = voice_store.save_wav(req.plan_id, req.scene_id, wav_bytes)
     scene.voiceover_url = url
+    # 用清洗后的 text 覆盖 scene.narration——避免前端字幕显示重复字而音频却是干净的
     if req.text and req.text.strip():
-        scene.narration = req.text.strip()
+        scene.narration = text
+    elif text != (scene.narration or "").strip():
+        scene.narration = text
     plan_store.put(plan)
     log.info(
         "[voice] synthesized plan=%s scene=%s chars=%d voice=%s backend=%s url=%s truncated=%s",
@@ -152,6 +159,14 @@ async def synthesize_all(req: VoiceSynthesizeAllRequest) -> VoiceSynthesizeAllRe
             scene.narration = text
             log.warning("[voice] synthesize_all plan=%s scene=%s narration 空 → 兜底填 %r",
                         req.plan_id, scene.scene_id, text)
+        # 防御性 dedupe：把 LLM/手编残留的『重复凑时长』压掉，再同步回 scene.narration——
+        # 这样字幕显示与 TTS 音频始终一致。
+        cleaned = _dedupe_repetition_for_tts(text)
+        if cleaned != text:
+            log.info("[voice] synthesize_all dedupe scene=%s %r → %r",
+                     scene.scene_id, text, cleaned)
+            text = cleaned
+            scene.narration = cleaned
         try:
             wav_bytes, truncated = await asyncio.to_thread(
                 synthesize_with_alignment,

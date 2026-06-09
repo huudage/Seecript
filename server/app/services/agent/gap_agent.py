@@ -1099,6 +1099,57 @@ def _extract_subjects_from_section(section: "AdaptedSection | None") -> list[str
     return []
 
 
+def _camera_technique_to_anim_hints(text: str) -> dict:
+    """stage-43：把 LLM 给的中文运镜短语映射成 AnimationSpec 字段建议。
+
+    返回 dict，只覆盖明确推断出来的字段（anim_type / motion_direction / intensity）。
+    无法推断的字段不返回 → 上层 fallback 到 role/tempo 规则。
+    """
+    if not text:
+        return {}
+    t = text.lower()
+    hints: dict = {}
+    # 推/拉镜头
+    if any(k in t for k in ["推近", "推镜", "推进", "zoom in", "推 ", "快推"]):
+        hints["animation_type"] = "ken-burns"
+        hints["motion_direction"] = "in"
+        hints["intensity"] = 0.6 if "快" in t or "急" in t else 0.4
+    elif any(k in t for k in ["拉远", "拉镜", "后退", "zoom out", "拉 "]):
+        hints["animation_type"] = "ken-burns"
+        hints["motion_direction"] = "out"
+        hints["intensity"] = 0.5 if "快" in t else 0.3
+    # 横摇/竖摇
+    elif any(k in t for k in ["横摇", "左移", "右移", "横向", "侧移", "pan"]):
+        hints["animation_type"] = "parallax"
+        hints["motion_direction"] = "in"
+        hints["intensity"] = 0.45 if "快" in t else 0.3
+    elif any(k in t for k in ["上摇", "下摇", "俯拍", "仰拍", "tilt"]):
+        hints["animation_type"] = "parallax"
+        hints["motion_direction"] = "in"
+        hints["intensity"] = 0.4
+    # 跟随
+    elif any(k in t for k in ["跟随", "跟拍", "跟随主体", "follow"]):
+        hints["animation_type"] = "parallax"
+        hints["motion_direction"] = "in"
+        hints["intensity"] = 0.5
+    # 静止
+    elif any(k in t for k in ["静止", "静态", "固定", "定格", "static", "still"]):
+        hints["animation_type"] = "ken-burns"
+        hints["motion_direction"] = "in"
+        hints["intensity"] = 0.08  # 极轻微，几乎静帧但避免完全死板
+    # 抖动/冲击
+    elif any(k in t for k in ["抖动", "震动", "冲击", "shake"]):
+        hints["animation_type"] = "ken-burns"
+        hints["motion_direction"] = "in"
+        hints["intensity"] = 0.85
+    # 转场类
+    elif any(k in t for k in ["焦点过渡", "焦点转移", "焦点切换", "rack focus"]):
+        hints["animation_type"] = "parallax"
+        hints["motion_direction"] = "in"
+        hints["intensity"] = 0.35
+    return hints
+
+
 def _suggest_animation_spec(
     section: "AdaptedSection | None",
     n_images: int,
@@ -1106,8 +1157,9 @@ def _suggest_animation_spec(
 ) -> "AnimationSpec":
     """Stage 4 动效 DSL：根据 section 角色 / 节奏 / 图片数自动推荐 Remotion 动效。
 
-    优先级：user_override > rule-based 推荐。
+    优先级：user_override > camera_technique（stage-43，LLM 显式给的运镜手法）> rule-based 推荐。
     user_override 是前端可选的 partial dict，只覆盖被指定的字段。
+    camera_technique 来自 section.shots[0].camera_technique（首镜锚定整段动效基调）。
 
     规则（与 SectionRole 协同）：
     - opening + fast/peak  → ken-burns in（推近营造冲击）
@@ -1153,6 +1205,14 @@ def _suggest_animation_spec(
         "transition": "cross-fade",
         "transition_duration": 0.4,
     }
+    # stage-43：camera_technique override（介于规则与 user_override 之间）
+    shots = getattr(section, "shots", None) or [] if section else []
+    if shots:
+        cam = (getattr(shots[0], "camera_technique", "") or "").strip()
+        if cam:
+            cam_hints = _camera_technique_to_anim_hints(cam)
+            for k, v in cam_hints.items():
+                defaults[k] = v
     if isinstance(user_override, dict):
         for k, v in user_override.items():
             if k in defaults and v is not None:

@@ -137,9 +137,15 @@ async def generate_aigc_prompt(
                     for t in tgts
                 )
                 base += f" | 目标={tgt_str}"
+            cam = (getattr(sh, "camera_technique", "") or "").strip()
+            if cam:
+                base += f" | 运镜={cam}（必须在 prompt 中体现）"
             shot_lines.append(base)
         user_lines.append("\n".join(shot_lines))
-    user_lines.append("请输出一句完备的 t2v_prompt，覆盖主体/景别/机位/光线/质感/情绪。")
+    user_lines.append(
+        "请输出一句完备的 t2v_prompt，覆盖主体/景别/机位/光线/质感/情绪；"
+        "若分镜带『运镜』字段，必须把该运镜短语原样融入 prompt（这是渲染端的硬约束）。"
+    )
 
     user = "\n".join(user_lines)
 
@@ -349,6 +355,9 @@ async def generate_image_specs(
                     for t in tgts
                 )
                 base += f" | 目标={tgt_str}"
+            cam = (getattr(sh, "camera_technique", "") or "").strip()
+            if cam:
+                base += f" | 运镜={cam}（图也要体现该机位/景别/构图）"
             shot_lines.append(base)
         user_lines.append("\n".join(shot_lines))
     user_lines.append("请输出 1-4 张参考图的 specs JSON（带 targets 时按 target 个数出图）。")

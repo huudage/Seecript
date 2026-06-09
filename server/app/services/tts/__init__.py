@@ -9,9 +9,10 @@ provider 选择：
 - backend_name() -> "mock" | "volc"
 """
 from .client import TTSError, backend_name, synthesize
-from .scene_voice import synthesize_scene_voice, synthesize_with_alignment
+from .scene_voice import _dedupe_repetition_for_tts, synthesize_scene_voice, synthesize_with_alignment
 
 __all__ = [
     "TTSError", "backend_name", "synthesize",
     "synthesize_scene_voice", "synthesize_with_alignment",
+    "_dedupe_repetition_for_tts",
 ]

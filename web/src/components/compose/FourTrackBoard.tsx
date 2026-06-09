@@ -70,8 +70,6 @@ interface Props {
   onClearVoice?: (sceneId: string) => void | Promise<void>
   /** 触发"一键包装推荐"。 */
   onRecommendPackaging?: () => void | Promise<void>
-  /** 包装轨「+ 添加组件」下拉——按 kind 走 /packaging/items/draft + place 一键落进 plan。 */
-  onAddPackagingItem?: (kind: 'title_bar' | 'sticker' | 'cover') => void | Promise<void>
   /** 包装轨「推荐生成」——根据当前选中的内容片段 + frame + 自然语言诉求生成单个包装组件。 */
   onRecommendPackagingForScene?: (
     sceneId: string,
@@ -334,7 +332,6 @@ export function FourTrackBoard({
   onSynthesizeScene,
   onSynthesizeAll,
   onClearVoice,
-  onAddPackagingItem,
   onRecommendPackagingForScene,
   onDeletePackagingItem,
   onPickBgm,
@@ -559,15 +556,6 @@ export function FourTrackBoard({
 
   /* ==================== 包装轨 row ref（被 packagingRowRef 仅作 DOM 测量用，已不再支持拖动平移）==================== */
   const packagingRowRef = useRef<HTMLDivElement | null>(null)
-
-  // 包装轨「+ 添加组件 ▾」下拉开闭——点其它地方关闭
-  const [addMenuOpen, setAddMenuOpen] = useState(false)
-  useEffect(() => {
-    if (!addMenuOpen) return
-    const close = () => setAddMenuOpen(false)
-    window.addEventListener('click', close)
-    return () => window.removeEventListener('click', close)
-  }, [addMenuOpen])
 
   // 包装轨「推荐生成」下拉菜单：点 kind 直接对当前选中 scene 调 LLM 生成单个组件（时长 = scene 时长）
   // 创作者后续若要改文案/位置/颜色，点轨道上的组件块进编辑面板调整。
@@ -1398,44 +1386,11 @@ export function FourTrackBoard({
         actions={
           !readOnly ? (
             <div className="flex flex-nowrap items-center gap-1 whitespace-nowrap">
-              {onAddPackagingItem && (
-                <div className="relative" onClick={(e) => e.stopPropagation()}>
-                  <button
-                    onClick={() => setAddMenuOpen((v) => !v)}
-                    disabled={busy}
-                    title="加单个包装组件：标题条 / 贴纸 / 封面（AI 给草稿，落到轨上点击改）"
-                    className="rounded border border-border bg-background/70 px-1.5 py-0.5 text-[10px] text-muted-foreground hover:bg-secondary hover:text-foreground disabled:opacity-50"
-                  >
-                    {busy ? '⏳…' : '+组件 ▾'}
-                  </button>
-                  {addMenuOpen && (
-                    <div className="absolute right-0 top-full z-50 mt-1 w-32 overflow-hidden rounded-md border border-border bg-card shadow-lg">
-                      {([
-                        { kind: 'title_bar', label: '标题条' },
-                        { kind: 'sticker', label: '贴纸' },
-                        { kind: 'cover', label: '封面' },
-                      ] as const).map((opt) => (
-                        <button
-                          key={opt.kind}
-                          onClick={() => {
-                            setAddMenuOpen(false)
-                            void onAddPackagingItem(opt.kind)
-                          }}
-                          className="block w-full px-2 py-1 text-left text-[10px] hover:bg-secondary"
-                        >
-                          {opt.label}
-                        </button>
-                      ))}
-                    </div>
-                  )}
-                </div>
-              )}
               {onRecommendPackagingForScene && (
                 <div className="relative" onClick={(e) => e.stopPropagation()}>
                   <button
                     onClick={() => {
                       setRecommendMenuOpen((v) => !v)
-                      setAddMenuOpen(false)
                     }}
                     disabled={busy || recommendBusy || !targetSceneForRecommend}
                     title={
@@ -1490,7 +1445,7 @@ export function FourTrackBoard({
       >
         {nonSubtitleItems.length === 0 ? (
           <div className="absolute inset-1 flex items-center justify-center rounded-md border border-dashed border-border bg-background/30 text-center text-[10px] text-muted-foreground">
-            还没生成包装项（标题 / 封面 / 贴纸）——点上方「+ 组件」加入
+            还没生成包装项（标题 / 封面 / 贴纸）——先在内容轨选中片段，再点上方「✨ 推荐生成」加入
           </div>
         ) : (
           <>

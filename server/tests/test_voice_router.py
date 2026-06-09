@@ -186,3 +186,45 @@ def test_synthesize_all_returns_truncated_scene_ids(client):
     body = resp.json()
     assert "sc-0" in body["truncated_scene_ids"]
     assert "sc-1" not in body["truncated_scene_ids"]
+
+
+def test_synthesize_dedupes_repetition_padding_before_tts(client):
+    """用户报障：TTS 会重复某几个字硬凑时长。
+    防御性 dedupe 在 voice 路由入口压掉这类输入——scene.narration 应回写为干净文案。"""
+    plan = _make_plan(f"plan-voice-dedupe-{int(time.time() * 1000)}")
+    # 三种典型『凑时长』产物
+    plan.main_track[0].narration = "来来来来来看一下这款咖啡"  # 单字 5 连
+    plan.main_track[1].narration = "看看看看就知道了。看看看看就知道了。"  # 短语+整句双重重复
+    _TEST_PLAN_IDS.append(plan.plan_id)
+    plan_store.put(plan)
+
+    resp = client.post("/api/voice/synthesize-all", json={"plan_id": plan.plan_id})
+    assert resp.status_code == 200, resp.text
+
+    refreshed = plan_store.get(plan.plan_id)
+    sc0 = refreshed.main_track[0].narration
+    sc1 = refreshed.main_track[1].narration
+    # 5 连应被压成 2 个
+    assert "来来来来来" not in sc0, f"5 连字应被 dedupe，实际：{sc0!r}"
+    assert sc0.count("来") <= 2, f"『来』应不超 2 个，实际：{sc0!r}"
+    # 整句重复应只保留 1 次
+    assert sc1.count("看看就知道了") == 1, f"整句应去重，实际：{sc1!r}"
+
+
+def test_synthesize_one_dedupes_text_override(client):
+    """单段合成时 text override 也要走 dedupe，scene.narration 显示与音频一致。"""
+    plan = _make_plan(f"plan-voice-dedupe-one-{int(time.time() * 1000)}")
+    _TEST_PLAN_IDS.append(plan.plan_id)
+    plan_store.put(plan)
+
+    resp = client.post("/api/voice/synthesize", json={
+        "plan_id": plan.plan_id,
+        "scene_id": "sc-0",
+        "text": "试试试试这款奶茶",
+    })
+    assert resp.status_code == 200, resp.text
+
+    refreshed = plan_store.get(plan.plan_id)
+    sc0 = refreshed.main_track[0].narration
+    assert "试试试试" not in sc0, f"4 连应被 dedupe，实际：{sc0!r}"
+    assert sc0.count("试") <= 2

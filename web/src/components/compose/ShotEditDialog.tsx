@@ -62,6 +62,7 @@ export function ShotEditDialog({
   const [subject, setSubject] = useState('')
   const [visual, setVisual] = useState('')
   const [narration, setNarration] = useState('')
+  const [cameraTechnique, setCameraTechnique] = useState('')
   const [saving, setSaving] = useState(false)
   const [err, setErr] = useState<string | null>(null)
 
@@ -80,6 +81,7 @@ export function ShotEditDialog({
     setSubject(shot?.subject ?? scene?.shot_subject ?? '')
     setVisual(shot?.visual ?? '')
     setNarration(shot?.narration ?? scene?.narration ?? '')
+    setCameraTechnique(shot?.camera_technique ?? '')
     setErr(null)
     // 换源默认值：currentSource = scene.source；切目标默认 user_material；其它字段清空
     const curRaw = scene?.source as string | undefined
@@ -113,10 +115,12 @@ export function ShotEditDialog({
   const origSubject = shot?.subject ?? scene.shot_subject ?? ''
   const origVisual = shot?.visual ?? ''
   const origNarration = shot?.narration ?? scene.narration ?? ''
+  const origCameraTechnique = shot?.camera_technique ?? ''
   const dirty =
     subject !== origSubject ||
     visual !== origVisual ||
-    narration !== origNarration
+    narration !== origNarration ||
+    cameraTechnique !== origCameraTechnique
 
   const handleSave = async () => {
     if (!dirty) {
@@ -126,10 +130,11 @@ export function ShotEditDialog({
     setSaving(true)
     setErr(null)
     try {
-      const patch: { subject?: string; visual?: string; narration?: string } = {}
+      const patch: { subject?: string; visual?: string; narration?: string; camera_technique?: string } = {}
       if (subject !== origSubject) patch.subject = subject.trim()
       if (visual !== origVisual) patch.visual = visual.trim()
       if (narration !== origNarration) patch.narration = narration.trim()
+      if (cameraTechnique !== origCameraTechnique) patch.camera_technique = cameraTechnique.trim()
       const fresh = await patchShotFields(plan.plan_id, scene.scene_id, patch)
       onSaved(fresh)
       onClose()
@@ -275,6 +280,19 @@ export function ShotEditDialog({
                 rows={2}
                 className="w-full resize-y rounded border border-border bg-background px-2 py-1.5 text-sm disabled:opacity-60"
                 placeholder="嘿，看这块青铜鼎，三千年前就有了这种范铸工艺……"
+              />
+            </label>
+            <label className="block space-y-1">
+              <span className="text-xs text-muted-foreground">
+                运镜手法（camera_technique · ≤30 字 · 同时驱动 AI 视频提示词 & Remotion 静帧动效）
+              </span>
+              <input
+                value={cameraTechnique}
+                maxLength={30}
+                disabled={busy}
+                onChange={(e) => setCameraTechnique(e.target.value)}
+                className="w-full rounded border border-border bg-background px-2 py-1.5 text-sm disabled:opacity-60"
+                placeholder="如：缓慢推近 / 左向横摇 / 固定特写 / 跟随主体侧移"
               />
             </label>
             <div className="rounded-md border border-border/60 bg-muted/30 px-2 py-1.5 text-[11px] leading-relaxed text-muted-foreground">

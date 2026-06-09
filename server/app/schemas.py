@@ -1252,6 +1252,18 @@ class ShotPlan(BaseModel):
                     "下游 aigc_prompt_agent 按 N 个目标各拼 N 个 Seedream prompt → N 张图 → 合成给 T2V。"
                     "空列表 = 单目标（按 visual 整段出 1 张图，老路）。",
     )
+    camera_technique: str = Field(
+        default="",
+        max_length=80,
+        description=(
+            "stage-43：本镜运镜手法（≤30 字）。由 plan_agent LLM 根据 role/visual/content 推断，"
+            "下游同时驱动 3 处：1) aigc_prompt_agent 拼 Seedance 视频提示词时显式注入运镜短语；"
+            "2) gap_agent._suggest_animation_spec 把 LLM 自然语言映射为 Remotion zoom/pan/tilt 参数；"
+            "3) 前端 step2 单镜小卡上展示，让创作者知道画面会怎么动。"
+            "典型值：『静态特写』『缓慢推近』『左向横摇』『俯拍下移』『跟随主体』『焦点过渡』。"
+            "空字符串 = 让下游按段落 role 默认（hook→快推/特写、resolve→收尾静帧）。"
+        ),
+    )
 
 
 class AdaptedSection(BaseModel):

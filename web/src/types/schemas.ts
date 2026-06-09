@@ -450,6 +450,8 @@ export interface FillResult {
   section_id?: string | null
   /** copy fill 产出的字卡画面规格——决定 Scene 渲染什么字卡。 */
   text_card_spec?: TextCardSpec | null
+  /** aigc_image 静帧动画规格——前端从历史 plan 重建 fill 时回带，保证 step3 预览与 plan 一致。 */
+  animation_spec?: AnimationSpec | null
 }
 
 export interface GapFillRequest {
@@ -634,6 +636,10 @@ export interface ShotPlan {
   /** stage-25：本镜要呈现的目标列表（0-4 个）。空 = 单目标按 visual 整段出图（老路）；
    *  非空 = aigc 多图合成（N 张 Seedream → 喂 T2V）。 */
   targets?: ShotTarget[]
+  /** stage-43：本镜运镜手法（≤30 字中文），由 plan_agent LLM 推断；下游 3 用途：
+   *  1) Seedance 视频提示词显式注入；2) gap_agent._suggest_animation_spec 映射 Remotion zoom/pan/tilt；
+   *  3) 前端 step2 单镜小卡展示。典型：『缓慢推近』『左向横摇』『固定特写』『跟随主体』。 */
+  camera_technique?: string
 }
 
 export interface AdaptedSection {
