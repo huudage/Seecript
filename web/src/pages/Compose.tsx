@@ -449,14 +449,20 @@ export default function ComposePage() {
   // 用户上传素材后立刻能拉动 outline.content（典型：上传纸巾 → 澄清 LLM 必须在 content
   // 里点名「纸巾」）。dedupe + 长度限制 + 黑名单兜底，避免把噪声标签塞给 LLM。
   const detectedSubjects = useMemo(() => {
-    const stop = new Set(['人', '物体', '场景', '画面', '视频', '图片'])
+    // VLM 失败兜底标 / 抽象描述词：扔进去除帮倒忙没别的；过滤掉。
+    const stop = new Set([
+      '人', '物体', '场景', '画面', '视频', '图片', '素材', '内容', '主体',
+      '构图', '光线', '风格', '氛围', '色彩', '色调', '镜头', '特写', '广角',
+      '白色', '黑色', '红色', '蓝色', '绿色', '黄色',
+    ])
     const seen = new Set<string>()
     const out: string[] = []
     for (const m of sortedMaterials) {
       for (const tag of m.tags ?? []) {
         const t = tag.trim()
         if (!t) continue
-        if (t.length > 12) continue
+        if (t.startsWith('[auto]')) continue // VLM 调用失败的兜底占位标
+        if (t.length < 2 || t.length > 12) continue
         if (stop.has(t)) continue
         if (seen.has(t)) continue
         seen.add(t)

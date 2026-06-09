@@ -298,10 +298,41 @@ async def run_clarify_round(
         thinking = str(parsed.get("thinking") or "").strip()
         question_raw = parsed.get("question")
 
+    # detected_subjects 兜底：LLM 经常会忘把这些对象点名进 content。在 yield 前
+    # 机械补回去——把缺的对象用顿号串拼到 content 末尾，括号注「（涉及 X、Y、Z）」。
+    # 与系统提示是双保险：用户上传纸巾 → content 一定能看到「纸巾」二字。
+    if detected_subjects:
+        outline = _enforce_subjects_in_content(outline, detected_subjects)
+
     yield OutlineReady(outline=outline, thinking=thinking)
 
     question_out: Optional[str] = None if is_final else _coerce_question(question_raw)
     yield RoundDone(outline=outline, question=question_out, is_final=is_final)
+
+
+def _enforce_subjects_in_content(
+    outline: ClarifyOutline, subjects: list[str]
+) -> ClarifyOutline:
+    """LLM 忘把 detected_subjects 写进 outline.content 时，机械补回去。
+
+    判定：subject 文本未出现在 content 里（精确子串匹配）。
+    补法：把所有缺的 subject 顿号串拼，括号注「（涉及 ...）」追加到 content 末尾。
+    总长度仍受 200 字限制；超过就截。
+    """
+    cleaned = [s.strip() for s in subjects if s and s.strip()]
+    if not cleaned:
+        return outline
+    content = (outline.content or "").strip()
+    missing = [s for s in cleaned if s not in content]
+    if not missing:
+        return outline
+    suffix = "（涉及" + "、".join(missing) + "）"
+    if content:
+        new_content = content + suffix
+    else:
+        new_content = "核心卖点：" + "、".join(cleaned)
+    new_content = new_content[:200]
+    return outline.model_copy(update={"content": new_content})
 
 
 def stitch_outline_to_brief(outline: ClarifyOutline) -> str:

@@ -306,6 +306,30 @@ export function ClarifyPanel({
         </button>
       </div>
 
+      {/* 已识别主体 chips：让用户看到「我们已经知道你上传了 X、Y、Z」，
+          配合服务端的「必须把这些写进 content」规则形成闭环——避免用户上传纸巾
+          却看到 outline 没纸巾时的疑惑。空时显示提示让用户去上传素材。 */}
+      <div className="rounded-md border border-dashed border-border bg-card/50 px-2 py-1.5 text-[10px]">
+        {detectedSubjects.length > 0 ? (
+          <div className="flex flex-wrap items-center gap-1">
+            <span className="text-muted-foreground">已从素材识别 {detectedSubjects.length}：</span>
+            {detectedSubjects.map((s) => (
+              <span
+                key={s}
+                className="rounded bg-emerald-500/10 px-1.5 py-0.5 text-emerald-700 dark:text-emerald-400"
+              >
+                {s}
+              </span>
+            ))}
+            <span className="text-muted-foreground">· 这些主体一定会出现在 content</span>
+          </div>
+        ) : (
+          <span className="text-muted-foreground">
+            尚未识别到素材主体——上传图片/视频后，VLM 标会自动加入并写进 content。
+          </span>
+        )}
+      </div>
+
       {transcript.length > 0 && (
         <div className="max-h-32 space-y-2 overflow-y-auto rounded-md bg-card/60 p-2 text-xs">
           <div className="text-[10px] uppercase tracking-wider text-muted-foreground">历史补充</div>
