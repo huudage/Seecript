@@ -213,6 +213,11 @@ export default function ComposePage() {
   // 选用 Set<section_id> 而非 gap_id（gap_id 不稳）；用户在 A 段等 AI 出图（3 min+）
   // 期间应能切到 B 段并行做字卡/AI 出图，A 段完成后自动应用到内容轨。
   const [busySectionIds, setBusySectionIds] = useState<ReadonlySet<string>>(() => new Set())
+  // stage-38：把每个 section_id 上次见过的 gap snapshot 缓存到 ref——silent rebuild
+  // 期间 gaps 可能临时找不到目标 section（plan 已 setPlan 但 gap/detect 未回），
+  // 这时直接用上次的 snapshot 兜底，避免 keepalive `<div key>` 因 find→null→return null
+  // 导致 FillAigcPanel 整段卸载（→ Seedance polling/spec 状态全废）。
+  const lastSeenGapBySectionRef = useRef<Map<string, Gap>>(new Map())
   // stage-37：原有 visitedSceneIds 多实例 SceneEditPanel keepalive 池已删除——
   // 段 / 单镜编辑迁到弹窗（SectionEditDialog / ShotEditDialog），不再需要保留草稿现场。
   const markBusy = useCallback((sectionId: string, busy: boolean) => {
@@ -557,6 +562,15 @@ export default function ComposePage() {
       return next
     })
   }, [selectedGap?.section_id, activeAction])
+
+  // stage-38：每次 gaps 列表更新，把当前每段最新的 Gap 快照刷进 ref。后续 keepalive 渲染
+  // 时若 `gaps.find(section_id)` 临时未命中（plan 已 setPlan / gap/detect 未回），就回落
+  // 到此 ref 里上次见过的快照——避免 panel 因 find→null→return null 整段卸载。
+  useEffect(() => {
+    for (const g of gaps) {
+      if (g.section_id) lastSeenGapBySectionRef.current.set(g.section_id, g)
+    }
+  }, [gaps])
 
   // gap 列表换了之后，自动选第一个 miss/warn——但**只看 selectedSectionId 是否仍在 gaps 里**。
   // 不能看 selectedGapId 是否存在，因为后端每次 detect 都会重写 gap_id，
@@ -1902,12 +1916,16 @@ export default function ComposePage() {
           {/* stage-36：缺口补全工作台移到右列 FourTrackBoard 正下方。
               这样左侧实时预览 sticky 不滚走，用户切段后视线在 [选段 → 工作台 → 预览]
               一条短弧上，不用全宽来回滚——也避免了"切几次就找不到当前段在跑什么"。
-              keepalive 多实例 display:none 切换，跨段后台跑。 */}
+              keepalive 多实例 display:none 切换，跨段后台跑。
+              stage-38：keepalive 池**总是**渲染（不再被外层 `selectedGap ?` 包住），
+              即使当前没选段或处于 silent rebuild 中间态，已访问过的 panel 也不会卸载，
+              Seedance polling / spec / prompt 状态稳定保留。tabs / rerank / 空状态提示
+              则按 selectedGap 走条件分支。 */}
           <div className="mt-3 space-y-2 border-t border-border pt-3">
             <p className="rounded-md border border-primary/30 bg-primary/5 px-2 py-1.5 text-[11px] leading-relaxed text-foreground">
               💡 这里只关心<strong>画面 + 字幕</strong>——三种方式都是给本段生成画面（挑素材 / 字卡画面 / AI 视频）；字幕轨开关默认关闭，开启后 AI 自动按段落生成可编辑字幕。口播留到第 3 步再切换音色合成。
             </p>
-            {selectedGap ? (
+            {selectedGap && (
               <>
                 <div className="flex flex-wrap items-center gap-1 text-xs">
                   {ACTION_TABS.map((tab) => (
@@ -1952,82 +1970,90 @@ export default function ComposePage() {
                     )}
                   </>
                 )}
-
-                {/* keepalive 工作台：每个 (section_id, action) 一份 panel，留在 DOM
-                    不卸载。切段或切动作只切 display；本地 useState（生成阶段、
-                    seedance polling、表单草稿）跨切换不丢。
-                    关键：键用 section_id（rebuild 后稳定），运行时按 section_id 反查
-                    最新 gaps 拿到最新 gap_id——这样 silent rebuild 重写 gap_id
-                    后，panel 不会因为 find 失败而卸载（→ AI 出图 polling 不丢）。 */}
-                {Array.from(visitedFillKeys).map((key) => {
-                  const [sectionId, action] = key.split('::') as [string, FillAction]
-                  const gapForKey =
-                    gaps.find((g) => g.section_id === sectionId) ??
-                    gaps.find((g) => g.gap_id === sectionId)  // 老 gap 兜底（没 section_id）
-                  if (!gapForKey) return null
-                  const isActive =
-                    selectedGap?.section_id === sectionId && activeAction === action
-                  const fillForKey =
-                    fills.find(
-                      (f) =>
-                        (f.section_id === sectionId || f.gap_id === gapForKey.gap_id) &&
-                        f.action === action,
-                    ) ?? null
-                  const onResult = async (f: FillResult) => {
-                    // 标记本段 busy（用 section_id 而非 gap_id，rebuild 后仍能定位）
-                    const sid = f.section_id ?? gapForKey.section_id ?? gapForKey.gap_id
-                    markBusy(sid, true)
-                    upsertFill(f)
-                    // 取 store 最新 snapshot（含其它并发面板刚 upsert 的 fill），避免
-                    // 用 closure 中的 stale `fills` 把别的段的成果覆盖掉。
-                    const latest = usePlanStore.getState().fills
-                    const nextFills = [...latest.filter((x) => x.gap_id !== f.gap_id), f]
-                    try {
-                      await runAnalyze(nextFills, { silent: true })
-                    } finally {
-                      markBusy(sid, false)
-                    }
-                  }
-                  return (
-                    <div
-                      key={key}
-                      style={{ display: isActive ? 'block' : 'none' }}
-                      aria-hidden={!isActive}
-                    >
-                      {action === 'copy' && (
-                        <FillCopyPanel
-                          gap={gapForKey}
-                          fill={fillForKey}
-                          plan={plan}
-                          onResult={onResult}
-                        />
-                      )}
-                      {action === 'aigc' && (
-                        <FillAigcPanel
-                          gap={gapForKey}
-                          fill={fillForKey}
-                          plan={plan}
-                          onResult={onResult}
-                        />
-                      )}
-                      {action === 'aigc_image' && (
-                        <FillAigcPanel
-                          gap={gapForKey}
-                          fill={fillForKey}
-                          plan={plan}
-                          mode="image"
-                          onResult={onResult}
-                        />
-                      )}
-                    </div>
-                  )
-                })}
               </>
-            ) : (
+            )}
+
+            {/* keepalive 工作台：每个 (section_id, action) 一份 panel，留在 DOM
+                不卸载。切段或切动作只切 display；本地 useState（生成阶段、
+                seedance polling、表单草稿）跨切换不丢。
+                关键：键用 section_id（rebuild 后稳定），运行时按 section_id 反查
+                最新 gaps 拿到最新 gap_id——这样 silent rebuild 重写 gap_id
+                后，panel 不会因为 find 失败而卸载（→ AI 出图 polling 不丢）。
+                stage-38：lastSeenGapBySectionRef 兜底——`gaps.find` 临时未命中也仍能渲染。 */}
+            {visitedFillKeys.size === 0 && !selectedGap && (
               <p className="rounded-md border border-dashed border-border bg-background/30 px-3 py-2 text-[11px] text-muted-foreground">
                 点上方内容轨任意一段——这里出现「挑素材 / 字卡画面 / AI 视频 / AI 生图再渲染」四个画面补全选项。
               </p>
             )}
+            {Array.from(visitedFillKeys).map((key) => {
+              const [sectionId, action] = key.split('::') as [string, FillAction]
+              const gapForKey =
+                gaps.find((g) => g.section_id === sectionId) ??
+                gaps.find((g) => g.gap_id === sectionId) ?? // 老 gap 兜底（没 section_id）
+                lastSeenGapBySectionRef.current.get(sectionId) ?? // stage-38：silent rebuild 兜底
+                null
+              if (!gapForKey) {
+                // 首次进入还没见过这个 section 的 gap——render 一个隐藏占位 div
+                // 保持 React key 稳定，避免后续命中时整段重新 mount。
+                return <div key={key} style={{ display: 'none' }} aria-hidden />
+              }
+              const isActive =
+                selectedGap?.section_id === sectionId && activeAction === action
+              const fillForKey =
+                fills.find(
+                  (f) =>
+                    (f.section_id === sectionId || f.gap_id === gapForKey.gap_id) &&
+                    f.action === action,
+                ) ?? null
+              const onResult = async (f: FillResult) => {
+                // 标记本段 busy（用 section_id 而非 gap_id，rebuild 后仍能定位）
+                const sid = f.section_id ?? gapForKey.section_id ?? gapForKey.gap_id
+                markBusy(sid, true)
+                upsertFill(f)
+                // 取 store 最新 snapshot（含其它并发面板刚 upsert 的 fill），避免
+                // 用 closure 中的 stale `fills` 把别的段的成果覆盖掉。
+                const latest = usePlanStore.getState().fills
+                const nextFills = [...latest.filter((x) => x.gap_id !== f.gap_id), f]
+                try {
+                  await runAnalyze(nextFills, { silent: true })
+                } finally {
+                  markBusy(sid, false)
+                }
+              }
+              return (
+                <div
+                  key={key}
+                  style={{ display: isActive ? 'block' : 'none' }}
+                  aria-hidden={!isActive}
+                >
+                  {action === 'copy' && (
+                    <FillCopyPanel
+                      gap={gapForKey}
+                      fill={fillForKey}
+                      plan={plan}
+                      onResult={onResult}
+                    />
+                  )}
+                  {action === 'aigc' && (
+                    <FillAigcPanel
+                      gap={gapForKey}
+                      fill={fillForKey}
+                      plan={plan}
+                      onResult={onResult}
+                    />
+                  )}
+                  {action === 'aigc_image' && (
+                    <FillAigcPanel
+                      gap={gapForKey}
+                      fill={fillForKey}
+                      plan={plan}
+                      mode="image"
+                      onResult={onResult}
+                    />
+                  )}
+                </div>
+              )
+            })}
           </div>
             </div>
           </div>
