@@ -397,14 +397,21 @@ _PROVIDERS = {
 
 
 def get_asr_client(settings: Optional[Settings] = None) -> ASRClient:
+    """生产工厂：ASR_PROVIDER=doubao 缺 key 直接 raise；mock 仅供单测。"""
     s = settings or get_settings()
-    if s.asr_provider == "doubao" and not s.doubao_api_key:
-        log.warning("ASR_PROVIDER=doubao but DOUBAO_API_KEY is empty -> using mock")
-        return MockASRClient()
-    cls = _PROVIDERS.get(s.asr_provider, MockASRClient)
-    if cls is DoubaoBigmodelASRClient:
+    if s.asr_provider == "doubao":
+        if not s.doubao_api_key:
+            raise ASRError(
+                "ASR_PROVIDER=doubao 但 DOUBAO_API_KEY 为空——生产环境不允许静默降级到 mock。",
+                code="ASR_NO_KEY",
+            )
         return DoubaoBigmodelASRClient(s)
-    return cls()
+    if s.asr_provider == "mock":
+        return MockASRClient()
+    raise ASRError(
+        f"未知 ASR_PROVIDER={s.asr_provider!r}；生产应为 doubao，单测可用 mock。",
+        code="ASR_BAD_PROVIDER",
+    )
 
 
 # --------------------------------------------------------------------------

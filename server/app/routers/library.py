@@ -26,14 +26,9 @@ from ..schemas import (
     LibraryItem,
     LibrarySource,
     ManifestSaveRequest,
-    PackagingProfile,
     ReferenceListItem,
-    RhythmCurve,
     SampleManifest,
     SampleVersionInfo,
-    Section,
-    SectionRole,
-    Shot,
     VideoType,
 )
 from ..services.library import manifest_store
@@ -270,110 +265,6 @@ def _scan_user_library() -> list[LibraryItem]:
 _LIBRARY = _SYSTEM_LIBRARY + _USER_LIBRARY
 
 
-# 内置样例的 stub manifest 默认 4 段：opening / development / climax / closing
-# 每个 video_type 给一组 (role, theme, summary) 三元组——summary 用于占位 UI。
-# 真 manifest（precompute_samples 跑出来的）会覆盖这套 stub。
-_STUB_STRUCTURE: dict[VideoType, list[tuple[SectionRole, str, str]]] = {
-    "marketing": [
-        ("opening", "钩子开场", "痛点提问 + 大字幕"),
-        ("development", "产品演示", "卖点展开 + 对比"),
-        ("climax", "卖点高潮", "强构图特写"),
-        ("closing", "行动引导", "点赞收藏"),
-    ],
-    "editing": [
-        ("opening", "氛围铺垫", "环境/氛围铺垫"),
-        ("development", "节奏铺陈", "情绪/动作展开"),
-        ("climax", "情绪高潮", "情绪/动作顶点"),
-        ("closing", "余韵收尾", "慢镜或长镜"),
-    ],
-    "motion_graph": [
-        ("opening", "标题入场", "标题/Logo 入场"),
-        ("development", "信息铺陈", "图表/字段动画"),
-        ("climax", "视觉爆点", "快剪/形变"),
-        ("closing", "落版收尾", "品牌定格"),
-    ],
-}
-
-
-def _stub_sections(item: LibraryItem) -> list[Section]:
-    """4 段 opening/development/climax/closing 等比例切，时间占比 15/50/20/15。"""
-    structure = _STUB_STRUCTURE.get(item.video_type, _STUB_STRUCTURE["marketing"])
-    n_seg = len(structure)
-    total = item.duration_seconds
-    # 时间占比：开场 15% · 主体 50% · 高潮 20% · 收尾 15%
-    ratios = [0.15, 0.50, 0.20, 0.15]
-    if n_seg != 4 or len(ratios) != n_seg:
-        # 退化到等分
-        ratios = [1.0 / n_seg] * n_seg
-    boundaries = [0.0]
-    for r in ratios:
-        boundaries.append(boundaries[-1] + total * r)
-    boundaries[-1] = total
-
-    sections: list[Section] = []
-    for i, (role, theme, summary) in enumerate(structure):
-        start = boundaries[i]
-        end = boundaries[i + 1]
-        first = int(item.shot_count * (start / total))
-        last = int(item.shot_count * (end / total))
-        if i == n_seg - 1:
-            last = item.shot_count
-        shot_idx = list(range(first, max(first + 1, last)))
-        sections.append(Section(
-            role=role,
-            theme=theme,
-            start=start,
-            end=end,
-            summary=summary,
-            shot_indices=shot_idx,
-        ))
-    return sections
-
-
-def _stub_manifest(sample_id: str, item: LibraryItem) -> SampleManifest:
-    """阶段 1 占位 manifest——给前端把 5 个 page 跑通。"""
-    shots = [
-        Shot(
-            index=i,
-            start=i * (item.duration_seconds / item.shot_count),
-            end=(i + 1) * (item.duration_seconds / item.shot_count),
-            duration=item.duration_seconds / item.shot_count,
-            thumbnail_url=f"/samples/{sample_id}/shot-{i:02d}.jpg",
-            transcript=f"[mock] 镜头 {i + 1} 口播片段。" if item.video_type != "motion_graph" else None,
-            tags=["近景", "口播"] if i % 3 == 0 else ["特写", "产品"],
-        )
-        for i in range(item.shot_count)
-    ]
-    rhythm = RhythmCurve(
-        times=[s.start for s in shots],
-        cut_density=[],
-        bgm_energy=[round((i % 5) / 5.0, 2) for i in range(item.shot_count)],
-        tempo_bpm=None,
-    )
-    sections = _stub_sections(item)
-    packaging = PackagingProfile(
-        subtitle_style="大字加描边" if item.video_type != "motion_graph" else "无字幕",
-        has_title_bar=item.video_type == "marketing",
-        transition_types=["cut", "fade"] if item.video_type != "motion_graph" else ["cut", "wipe", "scale"],
-        cover_style="纯色大字" if item.video_type == "marketing" else (
-            "合成画面 + 大字标题" if item.video_type == "motion_graph" else "实拍画面 + 标题条"
-        ),
-        sticker_density=0.6 if item.video_type == "motion_graph" else 0.2,
-    )
-    return SampleManifest(
-        sample_id=sample_id,
-        title=item.title,
-        video_type=item.video_type,
-        duration_seconds=item.duration_seconds,
-        video_url=f"/samples/{sample_id}/video.mp4",
-        has_voice=item.video_type != "motion_graph",
-        shots=shots,
-        rhythm=rhythm,
-        sections=sections,
-        packaging=packaging,
-    )
-
-
 @router.get("/library", response_model=list[LibraryItem])
 async def list_library(
     source: Optional[LibrarySource] = Query(
@@ -423,11 +314,13 @@ async def get_sample_manifest(
     - 没有任何版本槽且不是内置 stub fallback → 409，让前端跳 Decompose 页拆解
     """
     if manifest_store.locate_sample_dir(sample_id) is None:
-        # 兜底：内置 _SYSTEM_LIBRARY 即使没 sample dir 也回 stub manifest，保证旧前端跑通
+        # 内置 _SYSTEM_LIBRARY 也必须先拆解，不再 stub fallback
         for item in _SYSTEM_LIBRARY:
             if item.id == sample_id:
-                log.warning("[library] %s 无样例目录，返回 stub manifest", sample_id)
-                return _stub_manifest(sample_id, item)
+                raise HTTPException(
+                    status_code=409,
+                    detail=f"sample {sample_id} 尚未拆解，请先在「视频拆解」页跑一次 decompose",
+                )
         raise HTTPException(status_code=404, detail=f"sample not found: {sample_id}")
 
     if slot is not None:
@@ -440,11 +333,7 @@ async def get_sample_manifest(
     if active is not None:
         return active
 
-    # 没任何版本——内置 3 条退化到 stub 让旧 Compose 跑通；其它的拒绝
-    for item in _SYSTEM_LIBRARY:
-        if item.id == sample_id:
-            log.warning("[library] %s 无 active manifest，回落等分 stub", sample_id)
-            return _stub_manifest(sample_id, item)
+    # 没任何版本——一律拒绝，让前端跳拆解
     raise HTTPException(
         status_code=409,
         detail=f"sample {sample_id} 尚未拆解，请先在「视频拆解」页跑一次 decompose",

@@ -215,10 +215,15 @@ class DoubaoArkSeedreamClient(SeedreamClient):
             except httpx.HTTPError as exc:
                 last_exc = exc
                 if attempt == 0:
-                    log.warning("[seedream] HTTP error attempt 1/2: %s — retrying after 2s", exc)
+                    log.warning("[seedream] HTTP error attempt 1/2: %r — retrying after 2s", exc)
                     await asyncio.sleep(2.0)
                     continue
-                raise SeedreamError(f"Seedream HTTP 失败：{exc}", code="SEEDREAM_HTTP") from exc
+                # exc.__str__() 在 ReadTimeout 等子类下可能为空——加 class 名让前端能区分超时/重置/拒绝
+                detail = str(exc).strip() or exc.__class__.__name__
+                raise SeedreamError(
+                    f"Seedream HTTP 失败：{exc.__class__.__name__}: {detail}",
+                    code="SEEDREAM_HTTP",
+                ) from exc
 
         if resp.status_code >= 400:
             text = resp.text[:300] if resp.text else ""
@@ -294,10 +299,14 @@ class DoubaoArkSeedreamClient(SeedreamClient):
                 break
             except httpx.HTTPError as exc:
                 if attempt == 0:
-                    log.warning("[seedream] sequence HTTP error attempt 1/2: %s — retrying after 2s", exc)
+                    log.warning("[seedream] sequence HTTP error attempt 1/2: %r — retrying after 2s", exc)
                     await asyncio.sleep(2.0)
                     continue
-                raise SeedreamError(f"Seedream HTTP 失败：{exc}", code="SEEDREAM_HTTP") from exc
+                detail = str(exc).strip() or exc.__class__.__name__
+                raise SeedreamError(
+                    f"Seedream HTTP 失败：{exc.__class__.__name__}: {detail}",
+                    code="SEEDREAM_HTTP",
+                ) from exc
 
         if resp.status_code >= 400:
             text = resp.text[:300] if resp.text else ""
@@ -332,15 +341,24 @@ _singleton: Optional[SeedreamClient] = None
 
 
 def get_seedream_client() -> SeedreamClient:
-    """Return cached SeedreamClient instance per process."""
+    """生产工厂：SEEDREAM_PROVIDER 必须显式 doubao_ark；其它值仅供单测。
+
+    SEEDREAM_PROVIDER=mock 时仍允许返回 MockSeedreamClient（pytest fixture），
+    但生产 .env 必须配 doubao_ark，否则 raise。
+    """
     global _singleton
     if _singleton is not None:
         return _singleton
     settings = get_settings()
     if settings.seedream_provider == "doubao_ark":
         _singleton = DoubaoArkSeedreamClient(settings)
-    else:
+    elif settings.seedream_provider == "mock":
         _singleton = MockSeedreamClient(mock_latency_seconds=settings.seedream_mock_latency_seconds)
+    else:
+        raise SeedreamError(
+            f"未知 SEEDREAM_PROVIDER={settings.seedream_provider!r}；生产应为 doubao_ark，单测可用 mock。",
+            code="SEEDREAM_BAD_PROVIDER",
+        )
     log.info("[seedream] provider=%s", _singleton.name)
     return _singleton
 

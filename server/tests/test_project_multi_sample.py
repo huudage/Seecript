@@ -65,12 +65,17 @@ def test_project_create_rejects_three_sample_ids(client):
     assert r.status_code in (400, 422), r.text
 
 
-def test_project_create_rejects_empty_sample_ids(client):
+def test_project_create_accepts_empty_sample_ids(client):
+    """新流程：允许只填 name 建空项目（用户进入 Decompose 后再挑样例）。"""
     r = client.post("/api/project", json={
-        "name": "单测·空 sample_ids",
+        "name": "单测·空 sample_ids 应放过",
         "sample_ids": [],
     })
-    assert r.status_code in (400, 422), r.text
+    assert r.status_code == 200, r.text
+    body = r.json()
+    pid = body["project_id"]
+    _TEST_PROJECT_IDS.append(pid)
+    assert body["sample_ids"] == []
 
 
 def test_project_create_rejects_unknown_sample_id(client):
@@ -83,15 +88,21 @@ def test_project_create_rejects_unknown_sample_id(client):
 
 
 def test_project_create_request_pydantic_constraints():
-    """直接构造 ProjectCreateRequest 也应受 min_length=1 / max_length=2 约束。"""
+    """直接构造 ProjectCreateRequest：reference_versions 受 max_length=2 约束；空允许。"""
+    from app.schemas import ReferenceVersion
+
+    rv1 = ReferenceVersion(sample_id="a", slot_id="default")
+    rv2 = ReferenceVersion(sample_id="b", slot_id="default")
+    rv3 = ReferenceVersion(sample_id="c", slot_id="default")
+    # 超过 2 个 → 拒
     with pytest.raises(ValidationError):
-        ProjectCreateRequest(name="x", sample_ids=[])
-    with pytest.raises(ValidationError):
-        ProjectCreateRequest(name="x", sample_ids=["a", "b", "c"])
-    # 1 / 2 合法
-    ok1 = ProjectCreateRequest(name="x", sample_ids=["a"])
+        ProjectCreateRequest(name="x", reference_versions=[rv1, rv2, rv3])
+    # 0 / 1 / 2 都合法
+    ok0 = ProjectCreateRequest(name="x", reference_versions=[])
+    assert ok0.sample_ids == []
+    ok1 = ProjectCreateRequest(name="x", reference_versions=[rv1])
     assert ok1.sample_ids == ["a"]
-    ok2 = ProjectCreateRequest(name="x", sample_ids=["a", "b"])
+    ok2 = ProjectCreateRequest(name="x", reference_versions=[rv1, rv2])
     assert ok2.sample_ids == ["a", "b"]
 
 

@@ -70,10 +70,15 @@ class TTSError(RuntimeError):
 
 
 def backend_name() -> str:
+    """返回当前 TTS 后端名；若 provider=volc 但 key 缺失，仍返回 "volc" 让 synthesize() 抛错。
+    返回 "mock" 仅当显式 TTS_PROVIDER=mock（单测路径）。
+    """
     settings = get_settings()
-    if settings.tts_provider == "volc" and settings.volc_tts_app_id and settings.volc_tts_access_token:
+    if settings.tts_provider == "volc":
         return "volc"
-    return "mock"
+    if settings.tts_provider == "mock":
+        return "mock"
+    return settings.tts_provider or "volc"
 
 
 def _mock_synthesize(text: str, sample_rate: int, speed_ratio: float = 1.0) -> bytes:
@@ -189,5 +194,16 @@ def synthesize(
         backend, voice, rate, len(text), speed_ratio,
     )
     if backend == "volc":
+        if not settings.volc_tts_app_id or not settings.volc_tts_access_token:
+            raise TTSError(
+                "TTS_PROVIDER=volc 但 VOLC_TTS_APP_ID / VOLC_TTS_ACCESS_TOKEN 缺失——"
+                "生产环境不允许静默降级到 mock。",
+                code="TTS_NO_KEY",
+            )
         return _volc_synthesize(text, voice, rate, speed_ratio)
-    return _mock_synthesize(text, rate, speed_ratio)
+    if backend == "mock":
+        return _mock_synthesize(text, rate, speed_ratio)
+    raise TTSError(
+        f"未知 TTS_PROVIDER={backend!r}；生产应为 volc，单测可用 mock。",
+        code="TTS_BAD_PROVIDER",
+    )

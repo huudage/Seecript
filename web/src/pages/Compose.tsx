@@ -1839,11 +1839,16 @@ export default function ComposePage() {
                   // 痛报：『一键字卡生成会顶掉已经有内容的其他轨道的内容替换为字卡』
                   // 修：skip 列表不止采纳过的 fill —— 但凡对应 scene 已有真内容
                   // （user_material / aigc_image / aigc_t2v / 已选定 text_card），都不允许批量字卡覆盖。
+                  //
+                  // bug-fix（slot 粒度）：不能按 section 整段判定，否则同段下「一槽真填 + 一槽缺口」会把缺口槽也跳掉，
+                  // 触发 fill-all 误报『所有缺口已 ok』。改为按 (parent_section_id, shot_order) ↔ (gap.section_id, gap.slot_index) 精确匹配。
                   const adoptedFillGaps = new Set(
                     fills.filter((f) => f.status === 'ok').map((f) => f.gap_id),
                   )
-                  // section_id → 该段下是否有任何 scene 已有真内容
-                  const sectionHasRealContent = new Map<string, boolean>()
+                  // (section_id, slot_index) → 是否已有真内容（槽级）
+                  const slotHasRealContent = new Map<string, boolean>()
+                  const slotKey = (sid: string | null | undefined, idx: number) =>
+                    `${sid ?? ''}::${idx}`
                   for (const sc of plan.main_track ?? []) {
                     const secId = sc.parent_section_id
                     if (!secId) continue
@@ -1851,10 +1856,14 @@ export default function ComposePage() {
                       sc.source === 'text_card' &&
                       (sc.source_ref ?? '').startsWith('text-card-fill-empty')
                     const hasReal = !isPlaceholder && sc.needs_fill !== true
-                    if (hasReal) sectionHasRealContent.set(secId, true)
+                    if (hasReal) slotHasRealContent.set(slotKey(secId, sc.shot_order), true)
                   }
                   const skipFromScenes = gaps
-                    .filter((g) => g.section_id && sectionHasRealContent.get(g.section_id))
+                    .filter(
+                      (g) =>
+                        g.section_id &&
+                        slotHasRealContent.get(slotKey(g.section_id, g.slot_index)),
+                    )
                     .map((g) => g.gap_id)
                   return Array.from(new Set([...adoptedFillGaps, ...skipFromScenes]))
                 })()}

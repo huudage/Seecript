@@ -108,7 +108,9 @@ def test_synthesize_one_text_override_updates_narration(client):
     assert refreshed.main_track[0].narration == "覆盖文案：新的口播内容"
 
 
-def test_synthesize_all_skips_empty_narration(client):
+def test_synthesize_all_backfills_empty_narration(client):
+    """Stage-26 起 synthesize-all 不再 skip 空 narration——为避免音轨空缺，
+    自动兜底填一句话（subj/theme/content 取截 24 字，最低 '画面定格'）后照常合成。"""
     plan = _make_plan(f"plan-voice-all-{int(time.time() * 1000)}")
     _TEST_PLAN_IDS.append(plan.plan_id)
     plan_store.put(plan)
@@ -116,9 +118,15 @@ def test_synthesize_all_skips_empty_narration(client):
     resp = client.post("/api/voice/synthesize-all", json={"plan_id": plan.plan_id})
     assert resp.status_code == 200, resp.text
     body = resp.json()
-    assert len(body["synthesized"]) == 1
-    assert body["skipped_scene_ids"] == ["sc-1"]
+    # 两段都应被合成，sc-1 narration 已被路由兜底填充
+    assert len(body["synthesized"]) == 2
+    assert body["skipped_scene_ids"] == []
     assert body["failures"] == []
+    # 验证 sc-1 的 narration 在 plan 上被兜底填了非空内容
+    refreshed = plan_store.get(plan.plan_id)
+    assert refreshed is not None
+    sc1 = next(s for s in refreshed.main_track if s.scene_id == "sc-1")
+    assert sc1.narration and sc1.narration.strip() != ""
 
 
 def test_synthesize_all_rejected_when_voiceover_disabled(client):

@@ -185,16 +185,18 @@ async def extend_with_seedance(
                 if video_url.startswith("http"):
                     await _download_to(video_url, chunk_path)
                 else:
-                    # mock 返回 /aigc/xxx.mp4 之类的本地相对路径 → 写占位
-                    chunk_path.write_bytes(b"")
-                    log.info("[seedance_chain] non-http video_url=%s, mock placeholder", video_url)
+                    raise SeedanceChainError(
+                        f"Seedance 返回非 http video_url={video_url!r}（生产不允许 mock 占位）",
+                    )
             except (httpx.HTTPError, OSError) as exc:
                 log.warning("[seedance_chain] download failed: %s", exc)
                 break
+            except SeedanceChainError as exc:
+                log.warning("[seedance_chain] %s", exc)
+                break
 
             if chunk_path.stat().st_size == 0:
-                # mock 模式下 chunk 是空文件，无法 concat — 停在这里，使用 base_segment
-                log.info("[seedance_chain] empty chunk %d (mock mode), abort extension", i)
+                log.warning("[seedance_chain] empty chunk %d, abort extension", i)
                 break
 
             chunks.append(chunk_path)

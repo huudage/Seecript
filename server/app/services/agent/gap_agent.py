@@ -413,12 +413,32 @@ def detect_gaps(
 
 
 def _lookup_plan_section_for_gap(gap: Gap):
-    """gap.section_id → (Plan | None, AdaptedSection | None)；延迟导入 plan_store 避免循环依赖。"""
+    """gap.section_id → (Plan | None, AdaptedSection | None)；延迟导入 plan_store 避免循环依赖。
+
+    顺序：
+    1. gap_id 后缀解码 plan_id —— /gap/detect 已嵌入 -{plan_suffix}，对话编辑后产生新 plan 时这一步把命中锁到最新 plan
+    2. 兜底：扫描所有 plan，返回首个匹配 section_id 的（兼容老 gap_id 没后缀场景）
+    """
     if not gap.section_id:
         return None, None
     from ..plans import plan_store  # 延迟导入：plans → agent 路径上无环
 
-    for plan_id in plan_store.all_ids():
+    all_ids = plan_store.all_ids()
+
+    if gap.gap_id:
+        for plan_id in all_ids:
+            suffix = plan_id.split("-", 1)[-1] if "-" in plan_id else plan_id
+            if not suffix:
+                continue
+            if gap.gap_id.endswith(f"-{suffix}"):
+                p = plan_store.get(plan_id)
+                if not p:
+                    continue
+                sec = next((s for s in p.adapted_sections if s.section_id == gap.section_id), None)
+                if sec:
+                    return p, sec
+
+    for plan_id in all_ids:
         plan = plan_store.get(plan_id)
         if not plan:
             continue

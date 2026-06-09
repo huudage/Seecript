@@ -1,7 +1,7 @@
 """Module 5 — Plan 组装。
 
 `POST /api/plan/build`：
-1. 反查样例 manifest（优先真预解析 `_load_real_manifest`，回落 `_stub_manifest`）
+1. 反查样例 manifest（优先真预解析 `_load_real_manifest`，否则 404 让用户先去拆解）
 2. 走 `plan_agent.adapt_structure`，基于 brief + video_goal + settings 把样例骨架改编为 AdaptedSection[]
 3. 按 AdaptedSection 一段对应一个 Scene 拼主轨——长度由 LLM 给的 duration_seconds 决定
 4. 持久化 Plan（含 adapted_sections + video_goal + settings），供 /gap/detect、/render、/edit 复用
@@ -15,7 +15,7 @@ from typing import Optional
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
-from ..routers.library import _LIBRARY, _load_real_manifest, _stub_manifest
+from ..routers.library import _LIBRARY, _load_real_manifest
 from ..schemas import (
     AdaptedSection,
     AnimationSpec,
@@ -54,12 +54,14 @@ router = APIRouter()
 
 
 def _resolve_manifest(sample_id: str) -> SampleManifest:
-    """先尝试真预解析 manifest，没有则回落 stub。"""
+    """加载样例真 manifest；找不到 → 404 让前端先跳拆解页。"""
     real = _load_real_manifest(sample_id)
     if real is not None:
         return real
-    sample = next((s for s in _LIBRARY if s.id == sample_id), _LIBRARY[0])
-    return _stub_manifest(sample.id, sample)
+    raise HTTPException(
+        status_code=404,
+        detail=f"sample {sample_id} 尚未拆解，请先在「视频拆解」页跑一次 decompose。",
+    )
 
 
 def _resolve_manifests(refs: list[ReferenceVersion]) -> list[SampleManifest]:

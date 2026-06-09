@@ -153,9 +153,17 @@ async def analyze_bgm_with_llm(
     settings = get_settings()
     provider = settings.llm_provider
 
-    # mock 路径：早返一个固定 fixture，让前端 UI 在无 key 环境下也能渲染分析卡
-    if provider != "doubao_ark" or not settings.ark_api_key:
+    # 生产环境：缺 key 直接抛错；单测可显式 LLM_PROVIDER=mock 走 fixture
+    if provider == "mock":
         return _mock_bgm_analysis(duration_seconds)
+    if provider != "doubao_ark":
+        raise RuntimeError(
+            f"BGM 分析需要 LLM_PROVIDER=doubao_ark（当前 {provider!r}），生产 .env 必须显式配置。"
+        )
+    if not settings.ark_api_key:
+        raise RuntimeError(
+            "BGM 分析需要 ARK_API_KEY（多模态音频理解走 ARK）；生产 .env 缺 key。"
+        )
 
     public_url = _public_audio_url(file_url)
     if public_url is None:
@@ -438,8 +446,16 @@ async def analyze_sample_audio_with_llm(
     settings = get_settings()
     provider = settings.llm_provider
 
-    if provider != "doubao_ark" or not settings.ark_api_key:
+    if provider == "mock":
         return _mock_sample_audio_analysis(duration_seconds)
+    if provider != "doubao_ark":
+        raise RuntimeError(
+            f"样例音轨分析需要 LLM_PROVIDER=doubao_ark（当前 {provider!r}），生产 .env 必须显式配置。"
+        )
+    if not settings.ark_api_key:
+        raise RuntimeError(
+            "样例音轨分析需要 ARK_API_KEY（多模态音频理解走 ARK）；生产 .env 缺 key。"
+        )
 
     public_url = _public_audio_url(file_url)
     if public_url is None:

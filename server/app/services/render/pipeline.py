@@ -496,10 +496,13 @@ def _normalize_to_canvas(src: Path, dst: Path, *, width: int, height: int) -> Pa
 
 
 def _touch_placeholder(dst: Path, content: bytes = b"") -> Path:
-    """生成 0 字节占位 mp4/webm/jpg，用于 mock 模式下保持流水线串得起来。"""
-    dst.parent.mkdir(parents=True, exist_ok=True)
-    dst.write_bytes(content)
-    return dst
+    """Deprecated: 渲染流水线已禁用 0 字节占位 fallback——失败硬抛 RuntimeError。
+    保留函数签名仅为兼容老 import；不应再被调用。
+    """
+    raise RuntimeError(
+        f"_touch_placeholder({dst.name}) 被调用——渲染流水线已禁用占位 fallback，"
+        "请检查上游 ffmpeg/remotion 失败原因。",
+    )
 
 
 # ----------------------------- 流水线 -------------------------------------
@@ -632,12 +635,12 @@ async def run_pipeline(job_id: str, plan: Plan) -> RenderResult:
             else:
                 await asyncio.to_thread(ffmpeg_svc.concat, inputs, main_path, reencode=True)
         except ffmpeg_svc.FFmpegError as exc:
-            log.warning("[%s] concat failed, falling back to mock: %s", job_id, exc)
-            notes.append(f"concat fallback: {exc}")
-            _touch_placeholder(main_path)
+            raise RuntimeError(f"主轨 concat 失败：{exc}") from exc
     else:
-        notes.append(f"ffmpeg unavailable or no inputs (n={len(inputs)}); mock main.mp4")
-        _touch_placeholder(main_path)
+        raise RuntimeError(
+            f"主轨为空或 ffmpeg 不可用（n={len(inputs)}）——无法渲染主视频，"
+            "请检查上游素材落地与 ffmpeg 安装。",
+        )
     timings["concat_ms"] = int((time.time() - t0) * 1000)
 
     # ---- Step 3 · 主轨直通 ----
@@ -668,7 +671,6 @@ async def run_pipeline(job_id: str, plan: Plan) -> RenderResult:
         except (remotion_svc.RemotionError, FileNotFoundError) as exc:
             log.warning("[%s] remotion render failed, falling back to drawtext: %s", job_id, exc)
             notes.append(f"remotion fallback: {exc}")
-            _touch_placeholder(packaging_path)
     else:
         if plan.packaging_track:
             notes.append(
@@ -677,7 +679,6 @@ async def run_pipeline(job_id: str, plan: Plan) -> RenderResult:
             )
         else:
             notes.append("empty packaging_track; skip remotion")
-        _touch_placeholder(packaging_path)
     timings["remotion_ms"] = int((time.time() - t0) * 1000)
 
     # ---- Step 5 · 包装合成：remotion overlay 或 drawtext burn ----
@@ -731,13 +732,17 @@ async def run_pipeline(job_id: str, plan: Plan) -> RenderResult:
                 if extended_ok:
                     overlaid_path.write_bytes(extended_path.read_bytes())
                 else:
-                    _touch_placeholder(overlaid_path)
+                    raise RuntimeError(
+                        f"drawtext 烧字失败且无可用主轨：{exc}",
+                    ) from exc
         else:
             notes.append("overlay skipped (missing inputs or ffmpeg); passthrough")
             if extended_ok:
                 overlaid_path.write_bytes(extended_path.read_bytes())
             else:
-                _touch_placeholder(overlaid_path)
+                raise RuntimeError(
+                    "overlay 阶段无可用主轨，且 ffmpeg 不可用——无法继续渲染。",
+                )
 
     timings["overlay_ms"] = int((time.time() - t0) * 1000)
 
@@ -852,14 +857,19 @@ async def run_pipeline(job_id: str, plan: Plan) -> RenderResult:
         except ffmpeg_svc.FFmpegError as exc:
             log.warning("[%s] mix_bgm failed: %s", job_id, exc)
             notes.append(f"mix_bgm fallback: {exc}")
-            final_path.write_bytes(voice_mixed_path.read_bytes() if voice_mixed_path.exists() else b"")
+            if voice_mixed_path.exists():
+                final_path.write_bytes(voice_mixed_path.read_bytes())
+            else:
+                raise RuntimeError(f"BGM 混音失败且无可用 voice_mixed：{exc}") from exc
     else:
         # 无 BGM 或缺 ffmpeg：直接 rename
         notes.append("bgm mix skipped; using overlaid output as final")
         if voice_mixed_path.exists():
             final_path.write_bytes(voice_mixed_path.read_bytes())
         else:
-            _touch_placeholder(final_path)
+            raise RuntimeError(
+                "finalize 阶段无可用 voice_mixed 输出——无法生成 final.mp4。",
+            )
 
     cover_path = out_dir / "cover.jpg"
     if ffmpeg_svc.ffmpeg_available() and final_path.exists() and final_path.stat().st_size > 0:
@@ -868,10 +878,8 @@ async def run_pipeline(job_id: str, plan: Plan) -> RenderResult:
         except ffmpeg_svc.FFmpegError as exc:
             log.warning("[%s] cover extract failed: %s", job_id, exc)
             notes.append(f"cover fallback: {exc}")
-            _touch_placeholder(cover_path)
     else:
         notes.append("cover frame skipped; ffmpeg or video missing")
-        _touch_placeholder(cover_path)
 
     timings["finalize_ms"] = int((time.time() - t0) * 1000)
 

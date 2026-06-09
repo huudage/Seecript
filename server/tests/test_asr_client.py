@@ -37,13 +37,15 @@ class TestFactory:
         assert c.name == "mock"
 
     def test_falls_back_to_mock_when_doubao_missing_key(self, monkeypatch):
+        """Stage-prod #1：缺 key 不再 silent fallback，硬失败给前端 500。"""
         monkeypatch.setenv("ASR_PROVIDER", "doubao")
         monkeypatch.setenv("DOUBAO_API_KEY", "")
         from app.config import get_settings
 
         get_settings.cache_clear()
-        c = get_asr_client()
-        assert c.name == "mock"
+        with pytest.raises(ASRError) as exc_info:
+            get_asr_client()
+        assert exc_info.value.code == "ASR_NO_KEY"
 
     def test_uses_doubao_when_key_present(self, monkeypatch):
         monkeypatch.setenv("ASR_PROVIDER", "doubao")

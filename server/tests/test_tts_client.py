@@ -46,10 +46,16 @@ def test_volc_backend_selected_when_both_keys_set(monkeypatch):
     assert backend_name() == "volc"
 
 
-def test_volc_falls_back_to_mock_when_provider_set_but_key_missing(monkeypatch):
+def test_volc_missing_key_raises_at_synthesize(monkeypatch):
+    """Stage-prod #1：缺 key 不再 silent fallback——synthesize 直接抛 TTS_NO_KEY 给前端 500。"""
     monkeypatch.setenv("TTS_PROVIDER", "volc")
-    monkeypatch.delenv("VOLC_TTS_APP_ID", raising=False)
+    # 用 setenv("") 而非 delenv：pydantic-settings 会从 .env 加载真值，
+    # delenv 只清 os.environ 不会覆盖 .env 里的默认值。
+    monkeypatch.setenv("VOLC_TTS_APP_ID", "")
     monkeypatch.setenv("VOLC_TTS_ACCESS_TOKEN", "fake-token")
     get_settings.cache_clear()
-    # 只有 token 没有 app_id —— backend 应回落到 mock
-    assert backend_name() == "mock"
+    # backend_name 仍报 "volc"（保留原 provider 名），synthesize 调用时硬失败
+    assert backend_name() == "volc"
+    with pytest.raises(TTSError) as excinfo:
+        synthesize("你好", voice="zh_female_qingxin")
+    assert excinfo.value.code == "TTS_NO_KEY"

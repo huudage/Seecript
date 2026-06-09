@@ -312,10 +312,19 @@ class DoubaoArkT2VClient(T2VClient):
 
 
 def get_t2v_client(settings: Optional[Settings] = None) -> T2VClient:
+    """生产工厂：T2V_PROVIDER=doubao_ark 时缺 key 直接 raise；mock 仅供单测。"""
     s = settings or get_settings()
     if s.t2v_provider == "doubao_ark":
         if not s.t2v_api_key:
-            log.warning("T2V_PROVIDER=doubao_ark but no T2V/ARK key set -> using mock")
-            return MockT2VClient(mock_duration_seconds=s.t2v_mock_duration_seconds)
+            raise T2VError(
+                "T2V_PROVIDER=doubao_ark 但 ARK_T2V_API_KEY / ARK_API_KEY 都为空——"
+                "生产环境不允许静默降级到 mock。请在 server/.env 配真 key。",
+                code="T2V_NO_KEY",
+            )
         return DoubaoArkT2VClient(s)
-    return MockT2VClient(mock_duration_seconds=s.t2v_mock_duration_seconds)
+    if s.t2v_provider == "mock":
+        return MockT2VClient(mock_duration_seconds=s.t2v_mock_duration_seconds)
+    raise T2VError(
+        f"未知 T2V_PROVIDER={s.t2v_provider!r}；生产应为 doubao_ark，单测可用 mock。",
+        code="T2V_BAD_PROVIDER",
+    )

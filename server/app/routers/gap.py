@@ -16,7 +16,7 @@ from typing import Optional
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
-from ..routers.library import _LIBRARY, _load_real_manifest, _stub_manifest
+from ..routers.library import _LIBRARY, _load_real_manifest
 from ..schemas import (
     AdaptedSection,
     AigcImageSpecRequest,
@@ -59,16 +59,16 @@ router = APIRouter()
 
 def _resolve_manifest(plan_id: str) -> SampleManifest:
     """plan_id → 第一个参考版本对应的 manifest；优先按 (sample_id, slot_id) 精确加载，
-    退而求次到 _load_real_manifest，再回落 stub。
+    退而求其次到 _load_real_manifest。
 
     多样例项目（plan.reference_versions 长度 > 1）gap 视图仍以第一份为参考缩略图基线，
     因为跨样例 shot 编号会重号；plan_agent 已在跨样例段把 source_shot_indices 置空。
+
+    所有路径找不到 manifest → 404，让前端先跳拆解。
     """
     plan = plan_store.get(plan_id)
     if plan is None:
-        log.warning("[gap] plan_id=%s 未找到，回退 _LIBRARY[0]", plan_id)
-        sample = _LIBRARY[0]
-        return _load_real_manifest(sample.id) or _stub_manifest(sample.id, sample)
+        raise HTTPException(status_code=404, detail=f"plan {plan_id} 不存在")
     if plan.reference_versions:
         primary = plan.reference_versions[0]
         from ..services.library import manifest_store
@@ -77,9 +77,14 @@ def _resolve_manifest(plan_id: str) -> SampleManifest:
             return precise
         sample_id = primary.sample_id
     else:
-        sample_id = _LIBRARY[0].id
-    sample = next((s for s in _LIBRARY if s.id == sample_id), _LIBRARY[0])
-    return _load_real_manifest(sample.id) or _stub_manifest(sample.id, sample)
+        raise HTTPException(status_code=409, detail=f"plan {plan_id} 缺少 reference_versions")
+    real = _load_real_manifest(sample_id)
+    if real is None:
+        raise HTTPException(
+            status_code=404,
+            detail=f"sample {sample_id} 尚未拆解，请先在「视频拆解」页跑一次 decompose。",
+        )
+    return real
 
 
 def _legacy_wrap(manifest: SampleManifest) -> list[AdaptedSection]:
@@ -108,10 +113,30 @@ def _resolve_materials(session_id: str | None) -> list[Material]:
     return []
 
 
+def _plan_id_from_gap_suffix(gap_id: Optional[str]) -> Optional[str]:
+    """gap_id 后缀 = plan_id 去掉 `plan-` 前缀的 hex 部分（/gap/detect 第 256 行嵌入）。
+    扫一遍 plan_store 找匹配的 plan_id；找不到返回 None。
+    """
+    if not gap_id:
+        return None
+    for plan_id in plan_store.all_ids():
+        suffix = plan_id.split("-", 1)[-1] if "-" in plan_id else plan_id
+        if not suffix:
+            continue
+        if gap_id.endswith(f"-{suffix}"):
+            return plan_id
+    return None
+
+
 def _plan_for_gap(gap: Gap):
-    """反查 gap 所属 plan。优先用 section_id 精准匹配；老 gap 缺 section_id 时回退 None。"""
+    """反查 gap 所属 plan。优先 gap_id 后缀（指向当前 plan），再按 section_id 兜底。"""
     if not gap.section_id:
         return None
+    pid = _plan_id_from_gap_suffix(gap.gap_id)
+    if pid:
+        plan = plan_store.get(pid)
+        if plan and any(s.section_id == gap.section_id for s in plan.adapted_sections):
+            return plan
     for plan_id in plan_store.all_ids():
         plan = plan_store.get(plan_id)
         if not plan:
@@ -140,9 +165,20 @@ def _inject_aigc_params(gap: Gap, params: dict) -> dict:
 
 
 def _resolve_plan_and_scene_for_gap(gap: Gap):
-    """gap.section_id → (plan, scene)；用 adapted_sections.order 对齐 main_track scene_id=`sc-{order}`。"""
+    """gap.section_id → (plan, scene)；用 adapted_sections.order 对齐 main_track scene_id=`sc-{order}`。
+    优先 gap_id 后缀锁到当前 plan；兜底扫所有 plan。
+    """
     if not gap.section_id:
         return None, None
+    pid = _plan_id_from_gap_suffix(gap.gap_id)
+    if pid:
+        plan = plan_store.get(pid)
+        if plan:
+            sec = next((s for s in plan.adapted_sections if s.section_id == gap.section_id), None)
+            if sec:
+                target_scene_id = f"sc-{sec.order}"
+                scene = next((sc for sc in plan.main_track if sc.scene_id == target_scene_id), None)
+                return plan, scene
     for plan_id in plan_store.all_ids():
         plan = plan_store.get(plan_id)
         if not plan:
@@ -175,7 +211,7 @@ def _maybe_auto_tts(result: FillResult) -> FillResult:
     if not result.section_id:
         return result
 
-    plan, scene = _resolve_plan_and_scene_for_gap_by_section(result.section_id)
+    plan, scene = _resolve_plan_and_scene_for_gap_by_section(result.section_id, gap_id=result.gap_id)
     if plan is None or not plan.settings.voiceover_enabled:
         return result
     if scene is None:
@@ -207,8 +243,19 @@ def _maybe_auto_tts(result: FillResult) -> FillResult:
     return result.model_copy(update={"voiceover_url": url})
 
 
-def _resolve_plan_and_scene_for_gap_by_section(section_id: str):
-    """section_id → (plan, scene)；遍历 plan_store 找到第一条匹配。"""
+def _resolve_plan_and_scene_for_gap_by_section(section_id: str, *, gap_id: Optional[str] = None):
+    """section_id (+ 可选 gap_id) → (plan, scene)。
+    若给了 gap_id，先按 gap_id 后缀锁到目标 plan；否则扫所有 plan 取首个匹配。
+    """
+    pid = _plan_id_from_gap_suffix(gap_id) if gap_id else None
+    if pid:
+        p = plan_store.get(pid)
+        if p:
+            sec = next((s for s in p.adapted_sections if s.section_id == section_id), None)
+            if sec:
+                target_scene_id = f"sc-{sec.order}"
+                scene = next((sc for sc in p.main_track if sc.scene_id == target_scene_id), None)
+                return p, scene
     for plan_id in plan_store.all_ids():
         p = plan_store.get(plan_id)
         if not p:
@@ -505,9 +552,16 @@ async def aigc_refresh(req: AigcRefreshRequest) -> FillResult:
 
 
 def _find_section_for_gap(gap: Gap):
-    """暴扫 plan_store 找到 gap.section_id 对应的 (plan, AdaptedSection)；找不到回 (None, None)。"""
+    """gap → (plan, AdaptedSection)。优先 gap_id 后缀锁定当前 plan，再扫所有 plan 兜底。"""
     if not gap.section_id:
         return None, None
+    pid = _plan_id_from_gap_suffix(gap.gap_id)
+    if pid:
+        plan = plan_store.get(pid)
+        if plan:
+            sec = next((s for s in plan.adapted_sections if s.section_id == gap.section_id), None)
+            if sec:
+                return plan, sec
     for plan_id in plan_store.all_ids():
         plan = plan_store.get(plan_id)
         if not plan:

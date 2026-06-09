@@ -636,19 +636,36 @@ class DeepSeekLLMClient(_OpenAICompatLLMClient):
 # Factory
 # --------------------------------------------------------------------------
 def get_llm_client(settings: Optional[Settings] = None) -> LLMClient:
+    """生产工厂：缺 key 直接 raise LLMError，不再静默降级到 MockLLMClient。
+
+    保留 LLM_PROVIDER=mock 仅用于单元测试（pytest fixture 显式设置），
+    生产 .env 必须配真 provider + 对应 key。
+    """
     s = settings or get_settings()
     provider = s.llm_provider
     if provider == "doubao_ark":
         if not s.ark_api_key:
-            log.warning("LLM_PROVIDER=doubao_ark but ARK_API_KEY is empty -> using mock")
-            return MockLLMClient()
+            raise LLMError(
+                "LLM_PROVIDER=doubao_ark 但 ARK_API_KEY 为空——生产环境不允许静默降级到 mock。"
+                "请在 server/.env 配置真 key。",
+                code="LLM_NO_KEY",
+            )
         return DoubaoArkLLMClient(s)
     if provider == "deepseek":
         if not s.deepseek_api_key:
-            log.warning("LLM_PROVIDER=deepseek but DEEPSEEK_API_KEY is empty -> using mock")
-            return MockLLMClient()
+            raise LLMError(
+                "LLM_PROVIDER=deepseek 但 DEEPSEEK_API_KEY 为空——生产环境不允许静默降级到 mock。"
+                "请在 server/.env 配置真 key。",
+                code="LLM_NO_KEY",
+            )
         return DeepSeekLLMClient(s)
-    return MockLLMClient()
+    if provider == "mock":
+        # 仅供单元测试 monkeypatch 显式启用；线上 .env 永远不应是 mock
+        return MockLLMClient()
+    raise LLMError(
+        f"未知 LLM_PROVIDER={provider!r}；生产支持 doubao_ark / deepseek，单测可用 mock。",
+        code="LLM_BAD_PROVIDER",
+    )
 
 
 # --------------------------------------------------------------------------

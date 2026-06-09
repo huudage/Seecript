@@ -175,23 +175,27 @@ class TestFactory:
         c = get_llm_client()
         assert c.name == "mock"
 
-    def test_falls_back_to_mock_when_doubao_ark_missing_key(self, monkeypatch):
+    def test_doubao_ark_missing_key_raises(self, monkeypatch):
+        """Stage-prod #1：缺 key 不再 silent fallback，硬失败给前端 500。"""
         monkeypatch.setenv("LLM_PROVIDER", "doubao_ark")
         monkeypatch.setenv("ARK_API_KEY", "")
         from app.config import get_settings
 
         get_settings.cache_clear()
-        c = get_llm_client()
-        assert c.name == "mock"
+        with pytest.raises(LLMError) as exc_info:
+            get_llm_client()
+        assert exc_info.value.code == "LLM_NO_KEY"
 
-    def test_falls_back_to_mock_when_deepseek_missing_key(self, monkeypatch):
+    def test_deepseek_missing_key_raises(self, monkeypatch):
+        """Stage-prod #1：DeepSeek 缺 key 同样硬失败。"""
         monkeypatch.setenv("LLM_PROVIDER", "deepseek")
         monkeypatch.setenv("DEEPSEEK_API_KEY", "")
         from app.config import get_settings
 
         get_settings.cache_clear()
-        c = get_llm_client()
-        assert c.name == "mock"
+        with pytest.raises(LLMError) as exc_info:
+            get_llm_client()
+        assert exc_info.value.code == "LLM_NO_KEY"
 
 
 class TestErrors:

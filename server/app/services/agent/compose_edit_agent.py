@@ -69,10 +69,18 @@ _SYSTEM_STEP2 = (
     "regenerate_fill（重新生成某段已有 fill，仅 rerank/copy/aigc_image；aigc 视频不允许通过对话重生成）、"
     "regenerate_all_fills（按 action+hint 批量重生成所有段，仅 copy/aigc_image/rerank）。"
     "用户表达模糊时按惯例：『稍短=×0.85 / 更短=×0.7 / 更长=×1.25 / 长很多=×1.5』，"
-    "时长统一钳制 [2, 30] 秒。"
-    "**分镜级编辑**：用户说『sec-1 第 2 镜画面改成…』『sec-2 第 1 镜口播改成…』『sec-0 第 3 镜短一点』『sec-1 第 2 镜主体改成…』时，"
-    "用 update_shot_visual / update_shot_subject / update_shot_narration / update_shot_duration；shot_order 从 0 起（用户说『第 1 镜』即 shot_order=0）。"
-    "若用户说『换一张图 / 重新生图 sec-1』『换文案』『重新挑素材』→ regenerate_fill。"
+    "时长统一钳制 [2, 30] 秒。\n"
+    "**段落识别（很重要）**：用户**不会**说 section_id（『sec-0 / sec-1』），他们会说自然语言。请**严格**按下表把自然语言映射到上文【段落结构】里列出的 section_id：\n"
+    "  · 『第 1 段 / 第一段 / 头一段 / 开头 / 开头段 / 开场 / 开场段 / 片头』 → 列表里**第 1 个段**的 section_id（通常 role=opening）。\n"
+    "  · 『第 2 段 / 第二段 / 中间段』 → 列表里第 2 个段的 section_id。\n"
+    "  · 『第 N 段 / 第 N 部分』 → 列表里第 N 个段的 section_id（按列表顺序数，从 1 起）。\n"
+    "  · 『最后一段 / 末段 / 收尾 / 收束 / 收束段 / 结尾 / 片尾』 → 列表里**最后一个段**的 section_id（通常 role=closing）。\n"
+    "  · 『高潮段 / 高潮部分 / 炸点 / 炸点段』 → 列表里 role=climax 的那段 section_id（若没有 climax 段，明确告诉用户『本片没有高潮段』而不是瞎选）。\n"
+    "  · 『发展段 / 推进段 / 正文段』 → 列表里第一个 role=development 的段 section_id。\n"
+    "用户若**直接**说 sec-0/sec-1 也照旧支持。**禁止**自己造 sec-id（例如不能凭空说 sec-5 但实际只有 4 段）。\n"
+    "**分镜级编辑**：用户说『第 1 段第 2 镜画面改成…』『开头段第 1 镜口播改成…』『高潮段第 3 镜短一点』时，"
+    "先按上面规则定段，再用 update_shot_visual / update_shot_subject / update_shot_narration / update_shot_duration；shot_order 从 0 起（用户说『第 1 镜』即 shot_order=0）。\n"
+    "若用户说『换一张图 / 重新生图 第 N 段』『换文案』『重新挑素材』→ regenerate_fill。"
     "若用户说『把所有段重新生图』『全部重出字卡』『所有段重排』→ regenerate_all_fills。"
     "若用户说『重新生成视频』『重做 AI 视频』→ **不要 tool_calls**，直接讲解："
     "『AI 视频成本高，请在 AIGC 面板手动改提示词后点重新生成。』"
@@ -1579,12 +1587,19 @@ def _build_user_prompt(plan: Plan, instruction: str, step: ComposeEditStep) -> s
     scene_count_by_role: dict[str, int] = {}
     for sc in plan.main_track:
         scene_count_by_role[sc.section] = scene_count_by_role.get(sc.section, 0) + 1
-    parts.append(f"段落结构（共 {len(plan.adapted_sections)} 段）：")
-    for sec in plan.adapted_sections:
+    parts.append(f"段落结构（共 {len(plan.adapted_sections)} 段；用户说『第 N 段』即下表第 N 行）：")
+    role_cn = {
+        "opening": "开头段/开场",
+        "development": "发展段/推进",
+        "climax": "高潮段/炸点",
+        "closing": "收束段/结尾",
+    }
+    for i, sec in enumerate(plan.adapted_sections):
         n = scene_count_by_role.get(sec.role, 0)
         gap_flag = "（⚠ 无 scene）" if n == 0 else ""
+        cn = role_cn.get(sec.role, sec.role)
         parts.append(
-            f"- {sec.section_id} role={sec.role} 时长={sec.duration_seconds:.1f}s "
+            f"- 第 {i+1} 段【{cn}】 → section_id={sec.section_id} role={sec.role} 时长={sec.duration_seconds:.1f}s "
             f"scene 数={n}{gap_flag} 主题={sec.theme[:30]!r} 描述={sec.content_description[:60]!r}"
         )
         # stage-24：分镜级摘要——shot_order 从 0 起，前端"第 N 镜"= shot_order=N-1
@@ -1637,8 +1652,73 @@ def _build_user_prompt(plan: Plan, instruction: str, step: ComposeEditStep) -> s
     return "\n".join(parts)
 
 
-def _mock_intent(instruction: str, step: ComposeEditStep) -> list[dict[str, Any]]:
-    """mock 模式兜底意图识别：关键词匹配。"""
+def _resolve_section_alias(plan: Plan, alias: str) -> str | None:
+    """把『第 1 段 / 开头段 / 高潮段 / 收束段 / sec-0』等自然语言映射到 section_id。
+
+    返回 None 时表示没匹配上（让 caller 决定怎么兜底）。
+    """
+    import re
+    if not alias:
+        return None
+    secs = list(plan.adapted_sections)
+    if not secs:
+        return None
+    txt = alias.strip()
+    # 1. 直说 sec-N
+    m = re.search(r"sec-(\d+)", txt)
+    if m:
+        idx = int(m.group(1))
+        for s in secs:
+            if s.section_id == f"sec-{idx}":
+                return s.section_id
+    # 2. 第 N 段 / 第N段 / 第N部分
+    m = re.search(r"第\s*(\d+)\s*(?:段|部分|节)", txt)
+    if m:
+        n = int(m.group(1))
+        if 1 <= n <= len(secs):
+            return secs[n - 1].section_id
+    # 3. 中文序号
+    cn_num = {"一": 1, "二": 2, "三": 3, "四": 4, "五": 5, "六": 6, "七": 7, "八": 8, "九": 9, "十": 10}
+    m = re.search(r"第\s*([一二三四五六七八九十])\s*(?:段|部分|节)", txt)
+    if m and m.group(1) in cn_num:
+        n = cn_num[m.group(1)]
+        if 1 <= n <= len(secs):
+            return secs[n - 1].section_id
+    # 4. role 别名
+    role_alias = [
+        (("开头", "开场", "片头", "头一段", "第一段", "首段"), "opening"),
+        (("高潮", "炸点", "燃点", "巅峰"), "climax"),
+        (("收束", "结尾", "片尾", "末段", "末尾", "最后一段", "收尾"), "closing"),
+        (("发展", "推进", "正文", "中段"), "development"),
+    ]
+    for kws, role in role_alias:
+        if any(k in txt for k in kws):
+            # 优先按 role 找；找不到时『第一段』fallback 到 secs[0]
+            for s in secs:
+                if s.role == role:
+                    return s.section_id
+            if role == "opening":
+                return secs[0].section_id
+            if role == "closing":
+                return secs[-1].section_id
+            if role == "development":
+                # 没 development 段时回中间一段
+                return secs[len(secs) // 2].section_id
+    return None
+
+
+_SEC_REF_PATTERN = (
+    r"(sec-\d+|第\s*\d+\s*段|第\s*[一二三四五六七八九十]+\s*段|"
+    r"开头段?|开场|片头|头一段|首段|"
+    r"高潮段?|炸点|燃点|巅峰|"
+    r"收束段?|结尾|片尾|末段|末尾|最后一段|收尾|"
+    r"发展段?|推进|正文|中段)"
+)
+_SEC_SHOT_GAP = r"\s*的?\s*"
+
+
+def _mock_intent(plan: Plan, instruction: str, step: ComposeEditStep) -> list[dict[str, Any]]:
+    """mock 模式兜底意图识别：关键词匹配。支持 sec-N / 第 N 段 / 开头段 / 高潮段 等自然语言段落引用。"""
     import re
     txt = instruction.strip()
     if not txt:
@@ -1674,52 +1754,50 @@ def _mock_intent(instruction: str, step: ComposeEditStep) -> list[dict[str, Any]
                 return [{"name": "update_compose_setting", "arguments": {"aspect_ratio": ratio}}]
 
     if step == "step2":
-        # stage-24 分镜级编辑兜底：『sec-1 第 2 镜短一点 / 改成 3 秒』『sec-0 第 1 镜画面改成 ...』『sec-2 第 3 镜口播改成 ...』
-        m_shot_dur = re.search(r"(sec-\d+)[^第]{0,15}?第\s*(\d+)\s*镜.{0,15}?(\d+(?:\.\d+)?)\s*秒", txt)
+        # stage-24 分镜级编辑兜底：『sec-1 第 2 镜短一点』『开头段第 1 镜画面改成 ...』『高潮段的第 3 镜口播改成 ...』
+        m_shot_dur = re.search(_SEC_REF_PATTERN + _SEC_SHOT_GAP + r"第\s*(\d+)\s*镜.{0,15}?(\d+(?:\.\d+)?)\s*秒", txt)
         if m_shot_dur:
-            return [{"name": "update_shot_duration", "arguments": {
-                "section_id": m_shot_dur.group(1),
-                "shot_order": int(m_shot_dur.group(2)) - 1,
-                "duration_seconds": float(m_shot_dur.group(3)),
-            }}]
-        m_shot_visual = re.search(r"(sec-\d+)[^第]{0,15}?第\s*(\d+)\s*镜.{0,8}?画面.{0,8}?(?:改成|改为|是)?\s*[:：]?\s*(.+)", txt)
+            sid = _resolve_section_alias(plan, m_shot_dur.group(1))
+            if sid:
+                return [{"name": "update_shot_duration", "arguments": {
+                    "section_id": sid,
+                    "shot_order": int(m_shot_dur.group(2)) - 1,
+                    "duration_seconds": float(m_shot_dur.group(3)),
+                }}]
+        m_shot_visual = re.search(_SEC_REF_PATTERN + _SEC_SHOT_GAP + r"第\s*(\d+)\s*镜.{0,8}?画面.{0,8}?(?:改成|改为|是)?\s*[:：]?\s*(.+)", txt)
         if m_shot_visual:
             visual = m_shot_visual.group(3).strip().strip("『』""\"'")
             if visual:
-                return [{"name": "update_shot_visual", "arguments": {
-                    "section_id": m_shot_visual.group(1),
-                    "shot_order": int(m_shot_visual.group(2)) - 1,
-                    "visual": visual[:120],
-                }}]
-        m_shot_narr = re.search(r"(sec-\d+)[^第]{0,15}?第\s*(\d+)\s*镜.{0,8}?(?:口播|字幕|文案).{0,8}?(?:改成|改为|是)?\s*[:：]?\s*(.+)", txt)
+                sid = _resolve_section_alias(plan, m_shot_visual.group(1))
+                if sid:
+                    return [{"name": "update_shot_visual", "arguments": {
+                        "section_id": sid,
+                        "shot_order": int(m_shot_visual.group(2)) - 1,
+                        "visual": visual[:120],
+                    }}]
+        m_shot_narr = re.search(_SEC_REF_PATTERN + _SEC_SHOT_GAP + r"第\s*(\d+)\s*镜.{0,8}?(?:口播|字幕|文案).{0,8}?(?:改成|改为|是)?\s*[:：]?\s*(.+)", txt)
         if m_shot_narr:
             narr = m_shot_narr.group(3).strip().strip("『』""\"'")
             if narr:
-                return [{"name": "update_shot_narration", "arguments": {
-                    "section_id": m_shot_narr.group(1),
-                    "shot_order": int(m_shot_narr.group(2)) - 1,
-                    "narration": narr[:200],
-                }}]
-        # 时长
-        m_dur = re.search(r"(sec-\d+|第\s*\d+\s*段).{0,15}?(\d+(?:\.\d+)?)\s*秒", txt)
-        if m_dur:
-            sid_raw = m_dur.group(1)
-            if sid_raw.startswith("sec-"):
-                sid = sid_raw
-            else:
-                idx_m = re.search(r"\d+", sid_raw)
-                sid = f"sec-{int(idx_m.group()) - 1}" if idx_m else "sec-0"
-            return [{"name": "update_section_duration", "arguments": {"section_id": sid, "duration_seconds": float(m_dur.group(2))}}]
+                sid = _resolve_section_alias(plan, m_shot_narr.group(1))
+                if sid:
+                    return [{"name": "update_shot_narration", "arguments": {
+                        "section_id": sid,
+                        "shot_order": int(m_shot_narr.group(2)) - 1,
+                        "narration": narr[:200],
+                    }}]
+        # 段时长（无镜级修饰）
+        m_dur = re.search(_SEC_REF_PATTERN + r".{0,15}?(\d+(?:\.\d+)?)\s*秒", txt)
+        if m_dur and "镜" not in txt:
+            sid = _resolve_section_alias(plan, m_dur.group(1))
+            if sid:
+                return [{"name": "update_section_duration", "arguments": {"section_id": sid, "duration_seconds": float(m_dur.group(2))}}]
         # 删段
-        m_del = re.search(r"删除?\s*(sec-\d+|第\s*\d+\s*段)", txt)
+        m_del = re.search(r"删除?\s*" + _SEC_REF_PATTERN, txt)
         if m_del:
-            sid_raw = m_del.group(1)
-            if sid_raw.startswith("sec-"):
-                sid = sid_raw
-            else:
-                idx_m = re.search(r"\d+", sid_raw)
-                sid = f"sec-{int(idx_m.group()) - 1}" if idx_m else "sec-0"
-            return [{"name": "delete_section", "arguments": {"section_id": sid}}]
+            sid = _resolve_section_alias(plan, m_del.group(1))
+            if sid:
+                return [{"name": "delete_section", "arguments": {"section_id": sid}}]
     return []
 
 
@@ -1755,7 +1833,7 @@ async def run_compose_edit(
         elif name in _MUTATORS:
             out_of_scope_hits.append(name)
     if not cleaned:
-        cleaned = _mock_intent(instruction, step)
+        cleaned = _mock_intent(plan, instruction, step)
 
     diffs: list[ComposeEditDiff] = []
     for tc in cleaned:
