@@ -129,7 +129,7 @@ class Settings(BaseSettings):
     seedream_provider: Literal["mock", "doubao_ark"] = Field(default="mock")
     ark_seedream_model: str = Field(default="doubao-seedream-5-0-260128")
     ark_seedream_api_key: str = Field(default="")
-    seedream_timeout_seconds: int = Field(default=60, ge=5, le=300)
+    seedream_timeout_seconds: int = Field(default=180, ge=5, le=600)
     seedream_mock_latency_seconds: float = Field(default=1.0, ge=0.0, le=30.0)
 
     # === CORS ===

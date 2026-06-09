@@ -174,7 +174,16 @@ class DoubaoArkSeedreamClient(SeedreamClient):
         self._api_key = api_key
         self._base_url = settings.ark_base_url.rstrip("/")
         self._model = settings.ark_seedream_model
-        self._timeout = settings.seedream_timeout_seconds
+        # stage-41：拆分 connect/read 超时——connect 仍 10s 快速失败（网络断），
+        # 但 read 走 settings.seedream_timeout_seconds（默认 180s），匹配 Seedream 5.0
+        # 出 2K 图实测 30-90s 的真实时长。原先单一 60s timeout 在 ratio=9:16 高并发下
+        # 经常触发 ReadTimeout，前端拿到 "Seedream HTTP 失败：ReadTimeout: ReadTimeout"。
+        self._timeout = httpx.Timeout(
+            connect=10.0,
+            read=float(settings.seedream_timeout_seconds),
+            write=15.0,
+            pool=10.0,
+        )
 
     def _headers(self) -> dict[str, str]:
         return {"Authorization": f"Bearer {self._api_key}", "Content-Type": "application/json"}
@@ -216,19 +225,25 @@ class DoubaoArkSeedreamClient(SeedreamClient):
         if n and n > 1:
             body["n"] = max(1, min(4, n))
         # PR-L.4：豆包 Seedream 在并发 ≥3 时会偶发 ReadTimeout / 服务端 RST（httpx 抛 HTTPError），
-        # 单次失败成本太高（warn fill 直接落到字卡兜底，用户看不到生成结果）。这里加 1 次重试 +
-        # 指数退避，对单点 HTTPError 是几乎免费的修复，对真正的额度/参数错误（HTTP 4xx）不会重试。
+        # 单次失败成本太高（warn fill 直接落到字卡兜底，用户看不到生成结果）。
+        # stage-41：把重试改成 3 次，ReadTimeout 等"服务端慢"型错误的退避更长（5/15s），
+        # 因为重试 2s 后服务可能仍处于产图压力下；网络层瞬断（ConnectError/RST）仍走 2s 短退。
         last_exc: Exception | None = None
-        for attempt in range(2):
+        for attempt in range(3):
             try:
                 async with httpx.AsyncClient(timeout=self._timeout) as cli:
                     resp = await cli.post(url, headers=self._headers(), json=body)
                 break
             except httpx.HTTPError as exc:
                 last_exc = exc
-                if attempt == 0:
-                    log.warning("[seedream] HTTP error attempt 1/2: %r — retrying after 2s", exc)
-                    await asyncio.sleep(2.0)
+                if attempt < 2:
+                    is_timeout = isinstance(exc, httpx.TimeoutException)
+                    backoff = (5.0 if is_timeout else 2.0) * (attempt + 1)
+                    log.warning(
+                        "[seedream] HTTP error attempt %d/3: %r — retrying after %.1fs",
+                        attempt + 1, exc, backoff,
+                    )
+                    await asyncio.sleep(backoff)
                     continue
                 # exc.__str__() 在 ReadTimeout 等子类下可能为空——加 class 名让前端能区分超时/重置/拒绝
                 detail = str(exc).strip() or exc.__class__.__name__
@@ -303,16 +318,23 @@ class DoubaoArkSeedreamClient(SeedreamClient):
             "stream": False,
             "watermark": watermark,
         }
-        # PR-L.4：同 generate() 的重试策略——并发场景下 sequence 调用同样会偶发 HTTPError。
-        for attempt in range(2):
+        # stage-41：sequence 走同 generate() 的 3 次重试 + 自适应退避——
+        # 故事板模式输入更复杂（N 段 prompt 拼成一个长 prompt），服务端单次出 N 张图
+        # 在并发下更容易 ReadTimeout，需要给到充足的退避窗口。
+        for attempt in range(3):
             try:
                 async with httpx.AsyncClient(timeout=self._timeout) as cli:
                     resp = await cli.post(url, headers=self._headers(), json=body)
                 break
             except httpx.HTTPError as exc:
-                if attempt == 0:
-                    log.warning("[seedream] sequence HTTP error attempt 1/2: %r — retrying after 2s", exc)
-                    await asyncio.sleep(2.0)
+                if attempt < 2:
+                    is_timeout = isinstance(exc, httpx.TimeoutException)
+                    backoff = (5.0 if is_timeout else 2.0) * (attempt + 1)
+                    log.warning(
+                        "[seedream] sequence HTTP error attempt %d/3: %r — retrying after %.1fs",
+                        attempt + 1, exc, backoff,
+                    )
+                    await asyncio.sleep(backoff)
                     continue
                 detail = str(exc).strip() or exc.__class__.__name__
                 raise SeedreamError(
