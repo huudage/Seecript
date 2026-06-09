@@ -23,6 +23,8 @@ import { PackagingItemEditDialog } from '@/components/compose/PackagingItemEditD
 import { PackagingPanel } from '@/components/compose/PackagingPanel'
 import { ReferencePicker } from '@/components/compose/ReferencePicker'
 import { SceneEditPanel } from '@/components/compose/SceneEditPanel'
+import { SectionEditDialog } from '@/components/compose/SectionEditDialog'
+import { ShotEditDialog } from '@/components/compose/ShotEditDialog'
 import { StructureMapPanel } from '@/components/compose/StructureMapPanel'
 import { SubtitleEditPopover } from '@/components/compose/SubtitleEditPopover'
 import { SystemLibraryPicker } from '@/components/compose/SystemLibraryPicker'
@@ -36,6 +38,7 @@ import { usePlanStore } from '@/stores/plan'
 import { useProjectsStore } from '@/stores/projects'
 import { useSessionStore } from '@/stores/session'
 import type {
+  AdaptedSection,
   FillAction,
   FillResult,
   Gap,
@@ -210,11 +213,8 @@ export default function ComposePage() {
   // 选用 Set<section_id> 而非 gap_id（gap_id 不稳）；用户在 A 段等 AI 出图（3 min+）
   // 期间应能切到 B 段并行做字卡/AI 出图，A 段完成后自动应用到内容轨。
   const [busySectionIds, setBusySectionIds] = useState<ReadonlySet<string>>(() => new Set())
-  // 左侧段编辑面板 keepalive：每条 visited scene_id 都保留一份 SceneEditPanel 实例，
-  // display:none 切换。这样用户在 A 段输入草稿（theme/content/subject）→ 切到 B 段
-  // 做补全 → 切回 A，草稿仍在原现场。键用 scene_id（sc-{order}），保证多次 rebuild
-  // 时只要 shot 顺序不变就还能命中。
-  const [visitedSceneIds, setVisitedSceneIds] = useState<ReadonlySet<string>>(() => new Set())
+  // stage-37：原有 visitedSceneIds 多实例 SceneEditPanel keepalive 池已删除——
+  // 段 / 单镜编辑迁到弹窗（SectionEditDialog / ShotEditDialog），不再需要保留草稿现场。
   const markBusy = useCallback((sectionId: string, busy: boolean) => {
     if (!sectionId) return
     setBusySectionIds((prev) => {
@@ -249,6 +249,15 @@ export default function ComposePage() {
   const [editingTransition, setEditingTransition] = useState<{
     sceneId: string
     currentStyle: TransitionStyle | null
+  } | null>(null)
+  // stage-37：段块编辑 / 单镜编辑两套弹窗——替换 step2 keepalive SceneEditPanel
+  const [editingSection, setEditingSection] = useState<{
+    section: AdaptedSection
+    firstScene: Scene
+  } | null>(null)
+  const [editingShot, setEditingShot] = useState<{
+    scene: Scene
+    section: AdaptedSection
   } | null>(null)
   // ⌘K 自然语言编辑（R6）：唤起 ComposeCommandBar，作用域由 activeStep 决定
   const [commandBarOpen, setCommandBarOpen] = useState(false)
@@ -586,19 +595,7 @@ export default function ComposePage() {
     [plan, selectedPackagingItemId],
   )
 
-  // 用户点了任意 scene（内容 / 字幕 / 口播轨）→ 推进 visitedSceneIds，
-  // 让 SceneEditPanel 当前段的 useState 草稿在切段后仍保留（display:none keepalive）。
-  // 包装段单独走 PackagingPanel（read-only），不进 keepalive 池。
-  useEffect(() => {
-    if (!effectiveSelectedSceneId) return
-    if (selectedPackagingItemId) return
-    setVisitedSceneIds((prev) => {
-      if (prev.has(effectiveSelectedSceneId)) return prev
-      const next = new Set(prev)
-      next.add(effectiveSelectedSceneId)
-      return next
-    })
-  }, [effectiveSelectedSceneId, selectedPackagingItemId])
+  // stage-37：原有 visitedSceneIds 推进 useEffect 已删除（弹窗模型不再需要保留草稿现场）。
 
   // 渲染流水线衍生态：jobId 存在 + 未 done + 无错误 = 进行中
   const isRendering = jobId !== null && !renderDone && !renderError
@@ -1894,6 +1891,12 @@ export default function ComposePage() {
                 onEditTransition={(sceneId, currentStyle) =>
                   setEditingTransition({ sceneId, currentStyle })
                 }
+                onEditSection={(section, firstScene) =>
+                  setEditingSection({ section, firstScene })
+                }
+                onEditShot={(scene, section) =>
+                  setEditingShot({ scene, section })
+                }
               />
 
           {/* stage-36：缺口补全工作台移到右列 FourTrackBoard 正下方。
@@ -2087,13 +2090,11 @@ export default function ComposePage() {
           {/* 两栏：左 段落编辑（补全的依据） / 右 缺口补全 tabs。
               v34：把右侧补全工作台从两栏抽出，挪到了 FourTrackBoard 正下方
               （一行宽，方便用户切段后直接看到所有四种补全方式）。
-              这里仅剩段落/包装段编辑——按 selection 自动切换。 */}
+              stage-37：段落 / 单镜编辑迁到弹窗（点段块 ✏ 或展开后点小镜），
+              彻底去掉这里多实例 keepalive 池——「前 N 段共享工作台」的痛源即此。
+              这里仅剩包装段编辑——按 selection 自动展开。 */}
           <div className="grid gap-3">
-            {/* 左 · 段落/包装段编辑（按 selection 自动切换）
-                keepalive：包装项独立渲染（read-only）；scene 走多实例堆栈，每条 visited
-                scene_id 一份 SceneEditPanel，display:none 切换，本地 useState（theme/content/
-                subject 草稿）跨段切换不丢——和上方 fill 工作台一致。 */}
-            {selectedPackagingItem ? (
+            {selectedPackagingItem && (
               <SceneEditPanel
                 key={`pkg-${selectedPackagingItem.item_id}`}
                 plan={plan}
@@ -2103,38 +2104,6 @@ export default function ComposePage() {
                 onSaved={setPlanAndPush}
                 disabled={analyzing || anyGapBusy || trackBusy}
               />
-            ) : (
-              <div>
-                {Array.from(visitedSceneIds).map((sceneId) => {
-                  // plan rebuild 后老 scene_id 可能不存在（shot 数变了），命中不到就跳过。
-                  if (!plan.main_track.some((s) => s.scene_id === sceneId)) return null
-                  const isActive = sceneId === effectiveSelectedSceneId
-                  return (
-                    <div
-                      key={`scene-${sceneId}`}
-                      style={{ display: isActive ? 'block' : 'none' }}
-                      aria-hidden={!isActive}
-                    >
-                      <SceneEditPanel
-                        plan={plan}
-                        selectedSceneId={sceneId}
-                        materials={sortedMaterials}
-                        onSaved={setPlanAndPush}
-                        disabled={analyzing || anyGapBusy || trackBusy}
-                      />
-                    </div>
-                  )
-                })}
-                {visitedSceneIds.size === 0 && (
-                  <SceneEditPanel
-                    plan={plan}
-                    selectedSceneId={effectiveSelectedSceneId}
-                    materials={sortedMaterials}
-                    onSaved={setPlanAndPush}
-                    disabled={analyzing || anyGapBusy || trackBusy}
-                  />
-                )}
-              </div>
             )}
 
           </div>
@@ -2462,6 +2431,36 @@ export default function ComposePage() {
           planId={plan.plan_id}
           onClose={() => setEditingTransition(null)}
           onPlanUpdated={setPlanAndPush}
+        />
+      )}
+
+      {/* stage-37 段编辑弹窗：内容轨段块上 ✏ 按钮 → 改 theme + content_description */}
+      {plan && (
+        <SectionEditDialog
+          plan={plan}
+          section={editingSection?.section ?? null}
+          firstScene={editingSection?.firstScene ?? null}
+          onClose={() => setEditingSection(null)}
+          onSaved={(fresh) => {
+            setPlanAndPush(fresh)
+            setEditingSection(null)
+          }}
+          disabled={analyzing || anyGapBusy || trackBusy}
+        />
+      )}
+
+      {/* stage-37 单镜编辑弹窗：段块展开 ▾ 后点分镜小块 → 改 subject / visual / narration */}
+      {plan && (
+        <ShotEditDialog
+          plan={plan}
+          scene={editingShot?.scene ?? null}
+          section={editingShot?.section ?? null}
+          onClose={() => setEditingShot(null)}
+          onSaved={(fresh) => {
+            setPlanAndPush(fresh)
+            setEditingShot(null)
+          }}
+          disabled={analyzing || anyGapBusy || trackBusy}
         />
       )}
 

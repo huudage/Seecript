@@ -51,6 +51,24 @@ export async function patchShotSubject(
 }
 
 /**
+ * stage-37：弹窗里一次性提交单镜的多字段（subject / visual / narration）。
+ * 后端会双写 Scene + 父 ShotPlan；不动 duration（改时长需要重排时间线）。
+ */
+export interface ShotFieldsPatch {
+  subject?: string
+  visual?: string
+  narration?: string
+}
+
+export async function patchShotFields(
+  planId: PlanId,
+  sceneId: string,
+  patch: ShotFieldsPatch,
+): Promise<Plan> {
+  return await api.patch<Plan>(`/plan/${planId}/scene/${sceneId}/shot-fields`, patch)
+}
+
+/**
  * stage-26 PR-N.4 / N.5：单镜换源。把某 Scene 的 source 切到
  * user_material / aigc_image / aigc_t2v / text_card；后端会同步调
  * Seedream / Seedance / 切素材入出点 / 装 TextCardSpec，成功后清掉 needs_fill。

@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import logging
 import uuid
-from typing import Optional
+from typing import Any, Optional
 
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
@@ -1328,6 +1328,89 @@ async def patch_shot_subject(plan_id: str, scene_id: str, body: ShotSubjectPatch
     log.info(
         "[plan] shot subject patched plan=%s scene=%s subject=%r",
         plan_id, scene_id, new_subject[:32],
+    )
+    return plan
+
+
+# ---------------------------------------------------------------------------
+# stage-37：单镜（Scene + 父 ShotPlan）多字段编辑——弹窗用
+# ---------------------------------------------------------------------------
+
+class ShotFieldsPatch(BaseModel):
+    """PATCH /plan/{plan_id}/scene/{scene_id}/shot-fields：弹窗里改单镜的多个字段。
+
+    - subject：双写 Scene.shot_subject + ShotPlan.subject
+    - visual：只写父 ShotPlan.visual（Scene 上没这字段；aigc_prompt_agent / 字卡兜底读 ShotPlan）
+    - narration：双写 Scene.narration + ShotPlan.narration（口播 / 字幕都跟着）
+
+    duration_seconds 故意不在这条 patch 里——改时长要重排下游所有 Scene.start，
+    放到独立路由 / Plan rebuild 流程里更安全。
+    """
+
+    subject: Optional[str] = Field(default=None, max_length=40)
+    visual: Optional[str] = Field(default=None, max_length=200)
+    narration: Optional[str] = Field(default=None, max_length=200)
+
+
+@router.patch("/plan/{plan_id}/scene/{scene_id}/shot-fields", response_model=Plan)
+async def patch_shot_fields(plan_id: str, scene_id: str, body: ShotFieldsPatch) -> Plan:
+    """单镜级多字段编辑：写 Scene 上的 shot_subject / narration，同时同步父 ShotPlan
+    上的 subject / visual / narration（aigc_prompt_agent 重读 plan 时立即生效）。
+
+    与现有 patch_shot_subject 的区别：那个只改 subject；这个一次性提交弹窗里所有改动。
+    """
+    plan = plan_store.get(plan_id)
+    if plan is None:
+        raise HTTPException(status_code=404, detail=f"plan_id 不存在：{plan_id}")
+    patch = body.model_dump(exclude_unset=True)
+    if not patch:
+        return plan
+
+    scene_idx = next((i for i, s in enumerate(plan.main_track) if s.scene_id == scene_id), None)
+    if scene_idx is None:
+        raise HTTPException(status_code=404, detail=f"scene_id 不存在：{scene_id}")
+    scene = plan.main_track[scene_idx]
+
+    scene_update: dict[str, Any] = {}
+    if "subject" in patch:
+        scene_update["shot_subject"] = (patch["subject"] or "").strip()[:40]
+    if "narration" in patch:
+        # Scene.narration 可空——纯画面镜头允许无口播
+        new_narr = (patch["narration"] or "").strip()
+        scene_update["narration"] = new_narr or None
+    if scene_update:
+        plan.main_track[scene_idx] = scene.model_copy(update=scene_update)
+
+    # 同步父 AdaptedSection.shots[order] —— aigc_prompt_agent / Seedance 重新读 plan 时拿到的就是这里
+    if scene.parent_section_id:
+        sec_idx = next(
+            (i for i, sec in enumerate(plan.adapted_sections) if sec.section_id == scene.parent_section_id),
+            None,
+        )
+        if sec_idx is not None:
+            sec = plan.adapted_sections[sec_idx]
+            if sec.shots:
+                shot_idx = next(
+                    (i for i, sh in enumerate(sec.shots) if sh.order == scene.shot_order),
+                    None,
+                )
+                if shot_idx is not None:
+                    shot_update: dict[str, Any] = {}
+                    if "subject" in patch:
+                        shot_update["subject"] = (patch["subject"] or "").strip()[:40]
+                    if "visual" in patch:
+                        shot_update["visual"] = (patch["visual"] or "").strip()[:200]
+                    if "narration" in patch:
+                        shot_update["narration"] = (patch["narration"] or "").strip()[:200]
+                    if shot_update:
+                        new_shots = list(sec.shots)
+                        new_shots[shot_idx] = sec.shots[shot_idx].model_copy(update=shot_update)
+                        plan.adapted_sections[sec_idx] = sec.model_copy(update={"shots": new_shots})
+
+    plan_store.put(plan)
+    log.info(
+        "[plan] shot fields patched plan=%s scene=%s keys=%s",
+        plan_id, scene_id, list(patch.keys()),
     )
     return plan
 

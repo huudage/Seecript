@@ -141,6 +141,16 @@ interface Props {
   onEditPackagingItem?: (item: PackagingItem) => void
   /** 点击分镜间的转场节点 → 唤起转场样式选择弹窗。 */
   onEditTransition?: (sceneId: string, currentStyle: TransitionStyle | null) => void
+  /**
+   * stage-37：sections 模式下 ✏ 段编辑按钮 → 唤起 SectionEditDialog（theme/content_description）。
+   * 与 onSelectScene 互不冲突——选段为 Fill 工作台服务，编辑走弹窗。
+   */
+  onEditSection?: (section: AdaptedSection, firstScene: Scene) => void
+  /**
+   * stage-37：sections 模式下展开后点单个分镜小块 → 唤起 ShotEditDialog
+   * （subject/visual/narration 三字段双写 Scene + ShotPlan）。
+   */
+  onEditShot?: (scene: Scene, section: AdaptedSection) => void
 }
 
 const STATUS_GLYPH: Record<GapStatus, string> = { ok: '✓', warn: '!', miss: '×' }
@@ -345,6 +355,8 @@ export function FourTrackBoard({
   fills,
   onEditPackagingItem,
   onEditTransition,
+  onEditSection,
+  onEditShot,
   onResizePackagingItem,
 }: Props) {
   const total = plan.duration_seconds || 0
@@ -356,6 +368,17 @@ export function FourTrackBoard({
   const voiceoverEnabled = plan.settings.voiceover_enabled
   const ticks = useMemo(() => makeTicks(total), [total])
   const showSecondaryTracks = phase === 'full'
+
+  // stage-37：sections 模式下 ▾ 按钮展开看分镜，再点分镜 → ShotEditDialog
+  const [expandedSectionIds, setExpandedSectionIds] = useState<Set<string>>(() => new Set())
+  const toggleExpand = useCallback((sid: string) => {
+    setExpandedSectionIds((prev) => {
+      const next = new Set(prev)
+      if (next.has(sid)) next.delete(sid)
+      else next.add(sid)
+      return next
+    })
+  }, [])
 
   // 播放头测量：取 timebar 1fr 列的实际像素位置 + board 容器位置，让红线从 board
   // 顶部到底部精确铺满，不再用 9999px 超长溢出。ResizeObserver 监听窗口缩放/字体变。
@@ -641,8 +664,9 @@ export function FourTrackBoard({
       </div>
 
       {/* 播放头 overlay：放在 board 顶层，按 timeLaneRef 实测位置铺一条精确长度的
-          竖线。仅 phase=full 时显示——step2 没真预览不画红线。 */}
-      {total > 0 && showSecondaryTracks && laneGeom && (
+          竖线。stage-37：step2 也展示——配合 onSeek 让用户拖动预览，
+          step2 没真 Remotion Player 也能在画面上看到当前秒。 */}
+      {total > 0 && laneGeom && (
         <div
           className="pointer-events-none absolute z-30 w-px bg-rose-500/95"
           style={{
@@ -727,6 +751,8 @@ export function FourTrackBoard({
           const filled = gap && filledGapIds.has(gap.gap_id)
           const effectiveStatus: GapStatus = filled ? 'ok' : (status ?? 'ok')
           const selected = section.section_id === selectedSectionId
+          const expanded = expandedSectionIds.has(section.section_id)
+          const canExpand = scenesInSec.length > 1
 
           // 整段缩略图：跟 shots 模式相同的优先级，但只看首镜（代表画面）。
           const fillForSection = fillBySectionId.get(section.section_id) ?? null
@@ -746,6 +772,95 @@ export function FourTrackBoard({
           const textCardSpec =
             firstScene.text_card_spec ?? fillForSection?.text_card_spec ?? null
 
+          // stage-37 展开态：把段块按真实 scene.start/duration 拆成 N 个独立小镜块
+          if (expanded) {
+            return (
+              <div
+                key={section.section_id}
+                className="absolute top-1 bottom-1"
+                style={{ left: `${left}%`, width: `calc(${width}% - 2px)` }}
+              >
+                {/* 段头条：✏ 编辑段 + ▾ 折叠回去；占 14px 高，下面才是分镜小块 */}
+                <div className="absolute inset-x-0 top-0 z-[1] flex h-3.5 items-center gap-1 rounded-t bg-black/55 px-1">
+                  <span className="rounded bg-white/15 px-1 font-mono text-[8px] text-white">
+                    {getSectionMeta(section.role).short}
+                  </span>
+                  <span className="truncate text-[9px] font-semibold text-white/90">
+                    {section.theme || getSectionMeta(section.role).label}
+                  </span>
+                  <button
+                    type="button"
+                    onClick={(e) => {
+                      e.stopPropagation()
+                      onEditSection?.(section, firstScene)
+                    }}
+                    title="编辑段（主题 / 描述）"
+                    className="ml-auto inline-flex h-3 w-3 items-center justify-center rounded bg-white/20 text-[9px] text-white hover:bg-white/40"
+                  >
+                    ✏
+                  </button>
+                  <button
+                    type="button"
+                    onClick={(e) => {
+                      e.stopPropagation()
+                      toggleExpand(section.section_id)
+                    }}
+                    title="折叠回整段"
+                    className="inline-flex h-3 w-3 items-center justify-center rounded bg-white/20 text-[9px] text-white hover:bg-white/40"
+                  >
+                    ▴
+                  </button>
+                </div>
+                {/* 分镜小块 row：剩余高度，按 scene.start/duration 等比映射到段内 % */}
+                <div className="absolute inset-x-0 top-3.5 bottom-0">
+                  {scenesInSec.map((sc) => {
+                    const innerLeft = ((sc.start - start) / Math.max(0.001, end - start)) * 100
+                    const innerWidth = (sc.duration / Math.max(0.001, end - start)) * 100
+                    const matFor = sc.source === 'user_material' ? materialById.get(sc.source_ref) : null
+                    let scThumb: string | null = null
+                    if (sc.source === 'aigc_t2v') scThumb = fillForSection?.cover_url ?? null
+                    else if (sc.source === 'aigc_image') scThumb = sc.aigc_image_url ?? fillForSection?.aigc_image_url ?? null
+                    else if (sc.source === 'user_material') scThumb = matFor?.thumbnail_url ?? null
+                    const scTextCard = sc.text_card_spec ?? null
+                    const isSelectedShot = selectedSceneId === sc.scene_id
+                    return (
+                      <button
+                        key={sc.scene_id}
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation()
+                          onEditShot?.(sc, section)
+                        }}
+                        className={cn(
+                          'absolute inset-y-0 overflow-hidden rounded border text-left text-[9px] text-white shadow-sm transition-all',
+                          getSectionMeta(section.role).bg,
+                          isSelectedShot
+                            ? 'z-10 border-white ring-2 ring-white/80 brightness-110'
+                            : 'border-white/30 hover:brightness-110',
+                        )}
+                        style={{
+                          left: `${innerLeft}%`,
+                          width: `calc(${innerWidth}% - 1px)`,
+                        }}
+                        title={`第 ${sc.shot_order + 1} 镜 · ${sc.duration.toFixed(1)}s\n${sc.shot_subject || ''}\n${sc.narration || ''}\n点击：编辑本镜（subject / visual / narration）`}
+                      >
+                        <div className="absolute inset-0">
+                          <SceneThumb scene={sc} thumbnailUrl={scThumb} textCardSpec={scTextCard} />
+                          <div className="pointer-events-none absolute inset-x-0 bottom-0 h-4 bg-gradient-to-t from-black/70 to-transparent" />
+                        </div>
+                        <div className="relative z-[1] flex h-full flex-col justify-end p-0.5">
+                          <span className="truncate rounded bg-black/45 px-1 text-[9px] font-semibold leading-tight">
+                            #{sc.shot_order + 1} · {sc.shot_subject || sc.scene_id}
+                          </span>
+                        </div>
+                      </button>
+                    )
+                  })}
+                </div>
+              </div>
+            )
+          }
+
           return (
             <button
               key={section.section_id}
@@ -759,7 +874,7 @@ export function FourTrackBoard({
                   : 'hover:brightness-110',
               )}
               style={{ left: `${left}%`, width: `calc(${width}% - 2px)` }}
-              title={`${getSectionMeta(section.role).label} · ${section.theme}\n${section.content_description}\n（含 ${scenesInSec.length} 镜，点击在 Fill 面板里展开 / 编辑每镜）`}
+              title={`${getSectionMeta(section.role).label} · ${section.theme}\n${section.content_description}\n（含 ${scenesInSec.length} 镜，✏ 编辑段、▾ 展开分镜逐镜编辑）`}
             >
               <div className="absolute inset-0">
                 <SceneThumb scene={firstScene} thumbnailUrl={thumbUrl} textCardSpec={textCardSpec} />
@@ -796,7 +911,7 @@ export function FourTrackBoard({
                     {scenesInSec.length > 1 && (
                       <span
                         className="inline-flex h-3 items-center justify-center rounded-full bg-violet-300/95 px-1 font-mono text-[9px] font-bold text-violet-900"
-                        title={`本段拆为 ${scenesInSec.length} 个分镜（点击在 Fill 面板里逐镜调）`}
+                        title={`本段拆为 ${scenesInSec.length} 个分镜（▾ 展开后可单独编辑）`}
                       >
                         {scenesInSec.length}镜
                       </span>
@@ -813,6 +928,49 @@ export function FourTrackBoard({
                         )}
                       >
                         {STATUS_GLYPH[effectiveStatus]}
+                      </span>
+                    )}
+                    {/* stage-37：✏ 编辑段、▾ 展开看分镜——挂在角标行右侧 */}
+                    {onEditSection && (
+                      <span
+                        role="button"
+                        tabIndex={0}
+                        onClick={(e) => {
+                          e.stopPropagation()
+                          onEditSection(section, firstScene)
+                        }}
+                        onKeyDown={(e) => {
+                          if (e.key === 'Enter' || e.key === ' ') {
+                            e.preventDefault()
+                            e.stopPropagation()
+                            onEditSection(section, firstScene)
+                          }
+                        }}
+                        title="编辑段（主题 / 描述）"
+                        className="inline-flex h-3 w-3 cursor-pointer items-center justify-center rounded bg-white/70 text-[9px] font-bold text-foreground hover:bg-white"
+                      >
+                        ✏
+                      </span>
+                    )}
+                    {canExpand && onEditShot && (
+                      <span
+                        role="button"
+                        tabIndex={0}
+                        onClick={(e) => {
+                          e.stopPropagation()
+                          toggleExpand(section.section_id)
+                        }}
+                        onKeyDown={(e) => {
+                          if (e.key === 'Enter' || e.key === ' ') {
+                            e.preventDefault()
+                            e.stopPropagation()
+                            toggleExpand(section.section_id)
+                          }
+                        }}
+                        title="展开看分镜（点击各分镜独立编辑）"
+                        className="inline-flex h-3 w-3 cursor-pointer items-center justify-center rounded bg-white/70 text-[9px] font-bold text-foreground hover:bg-white"
+                      >
+                        ▾
                       </span>
                     )}
                   </div>
