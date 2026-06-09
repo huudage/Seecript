@@ -170,12 +170,16 @@ _TOOL_UPDATE_TEXT_CARD = {
     "type": "function",
     "function": {
         "name": "update_text_card_spec",
-        "description": "改某 scene 的字卡 spec：text（首行 main_text 主标≤24，余下 sub_text 副标≤40）。",
+        "description": "改某 scene 的字卡 spec：text（首行 main_text 主标≤24，余下 sub_text 副标≤40）+ font_size_pct（字号缩放 0.6-1.6，1.0=默认）。",
         "parameters": {
             "type": "object",
             "properties": {
                 "scene_id": {"type": "string"},
                 "text": {"type": "string", "description": "字卡文字。多行：第一行=主标，剩余=副标。"},
+                "font_size_pct": {
+                    "type": "number",
+                    "description": "字号缩放系数，1.0=默认，<1 缩小，>1 放大；范围 [0.6, 1.6]。",
+                },
             },
             "required": ["scene_id"],
         },
@@ -886,8 +890,15 @@ def _mut_update_text_card(plan: Plan, args: dict) -> ComposeEditDiff | None:
                 spec.sub_text = " ".join(lines[1:])[:40]
                 changed.append("sub_text")
         if new_size is not None:
-            # font_size_pct 已不在 TextCardSpec schema 上——本期忽略，只 log
-            log.info("update_text_card_spec ignored font_size_pct=%s (not in schema)", new_size)
+            try:
+                pct = float(new_size)
+            except (TypeError, ValueError):
+                pct = None
+            if pct is not None:
+                pct = max(0.6, min(1.6, pct))
+                if abs(pct - spec.font_size_pct) > 1e-3:
+                    spec.font_size_pct = pct
+                    changed.append(f"font_size_pct={pct:.2f}")
         if not changed:
             return None
         sc.text_card_spec = spec
@@ -917,38 +928,6 @@ def _mut_update_packaging_text(plan: Plan, args: dict) -> ComposeEditDiff | None
                 after=it.text,
                 summary=f"包装项 {iid} 文字改写",
             )
-    return None
-
-
-def _mut_move_packaging_item(plan: Plan, args: dict) -> ComposeEditDiff | None:
-    """沿时间轴平移包装项（preserve duration）。来源：包装轨手动拖动。"""
-    iid = args.get("item_id") or ""
-    if not iid:
-        return None
-    try:
-        new_start = float(args.get("start_seconds", -1))
-    except (TypeError, ValueError):
-        return None
-    if new_start < 0:
-        return None
-    for it in plan.packaging_track:
-        if it.item_id != iid:
-            continue
-        dur = max(0.0, float(it.end - it.start))
-        max_start = max(0.0, float(plan.duration_seconds) - dur)
-        clamped = min(new_start, max_start)
-        before = (round(it.start, 2), round(it.end, 2))
-        if abs(clamped - it.start) < 1e-3:
-            return None
-        it.start = round(clamped, 2)
-        it.end = round(clamped + dur, 2)
-        return ComposeEditDiff(
-            op="move_packaging_item",
-            target_id=iid,
-            before=before,
-            after=(it.start, it.end),
-            summary=f"包装项 {iid} {before[0]:.1f}s → {it.start:.1f}s",
-        )
     return None
 
 
@@ -1190,7 +1169,6 @@ _MUTATORS: dict[str, Callable[[Plan, dict], ComposeEditDiff | None]] = {
     "update_packaging_text": _mut_update_packaging_text,
     "update_packaging_item_time": _mut_update_packaging_item_time,
     "update_scene_transition": _mut_update_scene_transition,
-    "move_packaging_item": _mut_move_packaging_item,
     "update_bgm_offset": _mut_update_bgm_offset,
     "update_bgm_volume": _mut_update_bgm_volume,
     "update_compose_setting": _mut_update_compose_setting,
@@ -1546,7 +1524,6 @@ _STEP_ALLOWED_OPS: dict[ComposeEditStep, set[str]] = {
         "update_packaging_item_time",
         "update_scene_transition",
         "regenerate_narrations_all",
-        "move_packaging_item",
         "update_bgm_offset",
         "update_bgm_volume",
         "update_compose_setting",

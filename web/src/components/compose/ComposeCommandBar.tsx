@@ -39,13 +39,30 @@ const STEP_TITLE: Record<'step2' | 'step3', string> = {
 }
 
 const STEP_SCOPE: Record<'step2' | 'step3', string> = {
-  step2: '**可以改的（内容轨）**：段落文案、段落时长、删段、重排顺序。字卡 / BGM / 调性等要到 step3 再调。',
-  step3: '**可以改的（包装层）**：字卡文案与字号、包装项文字、BGM 偏移与音量、compose 设置（调性 / 比例 / 平台 / 关键词 / CTA / 总时长）。**内容轨此阶段已锁**，要改文案或段结构请回 step2。',
+  step2: '**可以改的（内容轨）**：段落文案、段落时长、删段、重排顺序；分镜级画面 / 口播 / 主体 / 时长；按段重生成字卡 LLM 文案 / 重排素材 / Seedream 静图（AI 视频不开放，要去 AIGC 面板）。字卡 / BGM / 调性等留到 step3。',
+  step3: '**可以改的（包装层）**：字卡文案与字号、包装项文字、包装项时间区间、转场样式（hard_cut / dissolve / slide / zoom / whip / wipe）、整体口播重写（hint）、BGM 偏移与音量、Compose 设置（平台 / 比例 / 总时长 / 迁移倾向 / 字幕开关 / 口播开关 / TTS 音色 / 画面预设 / 包装预设）。**内容轨此阶段不接受改动**，要改文案或段结构请回 step2。',
 }
 
 const STEP_EDIT_EXAMPLES: Record<'step2' | 'step3', string[]> = {
-  step2: ['把 sec-1 改成 5 秒', '删除 sec-2', '把段落顺序改成 sec-0、sec-2、sec-1', '把第二段文案改成「凌晨三点的便利店」'],
-  step3: ['BGM 推迟 2 秒', 'BGM 音量调到 0.6', '调性改紧凑', '画面改方版', '把最后一段字卡文字改成「现在就来」'],
+  step2: [
+    '把 sec-1 改成 5 秒',
+    '把 sec-1 第 2 镜画面改成「特写咖啡杯」',
+    '把 sec-2 第 1 镜口播改成「凌晨三点的便利店」',
+    '重新挑 sec-3 的素材',
+    '所有段都重新生成字卡',
+    '删除 sec-2',
+    '把段落顺序改成 sec-0、sec-2、sec-1',
+  ],
+  step3: [
+    'BGM 推迟 2 秒',
+    'BGM 音量调到 0.6',
+    '把 sc-2 字卡字号放大到 1.2',
+    '把 sc-3 转场改成 dissolve 0.4 秒',
+    '整体口播改成更紧凑的语气',
+    '把封面字卡时间挪到 0-2 秒',
+    '画面改方版',
+    '把最后一段字卡文字改成「现在就来」',
+  ],
 }
 
 const QA_EXAMPLES = [
@@ -56,8 +73,8 @@ const QA_EXAMPLES = [
 ]
 
 const STEP_EXAMPLES: Record<'step2' | 'step3', string[]> = {
-  step2: [...STEP_EDIT_EXAMPLES.step2.slice(0, 2), ...QA_EXAMPLES.slice(0, 2)],
-  step3: [...STEP_EDIT_EXAMPLES.step3.slice(0, 2), ...QA_EXAMPLES.slice(0, 2)],
+  step2: [...STEP_EDIT_EXAMPLES.step2.slice(0, 4), ...QA_EXAMPLES.slice(0, 2)],
+  step3: [...STEP_EDIT_EXAMPLES.step3.slice(0, 4), ...QA_EXAMPLES.slice(0, 2)],
 }
 
 type Role = 'agent' | 'user'

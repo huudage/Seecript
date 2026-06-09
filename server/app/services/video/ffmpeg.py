@@ -1336,8 +1336,13 @@ def text_card_clip(
     font_style = _TEXT_CARD_FONT_STYLE.get(font_family, _TEXT_CARD_FONT_STYLE["bold_sans"])
     # 字号按竖屏 1080×1920 基准；横屏 1920×1080 自动按 min(w,h) 缩
     base_size = min(width, height)
-    main_size = int(base_size * 0.12 * font_style["main_size_factor"])
-    sub_size = int(base_size * 0.12 * font_style["sub_size_factor"])
+    try:
+        size_pct = float(spec_dict.get("font_size_pct") or 1.0)
+    except (TypeError, ValueError):
+        size_pct = 1.0
+    size_pct = max(0.6, min(1.6, size_pct))
+    main_size = int(base_size * 0.12 * font_style["main_size_factor"] * size_pct)
+    sub_size = int(base_size * 0.12 * font_style["sub_size_factor"] * size_pct)
 
     main_y_expr, sub_y_expr = _TEXT_CARD_LAYOUT_Y.get(layout, _TEXT_CARD_LAYOUT_Y["center"])
 

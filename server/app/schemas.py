@@ -991,6 +991,7 @@ class TextCardSpec(BaseModel):
     animation: TextCardAnimation = Field(default="fade_in")
     emoji_decor: list[str] = Field(default_factory=list, max_length=3, description="装饰 emoji，最多 3 个")
     duration_seconds: float = Field(default=4.0, ge=1.5, le=15.0, description="字卡时长")
+    font_size_pct: float = Field(default=1.0, ge=0.6, le=1.6, description="字号缩放系数（1.0=默认；范围 60%-160%）")
 
 
 class CopyOutline(BaseModel):

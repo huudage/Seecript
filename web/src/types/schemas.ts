@@ -530,6 +530,8 @@ export interface TextCardSpec {
   emoji_decor: string[]
   /** 字卡播放时长（秒），1.5-15.0。 */
   duration_seconds: number
+  /** 字号缩放系数；1.0=默认，<1 缩小、>1 放大；范围 [0.6, 1.6]。 */
+  font_size_pct?: number
 }
 
 export interface CopyOutline {
