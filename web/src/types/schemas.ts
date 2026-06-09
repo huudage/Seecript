@@ -1002,6 +1002,8 @@ export interface Plan {
   brief?: string | null
   /** 视频要求与目的（受众/时长/调性等），驱动结构改编。 */
   video_goal?: string | null
+  /** stage-34：澄清阶段确认过的具象可拍物体清单（≤8 个）；后端从 brief 反解，前端 step3 chip 展示 + 校验。 */
+  subject_anchors?: string[]
   /** LLM 改编后的段落结构；空数组表示老 plan（前端兜底用 main_track 渲染）。 */
   adapted_sections: AdaptedSection[]
   variant: Variant

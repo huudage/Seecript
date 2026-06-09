@@ -193,3 +193,109 @@ def test_fallback_adaptation_scales_to_target_total():
     for sec in adapted:
         assert 2.0 <= sec.duration_seconds <= 30.0
 
+
+# ---------------- stage-34：subject_anchors 提取 + 注入 ----------------
+
+
+def test_extract_subject_anchors_parses_clarify_suffix():
+    """从 ClarifyPanel 写入的「（涉及 X、Y、Z）」后缀里反解 anchors。"""
+    from app.services.agent.plan_agent import extract_subject_anchors
+
+    brief = "新品纸巾种草（涉及纸巾、抹布、清洁喷雾）"
+    anchors = extract_subject_anchors(brief)
+    assert anchors == ["纸巾", "抹布", "清洁喷雾"], f"实际：{anchors}"
+
+
+def test_extract_subject_anchors_parses_head_format():
+    """content 空时 ClarifyPanel 用「核心可拍物体：X、Y」格式，也要解出。"""
+    from app.services.agent.plan_agent import extract_subject_anchors
+
+    brief = "国家文物展\n核心可拍物体：青铜鼎、玉器、陶俑"
+    anchors = extract_subject_anchors(brief)
+    assert "青铜鼎" in anchors and "玉器" in anchors and "陶俑" in anchors
+
+
+def test_extract_subject_anchors_dedupes_and_caps():
+    """多次「（涉及）」累积、去重、上限 8。"""
+    from app.services.agent.plan_agent import extract_subject_anchors
+
+    brief = "主题 A（涉及纸巾、抹布）；主题 B（涉及纸巾、拖把、清洁喷雾、洗碗布、玻璃水、马桶刷、抽纸、湿巾、洗洁精）"
+    anchors = extract_subject_anchors(brief)
+    # 去重 + 上限 8
+    assert len(anchors) <= 8
+    assert anchors[0] == "纸巾", f"应保序去重：{anchors}"
+    assert len(set(anchors)) == len(anchors), f"未去重：{anchors}"
+
+
+def test_extract_subject_anchors_returns_empty_when_no_marker():
+    from app.services.agent.plan_agent import extract_subject_anchors
+
+    assert extract_subject_anchors(None) == []
+    assert extract_subject_anchors("") == []
+    assert extract_subject_anchors("普通文案没有标记") == []
+
+
+@pytest.mark.asyncio
+async def test_adapt_structure_injects_missing_subject_anchors():
+    """LLM 漏掉了某个 anchor 时，_enforce_subject_anchors 必须机械补回去。"""
+    from app.services.agent.plan_agent import adapt_structure
+
+    manifest = _mini_manifest(4)
+    brief = "新品纸巾种草，主推沙发耐用日常清洁（涉及纸巾、抹布、清洁喷雾）"
+    adapted = await adapt_structure(
+        [manifest],
+        brief=brief,
+        video_goal="30 秒讲清家清好物三件套",
+    )
+    # 把整支视频的 subject + visual + targets.name + content_description 拼起来
+    blob_parts: list[str] = []
+    for sec in adapted:
+        blob_parts.append(sec.content_description or "")
+        for sh in (sec.shots or []):
+            blob_parts.append(sh.subject or "")
+            blob_parts.append(sh.visual or "")
+            for t in (sh.targets or []):
+                blob_parts.append(t.name or "")
+    blob = "\n".join(blob_parts)
+    for anchor in ("纸巾", "抹布", "清洁喷雾"):
+        assert anchor in blob, f"anchor『{anchor}』未被注入：\n{blob[:400]}"
+
+
+def test_enforce_subject_anchors_directly_with_synthetic_sections():
+    """单测 _enforce_subject_anchors：构造一份没有 anchor 的 sections，验证注入后命中。"""
+    from app.schemas import AdaptedSection, ShotPlan
+    from app.services.agent.plan_agent import _enforce_subject_anchors
+
+    sections = [
+        AdaptedSection(
+            section_id="sec-0", role="opening", theme="开场",
+            content_description="主播口播开场",
+            shots=[ShotPlan(order=0, subject="主播", visual="主播正脸特写", narration="嗨", duration_seconds=3.0)],
+            order=0, duration_seconds=3.0,
+        ),
+        AdaptedSection(
+            section_id="sec-1", role="development", theme="展示",
+            content_description="产品展示",
+            shots=[ShotPlan(order=0, subject="桌面", visual="桌面摆放", narration="", duration_seconds=4.0)],
+            order=1, duration_seconds=4.0,
+        ),
+        AdaptedSection(
+            section_id="sec-2", role="closing", theme="收尾",
+            content_description="行动引导",
+            shots=[ShotPlan(order=0, subject="主播", visual="主播总结", narration="拜拜", duration_seconds=3.0)],
+            order=2, duration_seconds=3.0,
+        ),
+    ]
+    out = _enforce_subject_anchors(sections, ["纸巾", "抹布"])
+    blob = "\n".join(
+        (sec.content_description or "") + "\n" +
+        "\n".join((sh.subject or "") + "|" + (sh.visual or "") + "|" + "、".join(t.name for t in (sh.targets or []))
+                  for sh in (sec.shots or []))
+        for sec in out
+    )
+    assert "纸巾" in blob, blob
+    assert "抹布" in blob, blob
+    # 首段（opening）和末段（closing）不应被改——只动中间主体段
+    assert out[0].shots[0].subject == "主播"
+    assert out[-1].shots[0].subject == "主播"
+

@@ -41,7 +41,7 @@ from ..schemas import (
     TransitionStyle,
     TTSVoice,
 )
-from ..services.agent.plan_agent import adapt_structure
+from ..services.agent.plan_agent import adapt_structure, extract_subject_anchors
 from ..services.assets import asset_store
 from ..services.library import manifest_store
 from ..services.materials import gap_store, material_store
@@ -866,6 +866,7 @@ async def build_plan(req: PlanBuildRequest) -> Plan:
         session_id=effective_project_id,
         brief=req.brief,
         video_goal=req.video_goal,
+        subject_anchors=extract_subject_anchors(req.brief),
         adapted_sections=adapted,
         variant=req.variant,
         duration_seconds=actual_total,

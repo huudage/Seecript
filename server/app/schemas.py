@@ -1915,6 +1915,14 @@ class Plan(BaseModel):
         default=None,
         description="用户对新视频的要求与目的（受众、时长目标、调性等），驱动结构改编。",
     )
+    subject_anchors: list[str] = Field(
+        default_factory=list,
+        description=(
+            "stage-34：从 brief 反解出的用户已确认的具象物体清单（≤8 个），来源于 ClarifyPanel "
+            "在 outline.content 写入的「（涉及 X、Y、Z）」后缀。整支视频里每个 anchor 至少出现 1 次"
+            "（plan_agent._enforce_subject_anchors 兜底）。下游 AIGC 生图/生视频会把它们当不可替换主体。"
+        ),
+    )
     adapted_sections: list[AdaptedSection] = Field(
         default_factory=list,
         description="LLM 基于样例骨架 + brief + video_goal 改编出的段落结构；空列表表示老 plan（兼容）。",

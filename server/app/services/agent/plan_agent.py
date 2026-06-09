@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import logging
 import math
+import re
 from typing import Optional
 
 from ..llm_client import get_llm_client, _extract_json
@@ -139,6 +140,46 @@ _DEFAULT_DURATION_BY_CLASS: dict[str, float] = {
 }
 
 
+# brief 里如果包含 ClarifyPanel 注入的「（涉及 X、Y、Z）」尾巴，或者「核心可拍物体：X、Y」
+# 起头，直接抠出这些用户已经检查过的具象物体名词——作为 adapt_structure 的硬约束传给 LLM。
+# 来源：clarify_agent._enforce_subjects_in_content 在 content 末尾补「（涉及 ...）」；
+# ClarifyPanel.handleAdopt 在用户点采纳时也会把 brief_subjects + detected_subjects union
+# 用同样的「（涉及 X、Y、Z）」格式拼到 outline.content，stitch_outline_to_brief 把 content
+# 整段串进 brief。所以在这里做反向解析，把它们提取出来当 subject_anchors。
+_BRIEF_SUBJECT_PATTERN = re.compile(r"（涉及([^）]+)）")
+_BRIEF_SUBJECT_HEAD_PATTERN = re.compile(r"核心可拍物体[：:]([^\n。]+)")
+
+
+def extract_subject_anchors(brief: Optional[str]) -> list[str]:
+    """从用户 brief 文本里反解 ClarifyPanel 注入的具象物体名词。
+
+    解析两种约定格式（都由 ClarifyPanel/clarify_agent 主动写入）：
+    - `（涉及 X、Y、Z）` 后缀：可能出现多次，全部取并集
+    - `核心可拍物体：X、Y、Z` 前缀（content 为空时的备用格式）
+
+    去重保序，最多 8 个；长度 1-12 字（≥1 字防止误吞「品」「物」单字噪声）。
+    """
+    if not brief:
+        return []
+    out: list[str] = []
+    seen: set[str] = set()
+    blobs: list[str] = []
+    blobs.extend(_BRIEF_SUBJECT_PATTERN.findall(brief))
+    blobs.extend(_BRIEF_SUBJECT_HEAD_PATTERN.findall(brief))
+    for blob in blobs:
+        for raw in re.split(r"[、,，;；\s/／]+", blob):
+            s = raw.strip()
+            if not s or len(s) > 12:
+                continue
+            if s in seen:
+                continue
+            seen.add(s)
+            out.append(s)
+            if len(out) >= 8:
+                return out
+    return out
+
+
 def _default_duration_for(role: str, pattern: str) -> float:
     """按 role 在 pattern 中的类（opening/main/peak/closing）给默认时长。
 
@@ -229,6 +270,16 @@ async def adapt_structure(
     cta_text = (settings.cta or "").strip() or "（未指定，可自拟收尾引导）"
     kw_text = "、".join(settings.keywords) if settings.keywords else "（无）"
 
+    # 从 brief 里反解 ClarifyPanel 已经写入的具象物体清单——这是用户在澄清阶段
+    # 亲自检查/编辑过的「可拍物体」白名单，下游 LLM 必须优先用这些当 shot.subject 和
+    # ShotTarget.name，绝不准忽略掉。空列表表示用户没用 ClarifyPanel 或者 brief 没含物体。
+    subject_anchors = extract_subject_anchors(brief)
+    if subject_anchors:
+        anchors_str = "、".join(subject_anchors)
+        log.info("[plan-agent] subject_anchors from brief: %s", anchors_str)
+    else:
+        anchors_str = ""
+
     # 样例标签：单样例时不打 tag（行为与旧版一致）；多样例时打 (样例A)/(样例B)
     multi = len(manifests) > 1
     sample_lines: list[str] = []
@@ -282,7 +333,16 @@ async def adapt_structure(
         f"创作者输入：\n"
         f"- 主题/卖点（brief）：{brief_text}\n"
         f"- 视频要求与目的（video_goal）：{goal_text}\n\n"
-        f"创作设置：\n"
+        + (
+            f"【可拍物体白名单 · stage-34 硬约束】\n"
+            f"用户在澄清阶段已经亲自检查/编辑过的具象物体清单：{anchors_str}\n"
+            f"- 每段的 shots[].subject 必须**优先**从这个清单选；多段同名是允许的（不同段拍同一物体的不同侧面/状态）；\n"
+            f"- shots[].targets 数组里至少有 1 个 target.name 命中清单（kind 给 object 或 person，按物体性质）；\n"
+            f"- 整支视频里这个清单的物体**必须全部出现至少 1 次**（缺哪个就在合适的段里补一镜）；\n"
+            f"- 清单之外的 subject 也允许（人物/场景补镜），但不准用上位词/营销词/形容词替换清单里的物体。\n\n"
+            if anchors_str else ""
+        )
+        + f"创作设置：\n"
         f"- 目标总时长：{target_total:.0f}s\n"
         f"- 目标平台：{_PLATFORM_LABEL.get(settings.target_platform, settings.target_platform)}\n"
         f"- 整体调性：{_TONE_LABEL.get(settings.tone, settings.tone)}\n"
@@ -348,11 +408,20 @@ async def adapt_structure(
         if items:
             items = _enforce_hard_constraints(items, n_src, pattern)
             items = _normalize_durations(items, target_total)
-            return _materialize(items, combined_sections, pattern)
+            sections = _materialize(items, combined_sections, pattern)
+            # stage-34：硬注入 subject_anchors——LLM 经常会漏掉某些用户已确认的物体。
+            # 用 _enforce_subject_anchors 兜底，把缺的 anchor 强行塞进最匹配的 section 的
+            # ShotPlan.subject / ShotTarget，保证整支视频里每个 anchor 至少出现 1 次。
+            if subject_anchors:
+                sections = _enforce_subject_anchors(sections, subject_anchors)
+            return sections
     except Exception as exc:
         log.warning("[plan-agent] adapt_structure LLM failed: %s → fallback", exc)
 
-    return _fallback_adaptation(list(manifests[0].sections), target_total, pattern)
+    fallback = _fallback_adaptation(list(manifests[0].sections), target_total, pattern)
+    if subject_anchors:
+        fallback = _enforce_subject_anchors(fallback, subject_anchors)
+    return fallback
 
 
 def _parse_raw_items(raw: list, pattern: str = "dramatic") -> list[dict]:
@@ -643,6 +712,112 @@ def _auto_shots_for_section(section_total: float, content_description: str, role
         narration="",
         duration_seconds=round(max(1.0, min(15.0, section_total)), 2),
     )]
+
+
+def _enforce_subject_anchors(
+    sections: list[AdaptedSection], anchors: list[str]
+) -> list[AdaptedSection]:
+    """硬注入 subject_anchors——LLM 漏掉某个用户确认的物体时，机械补回去。
+
+    判定缺失：anchor 没出现在任何 shot.subject、targets.name、shot.visual、
+    section.content_description 里（精确子串匹配）。
+    补法：把缺的 anchor 塞进**主体段**（development/step_N/item_N/flow/info_block 等
+    role_is_main 命中的段）的中段第一个 shot——优先复用现有 shot，把其 subject 改写
+    为 anchor、targets 头部插一个 kind="object" 的 ShotTarget；如果没有 shots 则用
+    占位 ShotPlan 兜底。开场/收尾段不动（节奏铁律）。
+
+    锚点全部命中则原样返回。
+    """
+    if not sections or not anchors:
+        return sections
+
+    # 命中检测：把所有可能写到的字段拼成大字符串
+    blob_parts: list[str] = []
+    for sec in sections:
+        if sec.content_description:
+            blob_parts.append(sec.content_description)
+        for sh in (sec.shots or []):
+            if sh.subject:
+                blob_parts.append(sh.subject)
+            if sh.visual:
+                blob_parts.append(sh.visual)
+            if sh.narration:
+                blob_parts.append(sh.narration)
+            for t in (sh.targets or []):
+                if t.name:
+                    blob_parts.append(t.name)
+    blob = "\n".join(blob_parts)
+    missing = [a for a in anchors if a and a not in blob]
+    if not missing:
+        return sections
+
+    # 选可注入的主体段（去掉首段和末段，且不是首/末段 role）
+    n = len(sections)
+    candidate_idxs: list[int] = []
+    for i, sec in enumerate(sections):
+        if i == 0 or i == n - 1:
+            continue
+        candidate_idxs.append(i)
+    if not candidate_idxs:
+        # 只有 1-2 段的极端情况，退而求其次：用倒数第二段（或唯一段）
+        candidate_idxs = [max(0, n - 2)]
+
+    log.info(
+        "[plan-agent] _enforce_subject_anchors missing=%s targets=%d sections=%d",
+        missing, len(candidate_idxs), n,
+    )
+
+    # 轮转分配：每个 anchor 塞到下一个候选段
+    cursor = 0
+    for anchor in missing:
+        sec_idx = candidate_idxs[cursor % len(candidate_idxs)]
+        cursor += 1
+        sec = sections[sec_idx]
+        shots = list(sec.shots or [])
+        if not shots:
+            # 空 shots：补一个新 shot（duration 取 section 总时长的 60% 但 ≤ 8s ≥ 1s）
+            base_dur = max(1.0, min(8.0, float(sec.duration_seconds or 4.0) * 0.6))
+            new_shot = ShotPlan(
+                order=0,
+                subject=anchor,
+                visual=f"{anchor}的特写镜头",
+                narration="",
+                duration_seconds=round(base_dur, 2),
+                targets=[ShotTarget(kind="object", name=anchor, role="primary", visual_hint=None)],
+            )
+            shots = [new_shot]
+        else:
+            # 改写中段第一个 shot 的 subject + targets——保留它原本的 visual/narration/duration
+            mid = len(shots) // 2
+            target_shot = shots[mid]
+            new_targets = list(target_shot.targets or [])
+            # 看 anchor 是否已在 targets.name；不在则插到最前
+            if not any(t.name == anchor for t in new_targets):
+                new_targets.insert(
+                    0,
+                    ShotTarget(kind="object", name=anchor, role="primary", visual_hint=None),
+                )
+            # 保留原 visual，但如果 anchor 不在 visual 里就拼上
+            new_visual = target_shot.visual or ""
+            if anchor not in new_visual:
+                new_visual = (anchor + "：" + new_visual)[:200] if new_visual else f"{anchor}的特写镜头"
+            shots[mid] = target_shot.model_copy(
+                update={
+                    "subject": anchor if not target_shot.subject or target_shot.subject not in anchors else target_shot.subject,
+                    "visual": new_visual,
+                    "targets": new_targets[:4],
+                }
+            )
+        # section.content_description 也拼一下 anchor 名字（前端拆解卡片读它）
+        new_content = sec.content_description or ""
+        if anchor not in new_content:
+            suffix = f"（含{anchor}）"
+            new_content = (new_content + suffix)[:400] if new_content else f"主体：{anchor}"
+        sections[sec_idx] = sec.model_copy(
+            update={"shots": shots, "content_description": new_content},
+        )
+
+    return sections
 
 
 def _materialize(

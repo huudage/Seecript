@@ -118,8 +118,15 @@ export function ClarifyPanel({
   const [error, setError] = useState('')
   const [snapshotBrief, setSnapshotBrief] = useState('')
   /** LLM 从 INITIAL_BRIEF + outline.content 自抽的具象名词（≤6）；与 detectedSubjects
-   *  平行，UI 分两组 chip 显示。即使用户没上传素材也能看到「主题里识别到了 X、Y」。 */
+   *  平行，UI 分两组 chip 显示。即使用户没上传素材也能看到「主题里识别到了 X、Y」。
+   *  用户可编辑：chip 上有 × 删除；末尾输入框 + Enter 添加；编辑后这些主体会被
+   *  写回 outline.content（「（涉及 ...）」机械追加），并作为 detected_subjects
+   *  二次跑澄清时的硬约束。 */
   const [briefSubjects, setBriefSubjects] = useState<string[]>([])
+  /** 是否被用户手动改过——改过之后下次 outline_ready 不再覆盖（避免 LLM 重抽冲掉用户编辑）。 */
+  const [briefSubjectsDirty, setBriefSubjectsDirty] = useState(false)
+  /** 末尾添加输入框 draft */
+  const [subjectDraft, setSubjectDraft] = useState('')
   const sseRef = useRef<SSEHandle | null>(null)
 
   const round = transcript.length + 1
@@ -141,6 +148,34 @@ export function ClarifyPanel({
     setPhase('idle')
     setError('')
     setBriefSubjects([])
+    setBriefSubjectsDirty(false)
+    setSubjectDraft('')
+  }
+
+  /** chip 删除：reuse 后 mark dirty 防止下轮 LLM 覆盖。 */
+  const removeBriefSubject = (s: string) => {
+    setBriefSubjects((prev) => prev.filter((x) => x !== s))
+    setBriefSubjectsDirty(true)
+  }
+
+  /** chip 添加：去重 + 长度 1–12 + 不超 6 个；mark dirty。 */
+  const addBriefSubject = (raw: string) => {
+    const v = raw.trim()
+    if (!v) return
+    if (v.length > 12) {
+      setError('单个物体最多 12 个字。')
+      return
+    }
+    setBriefSubjects((prev) => {
+      if (prev.includes(v)) return prev
+      if (prev.length >= 6) {
+        setError('最多 6 个物体（先删一个再加）。')
+        return prev
+      }
+      return [...prev, v]
+    })
+    setBriefSubjectsDirty(true)
+    setSubjectDraft('')
   }
 
   const startRound = (forceFinalize = false, baseBrief?: string, baseTranscript?: Turn[]) => {
@@ -173,7 +208,8 @@ export function ClarifyPanel({
             setStreaming((prev) => prev + (ev.payload?.delta ?? ''))
           } else if (ev.step === 'outline_ready' && ev.payload?.outline) {
             setOutline({ ...EMPTY_OUTLINE, ...ev.payload.outline })
-            if (Array.isArray(ev.payload.brief_subjects)) {
+            if (Array.isArray(ev.payload.brief_subjects) && !briefSubjectsDirty) {
+              // 用户没动过 chip 才允许 LLM 覆盖；编辑过的尊重用户判断。
               setBriefSubjects(ev.payload.brief_subjects.slice(0, 6))
             }
             if (ev.payload.thinking) {
@@ -231,15 +267,36 @@ export function ClarifyPanel({
       setPhase('error')
       return
     }
+    // 把用户编辑过的 briefSubjects + VLM detectedSubjects 合并，机械写进 outline.content
+    // 末尾「（涉及 X、Y、Z）」——保证下游 adapt / decompose / aigc prompt 看得到具体物体
+    // （后端 brief 文本是唯一传输通道，所以必须落地到 content）。
+    const unionSubjects = Array.from(
+      new Set([
+        ...briefSubjects.map((s) => s.trim()).filter(Boolean),
+        ...(detectedSubjects ?? []).map((s) => s.trim()).filter(Boolean),
+      ]),
+    )
+    let mergedOutline = outline
+    if (unionSubjects.length > 0) {
+      const content = (outline.content ?? '').trim()
+      const missing = unionSubjects.filter((s) => !content.includes(s))
+      if (missing.length > 0) {
+        const suffix = `（涉及${missing.join('、')}）`
+        const newContent = (content ? content + suffix : `核心可拍物体：${unionSubjects.join('、')}`).slice(0, 400)
+        mergedOutline = { ...outline, content: newContent }
+      }
+    }
+    const mergedStitched = stitchBrief(mergedOutline)
     // 用接口拼一次（让后端有「采纳了什么」的最终 ground truth；返回值与本地一致）
     void api
       .post<ClarifyFinalizeResponse>('/clarify/finalize', {
-        outline,
+        outline: mergedOutline,
         initial_brief: (snapshotBrief || initialBrief).trim(),
         transcript: transcript as ClarifyTurn[],
       })
-      .catch(() => null)
-    onAdopt(stitchedPreview.slice(0, 1000))
+      .catch(() => {})
+
+    onAdopt(mergedStitched.slice(0, 1000))
     setOpen(false)
     reset()
   }
@@ -314,28 +371,70 @@ export function ClarifyPanel({
       </div>
 
       {/* 双路 subject 识别 chips：
-          - 主题识别 (briefSubjects)：LLM 从 brief/outline.content 自抽的具象名词，没上传素材也有
-          - 素材识别 (detectedSubjects)：VLM 从用户已上传的图片/视频里识别的对象
-          两路 union 在脚本生成时一起作为锚点，配合服务端的 enforce_subjects_in_content 闭环。 */}
+          - 推断可拍物体 (briefSubjects)：LLM 反推用户最可能拍到的具体实物。**用户可编辑**——
+            chip 上 ✕ 删除、末尾输入框回车添加，最多 6 个。编辑过的清单会在采纳时机械写进
+            outline.content（「（涉及 ...）」追加），并下传到 plan.subject_anchors，
+            参与后续 adapted_sections / 分镜 / AIGC prompt 的硬约束。
+          - 素材识别 (detectedSubjects)：VLM 从用户已上传的图片/视频里识别的对象（只读）
+          两路在 handleAdopt 时合并写进 outline.content，形成闭环。 */}
       <div className="space-y-1.5">
-        <div className="rounded-md border border-dashed border-emerald-500/30 bg-emerald-50/40 px-2 py-1.5 text-[10px] dark:bg-emerald-950/20">
-          {briefSubjects.length > 0 ? (
-            <div className="flex flex-wrap items-center gap-1">
-              <span className="text-muted-foreground">推断可拍物体 {briefSubjects.length}：</span>
-              {briefSubjects.map((s) => (
+        <div className="rounded-md border-2 border-amber-500/60 bg-amber-50/70 px-2 py-2 text-[11px] shadow-sm dark:bg-amber-950/30">
+          <div className="mb-1.5 flex items-center justify-between">
+            <span className="font-semibold text-amber-700 dark:text-amber-300">
+              ⚠ 推断可拍物体（请检查；识别错了直接 ✕ 删，缺的回车补）
+            </span>
+            <span className="text-[10px] text-muted-foreground">
+              {briefSubjects.length}/6
+            </span>
+          </div>
+          <div className="flex flex-wrap items-center gap-1.5">
+            {briefSubjects.length > 0 ? (
+              briefSubjects.map((s) => (
                 <span
                   key={`b-${s}`}
-                  className="rounded bg-emerald-500/15 px-1.5 py-0.5 text-emerald-700 dark:text-emerald-300"
+                  className="group inline-flex items-center gap-1 rounded bg-emerald-500/20 px-1.5 py-0.5 text-emerald-800 dark:text-emerald-200"
                 >
                   {s}
+                  <button
+                    type="button"
+                    aria-label={`删除 ${s}`}
+                    onClick={() => removeBriefSubject(s)}
+                    className="text-emerald-700/70 hover:text-rose-600 dark:text-emerald-300/70 dark:hover:text-rose-400"
+                  >
+                    ×
+                  </button>
                 </span>
-              ))}
-              <span className="text-muted-foreground">· AI 反推你最可能拍到的具体实物（非主题词）</span>
+              ))
+            ) : (
+              <span className="text-muted-foreground">
+                暂无——AI 没识别到具体物体，建议手动加（如「青铜鼎」「玉器」）
+              </span>
+            )}
+            {briefSubjects.length < 6 && (
+              <input
+                value={subjectDraft}
+                onChange={(e) => setSubjectDraft(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') {
+                    e.preventDefault()
+                    addBriefSubject(subjectDraft)
+                  } else if (e.key === 'Escape') {
+                    setSubjectDraft('')
+                  }
+                }}
+                onBlur={() => {
+                  if (subjectDraft.trim()) addBriefSubject(subjectDraft)
+                }}
+                placeholder="+ 加物体（回车确认）"
+                maxLength={12}
+                className="w-32 rounded border border-amber-500/40 bg-background/70 px-1.5 py-0.5 text-[11px] placeholder:text-muted-foreground/60 focus:border-amber-500 focus:outline-none"
+              />
+            )}
+          </div>
+          {briefSubjectsDirty && (
+            <div className="mt-1 text-[10px] text-amber-700 dark:text-amber-300">
+              ✎ 已被你编辑过；采纳后将写进段落分镜的主体锚点
             </div>
-          ) : (
-            <span className="text-muted-foreground">
-              推断可拍物体：等待 AI 跑澄清——会反推「纸巾/瑜伽垫」这种镜头能拍到的具体实物。
-            </span>
           )}
         </div>
         <div className="rounded-md border border-dashed border-border bg-card/50 px-2 py-1.5 text-[10px]">

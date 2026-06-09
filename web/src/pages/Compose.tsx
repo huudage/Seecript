@@ -1815,9 +1815,11 @@ export default function ComposePage() {
                 onSelectScene={(scene, gap) => {
                   setSelectedSceneId(scene.scene_id)
                   setSelectedPackagingItemId(null)
-                  if (gap) {
-                    setSelectedGapId(gap.gap_id)
-                  }
+                  // 关键：无论是否有 gap 都更新 selectedGapId——没 gap 时置 null，
+                  // 否则右侧 keepalive 还会显示上一段正在生成的 panel（用户切到本段
+                  // 但看到的是别段的「生成中」状态）。已生成段的 keepalive 仍在 DOM 里
+                  // 不丢，下次切回时仍能恢复（display:none 不卸载）。
+                  setSelectedGapId(gap?.gap_id ?? null)
                   seekPlayer(scene.start)
                 }}
                 onSelectVoice={(scene) => {
@@ -1861,6 +1863,136 @@ export default function ComposePage() {
                 }
               />
             </div>
+          </div>
+
+          {/* v34：缺口补全工作台直接挂在 FourTrackBoard 下方（全宽）。
+              用户在上方轨道点哪段，这里就显示哪段的「挑素材 / 字卡画面 / AI 视频 /
+              AI 生图再渲染」四个 tab；keepalive 多实例 display:none 切换，跨段后台跑。 */}
+          <div className="space-y-2 border-t border-border pt-3">
+            <p className="rounded-md border border-primary/30 bg-primary/5 px-2 py-1.5 text-[11px] leading-relaxed text-foreground">
+              💡 这里只关心<strong>画面 + 字幕</strong>——三种方式都是给本段生成画面（挑素材 / 字卡画面 / AI 视频）；字幕轨开关默认关闭，开启后 AI 自动按段落生成可编辑字幕。口播留到第 3 步再切换音色合成。
+            </p>
+            {selectedGap ? (
+              <>
+                <div className="flex flex-wrap items-center gap-1 text-xs">
+                  {ACTION_TABS.map((tab) => (
+                    <button
+                      key={tab.value}
+                      onClick={() => setActiveAction(tab.value)}
+                      title={tab.hint}
+                      className={cn(
+                        'rounded-md border px-2 py-1 transition-colors',
+                        activeAction === tab.value
+                          ? 'border-primary bg-primary/10 text-primary'
+                          : 'border-border bg-background hover:bg-secondary',
+                      )}
+                    >
+                      {tab.label}
+                    </button>
+                  ))}
+                </div>
+
+                {activeAction === 'rerank' && (
+                  <>
+                    {!selectedFill && (
+                      <button
+                        onClick={() => void runFill(selectedGap, 'rerank')}
+                        disabled={gapBusy}
+                        className={cn(
+                          'w-full rounded-md bg-primary px-3 py-1.5 text-xs font-medium text-primary-foreground',
+                          gapBusy && 'cursor-not-allowed opacity-60',
+                        )}
+                      >
+                        {gapBusy ? '生成候选中…' : '让 AI 挑一个素材填进来'}
+                      </button>
+                    )}
+                    {selectedFill && selectedFill.action === 'rerank' && (
+                      <FillRerankPanel
+                        plan={plan}
+                        fill={selectedFill}
+                        materials={sortedMaterials}
+                        onApply={handleRerankApply}
+                        loading={gapBusy}
+                      />
+                    )}
+                  </>
+                )}
+
+                {/* keepalive 工作台：每个 (section_id, action) 一份 panel，留在 DOM
+                    不卸载。切段或切动作只切 display；本地 useState（生成阶段、
+                    seedance polling、表单草稿）跨切换不丢。
+                    关键：键用 section_id（rebuild 后稳定），运行时按 section_id 反查
+                    最新 gaps 拿到最新 gap_id——这样 silent rebuild 重写 gap_id
+                    后，panel 不会因为 find 失败而卸载（→ AI 出图 polling 不丢）。 */}
+                {Array.from(visitedFillKeys).map((key) => {
+                  const [sectionId, action] = key.split('::') as [string, FillAction]
+                  const gapForKey =
+                    gaps.find((g) => g.section_id === sectionId) ??
+                    gaps.find((g) => g.gap_id === sectionId)  // 老 gap 兜底（没 section_id）
+                  if (!gapForKey) return null
+                  const isActive =
+                    selectedGap?.section_id === sectionId && activeAction === action
+                  const fillForKey =
+                    fills.find(
+                      (f) =>
+                        (f.section_id === sectionId || f.gap_id === gapForKey.gap_id) &&
+                        f.action === action,
+                    ) ?? null
+                  const onResult = async (f: FillResult) => {
+                    // 标记本段 busy（用 section_id 而非 gap_id，rebuild 后仍能定位）
+                    const sid = f.section_id ?? gapForKey.section_id ?? gapForKey.gap_id
+                    markBusy(sid, true)
+                    upsertFill(f)
+                    // 取 store 最新 snapshot（含其它并发面板刚 upsert 的 fill），避免
+                    // 用 closure 中的 stale `fills` 把别的段的成果覆盖掉。
+                    const latest = usePlanStore.getState().fills
+                    const nextFills = [...latest.filter((x) => x.gap_id !== f.gap_id), f]
+                    try {
+                      await runAnalyze(nextFills, { silent: true })
+                    } finally {
+                      markBusy(sid, false)
+                    }
+                  }
+                  return (
+                    <div
+                      key={key}
+                      style={{ display: isActive ? 'block' : 'none' }}
+                      aria-hidden={!isActive}
+                    >
+                      {action === 'copy' && (
+                        <FillCopyPanel
+                          gap={gapForKey}
+                          fill={fillForKey}
+                          plan={plan}
+                          onResult={onResult}
+                        />
+                      )}
+                      {action === 'aigc' && (
+                        <FillAigcPanel
+                          gap={gapForKey}
+                          fill={fillForKey}
+                          plan={plan}
+                          onResult={onResult}
+                        />
+                      )}
+                      {action === 'aigc_image' && (
+                        <FillAigcPanel
+                          gap={gapForKey}
+                          fill={fillForKey}
+                          plan={plan}
+                          mode="image"
+                          onResult={onResult}
+                        />
+                      )}
+                    </div>
+                  )
+                })}
+              </>
+            ) : (
+              <p className="rounded-md border border-dashed border-border bg-background/30 px-3 py-2 text-[11px] text-muted-foreground">
+                点上方内容轨任意一段——这里出现「挑素材 / 字卡画面 / AI 视频 / AI 生图再渲染」四个画面补全选项。
+              </p>
+            )}
           </div>
 
           {/* 素材库（提升到中段，提升上传感受）：上传 / 拖拽排序 / 删除 → 自动重排并刷新缺口 */}
@@ -1919,12 +2051,14 @@ export default function ComposePage() {
           </div>
 
           {/* 两栏：左 段落编辑（补全的依据） / 右 缺口补全 tabs。
-              把段落编辑放左是因为补全永远基于段落实时内容——先在左边把段落写顺，再来右边补。 */}
-          <div className="grid gap-3 lg:grid-cols-[1fr_1.2fr]">
+              v34：把右侧补全工作台从两栏抽出，挪到了 FourTrackBoard 正下方
+              （一行宽，方便用户切段后直接看到所有四种补全方式）。
+              这里仅剩段落/包装段编辑——按 selection 自动切换。 */}
+          <div className="grid gap-3">
             {/* 左 · 段落/包装段编辑（按 selection 自动切换）
                 keepalive：包装项独立渲染（read-only）；scene 走多实例堆栈，每条 visited
                 scene_id 一份 SceneEditPanel，display:none 切换，本地 useState（theme/content/
-                subject 草稿）跨段切换不丢——和右侧 fill 工作台一致。 */}
+                subject 草稿）跨段切换不丢——和上方 fill 工作台一致。 */}
             {selectedPackagingItem ? (
               <SceneEditPanel
                 key={`pkg-${selectedPackagingItem.item_id}`}
@@ -1969,133 +2103,6 @@ export default function ComposePage() {
               </div>
             )}
 
-            {/* 右 · 缺口补全（依赖选中 gap） */}
-            <div className="space-y-2">
-              <p className="rounded-md border border-primary/30 bg-primary/5 px-2 py-1.5 text-[11px] leading-relaxed text-foreground">
-              💡 这里只关心<strong>画面 + 字幕</strong>——三种方式都是给本段生成画面（挑素材 / 字卡画面 / AI 视频）；字幕轨开关默认关闭，开启后 AI 自动按段落生成可编辑字幕。口播留到第 3 步再切换音色合成。
-              </p>
-              {selectedGap ? (
-                <>
-                  <div className="flex flex-wrap items-center gap-1 text-xs">
-                    {ACTION_TABS.map((tab) => (
-                      <button
-                        key={tab.value}
-                        onClick={() => setActiveAction(tab.value)}
-                        title={tab.hint}
-                        className={cn(
-                          'rounded-md border px-2 py-1 transition-colors',
-                          activeAction === tab.value
-                            ? 'border-primary bg-primary/10 text-primary'
-                            : 'border-border bg-background hover:bg-secondary',
-                        )}
-                      >
-                        {tab.label}
-                      </button>
-                    ))}
-                  </div>
-
-                  {activeAction === 'rerank' && (
-                    <>
-                      {!selectedFill && (
-                        <button
-                          onClick={() => void runFill(selectedGap, 'rerank')}
-                          disabled={gapBusy}
-                          className={cn(
-                            'w-full rounded-md bg-primary px-3 py-1.5 text-xs font-medium text-primary-foreground',
-                            gapBusy && 'cursor-not-allowed opacity-60',
-                          )}
-                        >
-                          {gapBusy ? '生成候选中…' : '让 AI 挑一个素材填进来'}
-                        </button>
-                      )}
-                      {selectedFill && selectedFill.action === 'rerank' && (
-                        <FillRerankPanel
-                          plan={plan}
-                          fill={selectedFill}
-                          materials={sortedMaterials}
-                          onApply={handleRerankApply}
-                          loading={gapBusy}
-                        />
-                      )}
-                    </>
-                  )}
-
-                  {/* keepalive 工作台：每个 (section_id, action) 一份 panel，留在 DOM
-                      不卸载。切段或切动作只切 display；本地 useState（生成阶段、
-                      seedance polling、表单草稿）跨切换不丢。
-                      关键：键用 section_id（rebuild 后稳定），运行时按 section_id 反查
-                      最新 gaps 拿到最新 gap_id——这样 silent rebuild 重写 gap_id
-                      后，panel 不会因为 find 失败而卸载（→ AI 出图 polling 不丢）。 */}
-                  {Array.from(visitedFillKeys).map((key) => {
-                    const [sectionId, action] = key.split('::') as [string, FillAction]
-                    const gapForKey =
-                      gaps.find((g) => g.section_id === sectionId) ??
-                      gaps.find((g) => g.gap_id === sectionId)  // 老 gap 兜底（没 section_id）
-                    if (!gapForKey) return null
-                    const isActive =
-                      selectedGap?.section_id === sectionId && activeAction === action
-                    const fillForKey =
-                      fills.find(
-                        (f) =>
-                          (f.section_id === sectionId || f.gap_id === gapForKey.gap_id) &&
-                          f.action === action,
-                      ) ?? null
-                    const onResult = async (f: FillResult) => {
-                      // 标记本段 busy（用 section_id 而非 gap_id，rebuild 后仍能定位）
-                      const sid = f.section_id ?? gapForKey.section_id ?? gapForKey.gap_id
-                      markBusy(sid, true)
-                      upsertFill(f)
-                      // 取 store 最新 snapshot（含其它并发面板刚 upsert 的 fill），避免
-                      // 用 closure 中的 stale `fills` 把别的段的成果覆盖掉。
-                      const latest = usePlanStore.getState().fills
-                      const nextFills = [...latest.filter((x) => x.gap_id !== f.gap_id), f]
-                      try {
-                        await runAnalyze(nextFills, { silent: true })
-                      } finally {
-                        markBusy(sid, false)
-                      }
-                    }
-                    return (
-                      <div
-                        key={key}
-                        style={{ display: isActive ? 'block' : 'none' }}
-                        aria-hidden={!isActive}
-                      >
-                        {action === 'copy' && (
-                          <FillCopyPanel
-                            gap={gapForKey}
-                            fill={fillForKey}
-                            plan={plan}
-                            onResult={onResult}
-                          />
-                        )}
-                        {action === 'aigc' && (
-                          <FillAigcPanel
-                            gap={gapForKey}
-                            fill={fillForKey}
-                            plan={plan}
-                            onResult={onResult}
-                          />
-                        )}
-                        {action === 'aigc_image' && (
-                          <FillAigcPanel
-                            gap={gapForKey}
-                            fill={fillForKey}
-                            plan={plan}
-                            mode="image"
-                            onResult={onResult}
-                          />
-                        )}
-                      </div>
-                    )
-                  })}
-                </>
-              ) : (
-                <p className="rounded-md border border-dashed border-border bg-background/30 px-3 py-2 text-[11px] text-muted-foreground">
-                  点下方内容轨任意一段——这里出现「挑素材 / 字卡画面 / AI 视频 / AI 生图再渲染」四个画面补全选项。
-                </p>
-              )}
-            </div>
           </div>
 
           {/* 步骤 2 → 步骤 3 转换按钮（与步骤 1 → 步骤 2 同形式：主按钮 + 可选辅按钮） */}
@@ -2164,6 +2171,24 @@ export default function ComposePage() {
               onPlanUpdate={setPlanAndPush}
               className="mb-2"
             />
+            {plan.subject_anchors && plan.subject_anchors.length > 0 ? (
+              <div className="mb-2 flex flex-wrap items-center gap-1.5 rounded-md border border-emerald-500/40 bg-emerald-50/60 px-2 py-1.5 text-[11px] dark:bg-emerald-950/30">
+                <span className="font-medium text-emerald-900 dark:text-emerald-200">
+                  🎯 锁定可拍物体
+                </span>
+                <span className="text-emerald-700/80 dark:text-emerald-300/80">
+                  （澄清阶段已确认，每个物体在视频里至少出现 1 次）
+                </span>
+                {plan.subject_anchors.map((a) => (
+                  <span
+                    key={a}
+                    className="inline-flex items-center rounded-full border border-emerald-600/50 bg-white px-2 py-0.5 text-[10px] font-medium text-emerald-800 dark:bg-emerald-950 dark:text-emerald-200"
+                  >
+                    {a}
+                  </span>
+                ))}
+              </div>
+            ) : null}
             <div className="mb-3 grid items-start gap-3 md:grid-cols-[minmax(0,280px)_1fr]">
               <div className="rounded-lg border border-border bg-card p-2 md:sticky md:top-4 md:self-start">
                 <div className="mb-1.5 flex items-center justify-between px-1 text-[11px] text-muted-foreground">
@@ -2192,9 +2217,11 @@ export default function ComposePage() {
                 onSelectScene={(scene, gap) => {
                   setSelectedSceneId(scene.scene_id)
                   setSelectedPackagingItemId(null)
-                  if (gap) {
-                    setSelectedGapId(gap.gap_id)
-                  }
+                  // 关键：无论是否有 gap 都更新 selectedGapId——没 gap 时置 null，
+                  // 否则右侧 keepalive 还会显示上一段正在生成的 panel（用户切到本段
+                  // 但看到的是别段的「生成中」状态）。已生成段的 keepalive 仍在 DOM 里
+                  // 不丢，下次切回时仍能恢复（display:none 不卸载）。
+                  setSelectedGapId(gap?.gap_id ?? null)
                   seekPlayer(scene.start)
                 }}
                 onSelectVoice={(scene) => {
