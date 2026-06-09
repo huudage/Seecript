@@ -3,17 +3,24 @@ import { useEffect, useRef, useState } from 'react'
 import { api } from '@/api/client'
 import { createSSE, type SSEHandle } from '@/api/sse'
 import { cn } from '@/lib/utils'
+import type {
+  ClarifyFinalizeResponse,
+  ClarifyOutline,
+  ClarifyRoundDone,
+  ClarifyRoundProgress,
+  ClarifyTurn,
+} from '@/types/schemas'
 
 /**
- * 视频工坊 step 1 内嵌:意图澄清面板。
+ * 视频工坊 step 1 内嵌：意图澄清面板（v2 · 五件套结构化）。
  *
- * - LLM 多轮追问(最多 3 轮),流式输出「思考流」+ 重写稿 + 一个具体追问。
- * - 用户随时可「跳过追问、1 键定稿」。
- * - 仅在用户点「采纳」时,通过 onAdopt 回写 BriefInput。Q&A 期间不动外部 brief。
+ * - LLM 多轮追问（最多 3 轮），每轮返回结构化 outline（topic/content/audience/goal/tone）+ 一个具体追问。
+ * - 用户可在面板里直接编辑五件套字段，点「采纳」时由前端拼出 brief 写回。
+ * - 「跳过追问」直接拼当前五件套，后端不再调 LLM（v2 改动）。
  *
- * 与服务端的协议:
- *   GET  /api/clarify/round?p=<base64(JSON)>   流式 SSE
- *   POST /api/clarify/finalize                  一键定稿
+ * 与服务端的协议：
+ *   GET  /api/clarify/round?p=<base64(JSON)>   流式 SSE（progress.thinking / progress.outline_ready / done）
+ *   POST /api/clarify/finalize                  纯字段拼接（v2 不再调 LLM）
  */
 
 const MAX_ROUNDS = 3
@@ -25,17 +32,26 @@ interface Turn {
   answer: string
 }
 
-interface ClarifyDonePayload {
-  round: number
-  question: string | null
-  is_final: boolean
-  final_brief: string | null
+const EMPTY_OUTLINE: ClarifyOutline = {
+  topic: null,
+  content: null,
+  audience: null,
+  goal: null,
+  tone: null,
 }
 
-interface ClarifyProgressPayload {
-  delta?: string
-  draft?: string
-}
+const FIELD_DEFS: Array<{
+  key: keyof ClarifyOutline
+  label: string
+  placeholder: string
+  rows?: number
+}> = [
+  { key: 'topic', label: '主题', placeholder: '一句话讲这条视频要做什么', rows: 2 },
+  { key: 'content', label: '内容卖点', placeholder: '核心卖点 / 亮点；多条用顿号分隔', rows: 3 },
+  { key: 'audience', label: '受众', placeholder: '谁会看？年龄段 / 职业 / 场景任选', rows: 2 },
+  { key: 'goal', label: '目的', placeholder: '卖货 / 种草 / 教程 / 娱乐 / 品牌', rows: 1 },
+  { key: 'tone', label: '语气', placeholder: '温柔 / 高能 / 沙雕 / 严肃 …', rows: 1 },
+]
 
 function encodePayload(obj: unknown): string {
   const json = JSON.stringify(obj)
@@ -46,6 +62,25 @@ function encodePayload(obj: unknown): string {
     bin += String.fromCharCode(b)
   })
   return btoa(bin).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '')
+}
+
+/** 把五件套拼成 brief —— 与服务端 stitch_outline_to_brief 严格一致。 */
+function stitchBrief(outline: ClarifyOutline): string {
+  const order: Array<[string, string | null]> = [
+    ['主题', outline.topic],
+    ['内容', outline.content],
+    ['受众', outline.audience],
+    ['目的', outline.goal],
+    ['语气', outline.tone],
+  ]
+  return order
+    .filter(([, v]) => v && v.trim())
+    .map(([label, v]) => `【${label}】${(v as string).trim()}`)
+    .join('\n')
+}
+
+function isOutlineEmpty(outline: ClarifyOutline): boolean {
+  return FIELD_DEFS.every(({ key }) => !outline[key]?.trim())
 }
 
 export function ClarifyPanel({
@@ -64,7 +99,7 @@ export function ClarifyPanel({
   const [open, setOpen] = useState(false)
   const [transcript, setTranscript] = useState<Turn[]>([])
   const [streaming, setStreaming] = useState('')
-  const [draft, setDraft] = useState('')
+  const [outline, setOutline] = useState<ClarifyOutline>(EMPTY_OUTLINE)
   const [question, setQuestion] = useState<string | null>(null)
   const [answer, setAnswer] = useState('')
   const [phase, setPhase] = useState<Phase>('idle')
@@ -83,7 +118,7 @@ export function ClarifyPanel({
     sseRef.current = null
     setTranscript([])
     setStreaming('')
-    setDraft('')
+    setOutline(EMPTY_OUTLINE)
     setQuestion(null)
     setAnswer('')
     setPhase('idle')
@@ -100,7 +135,6 @@ export function ClarifyPanel({
       return
     }
     setStreaming('')
-    setDraft('')
     setQuestion(null)
     setAnswer('')
     setError('')
@@ -112,26 +146,30 @@ export function ClarifyPanel({
       force_finalize: forceFinalize,
     }
     const p = encodePayload(payload)
-    sseRef.current = createSSE<ClarifyDonePayload, ClarifyProgressPayload>(
+    sseRef.current = createSSE<ClarifyRoundDone, ClarifyRoundProgress>(
       `/clarify/round?p=${p}`,
       {
         onProgress: (ev) => {
           if (ev.step === 'thinking' && ev.payload?.delta) {
             setStreaming((prev) => prev + (ev.payload?.delta ?? ''))
-          } else if (ev.step === 'draft_done' && ev.payload?.draft) {
-            setDraft(ev.payload.draft)
+          } else if (ev.step === 'outline_ready' && ev.payload?.outline) {
+            // 让用户在 done 事件之前就看到字段填上
+            setOutline({ ...EMPTY_OUTLINE, ...ev.payload.outline })
+            if (ev.payload.thinking) {
+              setStreaming((prev) => (prev ? prev + '\n' + ev.payload!.thinking : ev.payload!.thinking || ''))
+            }
           }
         },
         onDone: (d) => {
-          if (d.is_final && d.final_brief) {
-            setDraft(d.final_brief)
+          setOutline({ ...EMPTY_OUTLINE, ...d.outline })
+          if (d.is_final) {
             setQuestion(null)
             setPhase('finalDraft')
           } else if (d.question) {
             setQuestion(d.question)
             setPhase('awaitAnswer')
           } else {
-            // 后端没问也没 final 的兜底:当作 finalDraft
+            // 后端没问也没标 final 的兜底：当作 finalDraft，用户改完点采纳
             setPhase('finalDraft')
           }
         },
@@ -147,6 +185,7 @@ export function ClarifyPanel({
     setSnapshotBrief(initialBrief)
     setOpen(true)
     setTranscript([])
+    setOutline(EMPTY_OUTLINE)
     startRound(false, initialBrief, [])
   }
 
@@ -155,41 +194,52 @@ export function ClarifyPanel({
     const next = [...transcript, { question, answer: answer.trim() }]
     setTranscript(next)
     setAnswer('')
-    // 第 3 轮回答后,服务端会自动 force_finalize
+    // 第 3 轮回答后，服务端会自动 force_finalize
     startRound(false, snapshotBrief, next)
   }
 
   const handleSkipFinalize = async () => {
     sseRef.current?.close()
-    setPhase('streaming')
-    setStreaming('')
     setError('')
+    // 已经有 outline 直接拼字段过去；空了就给后端 fallback 到 initial_brief
+    if (isOutlineEmpty(outline) && transcript.length === 0) {
+      // 用户连一轮都没跑就点跳过 → 让后端兜底（initial_brief 当 final）
+    }
+    setPhase('streaming')
     try {
-      const resp = await api.post<{ final_brief: string; round: number }>(
-        '/clarify/finalize',
-        {
-          initial_brief: (snapshotBrief || initialBrief).trim(),
-          transcript,
-        },
-      )
-      setDraft(resp.final_brief)
+      const tx: ClarifyTurn[] = transcript
+      const resp = await api.post<ClarifyFinalizeResponse>('/clarify/finalize', {
+        outline,
+        initial_brief: (snapshotBrief || initialBrief).trim(),
+        transcript: tx,
+      })
+      setOutline({ ...EMPTY_OUTLINE, ...resp.outline })
       setQuestion(null)
       setPhase('finalDraft')
     } catch (err) {
-      setError(err instanceof Error ? err.message : '定稿失败,请重试')
+      setError(err instanceof Error ? err.message : '定稿失败，请重试')
       setPhase('error')
     }
   }
 
   const handleAdopt = () => {
-    if (!draft.trim()) return
-    onAdopt(draft.slice(0, 500))
+    const stitched = stitchBrief(outline).slice(0, 1000)
+    if (!stitched.trim()) {
+      setError('五件套全空，没法生成 brief。请至少填写主题。')
+      setPhase('error')
+      return
+    }
+    onAdopt(stitched)
     setOpen(false)
     reset()
   }
 
   const handleRetry = () => {
     startRound(false, snapshotBrief || initialBrief, transcript)
+  }
+
+  const updateField = (key: keyof ClarifyOutline, v: string) => {
+    setOutline((prev) => ({ ...prev, [key]: v.length > 0 ? v : null }))
   }
 
   if (!open) {
@@ -211,7 +261,7 @@ export function ClarifyPanel({
             ) : (
               <span className="text-amber-900 dark:text-amber-200">
                 <span className="font-semibold">必做：</span>
-                生成内容轨前请先做一轮意图澄清（AI 追问 1-3 个问题，最后给你一段可直接用的 brief）。
+                生成内容轨前先做一轮意图澄清——AI 把你的想法拆成「主题 / 内容 / 受众 / 目的 / 语气」5 件套，每个字段都能改。
               </span>
             )}
           </div>
@@ -235,6 +285,8 @@ export function ClarifyPanel({
     )
   }
 
+  const stitchedPreview = stitchBrief(outline)
+
   return (
     <div className="space-y-3 rounded-md border border-primary/40 bg-primary/5 p-3">
       <div className="flex items-center justify-between">
@@ -254,7 +306,7 @@ export function ClarifyPanel({
       </div>
 
       {transcript.length > 0 && (
-        <div className="max-h-40 space-y-2 overflow-y-auto rounded-md bg-card/60 p-2 text-xs">
+        <div className="max-h-32 space-y-2 overflow-y-auto rounded-md bg-card/60 p-2 text-xs">
           {transcript.map((t, i) => (
             <div key={i} className="space-y-1">
               <div className="font-medium text-primary">Q{i + 1}. {t.question}</div>
@@ -274,14 +326,45 @@ export function ClarifyPanel({
         </div>
       )}
 
-      {draft && (
-        <div className="rounded-md border border-emerald-500/30 bg-emerald-50/60 p-2 text-xs leading-relaxed text-foreground dark:bg-emerald-950/30">
-          <div className="mb-1 text-xs font-semibold text-emerald-700 dark:text-emerald-400">
-            当前重写稿
-          </div>
-          <pre className="whitespace-pre-wrap break-words font-sans">{draft}</pre>
+      {/* 五件套字段 —— 任何阶段都展示，让用户随时能改 */}
+      <div className="space-y-2 rounded-md border border-emerald-500/30 bg-emerald-50/40 p-2 dark:bg-emerald-950/20">
+        <div className="flex items-center justify-between text-xs font-semibold text-emerald-700 dark:text-emerald-400">
+          <span>五件套 outline · 任何字段都可以直接改</span>
+          {phase === 'streaming' && <span className="text-muted-foreground">填字段中…</span>}
         </div>
-      )}
+        <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+          {FIELD_DEFS.map(({ key, label, placeholder, rows }) => {
+            const value = outline[key] ?? ''
+            const isWide = key === 'content' || key === 'topic'
+            return (
+              <div
+                key={key}
+                className={cn(
+                  'flex flex-col gap-1',
+                  isWide ? 'sm:col-span-2' : 'sm:col-span-1',
+                )}
+              >
+                <label className="text-[10px] font-medium uppercase tracking-wider text-muted-foreground">
+                  {label}
+                </label>
+                <textarea
+                  value={value}
+                  onChange={(e) => updateField(key, e.target.value)}
+                  rows={rows ?? 1}
+                  placeholder={placeholder}
+                  className="w-full resize-y rounded-md border border-border bg-background/80 p-1.5 text-xs outline-none focus:border-primary"
+                />
+              </div>
+            )
+          })}
+        </div>
+        {stitchedPreview && (
+          <div className="rounded-md bg-card/70 p-1.5 text-[11px] leading-relaxed text-muted-foreground">
+            <div className="mb-0.5 text-[10px] uppercase tracking-wider">采纳后写回主题的 brief</div>
+            <pre className="whitespace-pre-wrap break-words font-sans">{stitchedPreview}</pre>
+          </div>
+        )}
+      </div>
 
       {phase === 'awaitAnswer' && question && (
         <div className="space-y-2 rounded-md border border-amber-500/30 bg-amber-50/60 p-2 dark:bg-amber-950/30">
@@ -290,7 +373,7 @@ export function ClarifyPanel({
             value={answer}
             onChange={(e) => setAnswer(e.target.value.slice(0, 200))}
             rows={2}
-            placeholder="一句话回答即可,留白会被忽略"
+            placeholder="一句话回答即可，留白会被忽略"
             className="w-full resize-y rounded-md border border-border bg-background/80 p-2 text-xs outline-none focus:border-primary"
           />
         </div>
@@ -336,12 +419,16 @@ export function ClarifyPanel({
             重试当前轮
           </button>
         )}
-        {phase === 'finalDraft' && draft && (
+        {phase === 'finalDraft' && (
           <>
             <button
               type="button"
               onClick={handleAdopt}
-              className="rounded-md bg-primary px-3 py-1.5 text-xs font-medium text-primary-foreground"
+              disabled={!stitchedPreview.trim()}
+              className={cn(
+                'rounded-md bg-primary px-3 py-1.5 text-xs font-medium text-primary-foreground',
+                !stitchedPreview.trim() && 'cursor-not-allowed opacity-60',
+              )}
             >
               采纳并写回主题 ✓
             </button>
@@ -350,6 +437,7 @@ export function ClarifyPanel({
               onClick={() => {
                 setTranscript([])
                 setSnapshotBrief(initialBrief)
+                setOutline(EMPTY_OUTLINE)
                 startRound(false, initialBrief, [])
               }}
               className="rounded-md border border-border bg-card px-3 py-1.5 text-xs font-medium hover:bg-secondary"

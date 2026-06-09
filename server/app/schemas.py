@@ -2512,6 +2512,37 @@ class ConversationAppendRequest(BaseModel):
 
 
 # =========================================================================
+# Clarify · 五件套结构化 outline（Stage-30 #408）
+# =========================================================================
+# 设计动机：原 clarify 把 brief 写成自由文本 draft，用户难局部改、Agent 也无法
+# 在「采纳」时跳过 LLM——每次 finalize 都要再问一遍 LLM，慢且不确定。
+# 现在改成五字段结构化输出（topic/content/audience/goal/tone），
+# 用户点 OK 时前端拼字段提交，后端 finalize 不再 LLM，真正秒结。
+
+class ClarifyOutline(BaseModel):
+    """五件套：主题 / 内容卖点 / 受众 / 目的 / 语气。每个字段都是 Optional 短语，
+    LLM 没把握的字段允许返回 null，前端给空 placeholder 让用户补。"""
+
+    topic: Optional[str] = Field(default=None, max_length=200, description="一句话主题")
+    content: Optional[str] = Field(
+        default=None,
+        max_length=400,
+        description="核心内容/卖点/亮点（可多条用顿号或换行）",
+    )
+    audience: Optional[str] = Field(default=None, max_length=200, description="目标受众画像")
+    goal: Optional[str] = Field(
+        default=None,
+        max_length=200,
+        description="视频目的：卖货 / 种草 / 教程 / 娱乐 / 品牌",
+    )
+    tone: Optional[str] = Field(
+        default=None,
+        max_length=200,
+        description="语气与风格：温柔 / 高能 / 严肃 / 沙雕 / ……",
+    )
+
+
+# =========================================================================
 # Jobs & SSE
 # =========================================================================
 

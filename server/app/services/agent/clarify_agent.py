@@ -1,88 +1,105 @@
-"""Clarify Agent —— 视频工坊 step 1 意图澄清的多轮追问引擎。
+"""Clarify Agent —— 视频工坊 step 1 意图澄清的多轮追问引擎（v2 · 五件套结构化）。
 
-为什么需要:用户在 BriefInput 里给的"主题/卖点/目的"通常是一句过于笼统的话
-(『想做一个卖耳机的视频』),后续 plan_agent 拿到的 user payload 信息密度太低,
-生成的 adapted_sections 容易偏题或互相重复。
+为什么这次重写：v1 用 `===DRAFT===` / `===QUESTION===` 文本标记切流，draft 是自由
+文本，用户没法局部改、finalize 还得再问一次 LLM。v2 改成 JSON 五件套：
+`topic / content / audience / goal / tone`，每轮把每个字段单独 emit，前端可以
+独立编辑、用户点 OK 时由前端把五件套拼成 brief，后端 finalize 不再 LLM。
 
-工作方式:无状态多轮——前端每轮把 INITIAL_BRIEF + 历史 Q/A transcript 一起送进来,
-本 agent 让 LLM 输出 `===DRAFT===` 段(最新整段 brief 重写稿) + `===QUESTION===` 段
-(本轮唯一追问;最终轮强制 NULL)。流式 yield 给路由层做 SSE 推送。
+工作方式：无状态多轮——前端把 INITIAL_BRIEF + 历史 Q/A transcript 一起送进来，
+本 agent 让 LLM 输出一段 JSON：
+```json
+{
+  "outline": {
+    "topic": "...", "content": "...", "audience": "...",
+    "goal": "...", "tone": "..."
+  },
+  "question": "本轮唯一追问，已经够清楚就给 null",
+  "thinking": "（可选）思考流，前端展示给用户看推理过程"
+}
+```
+路由层根据 round_no/3 + force_finalize 决定 is_final，最终轮强制把 question 置空。
 
-3 轮硬上限在路由层 cap(`/clarify/round`),本 agent 接收到 `is_final=True` 时
-会强制丢弃 LLM 越权输出的 question(即便 LLM 没遵守也兜底)。
+兼容性：保留 `===DRAFT===` 字面值在系统提示里——MockLLMClient 路由用「短视频脚本意图
+澄清助手」做指纹，并按这串字符识别 mock 分支；这次改 prompt 必须保留指纹。
 """
 from __future__ import annotations
 
+import json
 import logging
+import re
 from dataclasses import dataclass
-from typing import AsyncIterator, Optional
+from typing import Any, AsyncIterator, Optional
 
 from pydantic import BaseModel
 
+from ...schemas import ClarifyOutline
 from ..llm_client import LLMError, get_llm_client
 
 log = logging.getLogger("seecript.agent.clarify")
 
 
-# System prompt 同时是 MockLLMClient 路由指纹:必须含 "短视频脚本意图澄清助手"。
-# 不要轻易改这串字符——改了 mock 路由会失配,本地 dev mode 全链路会崩。
+# System prompt 同时是 MockLLMClient 路由指纹：必须含「短视频脚本意图澄清助手」。
+# 换 prompt 时务必保留这串中文，否则 mock 分支识别不到，本地 dev 全链路崩。
 _CLARIFY_SYSTEM = (
-    "你是短视频脚本意图澄清助手。任务是在最多 3 轮对话内,把用户最初零散的"
-    "「意图」打磨成一份信息密度高、可直接用于生成分镜脚本的最终 brief。\n\n"
-    "每一轮你要做两件事:\n"
-    "1) 用自然语言简要复述你目前对用户意图的理解,识别最不确定的一个维度"
-    "(目标受众、核心卖点/亮点、视频目的——卖货/种草/教程/娱乐、平台风格、口吻语气、行动号召)。\n"
-    "2) 在所有维度中,挑【信息缺口最大】的那一个,提【一个】具体、可一句话回答的问题。"
-    "问题不要套话,不要让用户做发散选择。\n\n"
-    "输出严格用 ===PART=== 分隔的两段纯文本:\n"
-    "===DRAFT===\n"
-    "<对当前 brief 的最新重写稿,不超过 500 字,可直接灌入下游生成器>\n"
-    "===QUESTION===\n"
-    "<本轮唯一的追问;若你判断已经足够清晰,或处于最终轮,输出英文 NULL>\n\n"
-    "最终轮规则: 当系统标注 IS_FINAL=true 时,你只能输出 ===DRAFT=== 段,"
-    "QUESTION 段必须是 NULL。final draft 必须包含: 主题/卖点/受众/目的/平台/语气/CTA(若已知)。\n\n"
-    "重要约束:\n"
-    "- DRAFT 段开头之前的内容(思考流程)是允许的,会作为「思考流」展示给用户。\n"
-    "- DRAFT 段必须以 `===DRAFT===` 行开始,且只有一处。\n"
-    "- QUESTION 段必须以 `===QUESTION===` 行开始,且整段是一行短句或 NULL。"
+    "你是短视频脚本意图澄清助手。任务是在最多 3 轮对话内，把用户最初零散的「意图」"
+    "打磨成五件套结构化 brief：主题 / 内容卖点 / 受众 / 目的 / 语气。\n\n"
+    "每一轮你要做两件事：\n"
+    "1) 综合 INITIAL_BRIEF + TRANSCRIPT，输出 outline 的最新五字段；\n"
+    "2) 在所有字段中挑【信息缺口最大】的那一个，提【一个】具体可一句话回答的追问。"
+    "若五件套已经足够清晰、或当前是 IS_FINAL=true 的最终轮，question 必须给 null。\n\n"
+    "输出严格 JSON 对象，不要 Markdown 围栏，不要任何额外文字：\n"
+    "{\n"
+    '  "thinking": "（可选）30 字内的思考流，前端给用户看你怎么推断",\n'
+    '  "outline": {\n'
+    '    "topic":    "<不超过 50 字一句话主题；不知道就 null>",\n'
+    '    "content":  "<核心卖点/亮点；多条用顿号或换行；不知道就 null，最多 200 字>",\n'
+    '    "audience": "<目标受众画像；不知道就 null，最多 80 字>",\n'
+    '    "goal":     "<目的：卖货/种草/教程/娱乐/品牌 等；不知道就 null>",\n'
+    '    "tone":     "<语气风格：温柔/高能/沙雕/严肃 等；不知道就 null>"\n'
+    "  },\n"
+    '  "question": "<本轮追问；够清楚或最终轮请给 null>"\n'
+    "}\n\n"
+    "重要约束：\n"
+    "- 五个字段都允许 null，不要瞎编；用户没说清的就留 null。\n"
+    "- question 只能 1 句、≤40 字、不要套话；最终轮(IS_FINAL=true) 必须 null。\n"
+    "- 输出**纯 JSON**，禁止三重反引号或任何前后缀。\n"
+    "- 历史轮对话已写在 TRANSCRIPT，不要重复问同一字段。\n"
+    "- 即使是历史 marker `===DRAFT===` 也别出现在你的输出里——纯 JSON 即可。"
 )
-
-_DRAFT_MARK = "===DRAFT==="
-_QUESTION_MARK = "===QUESTION==="
 
 
 class ClarifyTurn(BaseModel):
-    """一轮 Q/A 历史。前端把 transcript 完整回传,本 agent 无状态。"""
+    """一轮 Q/A 历史。前端把 transcript 完整回传，本 agent 无状态。"""
 
     question: str
     answer: str
 
 
 @dataclass
-class TokenDelta:
-    """流式输出的「思考流」片段——===DRAFT=== 标记之前的纯文本。"""
+class ThinkingDelta:
+    """『思考流』流式片段——LLM 在出 JSON 前的中间叙述（mock 模式没有）。"""
 
     text: str
 
 
 @dataclass
-class DraftDone:
-    """检测到 `===QUESTION===` 标记后,DRAFT 段已确定。"""
+class OutlineReady:
+    """LLM 完整输出已解析成五件套结构。"""
 
-    draft: str
+    outline: ClarifyOutline
+    thinking: str
 
 
 @dataclass
 class RoundDone:
-    """整段 LLM 输出已完成。is_final 时 question 永远 None。
-    final_brief 仅在最终轮非空(即可直接写回 BriefInput)。"""
+    """整轮结束。is_final=True 时 question 永远 None。"""
 
+    outline: ClarifyOutline
     question: Optional[str]
-    final_brief: Optional[str]
     is_final: bool
 
 
-ClarifyEvent = TokenDelta | DraftDone | RoundDone
+ClarifyEvent = ThinkingDelta | OutlineReady | RoundDone
 
 
 def _build_user_payload(
@@ -108,6 +125,87 @@ def _build_user_payload(
     return "\n".join(lines)
 
 
+_JSON_FENCE_RE = re.compile(r"^\s*```(?:json)?\s*|\s*```\s*$", re.MULTILINE)
+
+
+def _extract_json_object(text: str) -> Optional[dict[str, Any]]:
+    """从 LLM 输出里抠出第一个 `{...}` JSON 对象。
+
+    LLM 偶尔会带 Markdown 围栏或前后说明文字。先剥围栏，再用括号配对从第一个 `{`
+    扫到对应的 `}`——比直接 json.loads 整段文本鲁棒。
+    """
+    if not text:
+        return None
+    cleaned = _JSON_FENCE_RE.sub("", text).strip()
+    # 找第一个 `{`
+    start = cleaned.find("{")
+    if start < 0:
+        return None
+    depth = 0
+    in_str = False
+    esc = False
+    for i in range(start, len(cleaned)):
+        ch = cleaned[i]
+        if in_str:
+            if esc:
+                esc = False
+            elif ch == "\\":
+                esc = True
+            elif ch == '"':
+                in_str = False
+            continue
+        if ch == '"':
+            in_str = True
+        elif ch == "{":
+            depth += 1
+        elif ch == "}":
+            depth -= 1
+            if depth == 0:
+                snippet = cleaned[start: i + 1]
+                try:
+                    return json.loads(snippet)
+                except json.JSONDecodeError:
+                    return None
+    return None
+
+
+def _coerce_outline(raw: Any) -> ClarifyOutline:
+    """把 LLM 出的 outline dict 强转成 ClarifyOutline；非 dict / 字段缺失都填 None。"""
+    if not isinstance(raw, dict):
+        return ClarifyOutline()
+
+    def _str_or_none(v: Any, max_len: int) -> Optional[str]:
+        if v is None:
+            return None
+        if isinstance(v, (list, tuple)):
+            v = "、".join(str(x) for x in v if x)
+        s = str(v).strip()
+        if not s or s.lower() in {"null", "none", "n/a", "不知道", "未知"}:
+            return None
+        return s[:max_len]
+
+    return ClarifyOutline(
+        topic=_str_or_none(raw.get("topic"), 200),
+        content=_str_or_none(raw.get("content"), 400),
+        audience=_str_or_none(raw.get("audience"), 200),
+        goal=_str_or_none(raw.get("goal"), 200),
+        tone=_str_or_none(raw.get("tone"), 200),
+    )
+
+
+def _coerce_question(v: Any) -> Optional[str]:
+    if v is None:
+        return None
+    s = str(v).strip()
+    if not s or s.lower() in {"null", "none", "n/a"}:
+        return None
+    # 单行；去掉可能的 markdown 前缀和句末空白
+    first_line = next((ln.strip() for ln in s.splitlines() if ln.strip()), None)
+    if not first_line:
+        return None
+    return first_line[:200]
+
+
 async def run_clarify_round(
     *,
     initial_brief: str,
@@ -117,12 +215,12 @@ async def run_clarify_round(
 ) -> AsyncIterator[ClarifyEvent]:
     """跑一轮意图澄清。
 
-    yield 顺序:
-    1. 任意条 TokenDelta(若干,直到检测到 `===DRAFT===` 标记)
-    2. DraftDone(draft=...)  —— 当检测到 `===QUESTION===` 标记或流结束时
-    3. RoundDone(question, final_brief, is_final) —— 最终一条
+    yield 顺序：
+    1. 任意条 ThinkingDelta（思考流；mock 里没有）
+    2. OutlineReady(outline, thinking) —— 解析 LLM JSON 完成
+    3. RoundDone(outline, question, is_final) —— 最后一条
 
-    is_final=True 时,RoundDone.question 强制 None,final_brief = DRAFT 段。
+    is_final=True 时 RoundDone.question 强制 None。
     """
     user_payload = _build_user_payload(
         initial_brief=initial_brief,
@@ -132,126 +230,72 @@ async def run_clarify_round(
     )
     client = get_llm_client()
 
-    # 流式缓冲:
-    # - `phase` 控制 token 落到哪个累积区:'thinking' | 'draft' | 'question'
-    # - `pending` 是滑动窗口,保留 N 个字符直到能判断标记是否在边界
-    buf_thinking: list[str] = []
-    buf_draft: list[str] = []
-    buf_question: list[str] = []
-    pending = ""
-    phase = "thinking"
-    draft_emitted = False
-
-    # 标记最长长度:max(len(DRAFT_MARK), len(QUESTION_MARK)) - 1,
-    # 至少留 13 字符未 flush 才能判断标记是否在中间被切。
-    keep = max(len(_DRAFT_MARK), len(_QUESTION_MARK))
-
-    async def _flush_thinking_tail() -> AsyncIterator[ClarifyEvent]:
-        nonlocal pending
-        if pending:
-            buf_thinking.append(pending)
-            yield TokenDelta(text=pending)
-            pending = ""
+    # 完整 token 累积；JSON 完整性只能整段解析（与 v1 不同，v1 是文本 marker）
+    buf: list[str] = []
+    # 简易思考流：在第一个 `{` 之前的 token 实时透出，让用户感觉有响应
+    json_started = False
+    pre_json: list[str] = []
 
     try:
         async for delta in client.stream_complete(
             _CLARIFY_SYSTEM,
             user_payload,
-            temperature=0.7,
-            max_tokens=800,
+            temperature=0.6,
+            max_tokens=900,
         ):
-            pending += delta
-
-            # 在每个 phase 下扫描 pending,把可确定的部分 flush 出去,
-            # 剩下的尾巴留作下一片(防止标记被切断)。
-            while True:
-                if phase == "thinking":
-                    idx = pending.find(_DRAFT_MARK)
-                    if idx >= 0:
-                        # 标记前的全部 token → thinking
-                        head = pending[:idx]
-                        if head:
-                            buf_thinking.append(head)
-                            yield TokenDelta(text=head)
-                        # 跳过标记自身(包括标记后的可能换行)
-                        rest = pending[idx + len(_DRAFT_MARK):]
-                        if rest.startswith("\n"):
-                            rest = rest[1:]
-                        pending = rest
-                        phase = "draft"
-                        continue
-                    # 没找到标记:flush 安全前缀,保留 keep 长尾巴
-                    if len(pending) > keep:
-                        safe = pending[:-keep]
-                        buf_thinking.append(safe)
-                        yield TokenDelta(text=safe)
-                        pending = pending[-keep:]
-                    break
-                elif phase == "draft":
-                    idx = pending.find(_QUESTION_MARK)
-                    if idx >= 0:
-                        head = pending[:idx]
-                        buf_draft.append(head)
-                        draft_text = "".join(buf_draft).strip()
-                        if not draft_emitted:
-                            yield DraftDone(draft=draft_text)
-                            draft_emitted = True
-                        rest = pending[idx + len(_QUESTION_MARK):]
-                        if rest.startswith("\n"):
-                            rest = rest[1:]
-                        pending = rest
-                        phase = "question"
-                        continue
-                    if len(pending) > keep:
-                        safe = pending[:-keep]
-                        buf_draft.append(safe)
-                        pending = pending[-keep:]
-                    break
-                else:  # phase == "question"
-                    # question 段不再寻找标记;一直累积到流结束
-                    buf_question.append(pending)
-                    pending = ""
-                    break
-    except LLMError as exc:
+            buf.append(delta)
+            if not json_started:
+                pre_json.append(delta)
+                joined = "".join(pre_json)
+                idx = joined.find("{")
+                if idx >= 0:
+                    head = joined[:idx]
+                    if head.strip():
+                        yield ThinkingDelta(text=head)
+                    json_started = True
+                    pre_json = []
+                else:
+                    # 没看到 `{` 之前的纯文本就是思考流
+                    if delta:
+                        yield ThinkingDelta(text=delta)
+    except LLMError:
         log.exception("[clarify] LLM stream failed round=%d is_final=%s", round_no, is_final)
         raise
 
-    # 流结束:把 pending 尾巴 flush 到当前 phase
-    if pending:
-        if phase == "thinking":
-            buf_thinking.append(pending)
-            yield TokenDelta(text=pending)
-        elif phase == "draft":
-            buf_draft.append(pending)
-        else:
-            buf_question.append(pending)
-
-    # 计算最终 draft 与 question
-    draft_text = "".join(buf_draft).strip()
-    question_text = "".join(buf_question).strip()
-
-    # 兜底:如果 LLM 没遵守标记,把整段 thinking 当 draft——
-    # 这种情况只能尽力把内容写回 BriefInput,聊胜于无。
-    if not draft_text and not draft_emitted:
-        draft_text = "".join(buf_thinking).strip()
-
-    if not draft_emitted and draft_text:
-        yield DraftDone(draft=draft_text)
-
-    # is_final 强制丢弃 question
-    if is_final or question_text.upper() == "NULL" or not question_text:
-        question_out: Optional[str] = None
+    full = "".join(buf)
+    parsed = _extract_json_object(full)
+    if parsed is None:
+        log.warning("[clarify] failed to parse JSON, raw=%r", full[:500])
+        # 最低兜底：把整段当 topic 塞进去，让用户能看见原文
+        outline = ClarifyOutline(topic=full.strip()[:200] or None)
+        thinking = ""
+        question_raw: Any = None
     else:
-        # 取第一行非空,避免 LLM 多说一堆
-        first_line = next(
-            (ln.strip() for ln in question_text.splitlines() if ln.strip() and ln.strip().upper() != "NULL"),
-            None,
-        )
-        question_out = first_line
+        outline = _coerce_outline(parsed.get("outline") or {})
+        thinking = str(parsed.get("thinking") or "").strip()
+        question_raw = parsed.get("question")
 
-    final_brief = draft_text if is_final else None
-    yield RoundDone(
-        question=question_out,
-        final_brief=final_brief,
-        is_final=is_final,
-    )
+    yield OutlineReady(outline=outline, thinking=thinking)
+
+    question_out: Optional[str] = None if is_final else _coerce_question(question_raw)
+    yield RoundDone(outline=outline, question=question_out, is_final=is_final)
+
+
+def stitch_outline_to_brief(outline: ClarifyOutline) -> str:
+    """把五件套拼成可直接灌进 BriefInput 的中文段。
+
+    顺序固定：主题 → 内容 → 受众 → 目的 → 语气；缺的字段直接跳过，不留空头。
+    用户点「采纳」时前端调用，后端 finalize 也复用——保证两边一致。
+    """
+    parts: list[tuple[str, Optional[str]]] = [
+        ("主题", outline.topic),
+        ("内容", outline.content),
+        ("受众", outline.audience),
+        ("目的", outline.goal),
+        ("语气", outline.tone),
+    ]
+    chunks: list[str] = []
+    for label, value in parts:
+        if value and value.strip():
+            chunks.append(f"【{label}】{value.strip()}")
+    return "\n".join(chunks)

@@ -44,4 +44,4 @@ def test_third_round_forces_finalize_even_when_force_false(client):
     assert done["round"] == 3
     assert done["is_final"] is True
     assert done["question"] is None
-    assert done["final_brief"], "第 3 轮 final_brief 必须有内容"
+    assert done["outline"]["topic"], "第 3 轮 outline.topic 必须有值"

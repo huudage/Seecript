@@ -280,8 +280,8 @@ class MockLLMClient(LLMClient):
         temperature: Optional[float] = None,
         max_tokens: Optional[int] = None,
     ) -> AsyncIterator[str]:
-        """Mock 流式:把 complete() 的整段输出按 ~24 字切片 yield,模拟打字机。
-        意图澄清场景能让前端看到 ===DRAFT=== 段流出来,跟真链路体感一致。
+        """Mock 流式：把 complete() 的整段输出按 ~24 字切片 yield，模拟打字机。
+        意图澄清场景能让前端看到 JSON 流式出来，跟真链路体感一致。
         """
         import asyncio
         text = await self.complete(
@@ -839,47 +839,48 @@ def _build_mock_adapted_sections_json(user_text: str) -> str:
 
 
 def _build_mock_clarify_text(user_text: str) -> str:
-    """意图澄清 mock:按 user payload 里的 ROUND 与 IS_FINAL 字段动态生成 ===DRAFT===/===QUESTION===。
+    """意图澄清 mock：按 user payload 里的 ROUND 与 IS_FINAL 字段动态生成五件套 JSON。
 
-    - 非最终轮:首段思考流(给前端 thinking 区) + DRAFT + 一个具体追问。
-    - 最终轮(IS_FINAL=true):只输出思考流 + DRAFT,QUESTION 段写 NULL。
-    所有路径加 [mock] 前缀,方便联调时辨识。
+    v2 输出契约：纯 JSON 对象 {thinking, outline:{topic,content,audience,goal,tone}, question}
+    - 非最终轮：question 给本轮追问。
+    - 最终轮 (IS_FINAL=true)：question=null。
+    所有路径加 [mock] 前缀，方便联调时辨识。
     """
-    import re
-    m_round = re.search(r"ROUND:\s*(\d+)\s*/\s*(\d+)", user_text)
+    import json as _json
+    import re as _re
+    m_round = _re.search(r"ROUND:\s*(\d+)\s*/\s*(\d+)", user_text)
     round_no = int(m_round.group(1)) if m_round else 1
     is_final = "IS_FINAL: true" in user_text or "IS_FINAL:true" in user_text
 
-    m_brief = re.search(r"INITIAL_BRIEF:\s*(.+)", user_text)
+    m_brief = _re.search(r"INITIAL_BRIEF:\s*(.+)", user_text)
     brief = m_brief.group(1).strip()[:60] if m_brief else "用户主题"
 
-    thinking = (
-        f"[mock] 第 {round_no} 轮思考:用户给的核心信息聚焦在「{brief}」附近。"
-        f"目标受众、行动号召这两个维度还略模糊,先把现有信息按主流短视频脚本骨架重写,"
-        f"并在最不确定的位置发问。\n"
-    )
-    draft = (
-        f"主题:{brief}\n"
-        f"卖点:[mock] 强反差画面 + 一句金句,前 3 秒锁住注意力\n"
-        f"受众:[mock] 18-30 岁年轻用户,通勤刷屏场景\n"
-        f"目的:[mock] 种草引导关注或点击购物车\n"
-        f"平台:[mock] 抖音 / 小红书竖屏 9:16\n"
-        f"语气:[mock] 真诚不油腻、轻松带点节奏\n"
-        f"CTA:[mock] 「点关注 + 主页拿同款」"
-    )
+    outline = {
+        "topic": f"{brief}",
+        "content": "[mock] 强反差画面 + 一句金句，前 3 秒锁住注意力",
+        "audience": "[mock] 18-30 岁年轻用户，通勤刷屏场景",
+        "goal": "[mock] 种草引导关注或点击购物车",
+        "tone": "[mock] 真诚不油腻、轻松带点节奏",
+    }
     if is_final:
-        question = "NULL"
+        question = None
     else:
         questions = [
-            "[mock] 这条视频是想直接带货下单、还是先做认知种草?用一句话告诉我。",
-            "[mock] 主要给哪类用户看?(年龄段或场景任选一个即可)",
-            "[mock] 视频结尾你最希望观众做的一件事是什么?",
+            "[mock] 这条视频是想直接带货下单、还是先做认知种草？",
+            "[mock] 主要给哪类用户看？(年龄段或场景任选一个)",
+            "[mock] 视频结尾你最希望观众做的一件事是什么？",
         ]
         question = questions[(round_no - 1) % len(questions)]
 
-    return (
-        f"{thinking}===DRAFT===\n{draft}\n===QUESTION===\n{question}"
-    )
+    payload = {
+        "thinking": (
+            f"[mock] 第 {round_no} 轮思考：用户的核心信息聚焦在「{brief}」附近，"
+            f"先按五件套结构填字段，最不确定的位置留作追问。"
+        ),
+        "outline": outline,
+        "question": question,
+    }
+    return _json.dumps(payload, ensure_ascii=False, indent=2)
 
 
 _MOCK_GAP_FILL_JSON = """

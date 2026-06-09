@@ -1616,3 +1616,50 @@ export interface ProjectUpdateRequest {
 export interface ProjectListResponse {
   items: Project[]
 }
+
+
+// =========================================================================
+// Clarify · 五件套结构化 outline（v2 · #408）
+// =========================================================================
+
+export interface ClarifyOutline {
+  topic: string | null
+  content: string | null
+  audience: string | null
+  goal: string | null
+  tone: string | null
+}
+
+export interface ClarifyTurn {
+  question: string
+  answer: string
+}
+
+/** /clarify/round 的 SSE done 事件 data 字段。 */
+export interface ClarifyRoundDone {
+  round: number
+  outline: ClarifyOutline
+  question: string | null
+  is_final: boolean
+}
+
+/** /clarify/round 的 SSE progress 事件 data.payload 字段。 */
+export interface ClarifyRoundProgress {
+  /** thinking 阶段的流式 token；与 outline 字段二选一出现 */
+  delta?: string
+  /** outline_ready 阶段的完整 outline 与思考流摘要 */
+  outline?: ClarifyOutline
+  thinking?: string
+}
+
+export interface ClarifyFinalizeRequest {
+  outline: ClarifyOutline
+  initial_brief?: string
+  transcript?: ClarifyTurn[]
+}
+
+export interface ClarifyFinalizeResponse {
+  final_brief: string
+  outline: ClarifyOutline
+  round: number
+}
