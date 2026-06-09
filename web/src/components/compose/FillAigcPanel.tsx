@@ -661,6 +661,7 @@ export function FillAigcPanel({
           refreshing={refreshing}
           canRefresh={canRefresh}
           onRefresh={handleRefresh}
+          onReapply={() => onResult(fill)}
           projectId={plan?.project_id || gap.project_id || ''}
           saveTitle={gap.section || gap.section_id || (mode === 'image' ? 'AI 图片' : 'AI 视频')}
         />
@@ -1233,6 +1234,7 @@ function FillStatusCard({
   refreshing,
   canRefresh,
   onRefresh,
+  onReapply,
   projectId,
   saveTitle,
 }: {
@@ -1246,6 +1248,9 @@ function FillStatusCard({
   refreshing: boolean
   canRefresh: boolean
   onRefresh: () => void
+  /** 重新把当前 fill 推回父级 → runAnalyze 重建 plan，强制本段画面同步到内容轨。
+   *  正常路径下 fill 完成时已自动应用过一次，这个按钮供出错回滚 / 跨段反复确认时手动重灌。 */
+  onReapply: () => void
   projectId: string
   saveTitle: string
 }) {
@@ -1313,6 +1318,28 @@ function FillStatusCard({
       </div>
       {fill.note && <p className="text-muted-foreground">{fill.note}</p>}
 
+      {/* 应用到轨道：fill 完成后自动跑过一次 runAnalyze（在父级 onResult 里），
+          这里给一个显式标记 + 手动重灌按钮——用户改了 prompt 重生成后，UI
+          上更明确地知道"这版结果已经落到了内容轨" / 出问题时能一键重新应用。 */}
+      {hasPreview && (
+        <div className="flex items-center justify-between gap-2 rounded-md border border-emerald-500/30 bg-emerald-500/5 px-2 py-1">
+          <span className="text-xs text-emerald-700 dark:text-emerald-300">
+            ✓ 已应用到本镜内容轨
+            <span className="ml-1 text-[10px] font-normal text-muted-foreground">
+              （生成后自动写入；改完可再点右侧重新应用）
+            </span>
+          </span>
+          <button
+            type="button"
+            onClick={onReapply}
+            className="shrink-0 rounded border border-emerald-500/50 bg-emerald-500/10 px-1.5 py-0.5 text-[11px] font-medium text-emerald-700 hover:bg-emerald-500/20 dark:text-emerald-200"
+            title="把本结果重新写回内容轨（runAnalyze 重建 plan）"
+          >
+            ↻ 应用到轨道
+          </button>
+        </div>
+      )}
+
       {!hasPreview && (
         <div className="rounded-md border border-amber-500/40 bg-amber-500/10 p-2">
           <p className="text-xs font-medium text-amber-700 dark:text-amber-300">
@@ -1356,13 +1383,14 @@ function FillStatusCard({
 
       {hasPreview && mode === 'image' && fill.aigc_image_url && (
         <div className="space-y-1.5">
-          {/* 多镜头模式（path B）：N 张图横向预览，每张一个保存按钮。 */}
+          {/* 多镜头模式（path B）：N 张图横向预览，每张一个保存按钮。
+              预览压窄到 max-w-md (~448px) 避免占满整列；多镜头继续走 grid-cols-2。 */}
           {fill.aigc_image_urls && fill.aigc_image_urls.length > 1 ? (
             <>
               <div className="text-xs text-muted-foreground">
                 Seedream 故事板 · 本段拆 {fill.aigc_image_urls.length} 个子镜头（视觉一致）
               </div>
-              <div className="grid grid-cols-2 gap-1.5">
+              <div className="grid max-w-md grid-cols-2 gap-1.5">
                 {fill.aigc_image_urls.map((url, i) => (
                   <div key={`${url}-${i}`} className="space-y-0.5">
                     <div className="flex items-center justify-between text-xs text-muted-foreground">
@@ -1406,7 +1434,7 @@ function FillStatusCard({
               </div>
             </>
           ) : (
-            <div className="space-y-0.5">
+            <div className="max-w-xs space-y-0.5">
               <div className="flex items-center justify-between text-xs text-muted-foreground">
                 <span>Seedream 出图</span>
                 <div className="flex items-center gap-2">
@@ -1451,7 +1479,7 @@ function FillStatusCard({
       {hasPreview && mode === 'video' && (
         <div className="space-y-1.5">
           {fill.video_urls.map((url, i) => (
-            <div key={`${url}-${i}`} className="space-y-0.5">
+            <div key={`${url}-${i}`} className="max-w-md space-y-0.5">
               <div className="flex items-center justify-between text-xs text-muted-foreground">
                 <span>第 {i + 1} 段</span>
                 <div className="flex items-center gap-2">

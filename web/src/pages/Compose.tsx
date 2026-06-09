@@ -2114,16 +2114,30 @@ export default function ComposePage() {
                   上传或拖拽排序会自动重排并刷新缺口
                 </span>
               </h2>
-              <button
-                onClick={() => fileInputRef.current?.click()}
-                disabled={uploading || analyzing}
-                className={cn(
-                  'rounded-md border border-border bg-card px-2 py-1 text-[11px] hover:bg-secondary',
-                  (uploading || analyzing) && 'cursor-not-allowed opacity-60',
-                )}
-              >
-                {uploading ? '上传中…' : '+ 追加素材'}
-              </button>
+              <div className="flex items-center gap-1.5">
+                <button
+                  type="button"
+                  onClick={() => setSystemLibraryOpen(true)}
+                  disabled={!currentProjectId || uploading || analyzing}
+                  className={cn(
+                    'rounded-md border border-border bg-card px-2 py-1 text-[11px] hover:bg-secondary',
+                    (!currentProjectId || uploading || analyzing) && 'cursor-not-allowed opacity-60',
+                  )}
+                  title="从系统素材库挑选 → 克隆到本项目"
+                >
+                  + 从素材库选取
+                </button>
+                <button
+                  onClick={() => fileInputRef.current?.click()}
+                  disabled={uploading || analyzing}
+                  className={cn(
+                    'rounded-md border border-border bg-card px-2 py-1 text-[11px] hover:bg-secondary',
+                    (uploading || analyzing) && 'cursor-not-allowed opacity-60',
+                  )}
+                >
+                  {uploading ? '上传中…' : '+ 追加素材'}
+                </button>
+              </div>
             </div>
             <UploadDropzone
               uploading={uploading}
