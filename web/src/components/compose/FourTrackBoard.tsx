@@ -357,6 +357,36 @@ export function FourTrackBoard({
   const ticks = useMemo(() => makeTicks(total), [total])
   const showSecondaryTracks = phase === 'full'
 
+  // 播放头测量：取 timebar 1fr 列的实际像素位置 + board 容器位置，让红线从 board
+  // 顶部到底部精确铺满，不再用 9999px 超长溢出。ResizeObserver 监听窗口缩放/字体变。
+  const boardRef = useRef<HTMLDivElement>(null)
+  const timeLaneRef = useRef<HTMLDivElement>(null)
+  const [laneGeom, setLaneGeom] = useState<{ left: number; width: number; top: number; height: number } | null>(null)
+  useEffect(() => {
+    const lane = timeLaneRef.current
+    const board = boardRef.current
+    if (!lane || !board) return
+    const update = () => {
+      const lr = lane.getBoundingClientRect()
+      const br = board.getBoundingClientRect()
+      setLaneGeom({
+        left: lr.left - br.left,
+        width: lr.width,
+        top: lr.top - br.top,
+        height: br.height - (lr.top - br.top) - 4,
+      })
+    }
+    update()
+    const ro = new ResizeObserver(update)
+    ro.observe(lane)
+    ro.observe(board)
+    window.addEventListener('resize', update)
+    return () => {
+      ro.disconnect()
+      window.removeEventListener('resize', update)
+    }
+  }, [])
+
   // 内容轨缩略图查表（按 material_id 反查 user 上传素材的封面 / 按 section_id 反查 fill cover）
   const materialById = useMemo(() => {
     const m = new Map<string, Material>()
@@ -577,11 +607,12 @@ export function FourTrackBoard({
   }
 
   return (
-    <div className="relative space-y-2 rounded-lg border border-border bg-card p-4">
+    <div ref={boardRef} className="relative space-y-2 rounded-lg border border-border bg-card p-4">
       {/* ===================== 时间标尺 ===================== */}
       <div className="grid grid-cols-[88px_1fr] items-center">
         <span className="text-[10px] font-semibold text-muted-foreground">时间轴</span>
         <div
+          ref={timeLaneRef}
           className={cn(
             'relative h-5 border-b border-border',
             onSeek ? 'cursor-pointer' : undefined,
@@ -606,19 +637,22 @@ export function FourTrackBoard({
               {t.toFixed(0)}s
             </span>
           ))}
-          {/* 播放头：仅在 phase=full（step3 真有预览播放）时显示；step2 没播放功能不画红线 */}
-          {total > 0 && showSecondaryTracks && (
-            <div
-              className="pointer-events-none absolute top-0 z-30 w-px bg-rose-500/95"
-              style={{
-                left: `${pctOf(playheadSeconds, total)}%`,
-                height: '9999px',
-                boxShadow: '0 0 6px rgba(244,63,94,0.6)',
-              }}
-            />
-          )}
         </div>
       </div>
+
+      {/* 播放头 overlay：放在 board 顶层，按 timeLaneRef 实测位置铺一条精确长度的
+          竖线。仅 phase=full 时显示——step2 没真预览不画红线。 */}
+      {total > 0 && showSecondaryTracks && laneGeom && (
+        <div
+          className="pointer-events-none absolute z-30 w-px bg-rose-500/95"
+          style={{
+            left: `${laneGeom.left + laneGeom.width * Math.max(0, Math.min(1, playheadSeconds / total))}px`,
+            top: `${laneGeom.top}px`,
+            height: `${Math.max(0, laneGeom.height)}px`,
+            boxShadow: '0 0 6px rgba(244,63,94,0.6)',
+          }}
+        />
+      )}
 
       {/* ===================== 样例参考轨（1-2 条,放在内容轨之上做并排对照） ===================== */}
       {referenceManifests && referenceManifests.length > 0 && referenceManifests.map((mf, idx) => {

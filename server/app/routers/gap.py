@@ -3,8 +3,6 @@
 `POST /api/gap/detect`  根据 plan_id（反查 sample manifest）+ session_id（反查用户素材）
                         算槽位匹配，返回 Gap[]；结果存进 GapStore，让 fill 直接 lookup。
 `POST /api/gap/fill`    按 gap_id 从 GapStore 拿 Gap，分发到 rerank / copy / aigc。
-`POST /api/gap/fill-all` 一键 AI 生成所有 status≠ok 的 gap；
-                        aigc T2V 链式承接走串行+遇错即停，aigc_image/copy 段间独立走 asyncio.gather 并发。
 """
 from __future__ import annotations
 
@@ -32,8 +30,6 @@ from ..schemas import (
     FillResult,
     Gap,
     GapDetectRequest,
-    GapFillAllRequest,
-    GapFillAllResponse,
     GapFillRequest,
     Material,
     SampleManifest,
@@ -364,169 +360,6 @@ async def fill(req: GapFillRequest) -> FillResult:
     except Exception as exc:  # noqa: BLE001
         log.warning("[gap] profile.trace_b (gap_fill) write failed: %s", exc)
     return result
-
-
-@router.post("/gap/fill-all", response_model=GapFillAllResponse)
-async def fill_all(req: GapFillAllRequest) -> GapFillAllResponse:
-    """一键补全：把 plan 下所有 status≠ok 的 gap 走 action。
-
-    - action="aigc"：T2V 链式承接（前段尾帧 → 后段首帧），必须串行 + 遇错即停。
-    - action="aigc_image" / "copy"：每段独立，**并行执行**（asyncio.gather），
-      避免 4 段串行下 nginx 60s upstream 超时（即"failed to fetch"）。
-      失败段写进 stopped_reason 但不中断其它并发任务。
-    """
-    plan = plan_store.get(req.plan_id)
-    if plan is None:
-        raise HTTPException(status_code=404, detail=f"plan not found: {req.plan_id}")
-    all_gaps = gap_store.list_by_plan(req.plan_id)
-    if not all_gaps:
-        return GapFillAllResponse(
-            plan_id=req.plan_id, fills=[],
-            stopped_reason="该 plan 没有缺口（请先 /gap/detect）",
-        )
-    pending = [g for g in all_gaps if g.status != "ok"]
-    skip_set = set(req.skip_gap_ids or [])
-    if skip_set:
-        before = len(pending)
-        pending = [g for g in pending if g.gap_id not in skip_set]
-        log.info("[gap-fill-all] plan=%s skip %d gap_ids → pending %d→%d",
-                 req.plan_id, len(skip_set), before, len(pending))
-    if not pending:
-        return GapFillAllResponse(
-            plan_id=req.plan_id, fills=[],
-            stopped_reason="所有缺口已 ok，无需生成",
-        )
-
-    log.info("[gap-fill-all] plan=%s action=%s pending=%d", req.plan_id, req.action, len(pending))
-
-    template = (req.prompt_template or "").strip()
-
-    def _build_params(gap: Gap) -> dict:
-        """根据 action 类型为单个 gap 构建 fill_gap 参数。"""
-        if req.action == "aigc":
-            prompt = template or f"短视频画面：{gap.requirement}"
-            return _inject_aigc_params(gap, {"prompt": prompt})
-        if req.action == "aigc_image":
-            prompt = template or f"短视频画面：{gap.requirement}"
-            params: dict = {"prompt": prompt}
-            section = next(
-                (s for s in plan.adapted_sections if s.section_id == gap.section_id),
-                None,
-            )
-            if section and section.shots:
-                planned_subjects = [
-                    (sh.subject or "").strip()
-                    for sh in section.shots
-                    if (sh.subject or "").strip()
-                ][:4]
-                if planned_subjects:
-                    params["subjects"] = planned_subjects
-                    params["n_shots"] = len(planned_subjects)
-            ratio = (
-                plan.settings.aspect_ratio
-                if plan.settings and plan.settings.aspect_ratio
-                else None
-            )
-            if ratio:
-                params["ratio"] = ratio
-            return params
-        # copy
-        existing_cards: list[dict[str, object]] = []
-        if req.existing_text_cards:
-            for spec in req.existing_text_cards:
-                existing_cards.append(spec.model_dump())
-        else:
-            for sc in plan.main_track:
-                if sc.text_card_spec is None:
-                    continue
-                if gap.section_id:
-                    m = re.match(r"^sc-(\d+)$", sc.scene_id or "")
-                    if m:
-                        sec = next(
-                            (s for s in plan.adapted_sections if s.order == int(m.group(1))), None,
-                        )
-                        if sec and sec.section_id == gap.section_id:
-                            continue
-                existing_cards.append(sc.text_card_spec.model_dump())
-        log.info(
-            "[gap-fill-all] copy gap=%s existing_cards=%d (from %s)",
-            gap.gap_id, len(existing_cards),
-            "frontend" if req.existing_text_cards else "plan.main_track",
-        )
-        return {
-            "prompt_hint": gap.requirement,
-            "existing_text_cards": existing_cards,
-        }
-
-    fills: list[FillResult] = []
-    failed_gap_id: Optional[str] = None
-    stopped_reason: Optional[str] = None
-
-    if req.action == "aigc":
-        # T2V 链式承接：必须串行，前段尾帧 → 后段首帧；遇错即停（之前的 break 语义）
-        for gap in pending:
-            params = _build_params(gap)
-            try:
-                result = await fill_gap(gap, req.action, params)
-            except Exception as exc:
-                log.exception("[gap-fill-all] gap=%s action=%s raised", gap.gap_id, req.action)
-                failed_gap_id = gap.gap_id
-                stopped_reason = f"生成异常：{exc}"
-                break
-            result = await asyncio.to_thread(_maybe_auto_tts, result)
-            fills.append(result)
-            if result.status != "ok":
-                failed_gap_id = gap.gap_id
-                stopped_reason = f"{gap.gap_id} 失败：{result.note or result.status}"
-                break
-    else:
-        # aigc_image / copy：段间独立 → 并行执行（return_exceptions 保证一段挂掉
-        # 不会污染 gather 的其他任务；失败的 gap 仍有 fill 占位 / stopped_reason 兜底）
-        # PR-L.4：并发数过高时 Seedream 服务端会偶发掐连接（httpx ReadTimeout / RST），
-        # aigc_image 限制在 2 路并发——既能利用 gather 不让 60s 单点放大成 240s 串行，
-        # 又能避开 Seedream 并发上限导致中间段固定失败。copy 走 LLM 不限。
-        sema_limit = 2 if req.action == "aigc_image" else len(pending)
-        sema = asyncio.Semaphore(max(1, sema_limit))
-
-        async def _run_one(gap: Gap) -> tuple[Gap, FillResult | Exception]:
-            async with sema:
-                try:
-                    r = await fill_gap(gap, req.action, _build_params(gap))
-                    r = await asyncio.to_thread(_maybe_auto_tts, r)
-                    return gap, r
-                except Exception as exc:  # noqa: BLE001
-                    log.exception("[gap-fill-all] gap=%s action=%s raised", gap.gap_id, req.action)
-                    return gap, exc
-
-        outcomes = await asyncio.gather(*[_run_one(g) for g in pending])
-        # 严格 1:1：每个 pending gap 必产一个 FillResult（即使是 warn 占位）。
-        # 这样前端 BatchAigcButton + Compose.handleBatchDone 拿到的 resp.fills.length
-        # 永远 === pending.length，重建 plan 时 _fill_section_lookup 才能给每个 section 找到对应 fill，
-        # 不会因为漏 fill 让 _pick 走 user_material 顺位消费导致结构错位 / 段落缺失。
-        for gap, outcome in outcomes:
-            if isinstance(outcome, Exception):
-                if failed_gap_id is None:
-                    failed_gap_id = gap.gap_id
-                    stopped_reason = f"生成异常：{outcome}"
-                fills.append(FillResult(
-                    gap_id=gap.gap_id,
-                    action=req.action,
-                    status="warn",
-                    note=f"生成异常：{outcome}"[:200],
-                    section_id=gap.section_id,
-                ))
-                continue
-            fills.append(outcome)
-            if outcome.status != "ok" and failed_gap_id is None:
-                failed_gap_id = gap.gap_id
-                stopped_reason = f"{gap.gap_id} 失败：{outcome.note or outcome.status}"
-
-    return GapFillAllResponse(
-        plan_id=req.plan_id,
-        fills=fills,
-        failed_gap_id=failed_gap_id,
-        stopped_reason=stopped_reason,
-    )
 
 
 class AigcRefreshRequest(BaseModel):

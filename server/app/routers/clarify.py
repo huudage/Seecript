@@ -45,11 +45,14 @@ class ClarifyRoundRequest(BaseModel):
     """`/clarify/round` 请求体——通过 base64(JSON) 塞进 query。
 
     transcript 长度反推 round_no：transcript=[]→第 1 轮，len=1→第 2 轮，以此类推。
+    detected_subjects 是前端从已上传素材的 VLM tags 聚合后传来的对象清单（#420），
+    LLM 必须把它们写进 outline.content。
     """
 
     initial_brief: str = Field(..., max_length=4000)
     transcript: list[ClarifyTurn] = Field(default_factory=list)
     force_finalize: bool = False
+    detected_subjects: list[str] = Field(default_factory=list, max_length=20)
 
 
 class ClarifyFinalizeRequest(BaseModel):
@@ -98,6 +101,7 @@ async def clarify_round(p: str = Query(..., description="base64(JSON) 的 Clarif
                 transcript=req.transcript,
                 round_no=min(round_no, MAX_ROUNDS),
                 is_final=is_final,
+                detected_subjects=req.detected_subjects,
             ):
                 if isinstance(ev, ThinkingDelta):
                     yield _sse("progress", {

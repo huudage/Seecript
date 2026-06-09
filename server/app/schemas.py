@@ -28,7 +28,7 @@ from __future__ import annotations
 
 from typing import Any, Literal, Optional
 
-from pydantic import BaseModel, Field, computed_field, model_validator
+from pydantic import BaseModel, Field, computed_field, field_validator, model_validator
 
 # =========================================================================
 # Common
@@ -1052,54 +1052,6 @@ class CopyOutlineResponse(BaseModel):
     )
 
 
-class GapFillAllRequest(BaseModel):
-    """`POST /api/gap/fill-all` —— 对 plan_id 下所有非 ok 缺口顺序触发补全。
-
-    action:
-      - "aigc"（默认，向后兼容）：每个缺口走 Seedance T2V 链式生成
-      - "aigc_image"：每个缺口走 Seedream 文生图 + Remotion 动效渲染（成本远低于 T2V）
-      - "copy"：每个缺口走 LLM 文案补全（用 gap.requirement 作为 prompt_hint）
-    """
-
-    plan_id: str
-    action: Literal["copy", "aigc", "aigc_image"] = Field(
-        default="aigc",
-        description="批量补全使用的动作；rerank 不支持批量（依赖人工挑选）",
-    )
-    prompt_template: Optional[str] = Field(
-        default=None,
-        max_length=200,
-        description="可选自定义 prompt 模板（仅 aigc），{requirement} 占位会被替换为 gap.requirement。",
-    )
-    skip_gap_ids: list[str] = Field(
-        default_factory=list,
-        description=(
-            "前端已采纳/已完成的 gap_id 列表——后端在批量补全时跳过这些。"
-            "因为 gap_store 的 status 不会随 fill 落地（fills 主要走前端 zustand），"
-            "如果不传，已有字卡历史的镜头会被重新生成。"
-        ),
-    )
-    existing_text_cards: list[TextCardSpec] = Field(
-        default_factory=list,
-        description=(
-            "前端已采纳的字卡 spec 列表——作为风格样板透传给每个 batch fill。"
-            "之所以由前端传：fill-all 调用时 plan_store 中的 plan_id 往往是『旧版』"
-            "（runAnalyze 尚未跑完会签发新 plan_id），后端从 plan.main_track 取 text_card_spec 会拉到空。"
-            "由前端直接传 fills 里已 ok 的 TextCardSpec 数组，绕过 plan 时序竞态。"
-        ),
-    )
-
-
-class GapFillAllResponse(BaseModel):
-    plan_id: str
-    fills: list["FillResult"] = Field(default_factory=list, description="成功生成的 fills，顺序与 gap 一致")
-    failed_gap_id: Optional[str] = Field(
-        default=None,
-        description="部分失败时第一个失败的 gap_id；None 表示全部成功。",
-    )
-    stopped_reason: Optional[str] = None
-
-
 AnimationType = Literal["ken-burns", "parallax", "storyboard", "keyframe_morph", "static"]
 """单图 / 多图动效类型，与 remotion/src/AnimatedImage.tsx 镜像。"""
 
@@ -1716,22 +1668,38 @@ class PackagingPreferences(BaseModel):
 
 FrameDesignPreset = Literal[
     "custom",
-    "biennale-yellow",
-    "blockframe",
-    "blue-professional",
-    "bold-poster",
-    "broadside",
-    "capsule",
-    "cartesian",
-    "cobalt-grid",
-    "coral",
-    "creative-mode",
+    "social-energy",
+    "lifestyle-soft",
+    "clean-pro",
+    "poster-bold",
+    "cinematic",
 ]
-"""frame.md 设计系统预设（参考 HyperFrames frame.md 模板）。
+"""短视频常用画面风格预设（v2 简化）—— 从原 11 个 HyperFrames 模板收敛到 6 个。
 
-custom 表示完全由用户/LLM 在 FrameDesignSystem 字段里逐项填写；
-其他值是预定义模板，packaging_agent 会按 preset 套对应 palette/typography/motion。
+- custom         = 自由配色，逐项手填
+- social-energy  = 高能社交：鲜亮高对比 + 高动效（抖音 / Reels）
+- lifestyle-soft = 治愈生活：柔和暖色 + 适中动效（小红书）
+- clean-pro      = 商务科普：克制冷色 + 低动效（知识 / 品牌）
+- poster-bold    = 海报大字：撞色 + 巨字（口号 / 营销）
+- cinematic      = 电影胶片：暗色 + 颗粒 + 暗角（叙事 / 故事）
+
+老 plan/sample 里残留的 11 个旧值（biennale-yellow / blockframe / ……）会在
+FrameDesignSystem.preset 字段的 before-validator 里映射到最近的新值，避免 pydantic 报错。
 """
+
+
+_LEGACY_FRAME_PRESET_MAP: dict[str, str] = {
+    "biennale-yellow": "poster-bold",
+    "blockframe": "clean-pro",
+    "blue-professional": "clean-pro",
+    "bold-poster": "poster-bold",
+    "broadside": "cinematic",
+    "capsule": "lifestyle-soft",
+    "cartesian": "clean-pro",
+    "cobalt-grid": "clean-pro",
+    "coral": "lifestyle-soft",
+    "creative-mode": "social-energy",
+}
 
 
 MotionDensity = Literal["minimal", "balanced", "kinetic"]
@@ -1795,6 +1763,15 @@ class FrameDesignSystem(BaseModel):
         max_length=200,
         description="额外风格备注，自由文本。例：'阳光调，避免冷蓝'。",
     )
+
+    @field_validator("preset", mode="before")
+    @classmethod
+    def _migrate_legacy_preset(cls, v: Any) -> Any:
+        """老 plan/sample 落盘时存的是 v1 的 11 个 HyperFrames preset，
+        v2 简化到 6 个；这里把不在新表里的旧值映射到最近的新值，避免反序列化报 422。"""
+        if isinstance(v, str) and v in _LEGACY_FRAME_PRESET_MAP:
+            return _LEGACY_FRAME_PRESET_MAP[v]
+        return v
 
 
 class ComposeSettings(BaseModel):

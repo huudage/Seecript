@@ -918,19 +918,14 @@ export const DEFAULT_PACKAGING_PREFERENCES: PackagingPreferences = {
   llm_temperature: 0.7,
 }
 
-/** frame.md 设计系统预设（参考 HyperFrames frame.md 模板）。 */
+/** 短视频常用画面风格预设（v2 简化）。 */
 export type FrameDesignPreset =
   | 'custom'
-  | 'biennale-yellow'
-  | 'blockframe'
-  | 'blue-professional'
-  | 'bold-poster'
-  | 'broadside'
-  | 'capsule'
-  | 'cartesian'
-  | 'cobalt-grid'
-  | 'coral'
-  | 'creative-mode'
+  | 'social-energy'
+  | 'lifestyle-soft'
+  | 'clean-pro'
+  | 'poster-bold'
+  | 'cinematic'
 
 /** 画面动效密度。 */
 export type MotionDensity = 'minimal' | 'balanced' | 'kinetic'
@@ -1032,24 +1027,6 @@ export interface PlanBuildRequest {
   /** 增量重建：透传上一版 plan.adapted_sections，跳过 LLM 段落改编（修复 5→4 抖动 bug）。 */
   reuse_sections?: AdaptedSection[]
   variant: Variant
-}
-
-export interface GapFillAllRequest {
-  plan_id: PlanId
-  /** 批量补全使用的动作；默认 aigc（向后兼容）。rerank 不支持批量。 */
-  action?: 'copy' | 'aigc' | 'aigc_image'
-  prompt_template?: string | null
-  /** 已采纳/已完成的 gap_id 列表，传过去让后端跳过它们（避免覆盖单条手动生成的字卡/镜头）。 */
-  skip_gap_ids?: GapId[]
-  /** 已采纳字卡 spec 列表——作为风格样板透传，绕过 plan_id 时序竞态。 */
-  existing_text_cards?: TextCardSpec[]
-}
-
-export interface GapFillAllResponse {
-  plan_id: PlanId
-  fills: FillResult[]
-  failed_gap_id?: GapId | null
-  stopped_reason?: string | null
 }
 
 export interface GapDetectRequest {

@@ -7,7 +7,6 @@ import { patchPlanSettings } from '@/api/plan'
 import { createSSE } from '@/api/sse'
 import { commitStep, getStepSnapshot } from '@/api/steps'
 import { deleteVoice, regenerateNarrations, synthesizeAll, synthesizeOne } from '@/api/voice'
-import { BatchCopyButton } from '@/components/compose/BatchCopyButton'
 import { BgmPickerDialog } from '@/components/compose/BgmPickerDialog'
 import { BriefInput } from '@/components/compose/BriefInput'
 import { ClarifyPanel } from '@/components/compose/ClarifyPanel'
@@ -24,6 +23,7 @@ import { PackagingItemEditDialog } from '@/components/compose/PackagingItemEditD
 import { PackagingPanel } from '@/components/compose/PackagingPanel'
 import { ReferencePicker } from '@/components/compose/ReferencePicker'
 import { SceneEditPanel } from '@/components/compose/SceneEditPanel'
+import { SectionPreviewCard } from '@/components/compose/SectionPreviewCard'
 import { StructureMapPanel } from '@/components/compose/StructureMapPanel'
 import { SubtitleEditPopover } from '@/components/compose/SubtitleEditPopover'
 import { SystemLibraryPicker } from '@/components/compose/SystemLibraryPicker'
@@ -41,7 +41,6 @@ import type {
   FillResult,
   Gap,
   GapDetectRequest,
-  GapFillAllResponse,
   GapFillRequest,
   Material,
   MaterialUploadResponse,
@@ -197,6 +196,21 @@ export default function ComposePage() {
     }
   }, [secondaryRef])
   const [activeAction, setActiveAction] = useState<FillAction>('rerank')
+  // 每条 (gap_id, action) 独立工作台：用户切到别的段或别的动作时，旧 panel 留在 DOM
+  // 里只 display:none，本地 useState（form/思考态/seedance polling）不丢。回到该组合
+  // 看到的就是离开时的现场。rerank 不进 keepalive——它没有用户输入，重渲染廉价。
+  const [visitedFillKeys, setVisitedFillKeys] = useState<ReadonlySet<string>>(() => new Set())
+  useEffect(() => {
+    if (!selectedGapId) return
+    if (activeAction === 'rerank') return
+    const key = `${selectedGapId}::${activeAction}`
+    setVisitedFillKeys((prev) => {
+      if (prev.has(key)) return prev
+      const next = new Set(prev)
+      next.add(key)
+      return next
+    })
+  }, [selectedGapId, activeAction])
   // 每条 gap 独立的 busy 锁：切到别的 gap 不会还显示上一段的 loading 态。
   // 选用 Set<gap_id> 而非全局 boolean——AIGC 链式生成可能 >3 分钟，用户在等待期间
   // 完全有理由切到别的段先写文案、看分镜，不该被全局 spinner 锁死。
@@ -278,29 +292,9 @@ export default function ComposePage() {
   //     → 不复位，避免无关的 plan rebuild 把用户从 step3 弹回 step2（这是 PR-K 修复点）。
   //   - 其他情况（如 step1/2 中的 plan rebuild）→ 复位为锁定，老 step3 解锁状态不要串到新 plan。
   const [step3Unlocked, setStep3Unlocked] = useState(false)
-  // stage-26 PR-N.6：批量字卡/AIGC 在跑期间禁止进入 step3——
-  // 关键场景：用户点了「✨ 参照样板批量补字卡」之后，乐观更新立刻把 pendingGapsCount 抹零，
-  // 但后端 /gap/fill-all 还在跑、plan rebuild 也还没回来；此时若让用户进 step3，
-  // 内容轨预览的还是旧的 text-card-fill-empty 占位，不是补好后的真字卡。
-  //
-  // 审计修 B1：原本是单 boolean 共享在 BatchCopy + BatchAigc 之间——任一先完成 finally 就解锁，
-  // 另一个仍在跑用户即可进 step3。改为 Set<key>：两个按钮各持一个 key，任意非空都视为忙。
-  const [batchBusyKeys, setBatchBusyKeys] = useState<Set<string>>(() => new Set())
-  const batchFillBusy = batchBusyKeys.size > 0
 
   // 系统素材库选择器开关。
   const [systemLibraryOpen, setSystemLibraryOpen] = useState(false)
-  const setBatchBusyFor = useCallback(
-    (key: string) => (busy: boolean) => {
-      setBatchBusyKeys((prev) => {
-        const next = new Set(prev)
-        if (busy) next.add(key)
-        else next.delete(key)
-        return next
-      })
-    },
-    [],
-  )
   const lastStep3PlanIdRef = useRef<string | null>(null)
   // 通过 ref 读取当前 activeStep，避免把 activeStep 加入 useEffect 依赖
   // 而引发 plan_id 没变也跑这段重置逻辑的副作用
@@ -392,10 +386,10 @@ export default function ComposePage() {
             (sc.source_ref ?? '').startsWith('text-card-fill-empty'),
         ).length
       : 0
-    if (activeStep === 3 && (batchFillBusy || unfilled > 0)) {
+    if (activeStep === 3 && unfilled > 0) {
       setActiveStep(2)
     }
-  }, [plan, activeStep, step3Unlocked, batchFillBusy, setActiveStep])
+  }, [plan, activeStep, step3Unlocked, setActiveStep])
 
   /* --------------------- 渲染流水线（内联 · 无独立页面）--------------------- */
   // 设计：用户点「生成视频」之后，先补缺口 + 生成包装 + commit compose，再自动 POST /render/submit
@@ -450,6 +444,28 @@ export default function ComposePage() {
     () => materials.slice().sort((a, b) => a.sort_order - b.sort_order),
     [materials],
   )
+
+  // 把素材库里 VLM 识别出的对象聚合成「已知主体」清单，传给 ClarifyPanel：
+  // 用户上传素材后立刻能拉动 outline.content（典型：上传纸巾 → 澄清 LLM 必须在 content
+  // 里点名「纸巾」）。dedupe + 长度限制 + 黑名单兜底，避免把噪声标签塞给 LLM。
+  const detectedSubjects = useMemo(() => {
+    const stop = new Set(['人', '物体', '场景', '画面', '视频', '图片'])
+    const seen = new Set<string>()
+    const out: string[] = []
+    for (const m of sortedMaterials) {
+      for (const tag of m.tags ?? []) {
+        const t = tag.trim()
+        if (!t) continue
+        if (t.length > 12) continue
+        if (stop.has(t)) continue
+        if (seen.has(t)) continue
+        seen.add(t)
+        out.push(t)
+        if (out.length >= 20) return out
+      }
+    }
+    return out
+  }, [sortedMaterials])
 
   // stage-15: 拦截 / 检测样例是否已拆解的逻辑下沉到 ReferencePicker
   // (它只列已落版本槽的 sample × slot,空仓库时会引导用户去 Decompose)
@@ -829,47 +845,6 @@ export default function ComposePage() {
         (sc.source_ref ?? '').startsWith('text-card-fill-empty'),
     ).length
   }, [plan])
-
-  const handleBatchDone = useCallback(
-    async (resp: GapFillAllResponse) => {
-      if (!resp.fills.length) {
-        if (resp.stopped_reason) setError(resp.stopped_reason)
-        return
-      }
-      // 把所有批量 fills 合并进 store，然后重跑分析刷新一次
-      const merged = [
-        ...fills.filter((f) => !resp.fills.some((r) => r.gap_id === f.gap_id)),
-        ...resp.fills,
-      ]
-      // 立刻整体覆盖 store fills——内容轨 FourTrackBoard 用 fillBySectionId 查 text_card_spec，
-      // 在 plan rebuild 完成前先让字卡画面/AIGC 封面闪现出来，避免"生成完毕但预览还是旧的"体感。
-      setFills(merged)
-      // 乐观更新 gap 状态：runAnalyze 要等 /plan/build + /gap/detect 来回 1-2s，
-      // 期间内容轨段会显示旧的"未补全"状态——直接按本批 fill 的 section_id/gap_id 把 ✅ 先点上。
-      {
-        const okSet = new Set<string>()
-        const sidSet = new Set<string>()
-        for (const f of resp.fills) {
-          if (f.status === 'ok') {
-            if (f.gap_id) okSet.add(f.gap_id)
-            if (f.section_id) sidSet.add(f.section_id)
-          }
-        }
-        setGaps(
-          gaps.map((g) =>
-            okSet.has(g.gap_id) || (g.section_id && sidSet.has(g.section_id))
-              ? { ...g, status: 'ok' as const, note: g.note ?? '已补全（待刷新）' }
-              : g,
-          ),
-        )
-      }
-      await runAnalyze(merged)
-      if (resp.failed_gap_id && resp.stopped_reason) {
-        setError(`批量生成中断：${resp.stopped_reason}`)
-      }
-    },
-    [fills, gaps, runAnalyze, setFills, setGaps],
-  )
 
   /* --------------------- 四轨：口播 / 包装 / BGM 动作 --------------------- */
 
@@ -1443,7 +1418,6 @@ export default function ComposePage() {
           step3Unlocked={step3Unlocked}
           pendingGapsCount={pendingGapsCount}
           mainTrackUnfilledCount={mainTrackUnfilledCount}
-          batchFillBusy={batchFillBusy}
           onChange={setActiveStep}
         />
         {plan && (
@@ -1512,6 +1486,7 @@ export default function ComposePage() {
               }}
               disabled={analyzing}
               clarified={clarifiedOnce}
+              detectedSubjects={detectedSubjects}
             />
             <ComposeSettingsPanel value={settings} onChange={setSettings} />
           </section>
@@ -1832,50 +1807,6 @@ export default function ComposePage() {
               {fills.length > 0 && (
                 <span className="text-[10px] text-muted-foreground">已采纳 {fills.length}</span>
               )}
-              <BatchCopyButton
-                planId={plan.plan_id}
-                pendingCount={pendingGapsCount}
-                skipGapIds={(() => {
-                  // 痛报：『一键字卡生成会顶掉已经有内容的其他轨道的内容替换为字卡』
-                  // 修：skip 列表不止采纳过的 fill —— 但凡对应 scene 已有真内容
-                  // （user_material / aigc_image / aigc_t2v / 已选定 text_card），都不允许批量字卡覆盖。
-                  //
-                  // bug-fix（slot 粒度）：不能按 section 整段判定，否则同段下「一槽真填 + 一槽缺口」会把缺口槽也跳掉，
-                  // 触发 fill-all 误报『所有缺口已 ok』。改为按 (parent_section_id, shot_order) ↔ (gap.section_id, gap.slot_index) 精确匹配。
-                  const adoptedFillGaps = new Set(
-                    fills.filter((f) => f.status === 'ok').map((f) => f.gap_id),
-                  )
-                  // (section_id, slot_index) → 是否已有真内容（槽级）
-                  const slotHasRealContent = new Map<string, boolean>()
-                  const slotKey = (sid: string | null | undefined, idx: number) =>
-                    `${sid ?? ''}::${idx}`
-                  for (const sc of plan.main_track ?? []) {
-                    const secId = sc.parent_section_id
-                    if (!secId) continue
-                    const isPlaceholder =
-                      sc.source === 'text_card' &&
-                      (sc.source_ref ?? '').startsWith('text-card-fill-empty')
-                    const hasReal = !isPlaceholder && sc.needs_fill !== true
-                    if (hasReal) slotHasRealContent.set(slotKey(secId, sc.shot_order), true)
-                  }
-                  const skipFromScenes = gaps
-                    .filter(
-                      (g) =>
-                        g.section_id &&
-                        slotHasRealContent.get(slotKey(g.section_id, g.slot_index)),
-                    )
-                    .map((g) => g.gap_id)
-                  return Array.from(new Set([...adoptedFillGaps, ...skipFromScenes]))
-                })()}
-                adoptedTextCardCount={
-                  fills.filter((f) => f.status === 'ok' && f.action === 'copy').length
-                }
-                existingTextCards={fills
-                  .filter((f) => f.status === 'ok' && f.action === 'copy' && f.text_card_spec)
-                  .map((f) => f.text_card_spec!)}
-                onDone={handleBatchDone}
-                onLoadingChange={setBatchBusyFor('copy')}
-              />
             </div>
           </div>
 
@@ -1902,6 +1833,31 @@ export default function ComposePage() {
               <p className="rounded-md border border-primary/30 bg-primary/5 px-2 py-1.5 text-[11px] leading-relaxed text-foreground">
               💡 这里只关心<strong>画面 + 字幕</strong>——三种方式都是给本段生成画面（挑素材 / 字卡画面 / AI 视频）；字幕轨开关默认关闭，开启后 AI 自动按段落生成可编辑字幕。口播留到第 3 步再切换音色合成。
               </p>
+              {/* 段落预览：用户选中 gap 后立即看到本段当前画面+字幕+包装的实时效果，
+                  填了素材后会自动反映新结果——避免在 step2 盲填。 */}
+              {selectedGap && (() => {
+                const idx = plan.adapted_sections.findIndex(
+                  (s) => s.section_id === selectedGap.section_id,
+                )
+                if (idx < 0) return null
+                const sec = plan.adapted_sections[idx]
+                // adapted_sections 没有显式 start/end，按累计 duration 算段首；段尾=段首+本段时长。
+                let start = 0
+                for (let i = 0; i < idx; i += 1) {
+                  start += plan.adapted_sections[i].duration_seconds || 0
+                }
+                const end = start + (sec.duration_seconds || 0)
+                if (end <= start) return null
+                return (
+                  <SectionPreviewCard
+                    plan={plan}
+                    materials={sortedMaterials}
+                    sectionStart={start}
+                    sectionEnd={end}
+                    label={`段 #${idx + 1} · ${sec.role}`}
+                  />
+                )
+              })()}
               {selectedGap ? (
                 <>
                   <div className="flex flex-wrap items-center gap-1 text-xs">
@@ -1948,48 +1904,56 @@ export default function ComposePage() {
                     </>
                   )}
 
-                  {activeAction === 'copy' && (
-                    <FillCopyPanel
-                      key={selectedGap.gap_id}
-                      gap={selectedGap}
-                      fill={selectedFill?.action === 'copy' ? selectedFill : null}
-                      plan={plan}
-                      onResult={(f) => {
-                        upsertFill(f)
-                        const nextFills = [...fills.filter((x) => x.gap_id !== f.gap_id), f]
-                        void runAnalyze(nextFills)
-                      }}
-                    />
-                  )}
-
-                  {activeAction === 'aigc' && (
-                    <FillAigcPanel
-                      key={selectedGap.gap_id}
-                      gap={selectedGap}
-                      fill={selectedFill?.action === 'aigc' ? selectedFill : null}
-                      plan={plan}
-                      onResult={(f) => {
-                        upsertFill(f)
-                        const nextFills = [...fills.filter((x) => x.gap_id !== f.gap_id), f]
-                        void runAnalyze(nextFills)
-                      }}
-                    />
-                  )}
-
-                  {activeAction === 'aigc_image' && (
-                    <FillAigcPanel
-                      key={`${selectedGap.gap_id}-img`}
-                      gap={selectedGap}
-                      fill={selectedFill?.action === 'aigc_image' ? selectedFill : null}
-                      plan={plan}
-                      mode="image"
-                      onResult={(f) => {
-                        upsertFill(f)
-                        const nextFills = [...fills.filter((x) => x.gap_id !== f.gap_id), f]
-                        void runAnalyze(nextFills)
-                      }}
-                    />
-                  )}
+                  {/* keepalive 工作台：每个 (gap_id, action) 一份 panel，留在 DOM
+                      不卸载。切段或切动作只切 display；本地 useState（生成阶段、
+                      seedance polling、表单草稿）跨切换不丢。 */}
+                  {Array.from(visitedFillKeys).map((key) => {
+                    const [gapId, action] = key.split('::') as [string, FillAction]
+                    const gapForKey = gaps.find((g) => g.gap_id === gapId)
+                    if (!gapForKey) return null
+                    const isActive =
+                      selectedGap?.gap_id === gapId && activeAction === action
+                    const fillForKey =
+                      fills.find((f) => f.gap_id === gapId && f.action === action) ?? null
+                    const onResult = (f: FillResult) => {
+                      upsertFill(f)
+                      const nextFills = [...fills.filter((x) => x.gap_id !== f.gap_id), f]
+                      void runAnalyze(nextFills)
+                    }
+                    return (
+                      <div
+                        key={key}
+                        style={{ display: isActive ? 'block' : 'none' }}
+                        aria-hidden={!isActive}
+                      >
+                        {action === 'copy' && (
+                          <FillCopyPanel
+                            gap={gapForKey}
+                            fill={fillForKey}
+                            plan={plan}
+                            onResult={onResult}
+                          />
+                        )}
+                        {action === 'aigc' && (
+                          <FillAigcPanel
+                            gap={gapForKey}
+                            fill={fillForKey}
+                            plan={plan}
+                            onResult={onResult}
+                          />
+                        )}
+                        {action === 'aigc_image' && (
+                          <FillAigcPanel
+                            gap={gapForKey}
+                            fill={fillForKey}
+                            plan={plan}
+                            mode="image"
+                            onResult={onResult}
+                          />
+                        )}
+                      </div>
+                    )
+                  })}
                 </>
               ) : (
                 <p className="rounded-md border border-dashed border-border bg-background/30 px-3 py-2 text-[11px] text-muted-foreground">
@@ -2009,7 +1973,6 @@ export default function ComposePage() {
               disabled={
                 pendingGapsCount > 0 ||
                 trackBusy ||
-                batchFillBusy ||
                 mainTrackUnfilledCount > 0 ||
                 analyzing
               }
@@ -2017,25 +1980,22 @@ export default function ComposePage() {
                 'flex-1 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground transition-colors',
                 (pendingGapsCount > 0 ||
                   trackBusy ||
-                  batchFillBusy ||
                   mainTrackUnfilledCount > 0 ||
                   analyzing) &&
                   'cursor-not-allowed opacity-60',
               )}
             >
-              {batchFillBusy
-                ? '一键补字卡进行中…内容轨同步后才能进入第 3 步'
-                : analyzing
-                  ? '内容轨重排中…'
-                  : mainTrackUnfilledCount > 0
-                    ? `内容轨还有 ${mainTrackUnfilledCount} 段未补完 · 补齐后进入第 3 步`
-                    : pendingGapsCount > 0
-                      ? `还有 ${pendingGapsCount} 段缺口待补 · 补齐后进入第 3 步`
-                      : trackBusy
-                        ? '准备中…（重写口播 / 配音 / 包装推荐）'
-                        : '进入第 3 步 → 解锁口播 / 包装 / BGM 与实时预览'}
+              {analyzing
+                ? '内容轨重排中…'
+                : mainTrackUnfilledCount > 0
+                  ? `内容轨还有 ${mainTrackUnfilledCount} 段未补完 · 补齐后进入第 3 步`
+                  : pendingGapsCount > 0
+                    ? `还有 ${pendingGapsCount} 段缺口待补 · 补齐后进入第 3 步`
+                    : trackBusy
+                      ? '准备中…（重写口播 / 配音 / 包装推荐）'
+                      : '进入第 3 步 → 解锁口播 / 包装 / BGM 与实时预览'}
             </button>
-            {pendingGapsCount === 0 && mainTrackUnfilledCount === 0 && !batchFillBusy && (
+            {pendingGapsCount === 0 && mainTrackUnfilledCount === 0 && (
               <button
                 type="button"
                 onClick={() => setActiveStep(1)}
@@ -2206,7 +2166,7 @@ export default function ComposePage() {
             {!isRendering && finalizing === 'idle' && !renderDone && (
               <span className="text-[11px] text-muted-foreground">
                 {pendingGapsCount > 0
-                  ? `还有 ${pendingGapsCount} 个缺口将用文案自动补上，再生成包装与成片`
+                  ? `还有 ${pendingGapsCount} 段缺口未补，请回到第 2 步逐段补齐再渲染`
                   : '所有缺口已补，将直接生成包装并渲染成片'}
               </span>
             )}
@@ -2468,7 +2428,6 @@ function WorkshopStepNav({
   step3Unlocked,
   pendingGapsCount,
   mainTrackUnfilledCount,
-  batchFillBusy,
   onChange,
 }: {
   activeStep: WorkshopStep
@@ -2479,8 +2438,6 @@ function WorkshopStepNav({
   pendingGapsCount: number
   /** stage-26 PR-N.6：plan.main_track 里还有几段 needs_fill / fill-empty 占位。>0 时禁止进 step3。 */
   mainTrackUnfilledCount: number
-  /** stage-26 PR-N.6：一键批量补字卡 / AIGC 正在跑。期间禁止进 step3。 */
-  batchFillBusy: boolean
   onChange: (step: WorkshopStep) => void
 }) {
   const step2Reason = !hasReferences
@@ -2492,18 +2449,16 @@ function WorkshopStepNav({
         : ''
   const step3Reason = !hasPlan
     ? '先在第 2 步生成内容轨'
-    : batchFillBusy
-      ? '一键补字卡进行中…内容轨同步完成后才能进入第 3 步'
-      : mainTrackUnfilledCount > 0
-        ? `内容轨还有 ${mainTrackUnfilledCount} 段未补完，请先在第 2 步补齐再进入第 3 步`
-        : !step3Unlocked
-          ? '请在第 2 步底部点「进入第 3 步」解锁'
-          : pendingGapsCount > 0
-            ? `还有 ${pendingGapsCount} 个缺口未补，可继续进入第 3 步自动补全`
-            : ''
+    : mainTrackUnfilledCount > 0
+      ? `内容轨还有 ${mainTrackUnfilledCount} 段未补完，请先在第 2 步补齐再进入第 3 步`
+      : !step3Unlocked
+        ? '请在第 2 步底部点「进入第 3 步」解锁'
+        : pendingGapsCount > 0
+          ? `还有 ${pendingGapsCount} 个缺口未补，可继续进入第 3 步自动补全`
+          : ''
 
   const step3Disabled =
-    !hasPlan || !step3Unlocked || batchFillBusy || mainTrackUnfilledCount > 0
+    !hasPlan || !step3Unlocked || mainTrackUnfilledCount > 0
 
   const steps: { id: WorkshopStep; title: string; sub: string; disabled: boolean; tip: string }[] = [
     {

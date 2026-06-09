@@ -645,7 +645,7 @@ async def run_pipeline(job_id: str, plan: Plan) -> RenderResult:
 
     # ---- Step 3 · 主轨直通 ----
     # 渲染按 plan 主轨结构走，时长以 plan.duration_seconds 为准；
-    # 需要 AIGC 补齐请走「一键 AI 生成全部缺口」(/api/gap/fill-all)，
+    # 需要 AIGC 补齐请在 step2 单段触发 /gap/fill (action=aigc / aigc_image / copy)，
     # 不再在渲染阶段隐式跑 Seedance 首尾帧扩展。
     t0 = time.time()
     job_store.publish(

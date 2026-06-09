@@ -21,17 +21,12 @@ import { cn } from '@/lib/utils'
 import type { FrameDesignPreset, FrameDesignSystem, MotionDensity } from '@/types/schemas'
 
 const PRESET_OPTIONS: { value: FrameDesignPreset; label: string; hint: string }[] = [
-  { value: 'custom', label: '自由配色', hint: '逐项手填' },
-  { value: 'biennale-yellow', label: '柠檬黄黑', hint: '高对比柠檬黄 + 纯黑' },
-  { value: 'blockframe', label: '建筑网格', hint: '建筑感分块构图' },
-  { value: 'blue-professional', label: '商务冷蓝', hint: '冷蓝克制 · 偏正式' },
-  { value: 'bold-poster', label: '海报撞色', hint: '海报字 + 撞色' },
-  { value: 'broadside', label: '阔幅排版', hint: '横向大气 · 节奏舒展' },
-  { value: 'capsule', label: '胶囊柔和', hint: '柔和胶囊圆角 · 治愈系' },
-  { value: 'cartesian', label: '坐标系网格', hint: '科技感坐标网' },
-  { value: 'cobalt-grid', label: '钴蓝网格', hint: '深钴蓝 + 几何网格' },
-  { value: 'coral', label: '珊瑚暖色', hint: '珊瑚橙 + 暖光' },
-  { value: 'creative-mode', label: '玩味实验', hint: '解构 · 拼贴 · 实验感' },
+  { value: 'custom', label: '自由配色', hint: '色板 / 字体 / 动效全自己来' },
+  { value: 'social-energy', label: '高能社交', hint: '抖音 / Reels：鲜亮高对比 + 高动效' },
+  { value: 'lifestyle-soft', label: '治愈生活', hint: '小红书：柔和暖色 + 适中动效' },
+  { value: 'clean-pro', label: '商务科普', hint: '知识 / 品牌：克制冷色 + 低动效' },
+  { value: 'poster-bold', label: '海报大字', hint: '撞色巨字号，口号 / 营销片' },
+  { value: 'cinematic', label: '电影胶片', hint: '暗色 + 颗粒 + 暗角，叙事感' },
 ]
 
 const MOTION_OPTIONS: { value: MotionDensity; label: string; hint: string }[] = [

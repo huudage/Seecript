@@ -286,7 +286,8 @@ _TOOL_UPDATE_COMPOSE_SETTING = {
                 },
                 "frame_design_preset": {
                     "type": "string",
-                    "description": "整体视频风格预设（frame.md），如 biennale-yellow / blockframe / blue-professional / custom",
+                    "enum": ["custom", "social-energy", "lifestyle-soft", "clean-pro", "poster-bold", "cinematic"],
+                    "description": "整体视频风格预设：social-energy=高能社交 / lifestyle-soft=治愈生活 / clean-pro=商务科普 / poster-bold=海报大字 / cinematic=电影胶片 / custom=自由配色",
                 },
                 "packaging_preset": {
                     "type": "string",

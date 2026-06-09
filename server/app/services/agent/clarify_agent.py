@@ -41,29 +41,35 @@ log = logging.getLogger("seecript.agent.clarify")
 # System prompt 同时是 MockLLMClient 路由指纹：必须含「短视频脚本意图澄清助手」。
 # 换 prompt 时务必保留这串中文，否则 mock 分支识别不到，本地 dev 全链路崩。
 _CLARIFY_SYSTEM = (
-    "你是短视频脚本意图澄清助手。任务是在最多 3 轮对话内，把用户最初零散的「意图」"
-    "打磨成五件套结构化 brief：主题 / 内容卖点 / 受众 / 目的 / 语气。\n\n"
-    "每一轮你要做两件事：\n"
-    "1) 综合 INITIAL_BRIEF + TRANSCRIPT，输出 outline 的最新五字段；\n"
-    "2) 在所有字段中挑【信息缺口最大】的那一个，提【一个】具体可一句话回答的追问。"
-    "若五件套已经足够清晰、或当前是 IS_FINAL=true 的最终轮，question 必须给 null。\n\n"
+    "你是短视频脚本意图澄清助手。任务是把用户给的 INITIAL_BRIEF + 历史 TRANSCRIPT，"
+    "整合成一份五件套结构化 brief：主题 / 内容卖点 / 受众 / 目的 / 语气。\n\n"
+    "**核心规则：每一轮都必须把 outline 五个字段全部填满**——\n"
+    "- 用户没明说的字段，**根据 INITIAL_BRIEF 做最合理的推测**填入，并在 question 里说明你假设了什么；\n"
+    "- 仅当字段在已有信息里完全无依据、且推测会误导时才允许 null；topic 必须永远非空。\n"
+    "- 用户在后续轮次给出补充/纠正后，要把对应字段更新为新值。\n"
+    "- 如果用户输入里出现了 DETECTED_SUBJECTS 段（用户已上传素材里 VLM 识别到的物体/场景），\n"
+    "  你**必须**把这些对象在 outline.content 里点名出现（用顿号串联），缺的就拼上；\n"
+    "  比如 DETECTED_SUBJECTS 含「纸巾」，content 必须出现「纸巾」二字。\n\n"
+    "question 的语义（v3 调整）：\n"
+    "- 不再是「让用户作答」的硬追问，而是「让用户检查」的提示——告诉用户你做了哪些假设，"
+    "或哪个字段你还没把握，引导用户决定要不要补充。\n"
+    "- 若五件套已经非常贴合用户表达、无需任何假设，question 给 null。\n"
+    "- IS_FINAL=true 时 question 必须是 null。\n\n"
     "输出严格 JSON 对象，不要 Markdown 围栏，不要任何额外文字：\n"
     "{\n"
-    '  "thinking": "（可选）30 字内的思考流，前端给用户看你怎么推断",\n'
+    '  "thinking": "（可选）30 字内的思考流，告诉用户你怎么综合的",\n'
     '  "outline": {\n'
-    '    "topic":    "<不超过 50 字一句话主题；不知道就 null>",\n'
-    '    "content":  "<核心卖点/亮点；多条用顿号或换行；不知道就 null，最多 200 字>",\n'
-    '    "audience": "<目标受众画像；不知道就 null，最多 80 字>",\n'
-    '    "goal":     "<目的：卖货/种草/教程/娱乐/品牌 等；不知道就 null>",\n'
-    '    "tone":     "<语气风格：温柔/高能/沙雕/严肃 等；不知道就 null>"\n'
+    '    "topic":    "<必填，一句话主题，最多 50 字>",\n'
+    '    "content":  "<核心卖点/亮点；多条用顿号或换行；最多 200 字>",\n'
+    '    "audience": "<目标受众画像；最多 80 字>",\n'
+    '    "goal":     "<目的：卖货/种草/教程/娱乐/品牌 等>",\n'
+    '    "tone":     "<语气风格：温柔/高能/沙雕/严肃 等>"\n'
     "  },\n"
-    '  "question": "<本轮追问；够清楚或最终轮请给 null>"\n'
+    '  "question": "<向用户求证你做的假设；够清楚或最终轮请给 null；≤40 字>"\n'
     "}\n\n"
     "重要约束：\n"
-    "- 五个字段都允许 null，不要瞎编；用户没说清的就留 null。\n"
-    "- question 只能 1 句、≤40 字、不要套话；最终轮(IS_FINAL=true) 必须 null。\n"
     "- 输出**纯 JSON**，禁止三重反引号或任何前后缀。\n"
-    "- 历史轮对话已写在 TRANSCRIPT，不要重复问同一字段。\n"
+    "- 历史轮 TRANSCRIPT 已经包含用户补充信息，不要重复假设、不要忽略用户已澄清的字段。\n"
     "- 即使是历史 marker `===DRAFT===` 也别出现在你的输出里——纯 JSON 即可。"
 )
 
@@ -108,9 +114,20 @@ def _build_user_payload(
     transcript: list[ClarifyTurn],
     round_no: int,
     is_final: bool,
+    detected_subjects: list[str] | None = None,
 ) -> str:
     lines: list[str] = []
     lines.append(f"INITIAL_BRIEF:\n{initial_brief.strip() or '(empty)'}\n")
+    if detected_subjects:
+        # 用户已上传的素材里 VLM 已识别到的对象/主体清单。LLM 必须在 outline.content
+        # 里点名出现这些对象（用顿号串联），保证「带货纸巾」上传纸巾照片就一定能在
+        # 内容卖点里看到「纸巾」二字。
+        subjects_str = "、".join(s.strip() for s in detected_subjects if s.strip())[:300]
+        if subjects_str:
+            lines.append("DETECTED_SUBJECTS（用户已上传素材里 VLM 识别出的物体/场景；")
+            lines.append("  必须在 outline.content 里点名出现，缺的就拼上）:")
+            lines.append(subjects_str)
+            lines.append("")
     if transcript:
         lines.append("TRANSCRIPT:")
         for i, t in enumerate(transcript, 1):
@@ -212,6 +229,7 @@ async def run_clarify_round(
     transcript: list[ClarifyTurn],
     round_no: int,
     is_final: bool,
+    detected_subjects: list[str] | None = None,
 ) -> AsyncIterator[ClarifyEvent]:
     """跑一轮意图澄清。
 
@@ -221,12 +239,17 @@ async def run_clarify_round(
     3. RoundDone(outline, question, is_final) —— 最后一条
 
     is_final=True 时 RoundDone.question 强制 None。
+
+    detected_subjects 是用户已上传素材里 VLM 已识别出的物体/主体清单（如 ["纸巾", "客厅"]），
+    本 agent 把它喂进 LLM prompt，要求 outline.content 里必须点名出现这些对象，
+    保证素材上传与意图 outline 双向同步（#420）。
     """
     user_payload = _build_user_payload(
         initial_brief=initial_brief,
         transcript=transcript,
         round_no=round_no,
         is_final=is_final,
+        detected_subjects=detected_subjects,
     )
     client = get_llm_client()
 
