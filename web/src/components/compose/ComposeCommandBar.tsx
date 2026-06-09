@@ -20,6 +20,8 @@ import type {
   ComposeEditDismissRequest,
   ComposeEditRequest,
   ComposeEditResponse,
+  ConversationListResponse,
+  ConversationMessage,
   Plan,
   PlanId,
 } from '@/types/schemas'
@@ -29,6 +31,8 @@ interface Props {
   onClose: () => void
   planId: PlanId
   step: 'step2' | 'step3'
+  /** 项目级历史 scope；空字符串 → 不加载/写入历史（兼容老 plan 没绑 project） */
+  projectId: string
   /** apply 成功后用最新 plan 替换 store */
   onApplied: (plan: Plan) => void
 }
@@ -98,27 +102,56 @@ let _msgSeq = 0
 const nextId = () => `m-${Date.now()}-${++_msgSeq}`
 
 
-export function ComposeCommandBar({ open, onClose, planId, step, onApplied }: Props) {
+export function ComposeCommandBar({ open, onClose, planId, step, projectId, onApplied }: Props) {
   const [messages, setMessages] = useState<ChatMessage[]>([])
   const [draft, setDraft] = useState('')
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [historyLoading, setHistoryLoading] = useState(false)
   const inputRef = useRef<HTMLInputElement>(null)
   const scrollRef = useRef<HTMLDivElement>(null)
 
   // 当前 plan_id 实时跟随父级 props（apply 后父级会更新）
   const currentPlanId = planId
 
-  // 打开时构造开场白
+  // 打开时拉取项目级历史 + 拼上开场白
   useEffect(() => {
     if (!open) return
-    const intro = makeIntro(step)
-    setMessages([intro])
-    setDraft('')
+    let aborted = false
     setError(null)
+    setDraft('')
+    const intro = makeIntro(step)
+
+    if (!projectId) {
+      // 老 plan 没 project 锚——直接显示开场白，不持久化
+      setMessages([intro])
+      const t = setTimeout(() => inputRef.current?.focus(), 80)
+      return () => clearTimeout(t)
+    }
+
+    setHistoryLoading(true)
+    setMessages([intro])
+    void (async () => {
+      try {
+        const res = await api.get<ConversationListResponse>(
+          `/conversation/${encodeURIComponent(projectId)}`,
+        )
+        if (aborted) return
+        const restored = (res.messages || []).map(toChatMessage)
+        // intro 总是最新一条（开场白固定在头部，便于本轮新对话视觉锚定），历史在后面
+        setMessages([intro, ...restored])
+      } catch {
+        // 历史加载失败不影响新对话——继续走
+      } finally {
+        if (!aborted) setHistoryLoading(false)
+      }
+    })()
     const t = setTimeout(() => inputRef.current?.focus(), 80)
-    return () => clearTimeout(t)
-  }, [open, step])
+    return () => {
+      aborted = true
+      clearTimeout(t)
+    }
+  }, [open, step, projectId])
 
   // 滚到底
   useEffect(() => {
@@ -244,6 +277,18 @@ export function ComposeCommandBar({ open, onClose, planId, step, onApplied }: Pr
     })
   }
 
+  const clearHistory = async () => {
+    if (!projectId) return
+    if (!window.confirm('确定清空当前项目的 ⌘K 对话历史吗？此操作不可恢复。')) return
+    try {
+      await api.delete(`/conversation/${encodeURIComponent(projectId)}`)
+      setMessages([makeIntro(step)])
+    } catch (e) {
+      const msg = e instanceof ApiError ? e.message : (e as Error).message
+      setError(msg || '清空失败')
+    }
+  }
+
   if (!open) return null
 
   return (
@@ -263,13 +308,27 @@ export function ComposeCommandBar({ open, onClose, planId, step, onApplied }: Pr
             </span>
             <span className="text-sm font-medium">对话编辑小助手</span>
             <span className="text-xs text-muted-foreground">· {STEP_TITLE[step]}</span>
+            {historyLoading && (
+              <span className="text-xs text-muted-foreground">· 载入历史…</span>
+            )}
           </div>
-          <button
-            onClick={onClose}
-            className="text-xs text-muted-foreground hover:text-foreground"
-          >
-            关闭 (Esc)
-          </button>
+          <div className="flex items-center gap-3">
+            {projectId && (
+              <button
+                onClick={clearHistory}
+                className="text-xs text-muted-foreground hover:text-rose-500"
+                title="清空当前项目的 ⌘K 对话历史"
+              >
+                清空历史
+              </button>
+            )}
+            <button
+              onClick={onClose}
+              className="text-xs text-muted-foreground hover:text-foreground"
+            >
+              关闭 (Esc)
+            </button>
+          </div>
         </div>
 
         {/* messages */}
@@ -345,6 +404,27 @@ function makeIntro(step: 'step2' | 'step3'): ChatMessage {
     examples.map((e) => `· ${e}`).join('\n') +
     `\n\n下指令我会先给你看 diff 再确认；问问题我直接答。`
   return { id: nextId(), role: 'agent', text }
+}
+
+
+/** 把后端持久化的 ConversationMessage 还原成前端 ChatMessage（含 diff 卡片）。 */
+function toChatMessage(m: ConversationMessage): ChatMessage {
+  const meta = (m.meta || {}) as Record<string, unknown>
+  const diffs = Array.isArray(meta.diffs) ? (meta.diffs as ComposeEditDiff[]) : undefined
+  // 历史中已 applied/dismissed 的不再可重放——给一个终态标记
+  let applyState: ChatMessage['applyState']
+  if (m.kind === 'agent_apply') applyState = 'applied'
+  else if (m.kind === 'agent_dismiss') applyState = 'dismissed'
+  else if (diffs && diffs.length > 0 && meta.applied === false) applyState = 'pending'
+
+  return {
+    id: m.message_id || nextId(),
+    role: m.role === 'user' ? 'user' : 'agent',
+    text: m.text || '',
+    diffs,
+    applyState,
+    note: typeof meta.note === 'string' ? (meta.note as string) : null,
+  }
 }
 
 

@@ -33,6 +33,7 @@ from ..services.agent.compose_edit_agent import make_new_plan_id, replay_compose
 from ..services.llm_client import get_llm_client
 from ..services.plans import plan_store
 from ..services.profile import DEFAULT_USER_ID, TraceB, append_trace_b
+from ..services.projects.conversation_store import conversation_store
 from ..services.projects import project_store
 from ..services.tts import TTSError, synthesize_scene_voice
 
@@ -419,6 +420,9 @@ async def apply_compose_edit(req: ComposeEditRequest) -> ComposeEditResponse:
     if req.step not in ("step2", "step3"):
         raise HTTPException(status_code=400, detail=f"未知 step：{req.step}")
 
+    project_id = current.project_id  # 项目级历史 scope；__legacy plan 落到 __legacy 桶
+    _persist_user_message(project_id, req)
+
     working = current.model_copy(deep=True)
 
     # apply=True 且前端回传 confirmed_ops → 走确定性回放，跳过 LLM
@@ -429,13 +433,16 @@ async def apply_compose_edit(req: ComposeEditRequest) -> ComposeEditResponse:
             req.plan_id, req.step, len(req.confirmed_ops), len(diffs),
         )
         if not diffs:
+            note = "确认的修改在回放时全部失败（目标 id 可能已被其它编辑改动；请重新发送指令）。"
+            _persist_agent_message(project_id, req, [], note=note, applied=False, kind="agent_error")
             return ComposeEditResponse(
                 plan_id=current.plan_id, diffs=[], applied=False, plan=None,
-                note="确认的修改在回放时全部失败（目标 id 可能已被其它编辑改动；请重新发送指令）。",
+                note=note,
             )
         working.plan_id = make_new_plan_id()
         plan_store.put(working)
         _record_compose_trace(working, req.instruction, diffs, req.step, dismissed=False)
+        _persist_agent_message(project_id, req, diffs, note=None, applied=True, kind="agent_apply")
         return ComposeEditResponse(
             plan_id=working.plan_id, diffs=diffs, applied=True, plan=working, note=None,
         )
@@ -448,6 +455,7 @@ async def apply_compose_edit(req: ComposeEditRequest) -> ComposeEditResponse:
     )
 
     if not req.apply or not diffs:
+        _persist_agent_message(project_id, req, diffs, note=note, applied=False, kind="agent_reply")
         return ComposeEditResponse(
             plan_id=current.plan_id,
             diffs=diffs,
@@ -459,6 +467,7 @@ async def apply_compose_edit(req: ComposeEditRequest) -> ComposeEditResponse:
     working.plan_id = make_new_plan_id()
     plan_store.put(working)
     _record_compose_trace(working, req.instruction, diffs, req.step, dismissed=False)
+    _persist_agent_message(project_id, req, diffs, note=note, applied=True, kind="agent_apply")
     return ComposeEditResponse(
         plan_id=working.plan_id,
         diffs=diffs,
@@ -466,6 +475,49 @@ async def apply_compose_edit(req: ComposeEditRequest) -> ComposeEditResponse:
         plan=working,
         note=note,
     )
+
+
+def _persist_user_message(project_id: str | None, req: ComposeEditRequest) -> None:
+    """记录用户在 ⌘K 输入的指令到 conversation_store；失败仅 warn。"""
+    if not project_id:
+        return  # 无 project 锚的 plan（旧 demo）跳过；trace 仍走 __legacy
+    try:
+        msg = conversation_store.make_message(
+            role="user", kind="user_instruction", text=req.instruction,
+            plan_id=req.plan_id, step=req.step,
+            meta={"apply": req.apply, "has_confirmed_ops": bool(req.confirmed_ops)},
+        )
+        conversation_store.append(project_id, msg)
+    except Exception as exc:  # noqa: BLE001
+        log.warning("[edit] conversation user message persist failed: %s", exc)
+
+
+def _persist_agent_message(
+    project_id: str | None,
+    req: ComposeEditRequest,
+    diffs: list[ComposeEditDiff],
+    *,
+    note: str | None,
+    applied: bool,
+    kind: str,
+) -> None:
+    """记录 agent 回复（diff 列表 + note + apply 状态）。"""
+    if not project_id:
+        return
+    try:
+        msg = conversation_store.make_message(
+            role="agent", kind=kind,
+            text=note or "",
+            plan_id=req.plan_id, step=req.step,
+            meta={
+                "applied": applied,
+                "diff_count": len(diffs),
+                "diffs": [d.model_dump() for d in diffs],
+            },
+        )
+        conversation_store.append(project_id, msg)
+    except Exception as exc:  # noqa: BLE001
+        log.warning("[edit] conversation agent message persist failed: %s", exc)
 
 
 def _record_compose_trace(
@@ -532,5 +584,20 @@ async def dismiss_compose_edit(req: ComposeEditDismissRequest) -> dict[str, bool
             )
         )
     _record_compose_trace(current, req.instruction, fake_diffs, req.step, dismissed=True)
+    # 也写一条 dismiss 记录到对话历史
+    if current.project_id:
+        try:
+            msg = conversation_store.make_message(
+                role="agent", kind="agent_dismiss",
+                text="用户撤回了上一次预览的修改",
+                plan_id=req.plan_id, step=req.step,
+                meta={
+                    "dismissed_ops": req.dismissed_ops,
+                    "diff_count": len(fake_diffs),
+                },
+            )
+            conversation_store.append(current.project_id, msg)
+        except Exception as exc:  # noqa: BLE001
+            log.warning("[edit] conversation dismiss persist failed: %s", exc)
     log.info("[compose_edit.dismiss] plan=%s step=%s ops=%d", req.plan_id, req.step, len(fake_diffs))
     return {"ok": True}

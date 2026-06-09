@@ -2459,6 +2459,59 @@ class ComposeEditDismissRequest(BaseModel):
 
 
 # =========================================================================
+# ⌘K 对话历史持久化（项目级）
+# =========================================================================
+
+ConversationRole = Literal["user", "agent", "system"]
+ConversationKind = Literal[
+    "intro", "user_instruction", "agent_reply",
+    "agent_apply", "agent_dismiss", "agent_error",
+]
+
+
+class ConversationMessage(BaseModel):
+    """⌘K 命令面板的单条对话消息。
+
+    项目级 scoped：跨 plan 切换、重新拆解后历史仍连续。
+    持久化在 var/projects/<project_id>/conversations.json，自动 trim 到最近 200 条。
+    """
+
+    message_id: str = Field(..., description="客户端可生成或服务端补；用于乐观 UI 排重")
+    role: ConversationRole
+    kind: ConversationKind = Field(default="user_instruction")
+    text: str = Field(default="", max_length=4000)
+    created_at: float = Field(..., description="unix epoch seconds")
+    plan_id: Optional[str] = Field(default=None, description="当时操作的 plan id，便于回放")
+    step: Optional[ComposeEditStep] = Field(default=None)
+    meta: dict[str, Any] = Field(
+        default_factory=dict,
+        description="附加载荷：diffs / applied / note / dismissed_ops / error_code 等",
+    )
+
+
+class ConversationListResponse(BaseModel):
+    project_id: str
+    messages: list[ConversationMessage] = Field(default_factory=list)
+    truncated: bool = Field(
+        default=False,
+        description="历史长度已达上限（200），更老的消息已被 trim",
+    )
+
+
+class ConversationAppendRequest(BaseModel):
+    role: ConversationRole
+    kind: ConversationKind = Field(default="user_instruction")
+    text: str = Field(default="", max_length=4000)
+    plan_id: Optional[str] = None
+    step: Optional[ComposeEditStep] = None
+    meta: dict[str, Any] = Field(default_factory=dict)
+    message_id: Optional[str] = Field(
+        default=None,
+        description="可选；不传则服务端用 uuid hex 补",
+    )
+
+
+# =========================================================================
 # Jobs & SSE
 # =========================================================================
 

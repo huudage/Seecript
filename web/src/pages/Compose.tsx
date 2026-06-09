@@ -2319,6 +2319,7 @@ export default function ComposePage() {
           onClose={() => setCommandBarOpen(false)}
           planId={plan.plan_id}
           step={activeStep === 2 ? 'step2' : 'step3'}
+          projectId={currentProjectId ?? ''}
           onApplied={setPlanAndPush}
         />
       )}

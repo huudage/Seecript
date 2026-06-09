@@ -1425,6 +1425,46 @@ export interface ComposeEditDismissRequest {
 }
 
 // =========================================================================
+// ⌘K 对话历史（项目级 scoped，最近 200 条）
+// =========================================================================
+
+export type ConversationRole = 'user' | 'agent' | 'system'
+export type ConversationKind =
+  | 'intro'
+  | 'user_instruction'
+  | 'agent_reply'
+  | 'agent_apply'
+  | 'agent_dismiss'
+  | 'agent_error'
+
+export interface ConversationMessage {
+  message_id: string
+  role: ConversationRole
+  kind: ConversationKind
+  text: string
+  created_at: number
+  plan_id?: string | null
+  step?: ComposeEditStep | null
+  meta: Record<string, unknown>
+}
+
+export interface ConversationListResponse {
+  project_id: string
+  messages: ConversationMessage[]
+  truncated: boolean
+}
+
+export interface ConversationAppendRequest {
+  role: ConversationRole
+  kind?: ConversationKind
+  text?: string
+  plan_id?: string | null
+  step?: ComposeEditStep | null
+  meta?: Record<string, unknown>
+  message_id?: string | null
+}
+
+// =========================================================================
 // SSE
 // =========================================================================
 
