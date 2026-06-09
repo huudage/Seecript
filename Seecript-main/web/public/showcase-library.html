@@ -1,0 +1,232 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>素材与灵感 · Seecript</title>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&family=Noto+Sans+SC&display=swap" rel="stylesheet">
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:'Inter','Noto Sans SC',sans-serif;background:#030014;color:#f4f0ff;-webkit-font-smoothing:antialiased}
+.back-btn{position:fixed;top:20px;left:20px;z-index:100;display:flex;align-items:center;gap:6px;padding:8px 14px;border-radius:999px;font-size:13px;color:rgba(255,255,255,.5);text-decoration:none;border:1px solid rgba(255,255,255,.06);background:rgba(3,0,20,.6);backdrop-filter:blur(12px);transition:all .3s}
+.back-btn:hover{color:#fff;border-color:rgba(167,139,250,.2)}
+.header{padding:80px 24px 40px;max-width:1248px;margin:0 auto}
+.header h1{font-size:32px;font-weight:800;letter-spacing:-.02em}
+.header p{font-size:15px;color:rgba(255,255,255,.4);margin-top:8px;max-width:500px}
+.tabs{display:flex;gap:4px;padding:4px;border-radius:999px;border:1px solid rgba(255,255,255,.06);background:rgba(255,255,255,.02);width:fit-content;margin-bottom:32px}
+.tab{padding:6px 20px;border-radius:999px;font-size:13px;font-weight:500;color:rgba(255,255,255,.4);cursor:pointer;transition:all .25s;border:none;background:none;font-family:inherit}
+.tab:hover{color:rgba(255,255,255,.7)}
+.tab.active{color:#fff;background:rgba(167,139,250,.15)}
+
+/* Content area */
+.content{max-width:1248px;margin:0 auto;padding:0 24px 80px}
+.section-title{font-size:11px;font-weight:600;letter-spacing:.1em;text-transform:uppercase;color:rgba(167,139,250,.6);margin-bottom:16px}
+
+/* Sample grid */
+.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:12px}
+.card{border-radius:12px;overflow:hidden;border:1px solid rgba(255,255,255,.04);background:rgba(255,255,255,.01);cursor:pointer;transition:all .35s}
+.card:hover{transform:translateY(-3px);border-color:rgba(167,139,250,.2);box-shadow:0 8px 32px rgba(167,139,250,.08)}
+.card-thumb{aspect-ratio:16/9;background:linear-gradient(135deg,rgba(167,139,250,.12),rgba(129,140,248,.06));display:flex;align-items:center;justify-content:center;position:relative}
+.card-play{width:32px;height:32px;border-radius:50%;background:rgba(255,255,255,.12);backdrop-filter:blur(8px);display:flex;align-items:center;justify-content:center;transition:all .3s}
+.card:hover .card-play{background:rgba(167,139,250,.3);transform:scale(1.15)}
+.card-play svg{width:12px;height:12px;fill:#fff;margin-left:2px}
+.card-badge{position:absolute;top:8px;left:8px;padding:2px 8px;border-radius:999px;font-size:10px;font-weight:600}
+.card-badge.system{background:rgba(167,139,250,.2);color:rgba(167,139,250,.9)}
+.card-badge.user{background:rgba(52,211,153,.15);color:#34d399}
+.card-info{padding:12px}
+.card-name{font-size:13px;font-weight:600;margin-bottom:4px}
+.card-meta{font-size:11px;color:rgba(255,255,255,.3);display:flex;gap:12px}
+
+/* Upload card */
+.card-upload .card-thumb{border:2px dashed rgba(255,255,255,.06);background:transparent}
+.card-upload .card-thumb-inner{display:flex;flex-direction:column;align-items:center;gap:8px;color:rgba(255,255,255,.2);font-size:11px}
+.card-upload:hover .card-thumb{border-color:rgba(167,139,250,.3)}
+.upload-icon{width:24px;height:24px;border-radius:50%;border:2px solid rgba(255,255,255,.15);display:flex;align-items:center;justify-content:center;font-size:16px}
+
+/* Section spacing */
+.section-block{margin-bottom:48px}
+
+/* Upload area */
+.upload-area{margin-top:12px;border:2px dashed rgba(255,255,255,.04);border-radius:12px;padding:40px;text-align:center;cursor:pointer;transition:all .3s}
+.upload-area:hover{border-color:rgba(167,139,250,.2);background:rgba(167,139,250,.02)}
+.upload-area .icon{font-size:28px;margin-bottom:8px}
+.upload-area .text{font-size:13px;color:rgba(255,255,255,.3)}
+
+/* === MODAL === */
+.modal-overlay{position:fixed;inset:0;background:rgba(3,0,20,.8);backdrop-filter:blur(16px);z-index:200;display:none;align-items:center;justify-content:center;padding:24px}
+.modal-overlay.open{display:flex}
+.modal{max-width:800px;width:100%;border-radius:16px;border:1px solid rgba(255,255,255,.06);background:rgba(255,255,255,.02);backdrop-filter:blur(12px);overflow:hidden}
+.modal-header{display:flex;align-items:center;justify-content:space-between;padding:16px 20px;border-bottom:1px solid rgba(255,255,255,.04)}
+.modal-header h3{font-size:16px;font-weight:700}
+.modal-close{width:28px;height:28px;border-radius:50%;border:none;background:rgba(255,255,255,.04);color:rgba(255,255,255,.4);cursor:pointer;font-size:16px;display:flex;align-items:center;justify-content:center;transition:all .2s}
+.modal-close:hover{background:rgba(255,255,255,.1);color:#fff}
+.modal-body{padding:20px}
+.modal-video{width:100%;aspect-ratio:16/9;background:#000;border-radius:8px;display:flex;align-items:center;justify-content:center;margin-bottom:16px}
+.modal-video-inner{text-align:center;color:rgba(255,255,255,.2);font-size:13px}
+.modal-stats{display:flex;flex-wrap:wrap;gap:8px}
+.modal-stat{padding:6px 14px;border-radius:999px;font-size:12px;font-weight:500;background:rgba(255,255,255,.02);border:1px solid rgba(255,255,255,.04)}
+.modal-actions{display:flex;gap:8px;margin-top:20px}
+.modal-actions button{padding:10px 24px;border-radius:8px;font-size:13px;font-weight:600;border:none;cursor:pointer;font-family:inherit;transition:all .3s}
+.btn-primary{background:linear-gradient(135deg,rgba(167,139,250,.25),rgba(129,140,248,.18));border:1px solid rgba(167,139,250,.2);color:#fff;backdrop-filter:blur(8px)}
+.btn-primary:hover{background:linear-gradient(135deg,rgba(167,139,250,.4),rgba(129,140,248,.3));box-shadow:0 0 24px rgba(167,139,250,.15)}
+.btn-secondary{background:rgba(255,255,255,.03);border:1px solid rgba(255,255,255,.06);color:rgba(255,255,255,.6)}
+.btn-secondary:hover{background:rgba(255,255,255,.06);color:#fff}
+
+@media(max-width:600px){.grid{grid-template-columns:1fr 1fr}}
+
+.chip{padding:4px 14px;border-radius:999px;font-size:11px;font-weight:500;color:rgba(255,255,255,.3);cursor:pointer;transition:all .2s;border:1px solid rgba(255,255,255,.04);background:transparent;font-family:inherit}
+.chip:hover{color:rgba(255,255,255,.6);border-color:rgba(255,255,255,.1)}
+.chip.active{background:rgba(167,139,250,.1);color:rgba(167,139,250,.8);border-color:rgba(167,139,250,.15)}
+/* Version badge */
+.ver-badge{padding:2px 8px;border-radius:999px;font-size:10px;font-weight:600}
+.ver-badge.ready{background:rgba(52,211,153,.1);color:#34d399}
+.ver-badge.none{background:rgba(255,255,255,.04);color:rgba(255,255,255,.2)}
+</style>
+</head>
+<body>
+<nav>
+  <div class="inner">
+    <a href="showcase.html" class="logo">Seecript</a>
+    <div class="nav-links">
+      <a href="showcase.html" class="">首页</a>
+      <a href="showcase-projects.html" class="">我的项目</a>
+      <a href="showcase-library.html" class="active">素材与灵感</a>
+      <a href="showcase-decompose.html" class="">分析热门结构</a>
+      <a href="showcase-workspace.html" class="">创作工作台</a>
+      <a href="showcase-knowledge.html" class="">创作偏好</a>
+    </div>
+      </div>
+</nav>
+
+
+<div class="header">
+  <div style="margin-bottom:20px"><span style="font-size:11px;font-weight:600;letter-spacing:.1em;color:rgba(167,139,250,.6)">素材与灵感</span></div>
+  <h1>浏览热门样例</h1>
+  <p>内置 3 类预分析视频样例，选中即可开始借鉴。也可以上传你自己的参考视频。</p>
+</div>
+
+<div class="content">
+  <!-- Filter tabs -->
+  <div class="tabs">
+    <button class="tab active">全部</button>
+    <button class="tab">营销</button>
+    <button class="tab">Vlog</button>
+    <button class="tab">动效</button>
+    <button class="tab">我上传的</button>
+  </div>
+
+<div style="display:flex;align-items:center;gap:8px;margin:16px 0 24px;flex-wrap:wrap">
+  <span style="font-size:11px;color:rgba(255,255,255,.3)">视频类型</span>
+  <button class="chip active">全部</button>
+  <button class="chip">营销</button>
+  <button class="chip">Vlog</button>
+  <button class="chip">动效</button>
+</div>
+  <!-- Official samples -->
+  <div class="section-block">
+    <div class="section-title">官方样例 · 预分析完成</div>
+    <div class="grid">
+      <div class="card" onclick="openModal('数码产品开箱','marketing')">
+        <div class="card-thumb">
+          <div class="card-play"><svg viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg></div>
+          <span class="card-badge system">营销</span>
+        </div>
+        <div class="card-info"><div class="card-name">数码产品开箱</div><div class="card-meta"><span>28s</span><span>7 镜头</span><span>已分析<span class='ver-badge ready' style='margin-left:4px'>2 版本</span></span></div></div>
+      </div>
+      <div class="card" onclick="openModal('咖啡店日常','vlog')">
+        <div class="card-thumb">
+          <div class="card-play"><svg viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg></div>
+          <span class="card-badge system">Vlog</span>
+        </div>
+        <div class="card-info"><div class="card-name">咖啡店日常</div><div class="card-meta"><span>45s</span><span>12 镜头</span><span>已分析<span class='ver-badge ready' style='margin-left:4px'>2 版本</span></span></div></div>
+      </div>
+      <div class="card" onclick="openModal('品牌动画短片','motion')">
+        <div class="card-thumb">
+          <div class="card-play"><svg viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg></div>
+          <span class="card-badge system">动效</span>
+        </div>
+        <div class="card-info"><div class="card-name">品牌动画短片</div><div class="card-meta"><span>15s</span><span>4 镜头</span><span>已分析<span class='ver-badge ready' style='margin-left:4px'>2 版本</span></span></div></div>
+      </div>
+      <div class="card" onclick="openModal('运动手表评测','marketing')">
+        <div class="card-thumb">
+          <div class="card-play"><svg viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg></div>
+          <span class="card-badge system">营销</span>
+        </div>
+        <div class="card-info"><div class="card-name">运动手表评测</div><div class="card-meta"><span>38s</span><span>9 镜头</span><span>已分析<span class='ver-badge ready' style='margin-left:4px'>2 版本</span></span></div></div>
+      </div>
+      <div class="card" onclick="openModal('美食探店','vlog')">
+        <div class="card-thumb">
+          <div class="card-play"><svg viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg></div>
+          <span class="card-badge system">Vlog</span>
+        </div>
+        <div class="card-info"><div class="card-name">美食探店</div><div class="card-meta"><span>52s</span><span>15 镜头</span><span>已分析<span class='ver-badge ready' style='margin-left:4px'>2 版本</span></span></div></div>
+      </div>
+      <div class="card" onclick="openModal('科技发布片','motion')">
+        <div class="card-thumb">
+          <div class="card-play"><svg viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg></div>
+          <span class="card-badge system">动效</span>
+        </div>
+        <div class="card-info"><div class="card-name">科技发布片</div><div class="card-meta"><span>22s</span><span>6 镜头</span><span>已分析<span class='ver-badge ready' style='margin-left:4px'>2 版本</span></span></div></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Upload -->
+  <div class="section-block">
+    <div class="section-title">上传你的参考视频</div>
+    <div class="upload-area" onclick="alert('上传弹窗：选一个视频文件，AI 自动分析结构')">
+      <div class="icon">+</div>
+      <div class="text">点击或拖拽上传视频（支持 mp4/mov/webm，≤ 200MB）</div>
+    </div>
+  </div>
+</div>
+
+<!-- Preview Modal -->
+<div class="modal-overlay" id="modal">
+  <div class="modal">
+    <div class="modal-header">
+      <h3 id="modalTitle">数码产品开箱</h3>
+      <button class="modal-close" onclick="closeModal()">✕</button>
+    </div>
+    <div class="modal-body">
+      <div class="modal-video"><div class="modal-video-inner">▶ 视频预览区域<br><span style="font-size:11px">单击播放 / 暂停</span></div></div>
+      <div class="modal-stats" id="modalStats">
+        <span class="modal-stat">📹 7 镜头</span>
+        <span class="modal-stat">⏱ 28s</span>
+        <span class="modal-stat">📐 4 段落</span>
+        <span class="modal-stat">🎵 BGM 匹配 82%</span>
+      </div>
+      <div class="modal-actions">
+        <button class="btn-primary" onclick="alert('跳转到分解分析页 → showcase-decompose.html')">分析结构 →</button>
+        <button class="btn-secondary" onclick="alert('把这个视频设为参考，直接进工作台')">用这个结构创作</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+function openModal(title, type) {
+  document.getElementById('modalTitle').textContent = title
+  document.getElementById('modal').classList.add('open')
+}
+function closeModal() {
+  document.getElementById('modal').classList.remove('open')
+}
+document.getElementById('modal').addEventListener('click', function(e) {
+  if(e.target === this) closeModal()
+})
+document.querySelectorAll('.tab').forEach(t => {
+  t.addEventListener('click', function() {
+    document.querySelectorAll('.tab').forEach(x => x.classList.remove('active'))
+    this.classList.add('active')
+  })
+})
+
+document.querySelectorAll('.chip').forEach(c => {
+  c.addEventListener('click', function() {
+    document.querySelectorAll('.chip').forEach(x => x.classList.remove('active'));
+    this.classList.add('active');
+  })
+})
+</script>
+</body>
+</html>

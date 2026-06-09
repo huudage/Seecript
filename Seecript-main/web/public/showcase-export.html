@@ -1,0 +1,217 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>导出 · Seecript</title>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&family=Noto+Sans+SC&display=swap" rel="stylesheet">
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:'Inter','Noto Sans SC',sans-serif;background:#030014;color:#f4f0ff;-webkit-font-smoothing:antialiased}
+.back-btn{position:fixed;top:20px;left:20px;z-index:100;display:flex;align-items:center;gap:6px;padding:8px 14px;border-radius:999px;font-size:13px;color:rgba(255,255,255,.5);text-decoration:none;border:1px solid rgba(255,255,255,.06);background:rgba(3,0,20,.6);backdrop-filter:blur(12px);transition:all .3s}
+.back-btn:hover{color:#fff;border-color:rgba(167,139,250,.2)}
+
+.header{padding:80px 24px 0;max-width:1248px;margin:0 auto}
+.header h1{font-size:32px;font-weight:800;letter-spacing:-.02em}
+.breadcrumb{font-size:12px;color:rgba(255,255,255,.3);margin-bottom:12px}
+.breadcrumb a{color:rgba(167,139,250,.7);text-decoration:none}
+.breadcrumb span{color:rgba(255,255,255,.5)}
+
+/* Steps */
+.steps{display:flex;gap:4px;padding:4px;border-radius:999px;border:1px solid rgba(255,255,255,.06);background:rgba(255,255,255,.02);margin:24px auto;width:fit-content}
+.step-btn{padding:8px 24px;border-radius:999px;font-size:13px;font-weight:500;color:rgba(255,255,255,.3);border:none;background:none;font-family:inherit;display:flex;align-items:center;gap:6px;cursor:pointer}
+.step-btn.done{color:rgba(52,211,153,.6)}
+.step-btn.active{color:#fff;background:rgba(167,139,250,.12)}
+
+/* Main layout */
+.content{display:grid;grid-template-columns:340px 1fr;gap:24px;padding:24px;max-width:1248px;margin:0 auto}
+
+/* Progress panel */
+.progress-panel{border-radius:16px;border:1px solid rgba(255,255,255,.04);background:rgba(255,255,255,.01);overflow:hidden}
+.progress-header{padding:16px;border-bottom:1px solid rgba(255,255,255,.04);font-size:15px;font-weight:700}
+.progress-body{padding:16px}
+.step-row{display:flex;align-items:center;gap:12px;padding:12px 14px;border-radius:10px;margin-bottom:6px;transition:all .3s}
+.step-row.done{border:1px solid rgba(52,211,153,.1);background:rgba(52,211,153,.03)}
+.step-row.active{border:1px solid rgba(167,139,250,.15);background:rgba(167,139,250,.04)}
+.step-row.pending{border:1px solid rgba(255,255,255,.03);background:rgba(255,255,255,.005)}
+.step-icon{width:22px;height:22px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:10px;flex-shrink:0}
+.step-row.done .step-icon{background:rgba(52,211,153,.15);color:#34d399}
+.step-row.active .step-icon{background:rgba(167,139,250,.15);color:#a78bfa;animation:pulse 2s infinite}
+.step-row.pending .step-icon{background:rgba(255,255,255,.04);color:rgba(255,255,255,.2)}
+@keyframes pulse{0%,100%{opacity:.6}50%{opacity:1}}
+.step-label{flex:1;font-size:13px;font-weight:500}
+.step-status{font-size:11px}
+.step-row.done .step-status{color:#34d399}
+.step-row.active .step-status{color:rgba(167,139,250,.8)}
+.step-row.pending .step-status{color:rgba(255,255,255,.15)}
+.progress-bar{height:4px;border-radius:2px;background:rgba(255,255,255,.04);overflow:hidden;margin:16px 0}
+.progress-fill{height:100%;border-radius:2px;background:linear-gradient(90deg,rgba(167,139,250,.5),rgba(129,140,248,.3));width:58%;transition:width .5s;animation:progressPulse 2s infinite}
+@keyframes progressPulse{0%,100%{opacity:.7}50%{opacity:1}}
+
+/* Preview */
+.preview-panel{border-radius:16px;border:1px solid rgba(255,255,255,.04);background:#000;overflow:hidden;display:flex;flex-direction:column}
+.preview-topbar{display:flex;align-items:center;gap:12px;padding:12px 16px;border-bottom:1px solid rgba(255,255,255,.06);background:rgba(255,255,255,.02)}
+.preview-topbar span{font-size:12px;color:rgba(255,255,255,.4)}
+.preview-area{flex:1;display:flex;align-items:center;justify-content:center;min-height:400px;position:relative}
+.preview-play{width:80px;height:80px;border-radius:50%;background:rgba(255,255,255,.06);backdrop-filter:blur(16px);display:flex;align-items:center;justify-content:center;cursor:pointer;transition:all .3s}
+.preview-play:hover{background:rgba(167,139,250,.2);transform:scale(1.1)}
+.preview-play svg{width:30px;height:30px;fill:rgba(255,255,255,.6);margin-left:6px}
+.preview-controls{display:flex;align-items:center;gap:16px;padding:12px 16px;border-top:1px solid rgba(255,255,255,.04);background:rgba(255,255,255,.02)}
+.control-btn{width:28px;height:28px;border-radius:50%;border:none;background:rgba(255,255,255,.04);color:rgba(255,255,255,.4);cursor:pointer;display:flex;align-items:center;justify-content:center;font-size:12px}
+.control-btn:hover{background:rgba(255,255,255,.08);color:#fff}
+.timeline{flex:1;height:4px;border-radius:2px;background:rgba(255,255,255,.06);position:relative}
+.timeline-progress{height:100%;border-radius:2px;background:rgba(167,139,250,.5);width:35%}
+.timeline-dot{position:absolute;top:50%;left:35%;width:10px;height:10px;border-radius:50%;background:#a78bfa;transform:translate(-50%,-50%)}
+
+/* Stats */
+.stats{display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin:16px 0}
+.stat-card{padding:12px;border-radius:10px;border:1px solid rgba(255,255,255,.04);text-align:center}
+.stat-num{font-size:18px;font-weight:800;color:#fff}
+.stat-label{font-size:11px;color:rgba(255,255,255,.35);margin-top:4px}
+
+/* Done state */
+.done-state{display:none;padding:16px;text-align:center}
+.done-state.open{display:block}
+.done-icon{font-size:48px;margin-bottom:12px}
+.done-title{font-size:20px;font-weight:800;margin-bottom:8px}
+.done-desc{font-size:13px;color:rgba(255,255,255,.4);margin-bottom:20px}
+.done-actions{display:flex;gap:8px;justify-content:center}
+.done-actions button{padding:10px 24px;border-radius:8px;font-size:13px;font-weight:600;border:none;cursor:pointer;font-family:inherit;transition:all .3s}
+.btn-dl{background:linear-gradient(135deg,rgba(167,139,250,.25),rgba(129,140,248,.18));border:1px solid rgba(167,139,250,.2);color:#fff}
+.btn-dl:hover{box-shadow:0 0 24px rgba(167,139,250,.15)}
+.btn-share{background:rgba(255,255,255,.03);border:1px solid rgba(255,255,255,.06);color:rgba(255,255,255,.6)}
+.btn-share:hover{color:#fff}
+
+@media(max-width:768px){.content{grid-template-columns:1fr}.stats{grid-template-columns:repeat(2,1fr)}}
+</style>
+</head>
+<body>
+<nav>
+  <div class="inner">
+    <a href="showcase.html" class="logo">Seecript</a>
+    <div class="nav-links">
+      <a href="showcase.html" class="">首页</a>
+      <a href="showcase-projects.html" class="">我的项目</a>
+      <a href="showcase-library.html" class="">素材与灵感</a>
+      <a href="showcase-decompose.html" class="">分析热门结构</a>
+      <a href="showcase-workspace.html" class="active">创作工作台</a>
+      <a href="showcase-knowledge.html" class="">创作偏好</a>
+    </div>
+      </div>
+</nav>
+
+
+<div class="header">
+  <div class="breadcrumb"><a href="showcase.html">首页</a> / <a href="showcase-workspace.html">工作台</a> / <span>导出成片</span></div>
+  <h1>导出成片</h1>
+</div>
+
+<div class="steps">
+  <button class="step-btn done">✓ 选参考</button>
+  <button class="step-btn done">✓ 编排内容</button>
+  <button class="step-btn active">● 导出</button>
+</div>
+
+<div class="content">
+  <!-- Progress -->
+  <div class="progress-panel">
+    <div class="progress-header">渲染进度</div>
+    <div class="progress-body">
+      <div class="progress-bar"><div class="progress-fill"></div></div>
+      <div style="text-align:center;font-size:11px;color:rgba(255,255,255,.3);margin-bottom:16px">约 1分20秒 · 已完成 58%</div>
+
+      <div class="step-row done">
+        <span class="step-icon">✓</span><span class="step-label">画面合成</span><span class="step-status">已完成</span>
+      </div>
+      <div class="step-row done">
+        <span class="step-icon">✓</span><span class="step-label">AI 画面生成</span><span class="step-status">已完成</span>
+      </div>
+      <div class="step-row active">
+        <span class="step-icon">●</span><span class="step-label">字幕与特效</span><span class="step-status">进行中…</span>
+      </div>
+      <div class="step-row pending">
+        <span class="step-icon">4</span><span class="step-label">导出成片</span><span class="step-status">等待中</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- Preview + Done -->
+  <div class="preview-panel">
+    <div class="preview-topbar"><span>智能手表开箱 · 预览</span><span style="flex:1"></span><span>⏱ 0:10 / 0:25</span></div>
+
+    <div class="preview-area">
+      <div class="preview-play" onclick="simulateDone()"><svg viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg></div>
+    </div>
+
+    <div class="preview-controls">
+      <button class="control-btn">⏮</button>
+      <button class="control-btn">▶</button>
+      <button class="control-btn">⏭</button>
+      <div class="timeline"><div class="timeline-progress"><div class="timeline-dot"></div></div></div>
+    </div>
+
+    <!-- Stats -->
+    <div class="stats" id="statsNormal">
+      <div class="stat-card"><div class="stat-num">25s</div><div class="stat-label">时长</div></div>
+      <div class="stat-card"><div class="stat-num">9:16</div><div class="stat-label">画幅</div></div>
+      <div class="stat-card"><div class="stat-num">30MB</div><div class="stat-label">预计大小</div></div>
+      <div class="stat-card"><div class="stat-num">H.264</div><div class="stat-label">编码</div></div>
+    </div>
+
+    <!-- Done state (hidden initially) -->
+    <div class="done-state" id="doneState">
+      <div class="done-icon">🎉</div>
+      <div class="done-title">导出完成！</div>
+      <div class="done-desc">智能手表开箱 · 成品视频已就绪，可直接下载或分享。</div>
+      <div class="done-actions">
+        <button class="btn-dl" onclick="alert('下载视频文件')">下载视频 ⬇</button>
+        <button class="btn-share" onclick="alert('复制分享链接')">复制链接</button>
+      </div>
+      <div style="text-align:left;margin:16px auto 0;max-width:400px">
+    <div style="font-size:11px;color:rgba(255,255,255,.3);margin-bottom:8px">分步耗时</div>
+  </div>
+  <div style="display:grid;grid-template-columns:1fr 1fr;gap:4px;max-width:400px;margin:0 auto 12px;font-size:11px">
+    <div style="display:flex;justify-content:space-between;padding:4px 8px;border-radius:4px;background:rgba(255,255,255,.01);color:rgba(255,255,255,.4)"><span>准备</span><span>120ms</span></div>
+    <div style="display:flex;justify-content:space-between;padding:4px 8px;border-radius:4px;background:rgba(255,255,255,.01);color:rgba(255,255,255,.4)"><span>画面合成</span><span>8s</span></div>
+    <div style="display:flex;justify-content:space-between;padding:4px 8px;border-radius:4px;background:rgba(255,255,255,.01);color:rgba(255,255,255,.4)"><span>AI 画面生成</span><span>45s</span></div>
+    <div style="display:flex;justify-content:space-between;padding:4px 8px;border-radius:4px;background:rgba(255,255,255,.01);color:rgba(255,255,255,.4)"><span>字幕特效</span><span>18s</span></div>
+    <div style="display:flex;justify-content:space-between;padding:4px 8px;border-radius:4px;background:rgba(255,255,255,.01);color:rgba(255,255,255,.4)"><span>叠加输出</span><span>9s</span></div>
+    <div style="display:flex;justify-content:space-between;padding:4px 8px;border-radius:4px;background:rgba(255,255,255,.01);color:rgba(52,211,153,.7);font-weight:600"><span>总耗时</span><span>80s</span></div>
+  </div>
+  <div style="margin-top:12px;display:flex;gap:8px;justify-content:center;flex-wrap:wrap">
+        <span class="stat-tag">⏱ 25s</span>
+        <span class="stat-tag">📦 30MB</span>
+        <span class="stat-tag">🎬 1080p</span>
+        <span class="stat-tag">📝 SRT 字幕</span>
+        <span class="stat-tag">🎨 转场：滑入</span>
+        <span class="stat-tag">🎵 BGM：Electronic Uplift</span>
+      </div>
+    </div>
+
+    <style>
+    .stat-tag{padding:4px 12px;border-radius:999px;font-size:11px;font-weight:500;background:rgba(255,255,255,.02);border:1px solid rgba(255,255,255,.04);color:rgba(255,255,255,.4)}
+    </style>
+  </div>
+</div>
+
+<script>
+function simulateDone() {
+  // Hide progress steps and stats, show done state
+  document.getElementById('statsNormal').style.display = 'none';
+  document.getElementById('doneState').classList.add('open');
+  // Animate progress bar
+  document.querySelector('.progress-fill').style.width = '100%';
+  // Mark all steps done
+  document.querySelectorAll('.step-row.active').forEach(x => {
+    x.className = 'step-row done';
+    x.querySelector('.step-icon').textContent = '✓';
+    x.querySelector('.step-status').textContent = '已完成';
+  });
+  document.querySelectorAll('.step-row.pending').forEach(x => {
+    x.className = 'step-row done';
+    x.querySelector('.step-icon').textContent = '✓';
+    x.querySelector('.step-status').textContent = '已完成';
+  });
+}
+</script>
+</body>
+</html>

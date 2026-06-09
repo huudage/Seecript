@@ -1,0 +1,168 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>我的创作偏好 · Seecript</title>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&family=Noto+Sans+SC&display=swap" rel="stylesheet">
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:'Inter','Noto Sans SC',sans-serif;background:#030014;color:#f4f0ff;-webkit-font-smoothing:antialiased}
+/* === NAV === */
+nav{position:fixed;top:0;left:0;right:0;z-index:100;padding:0 24px;backdrop-filter:blur(20px);-webkit-backdrop-filter:blur(20px);background:rgba(3,0,20,.7);border-bottom:1px solid rgba(255,255,255,.04)}
+nav .inner{display:flex;align-items:center;justify-content:space-between;padding:14px 0}
+.logo{font-size:17px;font-weight:800;letter-spacing:-.02em;background:linear-gradient(135deg,#a78bfa,#818cf8);-webkit-background-clip:text;-webkit-text-fill-color:transparent;background-clip:text;text-decoration:none}
+.nav-links{display:flex;align-items:center;gap:6px;padding:4px 6px;border-radius:999px;border:1px solid rgba(255,255,255,.06);background:rgba(255,255,255,.02)}
+.nav-links a{font-size:12px;font-weight:500;color:rgba(255,255,255,.45);text-decoration:none;padding:6px 14px;border-radius:999px;transition:all .25s;white-space:nowrap}
+.nav-links a:hover{color:rgba(255,255,255,.8);background:rgba(255,255,255,.03)}
+.nav-links a.active{color:#fff;background:rgba(167,139,250,.12)}
+
+.content{max-width:1248px;margin:0 auto;padding:100px 24px 80px}
+.page-header{margin-bottom:32px}
+.page-header h1{font-size:28px;font-weight:800;letter-spacing:-.02em}
+.page-header p{font-size:14px;color:rgba(255,255,255,.35);max-width:560px;line-height:1.6}
+
+/* Settings card */
+.section{margin-bottom:24px}
+.section-title{font-size:14px;font-weight:700;margin-bottom:12px;display:flex;align-items:center;gap:8px}
+.card{border-radius:14px;border:1px solid rgba(255,255,255,.04);background:rgba(255,255,255,.01);overflow:hidden}
+.card-header{padding:14px 18px;border-bottom:1px solid rgba(255,255,255,.04);font-size:14px;font-weight:600;display:flex;align-items:center;justify-content:space-between}
+.card-body{padding:18px}
+.card-badge{padding:3px 10px;border-radius:999px;font-size:10px;font-weight:600}
+.card-badge.on{background:rgba(52,211,153,.1);color:#34d399}
+.card-badge.builtin{background:rgba(255,255,255,.04);color:rgba(255,255,255,.3)}
+
+/* Toggle switch */
+.toggle{display:flex;align-items:center;gap:12px;cursor:pointer}
+.toggle-label{font-size:14px;font-weight:500}
+.toggle-desc{font-size:12px;color:rgba(255,255,255,.35);margin-top:4px}
+.toggle-switch{width:40px;height:24px;border-radius:99px;background:rgba(255,255,255,.06);position:relative;transition:all .3s;flex-shrink:0}
+.toggle-switch.on{background:rgba(167,139,250,.3)}
+.toggle-switch::after{content:'';position:absolute;top:3px;left:3px;width:18px;height:18px;border-radius:50%;background:#fff;transition:all .3s}
+.toggle-switch.on::after{left:19px}
+
+/* Project list */
+.project-list{display:flex;flex-direction:column;gap:8px}
+.project-item{padding:14px 18px;border-radius:12px;border:1px solid rgba(255,255,255,.04);background:rgba(255,255,255,.005);display:flex;align-items:center;gap:14px;transition:all .2s}
+.project-item:hover{background:rgba(255,255,255,.01)}
+.project-item.enabled{border-color:rgba(167,139,250,.1);background:rgba(167,139,250,.02)}
+.project-check{width:18px;height:18px;border-radius:4px;border:2px solid rgba(255,255,255,.1);display:flex;align-items:center;justify-content:center;cursor:pointer;flex-shrink:0;transition:all .2s}
+.project-item.enabled .project-check{background:rgba(167,139,250,.2);border-color:rgba(167,139,250,.3)}
+.project-info{flex:1;min-width:0}
+.project-name{font-size:13px;font-weight:600}
+.project-desc{font-size:11px;color:rgba(255,255,255,.25);margin-top:2px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.project-rules{font-size:11px;color:rgba(255,255,255,.2);flex-shrink:0}
+.project-top{font-size:10px;padding:2px 8px;border-radius:999px;background:rgba(255,255,255,.03);color:rgba(255,255,255,.2);flex-shrink:0}
+
+.footer-note{margin-top:24px;padding:14px;border-radius:10px;border:1px solid rgba(255,255,255,.03);background:rgba(255,255,255,.005);font-size:12px;color:rgba(255,255,255,.25);text-align:center;line-height:1.6}
+
+@media(max-width:768px){.nav-links{overflow-x:auto;gap:2px}.nav-links a{font-size:10px;padding:5px 8px}}
+</style>
+</head>
+<body>
+
+<nav>
+  <div class="inner">
+    <a href="showcase.html" class="logo">Seecript</a>
+    <div class="nav-links">
+      <a href="showcase.html">首页</a>
+      <a href="showcase-projects.html">我的项目</a>
+      <a href="showcase-library.html">素材与灵感</a>
+      <a href="showcase-decompose.html">分析热门结构</a>
+      <a href="showcase-workspace.html">创作工作台</a>
+      <a href="showcase-knowledge.html" class="active">创作偏好</a>
+    </div>
+  </div>
+</nav>
+
+<div class="content">
+  <div class="page-header">
+    <h1>我的创作偏好</h1>
+    <p>AI 会记住你的创作习惯。每次完成视频后自动总结你的风格偏好，下次创作时自动帮你保持一致。</p>
+  </div>
+
+  <!-- Auto learn toggle -->
+  <div class="section">
+    <div class="card">
+      <div class="card-header">
+        <span>自动学习</span>
+        <span class="card-badge on">已开启</span>
+      </div>
+      <div class="card-body">
+        <div class="toggle" onclick="this.querySelector('.toggle-switch').classList.toggle('on')">
+          <div>
+            <div class="toggle-label">实时学习</div>
+            <div class="toggle-desc">开启后，每次导出视频时 AI 会自动总结你的创作偏好。关闭后只保存记录不自动总结。</div>
+          </div>
+          <div class="toggle-switch on"></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Default prefs -->
+  <div class="section">
+    <div class="card">
+      <div class="card-header">
+        <span>默认偏好</span>
+        <span class="card-badge builtin">始终生效</span>
+      </div>
+      <div class="card-body">
+        <p style="font-size:13px;color:rgba(255,255,255,.35);line-height:1.6">AI 内置的通用创作建议——包括段落结构、口播节奏、字幕样式的最佳实践。这些偏好始终生效，不可关闭。</p>
+      </div>
+    </div>
+  </div>
+
+  <!-- Project prefs -->
+  <div class="section">
+    <div class="section-title">项目偏好 <span style="font-size:11px;color:rgba(255,255,255,.2);font-weight:400">3 个项目 · 注入 7 条偏好</span></div>
+    <div class="card">
+      <div class="card-body" style="padding:0">
+        <div class="project-list">
+          <div class="project-item enabled">
+            <div class="project-check">✓</div>
+            <div class="project-info">
+              <div class="project-name">智能手表开箱</div>
+              <div class="project-desc">快节奏、强CTA、高饱和配色偏好</div>
+            </div>
+            <span class="project-rules">3 条偏好</span>
+            <span class="project-top">最近项目</span>
+          </div>
+          <div class="project-item enabled">
+            <div class="project-check">✓</div>
+            <div class="project-info">
+              <div class="project-name">咖啡店日常 Vlog</div>
+              <div class="project-desc">温暖色调、慢节奏、字幕居中偏好</div>
+            </div>
+            <span class="project-rules">2 条偏好</span>
+            <span class="project-top">最近项目</span>
+          </div>
+          <div class="project-item">
+            <div class="project-check"></div>
+            <div class="project-info">
+              <div class="project-name">新品牌发布片</div>
+              <div class="project-desc">信息密集、动效丰富、蓝紫调偏好</div>
+            </div>
+            <span class="project-rules">2 条偏好</span>
+            <span class="project-top">手动启用</span>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="footer-note">
+    💡 更多偏好会在你完成项目导出后自动沉淀。点击项目可查看具体的学习到的规则。
+  </div>
+</div>
+
+<script>
+document.querySelectorAll('.project-item').forEach(item => {
+  item.addEventListener('click', function() {
+    this.classList.toggle('enabled');
+    const check = this.querySelector('.project-check');
+    check.textContent = this.classList.contains('enabled') ? '✓' : '';
+  })
+});
+</script>
+</body>
+</html>

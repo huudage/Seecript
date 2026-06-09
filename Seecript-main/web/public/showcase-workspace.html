@@ -1,0 +1,313 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>创作工作台 · Seecript</title>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&family=Noto+Sans+SC&display=swap" rel="stylesheet">
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:'Inter','Noto Sans SC',sans-serif;background:#030014;color:#f4f0ff;-webkit-font-smoothing:antialiased}
+.back-btn{position:fixed;top:20px;left:20px;z-index:100;display:flex;align-items:center;gap:6px;padding:8px 14px;border-radius:999px;font-size:13px;color:rgba(255,255,255,.5);text-decoration:none;border:1px solid rgba(255,255,255,.06);background:rgba(3,0,20,.6);backdrop-filter:blur(12px);transition:all .3s}
+.back-btn:hover{color:#fff;border-color:rgba(167,139,250,.2)}
+
+.header{padding:80px 24px 0;max-width:1248px;margin:0 auto}
+.header h1{font-size:32px;font-weight:800;letter-spacing:-.02em}
+.breadcrumb{font-size:12px;color:rgba(255,255,255,.3);margin-bottom:12px}
+.breadcrumb a{color:rgba(167,139,250,.7);text-decoration:none}
+
+/* Step tabs */
+.steps{display:flex;gap:4px;padding:4px;border-radius:999px;border:1px solid rgba(255,255,255,.06);background:rgba(255,255,255,.02);width:fit-content;margin:24px auto}
+.step-btn{padding:8px 24px;border-radius:999px;font-size:13px;font-weight:500;color:rgba(255,255,255,.3);cursor:pointer;transition:all .25s;border:none;background:none;font-family:inherit;display:flex;align-items:center;gap:6px}
+.step-btn:hover{color:rgba(255,255,255,.6)}
+.step-btn.active{color:#fff;background:rgba(167,139,250,.12)}
+.step-num{width:18px;height:18px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:10px;font-weight:700}
+.step-btn.active .step-num{background:rgba(167,139,250,.3)}
+
+/* Content grid */
+.content{display:grid;grid-template-columns:1fr 300px;gap:20px;padding:24px;max-width:1248px;margin:0 auto}
+
+/* Board */
+.board{background:rgba(255,255,255,.01);border:1px solid rgba(255,255,255,.04);border-radius:16px;overflow:hidden}
+.board-header{padding:14px 16px;border-bottom:1px solid rgba(255,255,255,.04);display:flex;align-items:center;justify-content:space-between}
+.board-title{font-size:15px;font-weight:700}
+.board-badge{font-size:11px;padding:4px 12px;border-radius:999px;background:rgba(52,211,153,.1);color:#34d399}
+.board-body{padding:16px}
+
+/* Story grid */
+.story-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:12px}
+.seg{border-radius:10px;padding:10px 8px;text-align:center;transition:all .3s;cursor:default}
+.seg.filled{border:1px solid rgba(52,211,153,.15);background:rgba(52,211,153,.04)}
+.seg.empty{border:2px dashed rgba(255,255,255,.08);background:transparent;cursor:pointer}
+.seg.ai{border:1px solid rgba(167,139,250,.15);background:rgba(167,139,250,.04)}
+.seg:hover{transform:translateY(-2px)}
+.seg.empty:hover{border-color:rgba(167,139,250,.3);background:rgba(167,139,250,.04)}
+.seg-num{font-size:10px;font-weight:700;color:rgba(255,255,255,.25);margin-bottom:6px}
+.seg-label{font-size:13px;font-weight:600;margin-bottom:4px}
+.seg-dur{font-size:10px;color:rgba(255,255,255,.25)}
+.seg-status{font-size:11px;font-weight:600;margin-top:8px}
+.seg.filled .seg-status{color:#34d399}
+.seg.empty .seg-status{color:rgba(255,255,255,.15)}
+.seg.ai .seg-status{color:rgba(167,139,250,.8)}
+
+/* Scene list */
+.scene-list{margin-top:12px}
+.scene-item{display:flex;align-items:center;gap:8px;padding:6px 10px;border-radius:6px;transition:all .2s;cursor:pointer;font-size:11px}
+.scene-item:hover{background:rgba(255,255,255,.02)}
+.scene-idx{width:20px;height:20px;border-radius:6px;display:flex;align-items:center;justify-content:center;font-size:10px;font-weight:700;flex-shrink:0}
+.scene-item.filled .scene-idx{background:rgba(52,211,153,.15);color:#34d399}
+.scene-item.empty-s .scene-idx{background:rgba(255,255,255,.04);color:rgba(255,255,255,.2)}
+.scene-name{flex:1}
+.scene-dur{color:rgba(255,255,255,.2)}
+.scene-icon{font-size:12px}
+
+/* Side panel */
+.side-panel{display:flex;flex-direction:column;gap:10px;max-height:calc(100vh - 140px);overflow-y:auto;position:sticky;top:80px}
+.panel-card{border-radius:12px;border:1px solid rgba(255,255,255,.04);background:rgba(255,255,255,.01);overflow:hidden}
+.panel-header{padding:10px 12px;border-bottom:1px solid rgba(255,255,255,.04);font-size:12px;font-weight:700;display:flex;align-items:center;justify-content:space-between}
+.panel-badge{font-size:10px;padding:2px 8px;border-radius:999px;background:rgba(251,191,36,.1);color:#fbbf24}
+.panel-body{padding:10px 12px}
+
+/* Gap list */
+.gap-item{display:flex;align-items:center;gap:6px;padding:7px 10px;border-radius:6px;margin-bottom:2px;cursor:pointer;transition:all .2s;font-size:12px}
+.gap-item:hover{background:rgba(255,255,255,.02)}
+.gap-item.selected{background:rgba(167,139,250,.06);border:1px solid rgba(167,139,250,.15)}
+.gap-dot{width:6px;height:6px;border-radius:50%;flex-shrink:0}
+.gap-dot.warn{background:#f59e0b}
+.gap-dot.miss{background:#ef4444}
+.gap-name{flex:1}
+.gap-action{font-size:10px;padding:2px 8px;border-radius:999px;font-weight:500}
+.gap-action.fill{background:rgba(167,139,250,.1);color:rgba(167,139,250,.8)}
+
+/* Material grid in side panel */
+.mat-grid{display:grid;grid-template-columns:1fr 1fr;gap:6px}
+.mat-item{border-radius:8px;overflow:hidden;border:1px solid rgba(255,255,255,.03);cursor:pointer;transition:all .2s}
+.mat-item:hover{border-color:rgba(167,139,250,.2)}
+.mat-thumb{aspect-ratio:16/9;background:linear-gradient(135deg,rgba(167,139,250,.1),rgba(129,140,248,.04));display:flex;align-items:center;justify-content:center;font-size:18px}
+.mat-name{padding:6px 8px;font-size:11px;color:rgba(255,255,255,.5)}
+
+/* Fill panel (slide in) */
+.fill-panel{display:none}
+.fill-panel.open{display:block}
+.fill-tabs{display:flex;gap:4px;margin-bottom:12px}
+.fill-tab{padding:6px 14px;border-radius:999px;font-size:11px;font-weight:500;color:rgba(255,255,255,.3);cursor:pointer;transition:all .2s;border:1px solid rgba(255,255,255,.04);background:transparent;font-family:inherit}
+.fill-tab:hover{color:rgba(255,255,255,.6)}
+.fill-tab.active{background:rgba(167,139,250,.1);color:rgba(167,139,250,.8);border-color:rgba(167,139,250,.15)}
+.fill-btn{padding:8px 16px;border-radius:8px;font-size:12px;font-weight:600;border:none;cursor:pointer;font-family:inherit;transition:all .3s;background:linear-gradient(135deg,rgba(167,139,250,.2),rgba(129,140,248,.15));border:1px solid rgba(167,139,250,.15);color:#fff;width:100%;margin-top:8px}
+.fill-btn:hover{background:linear-gradient(135deg,rgba(167,139,250,.35),rgba(129,140,248,.25))}
+
+/* Export button area */
+.export-bar{margin-top:16px;padding:14px 16px;border-radius:10px;background:rgba(167,139,250,.03);border:1px solid rgba(167,139,250,.1);display:flex;align-items:center;justify-content:space-between}
+.export-bar .label{font-size:13px;font-weight:600}
+.export-bar .sub{font-size:11px;color:rgba(255,255,255,.3);margin-top:2px}
+.export-btn{padding:10px 24px;border-radius:8px;font-size:13px;font-weight:600;border:none;cursor:pointer;font-family:inherit;transition:all .3s;background:linear-gradient(135deg,rgba(167,139,250,.25),rgba(129,140,248,.18));border:1px solid rgba(167,139,250,.2);color:#fff}
+.export-btn:hover{background:linear-gradient(135deg,rgba(167,139,250,.4),rgba(129,140,248,.3));box-shadow:0 0 24px rgba(167,139,250,.15)}
+
+@media(max-width:900px){.content{grid-template-columns:1fr}.story-grid{grid-template-columns:repeat(2,1fr)}}
+
+.infotag{padding:4px 12px;border-radius:999px;font-size:11px;font-weight:500;background:rgba(167,139,250,.06);color:rgba(167,139,250,.7);border:1px solid rgba(167,139,250,.1)}
+.pkg-option{padding:8px 14px;border-radius:8px;border:1px solid rgba(255,255,255,.05);background:rgba(255,255,255,.01);cursor:pointer;transition:all .2s;font-size:12px;font-family:inherit;color:rgba(255,255,255,.4);text-align:left;width:100%}
+.pkg-option:hover{background:rgba(255,255,255,.03);color:rgba(255,255,255,.6)}
+.pkg-option.selected{border-color:rgba(167,139,250,.2);background:rgba(167,139,250,.04);color:#fff}
+.cmdk-bar{display:flex;align-items:center;gap:8px;padding:8px 14px;border-radius:8px;border:1px solid rgba(255,255,255,.06);background:rgba(255,255,255,.01);font-size:12px;color:rgba(255,255,255,.2);cursor:pointer;transition:all .2s}
+.cmdk-bar:hover{color:rgba(255,255,255,.4);border-color:rgba(167,139,250,.15)}
+.cmdk-key{padding:2px 6px;border-radius:4px;border:1px solid rgba(255,255,255,.08);font-size:10px;font-family:monospace;color:rgba(255,255,255,.3)}
+</style>
+</head>
+<body>
+<nav>
+  <div class="inner">
+    <a href="showcase.html" class="logo">Seecript</a>
+    <div class="nav-links">
+      <a href="showcase.html" class="">首页</a>
+      <a href="showcase-projects.html" class="">我的项目</a>
+      <a href="showcase-library.html" class="">素材与灵感</a>
+      <a href="showcase-decompose.html" class="">分析热门结构</a>
+      <a href="showcase-workspace.html" class="active">创作工作台</a>
+      <a href="showcase-knowledge.html" class="">创作偏好</a>
+    </div>
+      </div>
+</nav>
+
+
+<div class="header">
+  <div class="breadcrumb"><a href="showcase.html">首页</a> / <a href="showcase-library.html">素材库</a> / 创作工作台</div>
+  <h1>智能手表开箱 · 创作工作台</h1>
+</div>
+
+<!-- Steps -->
+<div class="steps" style="margin-bottom:8px">
+  <button class="step-btn"><span class="step-num">1</span> 选参考</button>
+  <button class="step-btn active"><span class="step-num">2</span> 编排内容</button>
+  <button class="step-btn"><span class="step-num">3</span> 精调导出</button>
+</div>
+
+<div class="content">
+  <!-- Main board -->
+  <div class="board">
+    <div class="board-header">
+      <span class="board-title">你的内容结构</span>
+      <span class="board-badge">✅ 3/4 已就绪</span>
+    </div>
+    <div class="board-body">
+      <div class="story-grid">
+        <div class="seg filled">
+          <div class="seg-num">段 1</div>
+          <div class="seg-label">悬念开场</div>
+          <div class="seg-dur">5s · 2 镜头</div>
+          <div class="seg-status">✅ 已就绪</div>
+          <div class="scene-list">
+            <div class="scene-item filled"><span class="scene-idx">1</span><span class="scene-name">手表局部特写</span><span class="scene-dur">3s</span><span class="scene-icon">🎬</span></div>
+            <div class="scene-item filled"><span class="scene-idx">2</span><span class="scene-name">包装盒拉开</span><span class="scene-dur">2s</span><span class="scene-icon">🎬</span></div>
+          </div>
+        </div>
+        <div class="seg filled">
+          <div class="seg-num">段 2</div>
+          <div class="seg-label">核心亮点</div>
+          <div class="seg-dur">12s · 2 镜头</div>
+          <div class="seg-status">✅ 已就绪</div>
+          <div class="scene-list">
+            <div class="scene-item filled"><span class="scene-idx">1</span><span class="scene-name">触屏操作演示</span><span class="scene-dur">6s</span><span class="scene-icon">🎬</span></div>
+            <div class="scene-item filled"><span class="scene-idx">2</span><span class="scene-name">健康监测展示</span><span class="scene-dur">6s</span><span class="scene-icon">🎬</span></div>
+          </div>
+        </div>
+        <div class="seg empty" onclick="openFill()">
+          <div class="seg-num">段 3</div>
+          <div class="seg-label">真实体验</div>
+          <div class="seg-dur">8s · 1 镜头</div>
+          <div class="seg-status">⬜ 待补齐</div>
+          <div class="scene-list">
+            <div class="scene-item empty-s"><span class="scene-idx">1</span><span class="scene-name">点击选择素材</span><span class="scene-dur">8s</span><span class="scene-icon">⬜</span></div>
+          </div>
+        </div>
+        <div class="seg ai">
+          <div class="seg-num">段 4</div>
+          <div class="seg-label">行动号召</div>
+          <div class="seg-dur">5s · AI 字卡</div>
+          <div class="seg-status">🤖 AI 生成</div>
+          <div class="scene-list">
+            <div class="scene-item empty-s"><span class="scene-idx">1</span><span class="scene-name">AI 字卡占位</span><span class="scene-dur">5s</span><span class="scene-icon">📝</span></div>
+          </div>
+        </div>
+      </div>
+
+      <div class="export-bar">
+        <div><div class="label">所有素材已就位</div><div class="sub">3 段已填 · 1 段待补 · 点空格子补全</div></div>
+        <button class="export-btn" onclick="alert('跳转导出 → showcase-export.html')">下一步：预览导出 →</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Side panel -->
+  <div class="side-panel">
+    <!-- Gaps panel -->
+    <div class="panel-card">
+      <div class="panel-header"><span>待补素材位</span><span class="panel-badge">2 个</span></div>
+      <div class="panel-body" id="gapList">
+        <div class="gap-item selected" onclick="selectGap(this)">
+          <span class="gap-dot miss"></span>
+          <span class="gap-name">真实体验 · 镜头 1</span>
+          <span class="gap-action fill">补齐</span>
+        </div>
+        <div class="gap-item" onclick="selectGap(this)">
+          <span class="gap-dot warn"></span>
+          <span class="gap-name">行动号召 · AI 字卡</span>
+          <span class="gap-action fill">生成</span>
+        </div>
+      </div>
+    </div>
+
+    
+    <!-- Packaging panel -->
+    <div class="panel-card">
+      <div class="panel-header"><span>✨ 包装风格</span><span class="panel-badge" style="background:rgba(167,139,250,.1);color:rgba(167,139,250,.8)">energetic</span></div>
+      <div class="panel-body">
+        <div style="font-size:11px;color:rgba(255,255,255,.3);margin-bottom:8px">转场风格</div>
+        <div style="display:flex;flex-wrap:wrap;gap:4px;margin-bottom:12px">
+          <button class="pkg-option selected">硬切</button><button class="pkg-option">溶解</button><button class="pkg-option">滑入</button><button class="pkg-option">缩放</button>
+        </div>
+        <div style="font-size:11px;color:rgba(255,255,255,.3);margin-bottom:8px">封面风格</div>
+        <div style="display:flex;gap:4px">
+          <button class="pkg-option selected">自动生成</button><button class="pkg-option">自定义</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- BGM panel -->
+    <div class="panel-card">
+      <div class="panel-header"><span>🎵 音乐</span></div>
+      <div class="panel-body">
+        <div style="display:flex;align-items:center;gap:8px;padding:10px 12px;border-radius:8px;border:1px solid rgba(52,211,153,.1);background:rgba(52,211,153,.03);margin-bottom:8px">
+          <span style="font-size:18px">🎵</span>
+          <div style="flex:1"><div style="font-size:13px;font-weight:600">Electronic Uplift</div><div style="font-size:10px;color:rgba(255,255,255,.3)">渐强推进 · 匹配度 82%</div></div>
+          <span style="color:#34d399;font-size:10px">✓</span>
+        </div>
+        <div style="display:flex;gap:8px">
+          <button class="pkg-option" style="flex:1;text-align:center" onclick="alert('打开 BGM 选择弹窗')">更换 BGM</button>
+          <button class="pkg-option" style="flex:1;text-align:center">音量 70%</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- ⌘K bar -->
+    <div class="cmdk-bar" onclick="alert('唤出对话编辑面板\n可以对视频说：把第二段加快、换冷色调转场、BGM 推迟 2 秒')">
+      ⌘K 对话编辑...
+      <span style="flex:1"></span>
+      <span class="cmdk-key">⌘</span><span class="cmdk-key">K</span>
+    </div>
+    
+    <!-- Fill panel -->
+    <div class="panel-card">
+      <div class="panel-header"><span>补齐素材</span></div>
+      <div class="panel-body" id="fillPanel">
+        <div class="fill-tabs">
+          <button class="fill-tab active" onclick="switchFillTab(this,'rec')">智能推荐</button>
+          <button class="fill-tab" onclick="switchFillTab(this,'ai')">AI 生成</button>
+          <button class="fill-tab" onclick="switchFillTab(this,'card')">文字卡片</button>
+        </div>
+        <div id="recTab">
+          <div class="mat-grid">
+            <div class="mat-item"><div class="mat-thumb">🎬</div><div class="mat-name">佩戴场景实拍</div></div>
+            <div class="mat-item"><div class="mat-thumb">🎬</div><div class="mat-name">产品细节特写</div></div>
+          </div>
+        </div>
+        <div id="aiTab" style="display:none;padding:20px 0;text-align:center;color:rgba(255,255,255,.3);font-size:12px">🤖 AI 自动生成 5-8 秒短片</div>
+        <div id="cardTab" style="display:none;padding:20px 0;text-align:center;color:rgba(255,255,255,.3);font-size:12px">📝 AI 设计个性化文字卡片</div>
+        <button class="fill-btn" onclick="alert('已采纳此素材 ✓')">采纳素材 ✓</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+function selectGap(el) {
+  document.querySelectorAll('.gap-item').forEach(x => x.classList.remove('selected'))
+  el.classList.add('selected')
+}
+function openFill() { document.getElementById('fillPanel').scrollIntoView({behavior:'smooth'}) }
+function switchFillTab(el, tab) {
+  document.querySelectorAll('.fill-tab').forEach(x => x.classList.remove('active'))
+  el.classList.add('active')
+  document.getElementById('recTab').style.display = tab === 'rec' ? 'block' : 'none'
+  document.getElementById('aiTab').style.display = tab === 'ai' ? 'block' : 'none'
+  document.getElementById('cardTab').style.display = tab === 'card' ? 'block' : 'none'
+}
+document.querySelectorAll('.step-btn').forEach(t => {
+  t.addEventListener('click', function() { document.querySelectorAll('.step-btn').forEach(x => x.classList.remove('active')); this.classList.add('active') })
+})
+
+document.querySelectorAll('.step-btn').forEach((t, i) => {
+  t.addEventListener('click', function() {
+    document.querySelectorAll('.step-btn').forEach(x => x.classList.remove('active'));
+    this.classList.add('active');
+    document.getElementById('step1Panel').style.display = i === 0 ? 'block' : 'none';
+  })
+});
+document.querySelectorAll('.pkg-option').forEach(o => {
+  o.addEventListener('click', function() {
+    o.parentElement.querySelectorAll('.pkg-option').forEach(x => x.classList.remove('selected'));
+    this.classList.add('selected');
+  })
+});
+</script>
+</body>
+</html>

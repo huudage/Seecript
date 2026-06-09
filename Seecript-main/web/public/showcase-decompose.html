@@ -1,0 +1,204 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>AI 分析 · Seecript</title>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&family=Noto+Sans+SC&display=swap" rel="stylesheet">
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:'Inter','Noto Sans SC',sans-serif;background:#030014;color:#f4f0ff;-webkit-font-smoothing:antialiased}
+.back-btn{position:fixed;top:20px;left:20px;z-index:100;display:flex;align-items:center;gap:6px;padding:8px 14px;border-radius:999px;font-size:13px;color:rgba(255,255,255,.5);text-decoration:none;border:1px solid rgba(255,255,255,.06);background:rgba(3,0,20,.6);backdrop-filter:blur(12px);transition:all .3s}
+.back-btn:hover{color:#fff;border-color:rgba(167,139,250,.2)}
+.container{max-width:1100px;margin:0 auto;padding:24px}
+
+/* Header */
+.page-header{padding:80px 24px 32px;max-width:1248px;margin:0 auto}
+.page-header h1{font-size:32px;font-weight:800;letter-spacing:-.02em}
+.page-header p{font-size:15px;color:rgba(255,255,255,.4);margin-top:8px}
+.breadcrumb{display:flex;align-items:center;gap:8px;font-size:12px;color:rgba(255,255,255,.3);margin-bottom:16px}
+.breadcrumb a{color:rgba(167,139,250,.7);text-decoration:none}
+.breadcrumb a:hover{text-decoration:underline}
+
+/* Main layout */
+.main{display:grid;grid-template-columns:1fr 1fr;gap:24px;padding:0 24px 80px;max-width:1248px;margin:0 auto}
+
+/* Video panel */
+.video-panel{background:rgba(255,255,255,.01);border:1px solid rgba(255,255,255,.04);border-radius:16px;overflow:hidden}
+.video-area{aspect-ratio:16/9;background:#000;display:flex;align-items:center;justify-content:center;position:relative}
+.video-play{width:64px;height:64px;border-radius:50%;background:rgba(255,255,255,.1);backdrop-filter:blur(12px);display:flex;align-items:center;justify-content:center;cursor:pointer;transition:all .3s}
+.video-play:hover{background:rgba(167,139,250,.3);transform:scale(1.1)}
+.video-play svg{width:24px;height:24px;fill:#fff;margin-left:4px}
+.video-info{padding:16px;display:flex;align-items:center;justify-content:space-between}
+.video-title{font-size:15px;font-weight:700}
+.video-meta{font-size:12px;color:rgba(255,255,255,.3);display:flex;gap:16px}
+
+/* Story card */
+.story-card{background:rgba(255,255,255,.01);border:1px solid rgba(255,255,255,.04);border-radius:16px;overflow:hidden}
+.story-header{padding:16px;border-bottom:1px solid rgba(255,255,255,.04);font-size:15px;font-weight:700;display:flex;align-items:center;justify-content:space-between}
+.story-badge{font-size:11px;font-weight:500;color:rgba(167,139,250,.7);background:rgba(167,139,250,.08);padding:4px 12px;border-radius:999px}
+.story-body{padding:16px}
+
+/* Section blocks */
+.section-strip{display:flex;gap:4px;margin-bottom:16px}
+.section-block{flex:1;padding:12px 8px;border-radius:8px;text-align:center;font-size:12px;font-weight:600}
+.section-block:nth-child(1){background:linear-gradient(135deg,rgba(167,139,250,.35),rgba(129,140,248,.2))}
+.section-block:nth-child(2){background:linear-gradient(135deg,rgba(129,140,248,.3),rgba(99,102,241,.2))}
+.section-block:nth-child(3){background:linear-gradient(135deg,rgba(99,102,241,.25),rgba(167,139,250,.15))}
+.section-block:nth-child(4){background:linear-gradient(135deg,rgba(167,139,250,.15),rgba(129,140,248,.1))}
+.section-block .sub{font-size:10px;opacity:.5;margin-top:4px}
+
+/* Mood chart */
+.chart-box{height:90px;background:rgba(255,255,255,.01);border-radius:10px;margin-bottom:16px;overflow:hidden;position:relative;border:1px solid rgba(255,255,255,.03)}
+.chart-svg{position:absolute;inset:0}
+.chart-svg svg{width:100%;height:100%}
+
+/* Stat tags */
+.stat-grid{display:flex;flex-wrap:wrap;gap:8px;margin-bottom:16px}
+.stat-tag{padding:6px 14px;border-radius:999px;font-size:12px;font-weight:500;background:rgba(255,255,255,.02);border:1px solid rgba(255,255,255,.04)}
+
+/* Shot list */
+.shot-section{margin-top:16px}
+.shot-toggle{display:flex;align-items:center;justify-content:center;gap:6px;padding:10px;border-radius:8px;font-size:12px;color:rgba(255,255,255,.4);cursor:pointer;transition:all .2s;border:1px solid rgba(255,255,255,.03);background:rgba(255,255,255,.01);width:100%;font-family:inherit;color:rgba(255,255,255,.5)}
+.shot-toggle:hover{background:rgba(255,255,255,.03);color:#fff}
+.shot-grid{display:none;grid-template-columns:repeat(2,1fr);gap:8px;margin-top:12px}
+.shot-grid.open{display:grid}
+.shot-item{border-radius:8px;overflow:hidden;border:1px solid rgba(255,255,255,.04);background:rgba(255,255,255,.005)}
+.shot-thumb{aspect-ratio:16/9;background:linear-gradient(135deg,rgba(167,139,250,.08),rgba(129,140,248,.04));display:flex;align-items:center;justify-content:center;font-size:10px;color:rgba(255,255,255,.2)}
+.shot-info{padding:8px;display:flex;justify-content:space-between;font-size:11px;color:rgba(255,255,255,.3)}
+
+/* BGM card */
+.bgm-card{margin-top:16px;padding:14px;border-radius:10px;background:rgba(167,139,250,.04);border:1px solid rgba(167,139,250,.1)}
+.bgm-title{font-size:13px;font-weight:600;margin-bottom:6px}
+.bgm-bar{height:6px;border-radius:3px;background:rgba(255,255,255,.04);overflow:hidden;margin-bottom:8px;position:relative}
+.bgm-fill{height:100%;border-radius:3px;background:linear-gradient(90deg,rgba(167,139,250,.4),rgba(129,140,248,.3));transition:width 1s}
+.bgm-desc{font-size:11px;color:rgba(255,255,255,.4)}
+.bgm-peak{position:absolute;top:-2px;width:2px;height:10px;background:#a78bfa;border-radius:1px;transform:translateX(-50%)}
+
+/* Actions bar */
+.actions{padding:16px;border-top:1px solid rgba(255,255,255,.04);display:flex;gap:8px}
+.actions button{padding:10px 20px;border-radius:8px;font-size:13px;font-weight:600;border:none;cursor:pointer;font-family:inherit;transition:all .3s}
+
+@media(max-width:768px){.main{grid-template-columns:1fr}}
+</style>
+</head>
+<body>
+<nav>
+  <div class="inner">
+    <a href="showcase.html" class="logo">Seecript</a>
+    <div class="nav-links">
+      <a href="showcase.html" class="">首页</a>
+      <a href="showcase-projects.html" class="">我的项目</a>
+      <a href="showcase-library.html" class="">素材与灵感</a>
+      <a href="showcase-decompose.html" class="active">分析热门结构</a>
+      <a href="showcase-workspace.html" class="">创作工作台</a>
+      <a href="showcase-knowledge.html" class="">创作偏好</a>
+    </div>
+      </div>
+</nav>
+
+
+<div class="page-header">
+  <div class="breadcrumb"><a href="showcase.html">首页</a> / <a href="showcase-library.html">素材库</a> / <span style="color:rgba(255,255,255,.5)">数码产品开箱 · 分析</span></div>
+  <h1>AI 分析结果</h1>
+  <p>让 AI 帮你读懂这个视频：分段、情绪变化、高光位置一目了然。</p>
+</div>
+
+<div class="main">
+  <!-- Left: Video -->
+  <div>
+    <div class="video-panel">
+      <div class="video-area"><div class="video-play"><svg viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg></div></div>
+      <div class="video-info"><span class="video-title">数码产品开箱</span><span class="video-meta"><span>⏱ 28s</span><span>📹 7 镜头</span><span>🔊 含口播</span></span></div>
+    </div>
+    <!-- Progress bar -->
+    <div style="margin-top:8px;padding:12px 16px;border-radius:10px;background:rgba(52,211,153,.04);border:1px solid rgba(52,211,153,.1);display:flex;align-items:center;gap:8px;font-size:12px;color:#34d399">
+      <span>✓</span> 分析完成（未保存）<span style="flex:1"></span><span style="color:rgba(255,255,255,.3)"><a href="#" style="color:rgba(167,139,250,.7);text-decoration:none" onclick="alert('保存到资产库')">保存结果</a></span>
+    </div>
+  </div>
+
+  <!-- Right: Story card -->
+  <div class="story-card">
+    <div class="story-header">
+      <span>这个视频怎么讲故事的</span>
+      <span class="story-badge">营销 · 快节奏</span>
+    </div>
+    <div class="story-body">
+      <div class="section-strip">
+        <div class="section-block">🎬 悬念开场<div class="sub">0–5s</div></div>
+        <div class="section-block">⚡ 功能展示<div class="sub">5–17s</div></div>
+        <div class="section-block">💬 真实体验<div class="sub">17–22s</div></div>
+        <div class="section-block">🎯 行动号召<div class="sub">22–28s</div></div>
+      </div>
+
+      <div class="chart-box">
+        <div class="chart-svg">
+          <svg viewBox="0 0 400 90" preserveAspectRatio="none">
+            <path d="M0,75 Q40,70 80,45 Q120,10 160,55 Q200,60 240,40 Q280,20 320,50 Q360,60 400,45" fill="none" stroke="rgba(167,139,250,.5)" stroke-width="2"/>
+            <path d="M0,75 Q40,70 80,45 Q120,10 160,55 Q200,60 240,40 Q280,20 320,50 Q360,60 400,45" fill="url(#moodGrad)" opacity=".08"/>
+            <circle cx="80" cy="45" r="3" fill="#a78bfa"/><text x="80" y="38" fill="rgba(255,255,255,.35)" font-size="8" text-anchor="middle">★ 高潮</text>
+            <defs><linearGradient id="moodGrad" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#a78bfa"/><stop offset="1" stop-color="transparent"/></linearGradient></defs>
+          </svg>
+        </div>
+      </div>
+
+      <div class="stat-grid">
+        <span class="stat-tag">🎵 BGM 匹配 82%</span>
+        <span class="stat-tag">🎨 快节奏 · 高饱和</span>
+        <span class="stat-tag">📐 4 段 · 7 镜头</span>
+        <span class="stat-tag">🗣️ 含口播</span>
+        <span class="stat-tag">📝 转场：滑入+溶解</span>
+      </div>
+
+      <div class="bgm-card">
+        <div class="bgm-title">BGM 分析 · Electronic Uplift</div>
+        <div class="bgm-bar">
+          <div class="bgm-fill" style="width:82%"></div>
+          <div class="bgm-peak" style="left:35%"></div>
+          <div class="bgm-peak" style="left:75%"></div>
+        </div>
+        <div class="bgm-desc">渐强推进，适合开场到高潮的节奏。Drop 爆发 @12s 可对齐功能展示段落。</div>
+      </div>
+
+      <div class="shot-section">
+        <button class="shot-toggle" onclick="toggleShots()">▸ 查看详细分镜（7 个镜头）</button>
+        <div class="shot-grid" id="shotGrid">
+          <div class="shot-item"><div class="shot-thumb">镜头 1</div><div class="shot-info"><span>暗光点亮</span><span>2.5s</span></div></div>
+          <div class="shot-item"><div class="shot-thumb">镜头 2</div><div class="shot-info"><span>开包装盒</span><span>2.5s</span></div></div>
+          <div class="shot-item"><div class="shot-thumb">镜头 3</div><div class="shot-info"><span>手表特写</span><span>3s</span></div></div>
+          <div class="shot-item"><div class="shot-thumb">镜头 4</div><div class="shot-info"><span>触屏操作</span><span>3s</span></div></div>
+          <div class="shot-item"><div class="shot-thumb">镜头 5</div><div class="shot-info"><span>佩戴效果</span><span>3s</span></div></div>
+          <div class="shot-item"><div class="shot-thumb">镜头 6</div><div class="shot-info"><span>功能展示</span><span>3s</span></div></div>
+          <div class="shot-item"><div class="shot-thumb">镜头 7</div><div class="shot-info"><span>产品定格</span><span>11s</span></div></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="actions">
+      <button class="btn-primary-h" onclick="alert('跳转工作台 → showcase-workspace.html')">用这个结构创作 →</button>
+      <button class="btn-secondary-h" onclick="alert('编辑标签、调整分段后保存')">编辑分析</button>
+      <button class="btn-secondary-h" onclick="alert('重新分析')">重新分析</button>
+    </div>
+  </div>
+</div>
+
+<style>
+.btn-primary-h{padding:10px 20px;border-radius:8px;font-size:13px;font-weight:600;border:none;cursor:pointer;font-family:inherit;transition:all .3s;background:linear-gradient(135deg,rgba(167,139,250,.25),rgba(129,140,248,.18));border:1px solid rgba(167,139,250,.2);color:#fff;backdrop-filter:blur(8px);flex:1}
+.btn-primary-h:hover{background:linear-gradient(135deg,rgba(167,139,250,.4),rgba(129,140,248,.3));box-shadow:0 0 24px rgba(167,139,250,.15)}
+.btn-secondary-h{padding:10px 20px;border-radius:8px;font-size:13px;font-weight:500;border:none;cursor:pointer;font-family:inherit;transition:all .3s;background:rgba(255,255,255,.03);border:1px solid rgba(255,255,255,.06);color:rgba(255,255,255,.5)}
+.btn-secondary-h:hover{background:rgba(255,255,255,.06);color:#fff}
+
+/* Loading simulation */
+.loading-bar{position:absolute;bottom:0;left:0;height:3px;background:linear-gradient(90deg,rgba(167,139,250,.5),rgba(129,140,248,.3),transparent);animation:loadAnim 2s linear infinite;width:100%}
+@keyframes loadAnim{0%{transform:translateX(-100%)}100%{transform:translateX(100%)}}
+</style>
+
+<script>
+function toggleShots() {
+  var g = document.getElementById('shotGrid');
+  g.classList.toggle('open');
+  var btn = document.querySelector('.shot-toggle');
+  btn.textContent = g.classList.contains('open') ? '▾ 收起详细分镜' : '▸ 查看详细分镜（7 个镜头）';
+}
+</script>
+</body>
+</html>
