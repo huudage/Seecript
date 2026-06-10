@@ -353,6 +353,51 @@ async def list_materials(project_id: str) -> list[Material]:
     return material_store.list(sid)
 
 
+@router.delete("/material/{material_id}")
+async def delete_material(material_id: str, project_id: str) -> dict[str, Any]:
+    """删除项目下一条素材：先抹 store，再尽力删盘上的原文件 + 缩略图。
+
+    project_id 必填——MaterialStore 按 project 分区，不能跨项目删。
+    `__system__` 素材禁删（运维若想下架共享样例，应删 server/samples/<id>/ 后重启）。
+    返回 {"ok": true, "removed": "<id>"}；记录不存在时 404。
+
+    盘上文件删除是 best-effort：失败只 log warning，不让前端看到 500——
+    用户的诉求是"我看不到了"，残留的 .mp4 进程重启时会被 GC 视作孤儿（暂未实现，acceptable）。
+    """
+    sid = project_id.strip()
+    if not sid:
+        raise HTTPException(status_code=400, detail="project_id 必填")
+    if sid == SYSTEM_PROJECT_ID:
+        raise HTTPException(status_code=403, detail="系统素材库不能从前端删除")
+
+    material = material_store.get(sid, material_id)
+    if material is None:
+        raise HTTPException(status_code=404, detail=f"material {material_id} not found in project {sid}")
+
+    removed = material_store.remove(sid, material_id)
+    if not removed:
+        # 极端竞态：get 命中但 remove 没返回 True（多 worker 并发删）。当成已删处理。
+        log.warning("[material/delete] store.remove returned False for %s/%s", sid, material_id)
+
+    # Best-effort 删盘上文件：file_url + thumbnail_url 都尝试。
+    # 只删落在 var/uploads/<sid>/ 下的——避免删到 /samples/ 共享文件
+    # (clone-from-system 时 thumbnail_url 可能是 /samples/.../cover.jpg 直接复用，不应删源)。
+    safe_root = _uploads_root() / sid
+    candidates: list[Optional[str]] = [material.file_url, material.thumbnail_url]
+    for url in candidates:
+        if not url or not url.startswith(f"/uploads/{sid}/"):
+            continue
+        local = safe_root / Path(url).name
+        try:
+            if local.is_file():
+                local.unlink()
+                log.info("[material/delete] unlinked %s", local)
+        except Exception as exc:  # noqa: BLE001
+            log.warning("[material/delete] unlink %s failed: %s", local, exc)
+
+    return {"ok": True, "removed": material_id}
+
+
 def _uploads_root() -> Path:
     """复用 MaterialUploadService 的 uploads 根目录路由。"""
     settings = get_settings()

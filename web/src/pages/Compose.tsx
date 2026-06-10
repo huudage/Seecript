@@ -140,7 +140,6 @@ export default function ComposePage() {
   // 这里不再保留 snapshots 状态；undo/redo 由 useEditStore 单独管理。
 
   // UI state
-  const fileInputRef = useRef<HTMLInputElement | null>(null)
   const [uploading, setUploading] = useState(false)
   const [analyzing, setAnalyzing] = useState(false)
   // A 位（refs[0]）primary manifest fallback：sessionStore.manifest 只在 Decompose 页才会 set。
@@ -846,6 +845,31 @@ export default function ComposePage() {
       }
     },
     [appendMaterials, currentProjectId, fills, plan, removeMaterial, setMaterials, setSession, videoType],
+  )
+
+  /* -------------------- 删素材：DELETE 后端 + 同步 store + 触发重算 -------------------- */
+  // MaterialCard 上的 × 按钮 / step2 onRemove 都走这里。后端调用失败仍同步本地（让用户看到效果），
+  // 但 setError 提示一下,不然进程重启后这条素材会"诈尸"回来,用户更困惑。
+  const handleDeleteMaterial = useCallback(
+    async (materialId: string) => {
+      // 占位条目还没 POST 到后端,直接走本地清理,不要 DELETE
+      if (materialId.startsWith('__pending_')) {
+        removeMaterial(materialId)
+        return
+      }
+      if (!currentProjectId) {
+        removeMaterial(materialId)
+        return
+      }
+      try {
+        await api.delete(`/material/${encodeURIComponent(materialId)}?project_id=${encodeURIComponent(currentProjectId)}`)
+      } catch (err) {
+        console.warn('[material] delete failed; UI state still updated:', err)
+        setError(err instanceof Error ? `删除失败：${err.message}` : '删除失败')
+      }
+      removeMaterial(materialId)
+    },
+    [currentProjectId, removeMaterial],
   )
 
   /* -------------------- 智能分析（plan/build + gap/detect） -------------------- */
@@ -1663,20 +1687,7 @@ export default function ComposePage() {
         </div>
       )}
 
-      {/* 始终挂载在最外层：步骤 1 / 2 / 3 都有"+追加素材"按钮想触发这个 input。 */}
-      <input
-        ref={fileInputRef}
-        type="file"
-        multiple
-        hidden
-        accept="video/*,image/*,audio/*"
-        onChange={(e) => {
-          const files = e.target.files
-          // 清掉 value 让用户能立刻再选同一文件——浏览器在 value 不变时不会再次 fire onChange
-          e.target.value = ''
-          void handlePickFiles(files)
-        }}
-      />
+      {/* 外部素材一律走拖拽,所以删除原"+追加素材"按钮配套的 hidden file input. */}
 
       {/* stage-15: ReferencePicker —— 从资产库挑 1-2 个 (sample, slot) 作为结构参考 */}
       {activeStep === 1 && (
@@ -1744,10 +1755,10 @@ export default function ComposePage() {
               )}
               <UploadDropzone
                 uploading={uploading}
-                onPick={() => fileInputRef.current?.click()}
                 onDrop={(f) => void handlePickFiles(f)}
               />
-              {/* hidden file input 已提到页面顶层（步骤 2/3 的"+追加素材"也要复用），见 Compose 根 div 末尾。 */}
+              {/* hidden file input 仍保留:仅供 Step3 内部其它路径(如 packaging fill)使用,
+                  外部素材一律走拖拽. */}
             </div>
 
             <div className="space-y-2">
@@ -1769,7 +1780,7 @@ export default function ComposePage() {
               <MaterialGrid
                 materials={sortedMaterials}
                 onReorder={reorderMaterials}
-                onRemove={removeMaterial}
+                onRemove={(id) => void handleDeleteMaterial(id)}
               />
             </div>
           </section>
@@ -2219,21 +2230,11 @@ export default function ComposePage() {
                 >
                   + 从素材库选取
                 </button>
-                <button
-                  onClick={() => fileInputRef.current?.click()}
-                  disabled={uploading || analyzing}
-                  className={cn(
-                    'rounded-md border border-border bg-card px-2 py-1 text-[11px] hover:bg-secondary',
-                    (uploading || analyzing) && 'cursor-not-allowed opacity-60',
-                  )}
-                >
-                  {uploading ? '上传中…' : '+ 追加素材'}
-                </button>
+                {/* "+ 追加素材" 已移除——外部素材一律走下方拖拽区，避免一个上传两套入口的歧义 */}
               </div>
             </div>
             <UploadDropzone
               uploading={uploading}
-              onPick={() => fileInputRef.current?.click()}
               onDrop={(f) => void handlePickFiles(f)}
             />
             {sortedMaterials.length > 0 && (
@@ -2244,8 +2245,9 @@ export default function ComposePage() {
                   if (runAnalyzeRef.current) void runAnalyzeRef.current(fills)
                 }}
                 onRemove={(id) => {
-                  removeMaterial(id)
-                  if (runAnalyzeRef.current) void runAnalyzeRef.current(fills)
+                  void handleDeleteMaterial(id).then(() => {
+                    if (runAnalyzeRef.current) void runAnalyzeRef.current(fills)
+                  })
                 }}
               />
             )}
@@ -2995,11 +2997,9 @@ function Stat({ label, value, mono }: { label: string; value: string; mono?: boo
 }
 
 function UploadDropzone({
-  onPick,
   onDrop,
   uploading,
 }: {
-  onPick: () => void
   onDrop: (files: FileList) => void
   uploading: boolean
 }) {
@@ -3016,15 +3016,14 @@ function UploadDropzone({
         setHover(false)
         onDrop(e.dataTransfer.files)
       }}
-      onClick={onPick}
       className={cn(
-        'flex h-24 cursor-pointer items-center justify-center rounded-md border-2 border-dashed text-xs transition-colors',
+        'flex h-24 items-center justify-center rounded-md border-2 border-dashed text-xs transition-colors',
         hover ? 'border-primary bg-primary/5' : 'border-border bg-background/40',
         uploading && 'pointer-events-none opacity-60',
       )}
     >
       <span className="text-muted-foreground">
-        {uploading ? '上传中…' : '点击或拖拽 video / image / audio（≤ 50MB / file）'}
+        {uploading ? '上传中…' : '拖拽 video / image / audio 到这里上传（≤ 50MB / 个）'}
       </span>
     </div>
   )
