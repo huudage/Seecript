@@ -1519,38 +1519,94 @@ function Row({ label, value }: { label: string; value: string }) {
 
 function SectionsBar({ manifest }: { manifest: SampleManifest }) {
   const total = manifest.duration_seconds || 1
+  // 每段镜头数:用 main_track shot.section_id 关联回不来,这里直接按 sec.start/end 数 shots
+  const shotCountFor = (sec: { start: number; end: number }): number =>
+    manifest.shots.filter(
+      (sh) => sh.start < sec.end - 0.01 && sh.end > sec.start + 0.01,
+    ).length
+
   return (
-    <div className="space-y-2">
-      <div className="relative flex h-12 w-full overflow-hidden rounded-md border border-border">
+    <div className="space-y-3">
+      {/* 时间比例条:按段时长比例的色块,极短段只画色条不写文字（写了也溢出） */}
+      <div className="relative flex h-11 w-full gap-[2px] overflow-hidden rounded-md">
         {manifest.sections.map((sec, idx) => {
           const widthPct = ((sec.end - sec.start) / total) * 100
+          // 宽度 < 7% 几乎没空间放任何文字,只显示色块 + tooltip
+          const hasRoom = widthPct >= 7
           return (
             <div
               key={idx}
               className={cn(
-                'flex flex-col items-center justify-center px-1 text-[11px] font-medium leading-tight text-white',
+                'flex min-w-0 flex-col items-center justify-center px-1.5 text-[11px] leading-tight text-white',
                 SECTION_BG[sec.role],
               )}
               style={{ width: `${widthPct}%` }}
-              title={`${SECTION_LABEL[sec.role]} · ${sec.theme}: ${sec.summary}`}
+              title={`${SECTION_LABEL[sec.role]} · ${sec.theme}（${sec.start.toFixed(1)}–${sec.end.toFixed(1)}s）：${sec.summary}`}
             >
-              <span className="opacity-80">{SECTION_LABEL[sec.role]}</span>
-              <span className="truncate font-semibold">{sec.theme}</span>
+              {hasRoom ? (
+                <>
+                  <span className="truncate text-[10px] opacity-75">
+                    {SECTION_LABEL[sec.role]}
+                  </span>
+                  <span className="w-full truncate text-center font-semibold">
+                    {sec.theme}
+                  </span>
+                </>
+              ) : (
+                <span className="text-[10px] font-bold opacity-90">{idx + 1}</span>
+              )}
             </div>
           )
         })}
       </div>
-      <div className="space-y-1 text-xs text-muted-foreground">
-        {manifest.sections.map((sec, idx) => (
-          <div key={idx} className="flex gap-2">
-            <span className="font-mono">{sec.start.toFixed(1)}–{sec.end.toFixed(1)}s</span>
-            <span className="font-medium text-foreground">
-              {SECTION_LABEL[sec.role]} · {sec.theme}：
-            </span>
-            <span>{sec.summary}</span>
-          </div>
-        ))}
-      </div>
+
+      {/* 段落详情列表:网格化对齐——色点 / 时间窗 / 角色·主题 / summary / 镜头数 */}
+      <ul className="divide-y divide-border/60 overflow-hidden rounded-md border border-border/60">
+        {manifest.sections.map((sec, idx) => {
+          const dur = sec.end - sec.start
+          const shots = shotCountFor(sec)
+          return (
+            <li
+              key={idx}
+              className="grid grid-cols-[auto_minmax(7rem,auto)_minmax(8rem,1fr)_auto] items-start gap-x-3 gap-y-1 px-3 py-2 text-xs hover:bg-muted/30"
+            >
+              {/* 1) 色点 + 序号 */}
+              <div className="flex items-center gap-2 pt-0.5">
+                <span
+                  className={cn('h-2.5 w-2.5 shrink-0 rounded-full', SECTION_BG[sec.role])}
+                  aria-hidden
+                />
+                <span className="font-mono text-[10px] text-muted-foreground">
+                  #{idx + 1}
+                </span>
+              </div>
+              {/* 2) 时间窗 */}
+              <div className="font-mono text-[11px] text-muted-foreground tabular-nums">
+                {sec.start.toFixed(1)}–{sec.end.toFixed(1)}s
+                <span className="ml-1 text-muted-foreground/60">·{dur.toFixed(1)}s</span>
+              </div>
+              {/* 3) 角色徽标 + 主题 + summary（同列折叠展开） */}
+              <div className="min-w-0">
+                <div className="flex flex-wrap items-baseline gap-x-2 gap-y-0.5">
+                  <span className="rounded bg-muted px-1.5 py-0.5 font-mono text-[10px] uppercase text-muted-foreground">
+                    {SECTION_LABEL[sec.role]}
+                  </span>
+                  <span className="font-medium text-foreground">{sec.theme}</span>
+                </div>
+                {sec.summary && (
+                  <p className="mt-0.5 leading-relaxed text-muted-foreground">
+                    {sec.summary}
+                  </p>
+                )}
+              </div>
+              {/* 4) 镜头数右对齐 */}
+              <span className="rounded-full bg-muted/60 px-2 py-0.5 text-[10px] font-medium text-muted-foreground">
+                {shots} 镜头
+              </span>
+            </li>
+          )
+        })}
+      </ul>
     </div>
   )
 }
