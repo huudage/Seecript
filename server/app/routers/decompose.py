@@ -239,6 +239,16 @@ async def upload_for_decompose(
     (target_dir / "meta.json").write_text(
         json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8"
     )
+
+    # 抽 cover.jpg(0.5s 首帧):样例库卡片用 CSS background-image 渲染——
+    # mp4 当 url() 在浏览器是死路一条(不会 poster)。这里抽完前端就有图;
+    # 拆解流水线再写一次也没关系,那时已经有真预览了。
+    cover_path = target_dir / "cover.jpg"
+    try:
+        ffmpeg_util.extract_frame(target_path, 0.5, cover_path)
+    except (ffmpeg_util.FFmpegError, FileNotFoundError, OSError) as exc:
+        log.warning("[decompose.upload] cover 抽帧失败 sample=%s: %s", sample_id, exc)
+
     log.info(
         "[decompose.upload] sample=%s type=%s saved %s (%d bytes)",
         sample_id,

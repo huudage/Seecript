@@ -233,10 +233,15 @@ def _scan_user_library() -> list[LibraryItem]:
         mf = _load_real_manifest(sample_id)
         duration = mf.duration_seconds if mf else 0.0
         shot_count = len(mf.shots) if mf else 0
-        # 封面：拆解时如果生成了 cover.jpg 走它，没有就用 video.mp4 第一帧（前端 <video poster>）
-        cover_url = f"/uploads/decompose/{sample_id}/cover.jpg"
-        if not (child / "cover.jpg").is_file():
-            cover_url = f"/uploads/decompose/{sample_id}/video.mp4"
+        # 封面优先级：cover.jpg(上传时抽的首帧) > shot-00.jpg(拆解抽的中点帧) > null。
+        # 老 fallback 用 video.mp4 当 cover_url——CSS background-image 加载 mp4 是死路一条,
+        # 浏览器不会做 poster,样例卡空白。前端兜底色块(LibraryItem.cover_url 为空时)更体面。
+        if (child / "cover.jpg").is_file():
+            cover_url = f"/uploads/decompose/{sample_id}/cover.jpg"
+        elif (child / "shot-00.jpg").is_file():
+            cover_url = f"/uploads/decompose/{sample_id}/shot-00.jpg"
+        else:
+            cover_url = ""
         items.append(LibraryItem(
             id=sample_id,
             title=title,
