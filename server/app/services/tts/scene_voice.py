@@ -1,9 +1,12 @@
 """Scene-level voice synthesis —— 给 main_track 单个 scene 重写口播的共享入口。
 
-被 3 处调用：
-- routers/voice.py            手动触发的"单段合成 / 全段合成"
-- routers/gap.py              copy fill 后的自动 TTS（_maybe_auto_tts）
-- routers/edit.py             NL 编辑 voice 轨道改 narration 后的重合成
+被 2 处调用（口播只在 step3 触发）：
+- routers/voice.py            手动触发的"单段合成 / 全段合成"——前端 step3 按钮
+- routers/edit.py             step3 NL 编辑 voice 轨改 narration 后的重合成
+
+step3 入口由 `Compose.handleEnterStep3` 一次性跑：先 regenerate-narrations，再
+synthesize-all（走 voice.py）。step2 内容轨编辑（包括 gap.fill 的 copy / AIGC
+补缺）不再链 TTS——TTS 属于 step3 解锁后的多轨范畴。
 
 所有调用方都是 async handler，且底层 synthesize 是同步阻塞 httpx 调用——
 **必须用 `await asyncio.to_thread(synthesize_scene_voice, ...)` 包一层**，

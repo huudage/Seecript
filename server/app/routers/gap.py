@@ -6,7 +6,6 @@
 """
 from __future__ import annotations
 
-import asyncio
 import logging
 import re
 from typing import Optional
@@ -46,7 +45,6 @@ from ..services.agent.gap_agent import (
 from ..services.seedream_client import SeedreamError, get_seedream_client
 from ..services.materials import gap_store, material_store
 from ..services.plans import plan_store
-from ..services.tts import TTSError, backend_name as tts_backend_name, synthesize_scene_voice
 from ..services.video.aspect import aspect_for_platform, aspect_for_settings
 
 log = logging.getLogger("seecript.gap")
@@ -188,57 +186,6 @@ def _resolve_plan_and_scene_for_gap(gap: Gap):
     return None, None
 
 
-def _maybe_auto_tts(result: FillResult) -> FillResult:
-    """`copy / aigc / aigc_image` 任一动作 + plan.settings.voiceover_enabled=True
-    → 自动调 TTS 并把 voiceover_url 回填到 FillResult + scene.voiceover_url（让 rebuild plan
-    时也能用上）。
-
-    narration 文本来源优先级：
-    1. FillResult.narration（copy / 字卡路径会带）
-    2. scene.narration（aigc / aigc_image 路径下，scene 已有 plan_agent 或
-       /plan/{id}/regenerate-narrations 写好的口播文本）
-
-    失败不抛——TTS 抖动不能阻断 fill 的成功语义；只在 note 里追加诊断。
-    注意：synthesize_scene_voice 是同步阻塞调用，async 调用方必须用
-    `await asyncio.to_thread(_maybe_auto_tts, ...)` 包一层。
-    """
-    if result.action not in ("copy", "aigc", "aigc_image"):
-        return result
-    if not result.section_id:
-        return result
-
-    plan, scene = _resolve_plan_and_scene_for_gap_by_section(result.section_id, gap_id=result.gap_id)
-    if plan is None or not plan.settings.voiceover_enabled:
-        return result
-    if scene is None:
-        return result
-
-    # 文本：优先 result.narration（copy 路径），否则用 scene.narration
-    text = (result.narration or "").strip() or (scene.narration or "").strip()
-    if not text:
-        return result
-
-    # copy 路径：把新文案同步回 scene；aigc/aigc_image 路径不动 scene.narration（保留 plan 阶段定稿）
-    if result.action == "copy":
-        scene.narration = text
-    try:
-        ret = synthesize_scene_voice(plan, scene.scene_id, text=None, voice=None)
-    except TTSError as exc:
-        log.warning("[gap] auto-tts failed gap=%s plan=%s code=%s: %s",
-                    result.gap_id, plan.plan_id, exc.code, exc)
-        return result.model_copy(update={
-            "note": (result.note or "") + f" | TTS 失败：{exc}",
-        })
-
-    if ret is None:
-        return result
-    url, _truncated, chars = ret
-    plan_store.put(plan)
-    log.info("[gap] auto-tts plan=%s scene=%s action=%s backend=%s chars=%d url=%s",
-             plan.plan_id, scene.scene_id, result.action, tts_backend_name(), chars, url)
-    return result.model_copy(update={"voiceover_url": url})
-
-
 def _record_aigc_to_library(gap: Gap, result: FillResult) -> None:
     """AIGC 自动入素材库 —— Seedream 出图 / Seedance 生视频成功后，按 (gap_id, origin)
     去重写入项目素材库；同 gap 重生成会替换上一条。
@@ -324,32 +271,6 @@ def _record_aigc_to_library(gap: Gap, result: FillResult) -> None:
         )
 
 
-def _resolve_plan_and_scene_for_gap_by_section(section_id: str, *, gap_id: Optional[str] = None):
-    """section_id (+ 可选 gap_id) → (plan, scene)。
-    若给了 gap_id，先按 gap_id 后缀锁到目标 plan；否则扫所有 plan 取首个匹配。
-    """
-    pid = _plan_id_from_gap_suffix(gap_id) if gap_id else None
-    if pid:
-        p = plan_store.get(pid)
-        if p:
-            sec = next((s for s in p.adapted_sections if s.section_id == section_id), None)
-            if sec:
-                target_scene_id = f"sc-{sec.order}"
-                scene = next((sc for sc in p.main_track if sc.scene_id == target_scene_id), None)
-                return p, scene
-    for plan_id in plan_store.all_ids():
-        p = plan_store.get(plan_id)
-        if not p:
-            continue
-        sec = next((s for s in p.adapted_sections if s.section_id == section_id), None)
-        if not sec:
-            continue
-        target_scene_id = f"sc-{sec.order}"
-        scene = next((sc for sc in p.main_track if sc.scene_id == target_scene_id), None)
-        return p, scene
-    return None, None
-
-
 def _resolve_plan_id_for_gap(gap: Gap) -> str:
     """gap → plan_id：gap_store._by_plan 反查；找不到回退空串（trace 仍可写，仅缺指针）。"""
     try:
@@ -407,7 +328,6 @@ async def fill(req: GapFillRequest) -> FillResult:
         )
     params = _inject_aigc_params(gap, req.params) if req.action == "aigc" else req.params
     result = await fill_gap(gap, req.action, params)
-    result = await asyncio.to_thread(_maybe_auto_tts, result)
     _record_aigc_to_library(gap, result)
     # Trace B：用户在 gap fill 上有自然语言输入时记一条。
     # - copy   ：params.prompt_hint（用户在 copy 面板填的文案要求）
