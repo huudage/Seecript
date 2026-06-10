@@ -177,24 +177,53 @@ function buildGraph(manifests: SampleManifest[], plan: Plan | null, _gaps: Gap[]
   const fallback = !plan.adapted_sections || plan.adapted_sections.length === 0
   const adaptedSorted = adapted.slice().sort((a, b) => a.order - b.order)
 
-  // 为每个 adapted role 指派一个 palette 色——同 role 在多个样例里同色。
-  const adaptedRoleColor = new Map<SectionRole, string>()
-  adaptedSorted.forEach((a, i) => {
-    if (!adaptedRoleColor.has(a.role)) {
-      adaptedRoleColor.set(a.role, SECTION_PALETTE[i % SECTION_PALETTE.length])
+  const nodes: Node[] = []
+  const edges: Edge[] = []
+
+  // source_section_indices 是 plan_agent 把多 manifest 合并成 flat pool 后写入的全局下标。
+  // 拆回 (side, localIdx)：先 leftManifest.sections，再 rightManifest.sections。
+  const leftLen = leftManifest?.sections.length ?? 0
+  const rightLen = rightManifest?.sections.length ?? 0
+  const resolveGlobalIdx = (g: number): { side: 'left' | 'right'; localIdx: number } | null => {
+    if (g < 0) return null
+    if (g < leftLen) return { side: 'left', localIdx: g }
+    if (g < leftLen + rightLen) return { side: 'right', localIdx: g - leftLen }
+    return null
+  }
+
+  // 反向索引：每个样例段被哪些 adapted section 引用——决定 hit/orphan 与连线着色
+  const leftHitByLocalIdx = new Map<number, string[]>() // localIdx -> adapted section_ids
+  const rightHitByLocalIdx = new Map<number, string[]>()
+  adaptedSorted.forEach((a) => {
+    for (const g of a.source_section_indices) {
+      const r = resolveGlobalIdx(g)
+      if (!r) continue
+      const bucket = r.side === 'left' ? leftHitByLocalIdx : rightHitByLocalIdx
+      const arr = bucket.get(r.localIdx) ?? []
+      arr.push(a.section_id)
+      bucket.set(r.localIdx, arr)
     }
   })
 
-  const adaptedRoles = new Set<SectionRole>(adaptedSorted.map((a) => a.role))
-  const nodes: Node[] = []
-  const edges: Edge[] = []
+  // adapted section_id -> palette color（按 order 选色，下面建节点/连线复用）
+  const adaptedColorById = new Map<string, string>()
+  adaptedSorted.forEach((a, i) => {
+    adaptedColorById.set(a.section_id, SECTION_PALETTE[i % SECTION_PALETTE.length])
+  })
+
+  // 样例节点取色：被多段引用时挑第一个 adapted 的色（保持视觉一致）
+  const colorForSampleHit = (hitIds: string[] | undefined): string =>
+    hitIds && hitIds.length > 0
+      ? (adaptedColorById.get(hitIds[0]) ?? ORPHAN_COLOR)
+      : ORPHAN_COLOR
 
   // 左列样例
   if (leftManifest) {
     leftManifest.sections.forEach((sec, i) => {
-      const hit = adaptedRoles.has(sec.role)
+      const hitIds = leftHitByLocalIdx.get(i)
+      const hit = (hitIds?.length ?? 0) > 0
       const relation: RelationKind = hit ? 'hit' : 'orphan'
-      const color = hit ? (adaptedRoleColor.get(sec.role) ?? ORPHAN_COLOR) : ORPHAN_COLOR
+      const color = colorForSampleHit(hitIds)
       nodes.push({
         id: `left-${i}`,
         type: 'sectionNode',
@@ -216,30 +245,27 @@ function buildGraph(manifests: SampleManifest[], plan: Plan | null, _gaps: Gap[]
   }
 
   // 中列：新方案
-  const scenesByRole = new Map<SectionRole, Scene[]>()
+  const scenesByParentSectionId = new Map<string, Scene[]>()
+  const scenesByRoleFallback = new Map<SectionRole, Scene[]>()
   plan.main_track.forEach((sc) => {
-    const roleArr = scenesByRole.get(sc.section) ?? []
-    roleArr.push(sc)
-    scenesByRole.set(sc.section, roleArr)
+    if (sc.parent_section_id) {
+      const arr = scenesByParentSectionId.get(sc.parent_section_id) ?? []
+      arr.push(sc)
+      scenesByParentSectionId.set(sc.parent_section_id, arr)
+    } else {
+      const arr = scenesByRoleFallback.get(sc.section) ?? []
+      arr.push(sc)
+      scenesByRoleFallback.set(sc.section, arr)
+    }
   })
-
-  const leftFirstIdxByRole = new Map<SectionRole, number>()
-  leftManifest?.sections.forEach((sec, i) => {
-    if (!leftFirstIdxByRole.has(sec.role)) leftFirstIdxByRole.set(sec.role, i)
-  })
-  const rightFirstIdxByRole = new Map<SectionRole, number>()
-  rightManifest?.sections.forEach((sec, i) => {
-    if (!rightFirstIdxByRole.has(sec.role)) rightFirstIdxByRole.set(sec.role, i)
-  })
-  const leftRoles = new Set<SectionRole>(leftManifest?.sections.map((s) => s.role) ?? [])
-  const rightRoles = new Set<SectionRole>(rightManifest?.sections.map((s) => s.role) ?? [])
 
   adaptedSorted.forEach((a, i) => {
-    const scList = scenesByRole.get(a.role) ?? []
+    const scList =
+      scenesByParentSectionId.get(a.section_id) ?? scenesByRoleFallback.get(a.role) ?? []
     const sceneCount = scList.length || a.source_shot_indices.length
-    const hitAnywhere = leftRoles.has(a.role) || rightRoles.has(a.role)
-    const relation: RelationKind = hitAnywhere ? 'hit' : 'new'
-    const color = adaptedRoleColor.get(a.role) ?? NEW_COLOR
+    const hasSource = a.source_section_indices.length > 0
+    const relation: RelationKind = hasSource ? 'hit' : 'new'
+    const color = adaptedColorById.get(a.section_id) ?? NEW_COLOR
     nodes.push({
       id: `adapted-${a.section_id}`,
       type: 'sectionNode',
@@ -258,38 +284,39 @@ function buildGraph(manifests: SampleManifest[], plan: Plan | null, _gaps: Gap[]
       selectable: false,
     })
 
-    // 左侧样例 → 新方案
-    const leftIdx = leftFirstIdxByRole.get(a.role)
-    if (leftIdx !== undefined) {
-      edges.push({
-        id: `e-left-${leftIdx}-to-${a.section_id}`,
-        source: `left-${leftIdx}`,
-        target: `adapted-${a.section_id}`,
-        type: 'smoothstep',
-        style: { stroke: color, strokeWidth: 2.5 },
-        interactionWidth: 0,
-      })
-    }
-    // 新方案 → 右侧样例
-    const rightIdx = rightFirstIdxByRole.get(a.role)
-    if (rightIdx !== undefined) {
-      edges.push({
-        id: `e-${a.section_id}-to-right-${rightIdx}`,
-        source: `adapted-${a.section_id}`,
-        target: `right-${rightIdx}`,
-        type: 'smoothstep',
-        style: { stroke: color, strokeWidth: 2.5 },
-        interactionWidth: 0,
-      })
+    // 按 source_section_indices 真实连线——跨 archetype 也准
+    for (const g of a.source_section_indices) {
+      const r = resolveGlobalIdx(g)
+      if (!r) continue
+      if (r.side === 'left') {
+        edges.push({
+          id: `e-left-${r.localIdx}-to-${a.section_id}`,
+          source: `left-${r.localIdx}`,
+          target: `adapted-${a.section_id}`,
+          type: 'smoothstep',
+          style: { stroke: color, strokeWidth: 2.5 },
+          interactionWidth: 0,
+        })
+      } else {
+        edges.push({
+          id: `e-${a.section_id}-to-right-${r.localIdx}`,
+          source: `adapted-${a.section_id}`,
+          target: `right-${r.localIdx}`,
+          type: 'smoothstep',
+          style: { stroke: color, strokeWidth: 2.5 },
+          interactionWidth: 0,
+        })
+      }
     }
   })
 
   // 右列样例
   if (rightManifest) {
     rightManifest.sections.forEach((sec, i) => {
-      const hit = adaptedRoles.has(sec.role)
+      const hitIds = rightHitByLocalIdx.get(i)
+      const hit = (hitIds?.length ?? 0) > 0
       const relation: RelationKind = hit ? 'hit' : 'orphan'
-      const color = hit ? (adaptedRoleColor.get(sec.role) ?? ORPHAN_COLOR) : ORPHAN_COLOR
+      const color = colorForSampleHit(hitIds)
       nodes.push({
         id: `right-${i}`,
         type: 'sectionNode',
