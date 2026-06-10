@@ -84,9 +84,11 @@ _SYSTEM_STEP2 = (
     "—— 编排级设置（与 step3 共用同一 tool，但 step2 只接受这些 key）——\n"
     "update_compose_setting（target_platform/aspect_ratio/target_duration_seconds/migration_preference）。\n"
     "—— 宏指令（形容词类指令统一走它） ——\n"
-    "apply_macro_adjustment：用户说形容词如『更快/紧凑/节奏感/慢一些』→ macro=amp_pace；『更抓人/更有感染力/情绪强一点』→ macro=amp_emotion。"
+    "apply_macro_adjustment：用户说形容词如『更快/紧凑/节奏感/慢一些』→ macro=amp_pace（**step2 只允许 scope=pace**，"
+    "因为 step2 不动 BGM / 转场）。"
     "档位 intensity 凭语气词判：『稍微/有点』→ light；『明显/适中』→ medium；『大幅/强烈/很』→ strong。"
-    "scope 默认 'all'；用户指了某段 → 传 section_id。\n"
+    "scope 默认 'all'；用户指了某段 → 传 section_id。"
+    "**若用户说『更抓人/更有感染力/情绪强一点』** → D 态引导：『情绪类宏调整在 step3（动转场+BGM 音量），请切到 step3 后再说一遍』，**不要 tool_calls**。\n"
     "用户表达模糊时按惯例：『稍短=×0.85 / 更短=×0.7 / 更长=×1.25 / 长很多=×1.5』，时长统一钳制 [2, 30] 秒。\n"
     "**段落识别（很重要）**：用户**不会**说 section_id（『sec-0 / sec-1』），他们会说自然语言。请**严格**按下表把自然语言映射到上文【段落结构】里列出的 section_id：\n"
     "  · 『第 1 段 / 第一段 / 头一段 / 开头 / 开头段 / 开场 / 开场段 / 片头』 → 列表里**第 1 个段**的 section_id（通常 role=opening）。\n"
@@ -660,6 +662,8 @@ _TOOLS_STEP3: list[dict] = [
     _TOOL_UPDATE_PACKAGING_TEXT,
     _TOOL_UPDATE_PACKAGING_ITEM_TIME,
     _TOOL_UPDATE_SCENE_TRANSITION,
+    # 整轨级口播改写（仅改语言风格不动结构，归 step3 渲染态调性调整）
+    _TOOL_REGENERATE_NARRATIONS_ALL,
     # BGM
     _TOOL_UPDATE_BGM_OFFSET,
     _TOOL_UPDATE_BGM_VOLUME,
@@ -1775,6 +1779,8 @@ _STEP_ALLOWED_OPS: dict[ComposeEditStep, set[str]] = {
         "update_packaging_text",
         "update_packaging_item_time",
         "update_scene_transition",
+        # 整轨级口播改写（不动结构、不动时长 → 渲染态调性调整，归 step3）
+        "regenerate_narrations_all",
         # BGM
         "update_bgm_offset",
         "update_bgm_volume",
@@ -1789,6 +1795,8 @@ _STEP_ALLOWED_OPS: dict[ComposeEditStep, set[str]] = {
 }
 
 # 内容轨 ops（用于在 step3 触发 D 态："请去 step2 改"）
+# 注意：regenerate_narrations_all 虽改 narration 文本，但不动段顺序/段时长 → 渲染态调性调整，
+# step3 也允许（见 _STEP_ALLOWED_OPS["step3"]），所以不在此集合中。
 _CONTENT_TRACK_OPS = {
     "update_section_narration",
     "update_section_duration",
@@ -1798,7 +1806,6 @@ _CONTENT_TRACK_OPS = {
     "update_shot_subject",
     "update_shot_narration",
     "update_shot_duration",
-    "regenerate_narrations_all",
 }
 
 # 包装/字幕/BGM/转场 ops（用于在 step2 触发 D 态："请去 step3 改"）
@@ -2098,6 +2105,15 @@ async def run_compose_edit(
     for tc in cleaned:
         name = tc["name"]
         args = tc.get("arguments") or {}
+        # step2 拦截 macro emotion：mutator 会动 BGM/transitions，越过 step2 边界
+        if (
+            step == "step2"
+            and name == "apply_macro_adjustment"
+            and (args.get("scope") or "").strip().lower() == "emotion"
+        ):
+            log.info("[compose_edit] 拦截 step2 macro emotion → D 态引导")
+            out_of_scope_hits.append("apply_macro_adjustment[emotion]")
+            continue
         if name in _ASYNC_OPS:
             mut_async = _ASYNC_MUTATORS.get(name)
             if mut_async is None:
@@ -2115,8 +2131,13 @@ async def run_compose_edit(
 
     note: str | None = None
     if not diffs:
-        # stage-53 D 态越界引导（细分三种）
-        if step == "step3" and any(op in _CONTENT_TRACK_OPS for op in out_of_scope_hits):
+        # stage-53 D 态越界引导（细分四种）
+        if step == "step2" and "apply_macro_adjustment[emotion]" in out_of_scope_hits:
+            note = (
+                "step2 不支持『情绪类宏调整』——这类指令会动 BGM 音量与转场强度，属于 step3 的范畴。"
+                "请切到 step3 后再说一遍『更抓人 / 情绪强一点 / BGM 平和一点』。"
+            )
+        elif step == "step3" and any(op in _CONTENT_TRACK_OPS for op in out_of_scope_hits):
             ops_hit = [op for op in out_of_scope_hits if op in _CONTENT_TRACK_OPS]
             note = (
                 "step3 不可改内容轨（段落文案 / 段时长 / 删段 / 重排 / 分镜文本 / 整轨重写口播）。"

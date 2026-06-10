@@ -966,7 +966,10 @@ export function FourTrackBoard({
                         {STATUS_GLYPH[effectiveStatus]}
                       </span>
                     )}
-                    {/* stage-37：✏ 编辑段、▾ 展开看分镜——挂在角标行右侧 */}
+                    {/* stage-37：✏ 编辑段、▾ 展开看分镜——挂在角标行右侧
+                        stage-60：去掉 canExpand 门禁——上游 dedup / 视觉差异度门禁会把
+                        近重复 sub-shot 折叠到 1 镜，单镜段也允许展开进入分镜级编辑入口，
+                        避免「明明本来有展开按钮，重新生成后没了」的体感。 */}
                     {onEditSection && (
                       <span
                         role="button"
@@ -988,7 +991,7 @@ export function FourTrackBoard({
                         ✏
                       </span>
                     )}
-                    {canExpand && onEditShot && (
+                    {onEditShot && (
                       <span
                         role="button"
                         tabIndex={0}
@@ -1003,7 +1006,7 @@ export function FourTrackBoard({
                             toggleExpand(section.section_id)
                           }
                         }}
-                        title="展开看分镜（点击各分镜独立编辑）"
+                        title={canExpand ? '展开看分镜（点击各分镜独立编辑）' : '展开本段进入分镜编辑（单镜段）'}
                         className="inline-flex h-3 w-3 cursor-pointer items-center justify-center rounded bg-white/70 text-[9px] font-bold text-foreground hover:bg-white"
                       >
                         ▾

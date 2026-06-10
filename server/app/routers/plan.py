@@ -357,6 +357,15 @@ def _adapted_sections_to_emotion_input(plan: Plan) -> list:
     return out
 
 
+def _auto_align_bgm_to_emotion(plan: Plan) -> None:
+    """委派给 services.plans.bgm_align——抽到 service 层是为了让单测能绕开 router import 链。
+
+    详见 services/plans/bgm_align.py 的 docstring（含算法、clamp 策略、调用时机）。
+    """
+    from ..services.plans.bgm_align import auto_align_bgm_to_emotion as _impl
+    _impl(plan)
+
+
 async def _compute_plan_emotion(plan: Plan) -> Optional["EmotionCurve"]:
     """跑一次 LLM 多信号情绪曲线打分；失败回 None（不抛）。
 
@@ -1082,6 +1091,8 @@ async def build_plan(req: PlanBuildRequest) -> Plan:
             plan_id, plan.emotion_curve.backend,
             len(plan.emotion_curve.anchors), len(plan.emotion_curve.peaks),
         )
+    # stage-60：BGM 高潮自动切片对齐内容高潮（用户上传 BGM 后听不到好听段的根因）
+    _auto_align_bgm_to_emotion(plan)
 
     # stage-59：素材适配度打分。给所有 user_material scene 写 fit_score / fit_reason，
     # 让用户在 Compose 卡上看到"这条素材跟段意 NN% 搭"，便于人工挑替换。
@@ -1174,6 +1185,10 @@ async def patch_plan_bgm(plan_id: str, body: PlanBgmPatch) -> Plan:
     # BGM 切换 / 锚点改变 → 情绪曲线过期，自动重算（失败回 None 不阻塞）
     if "bgm_asset_id" in patch:
         plan.emotion_curve = await _compute_plan_emotion(plan)
+        # 换 BGM 后 anchor 已被 _build_bgm_config 重置为 0，安全地按高潮重新对齐；
+        # 若同一 PATCH 又显式设了 video_anchor_seconds（手拖），用户意图覆盖自动对齐
+        if "video_anchor_seconds" not in patch or patch.get("video_anchor_seconds") is None:
+            _auto_align_bgm_to_emotion(plan)
     plan_store.put(plan)
     log.info(
         "[plan] bgm patched plan=%s asset=%s anchor=%.2fs vol=%.2f duck=%s",

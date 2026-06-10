@@ -115,3 +115,38 @@ async def test_chain_aborts_when_tail_frame_fails(monkeypatch):
     assert result.chunks_count == 1, f"中断后只应有 1 段，实际 {result.chunks_count}"
     assert len(result.video_urls) == 1
     assert "1/3" in (result.note or ""), f"note 应提示 1/3：{result.note!r}"
+
+
+@pytest.mark.asyncio
+async def test_wall_clock_cap_returns_pending(monkeypatch):
+    """wall-clock 总耗时超过 total_max_wait_seconds → 早返回 warn，
+    chunk_task_ids[0] 必须是 pending 段的 task_id（前端 auto-poll 用 [0]）。
+
+    这条覆盖『nginx 180s 截断 → failed to fetch』的早返回路径。
+    """
+    # mock T2V 永不 succeed：始终返回 pending（让 wall-clock 触发）
+    from app.services.t2v_client import MockT2VClient, QueryResult, T2VClient
+
+    class _AlwaysPendingT2V(MockT2VClient):
+        async def query(self, task_id: str) -> QueryResult:  # type: ignore[override]
+            return QueryResult(task_id=task_id, status="pending", provider=self.name)
+
+    monkeypatch.setattr(gap_agent, "get_t2v_client", lambda: _AlwaysPendingT2V())
+
+    result = await fill_gap(
+        _gap(),
+        action="aigc",
+        params={
+            "prompt": "永远 pending",
+            "duration_seconds": SEEDANCE_MAX_SECONDS,  # 单段
+            "poll_interval_seconds": 0.05,
+            "max_wait_seconds": 60.0,                  # 单段 max_wait 远大于 wall-clock
+            "total_max_wait_seconds": 0.3,             # 极小 wall-clock，必触发早返回
+        },
+    )
+    assert result.status == "warn", f"应早返回 warn，实际 {result.status}: {result.note}"
+    assert result.video_urls == [], "未完成的段不应有 video_url"
+    assert len(result.chunk_task_ids) == 1
+    # 关键：chunk_task_ids[0] 必须是 pending 段的 task_id，前端才能正确 auto-poll
+    assert result.chunk_task_ids[0] == result.new_material_id
+    assert "自动刷新" in (result.note or ""), f"note 应提示前端继续刷：{result.note!r}"

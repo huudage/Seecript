@@ -867,10 +867,16 @@ async def _fill_with_seedance(gap: Gap, params: dict[str, Any]) -> FillResult:
     }
     poll_interval = float(params.get("poll_interval_seconds") or 4.0)
     max_wait = float(params.get("max_wait_seconds") or 180.0)
+    # nginx proxy_read_timeout=180s（见 deploy/nginx.conf.example）。/gap/fill 必须在
+    # 这之前返回，否则前端 fetch 会以 "failed to fetch"（其实是 504/连接被截断）失败。
+    # 这里给整个链路（含 N 段 chunk + 落盘 + 抽尾帧）兜底 ~150s wall-clock。
+    # 超时未完成的最后一段 chunk 用 `pending` 占位回包，前端 chunk_task_ids[0] auto-poll
+    # （8s × 30 = 240s）经 /gap/aigc-refresh 接力补完。
+    total_max_wait = float(params.get("total_max_wait_seconds") or 150.0)
 
     log.info(
-        "[gap-fill] %s seedance: requested=%.1fs → %d chunks × %.1fs",
-        gap.gap_id, requested, n_chunks, per_chunk,
+        "[gap-fill] %s seedance: requested=%.1fs → %d chunks × %.1fs (total cap %.0fs)",
+        gap.gap_id, requested, n_chunks, per_chunk, total_max_wait,
     )
 
     chunk_results = await _generate_chunks(
@@ -880,6 +886,7 @@ async def _fill_with_seedance(gap: Gap, params: dict[str, Any]) -> FillResult:
         base_params=base_params,
         poll_interval=poll_interval,
         max_wait=max_wait,
+        total_max_wait=total_max_wait,
         gap_id=gap.gap_id,
     )
 
@@ -894,6 +901,7 @@ async def _generate_chunks(
     base_params: dict[str, Any],
     poll_interval: float,
     max_wait: float,
+    total_max_wait: float,
     gap_id: str,
 ) -> list[dict[str, Any]]:
     """顺序生成 N 个 chunk；前一段的尾帧（base64 data URL）作为后一段 first_frame。
@@ -901,11 +909,16 @@ async def _generate_chunks(
     每个元素：{status, task_id, video_url, cover_url, fail_reason, started, ended}
     出错的 chunk 立刻终止后续生成，但已生成的 chunk 仍保留。
     video_url 已经被 _persist_aigc_video 改写为同源 /aigc-videos/...（失败时回落原 CDN）。
+
+    wall-clock 兜底：累计耗时 > total_max_wait 时立即返回，让 caller 早一步回包给前端，
+    避开 nginx 180s 截断。当前正在轮询的 chunk 用 status='pending' 占位，task_id 仍带回，
+    供前端 auto-poll 接力。
     """
     t2v = get_t2v_client()
     results: list[dict[str, Any]] = []
     prev_tail_data_url: Optional[str] = None
     gap_id_for_persist = gap_id
+    pipeline_started = time.time()
 
     for i in range(n_chunks):
         first_frame = prev_tail_data_url or base_params.get("first_frame")
@@ -1002,6 +1015,22 @@ async def _generate_chunks(
                     "elapsed": int(time.time() - started),
                 })
                 break
+            # wall-clock 兜底：整条链路（含已完成 chunk）累计 > total_max_wait 时早回包，
+            # 让前端 auto-poll 接管。当前 chunk 标 pending（仍带 task_id，前端能接续刷）。
+            if time.time() - pipeline_started > total_max_wait:
+                results.append({
+                    "status": "pending",
+                    "task_id": task_id,
+                    "video_url": None,
+                    "cover_url": None,
+                    "fail_reason": f"server wall-clock cap {int(total_max_wait)}s reached, polling handed off to client",
+                    "elapsed": int(time.time() - started),
+                })
+                log.info(
+                    "[gap-fill] %s wall-clock %.0fs reached at chunk %d/%d task=%s → 早返回让前端 auto-poll",
+                    gap_id_for_persist, total_max_wait, i + 1, n_chunks, task_id,
+                )
+                return results
             await asyncio.sleep(poll_interval)
 
         # 当前 chunk 没成功就停（无法抽尾帧给下一段；且失败应及时反馈用户）
@@ -1046,6 +1075,28 @@ def _build_fill_result(gap: Gap, chunks: list[dict[str, Any]], expected: int) ->
                 if expected > 1
                 else f"Seedance 生成完成（{total_elapsed}s）"
             ),
+            section_id=gap.section_id,
+        )
+    # wall-clock 早返回：最后一段 pending（Seedance 仍在跑，前端 auto-poll 接力）
+    if last.get("status") == "pending":
+        pending_tid = last.get("task_id")
+        # 把 pending task_id 放到 chunk_task_ids[0]，前端 auto-poll 用 [0] 项继续轮询，
+        # 否则会去查已 succeeded 的 chunk 1，导致 chunk N 永远拿不到回包。
+        other_tids = [c["task_id"] for c in chunks[:-1] if c.get("task_id")]
+        ordered_tids = [pending_tid] + other_tids if pending_tid else other_tids
+        note = (
+            f"Seedance 仍在生成（已完成 {len(succeeded_urls)}/{expected} 段）"
+            f"，task={pending_tid}，自动刷新中…"
+        )
+        return FillResult(
+            gap_id=gap.gap_id, action="aigc",
+            new_material_id=pending_tid or (chunk_task_ids[0] if chunk_task_ids else None),
+            status="warn",
+            video_urls=succeeded_urls,
+            cover_url=cover_url,
+            chunks_count=len(succeeded_urls),
+            chunk_task_ids=ordered_tids,
+            note=note,
             section_id=gap.section_id,
         )
     # 部分成功 / 全失败

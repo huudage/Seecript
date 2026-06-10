@@ -28,7 +28,6 @@ import { SectionEditDialog } from '@/components/compose/SectionEditDialog'
 import { ShotEditDialog } from '@/components/compose/ShotEditDialog'
 import { StructureMapPanel } from '@/components/compose/StructureMapPanel'
 import { SubtitleEditPopover } from '@/components/compose/SubtitleEditPopover'
-import { SystemLibraryPicker } from '@/components/compose/SystemLibraryPicker'
 import { TransitionStylePicker } from '@/components/compose/TransitionStylePicker'
 import { VersionMenu } from '@/components/compose/VersionMenu'
 import { PageShell } from '@/components/layout/PageShell'
@@ -324,8 +323,6 @@ export default function ComposePage() {
   //   - 其他情况（如 step1/2 中的 plan rebuild）→ 复位为锁定，老 step3 解锁状态不要串到新 plan。
   const [step3Unlocked, setStep3Unlocked] = useState(false)
 
-  // 系统素材库选择器开关。
-  const [systemLibraryOpen, setSystemLibraryOpen] = useState(false)
   const lastStep3PlanIdRef = useRef<string | null>(null)
   // 通过 ref 读取当前 activeStep，避免把 activeStep 加入 useEffect 依赖
   // 而引发 plan_id 没变也跑这段重置逻辑的副作用
@@ -1771,18 +1768,7 @@ export default function ComposePage() {
             <div className="space-y-2">
               <div className="flex items-center justify-between">
                 <label className="text-xs font-semibold">素材库（拖拽可排序）</label>
-                <div className="flex items-center gap-2">
-                  <button
-                    type="button"
-                    onClick={() => setSystemLibraryOpen(true)}
-                    disabled={!currentProjectId}
-                    className="rounded border border-border bg-background px-2 py-0.5 text-[10px] hover:bg-secondary disabled:opacity-50"
-                    title="从系统素材库选择补充"
-                  >
-                    + 从系统素材库
-                  </button>
-                  <span className="text-[10px] text-muted-foreground">{sortedMaterials.length} 条</span>
-                </div>
+                <span className="text-[10px] text-muted-foreground">{sortedMaterials.length} 条</span>
               </div>
               <MaterialGrid
                 materials={sortedMaterials}
@@ -2224,21 +2210,7 @@ export default function ComposePage() {
                   上传或拖拽排序会自动重排并刷新缺口
                 </span>
               </h2>
-              <div className="flex items-center gap-1.5">
-                <button
-                  type="button"
-                  onClick={() => setSystemLibraryOpen(true)}
-                  disabled={!currentProjectId || uploading || analyzing}
-                  className={cn(
-                    'rounded-md border border-border bg-card px-2 py-1 text-[11px] hover:bg-secondary',
-                    (!currentProjectId || uploading || analyzing) && 'cursor-not-allowed opacity-60',
-                  )}
-                  title="从系统素材库挑选 → 克隆到本项目"
-                >
-                  + 从素材库选取
-                </button>
-                {/* "+ 追加素材" 已移除——外部素材一律走下方拖拽区，避免一个上传两套入口的歧义 */}
-              </div>
+              {/* "+ 从素材库选取" / "+ 追加素材" 已移除——外部素材一律走下方拖拽区，避免歧义 */}
             </div>
             <UploadDropzone
               uploading={uploading}
@@ -2571,13 +2543,7 @@ export default function ComposePage() {
 
       {/* 样例截图弹窗已废弃：选中内容轨改为直接切换右侧编辑区，不再弹窗。 */}
 
-      {/* 系统素材库选择器 —— step1 素材库标题栏「+ 从系统素材库」按钮触发 */}
-      <SystemLibraryPicker
-        open={systemLibraryOpen}
-        projectId={currentProjectId}
-        onClose={() => setSystemLibraryOpen(false)}
-        onCloned={(materials) => appendMaterials(materials)}
-      />
+      {/* 系统素材库（"样例库"）已下线：step1 只展示项目自有素材库 + 拖拽上传两条路径。 */}
 
       {/* BGM 选择 / 上传弹窗 */}
       {plan && currentProjectId && (
@@ -2944,6 +2910,23 @@ function RenderProgress({ step, percent }: { step: string; percent: number }) {
 }
 
 function RenderResult({ done }: { done: RenderDonePayload }) {
+  // 文件名规则：seecript-{plan-12位}-{variant}.{ext}——保证用户从浏览器下载下来一眼能认出
+  // 哪个 plan、哪个版本，本地多版本对比时不会撞名。
+  const safePlanId = done.plan_id.replace(/[^a-zA-Z0-9_-]/g, '').slice(0, 12) || 'plan'
+  const videoFilename = `seecript-${safePlanId}-${done.variant}.mp4`
+  const coverFilename = `seecript-${safePlanId}-${done.variant}-cover.jpg`
+  const [copied, setCopied] = useState(false)
+  const copyVideoLink = async () => {
+    try {
+      // 拼成绝对 URL，方便用户贴到别处直接下载
+      const absUrl = new URL(done.video_url, window.location.origin).toString()
+      await navigator.clipboard.writeText(absUrl)
+      setCopied(true)
+      setTimeout(() => setCopied(false), 1800)
+    } catch {
+      /* 复制失败静默——保留视频与新标签按钮作为兜底 */
+    }
+  }
   return (
     <div className="mt-2 space-y-3">
       <video
@@ -2952,6 +2935,42 @@ function RenderResult({ done }: { done: RenderDonePayload }) {
         src={done.video_url}
         className="w-full rounded-md border border-border bg-black"
       />
+      <div className="flex flex-wrap items-center gap-2">
+        <a
+          href={done.video_url}
+          download={videoFilename}
+          className={cn(
+            'inline-flex items-center gap-1 rounded-md bg-primary px-3 py-1.5 text-xs font-medium text-primary-foreground',
+            'hover:bg-primary/90',
+          )}
+        >
+          ⬇ 下载 MP4
+        </a>
+        {done.cover_url && (
+          <a
+            href={done.cover_url}
+            download={coverFilename}
+            className="inline-flex items-center gap-1 rounded-md border border-border bg-background px-3 py-1.5 text-xs hover:bg-secondary/40"
+          >
+            ⬇ 下载封面
+          </a>
+        )}
+        <button
+          type="button"
+          onClick={copyVideoLink}
+          className="inline-flex items-center gap-1 rounded-md border border-border bg-background px-3 py-1.5 text-xs hover:bg-secondary/40"
+        >
+          {copied ? '✓ 已复制' : '复制视频链接'}
+        </button>
+        <a
+          href={done.video_url}
+          target="_blank"
+          rel="noreferrer"
+          className="inline-flex items-center gap-1 rounded-md border border-border bg-background px-3 py-1.5 text-xs hover:bg-secondary/40"
+        >
+          新标签打开
+        </a>
+      </div>
       <div className="grid grid-cols-2 gap-2 text-xs sm:grid-cols-4">
         <Stat label="时长" value={`${done.duration_seconds.toFixed(1)}s`} />
         <Stat label="版本" value={done.variant} />

@@ -43,7 +43,7 @@ const STEP_TITLE: Record<'step2' | 'step3', string> = {
 }
 
 const STEP_SCOPE: Record<'step2' | 'step3', string> = {
-  step2: '**可以改的**：段落文案 / 段时长 / 删段 / 重排 / 分镜画面 / 分镜口播 / 分镜主体 / 分镜时长 / 字卡文案与字号 / 包装项文字与时间 / 转场样式 / 整体口播重写 / BGM 偏移与音量 / Compose 设置（平台 / 比例 / 总时长 / 迁移倾向 / 字幕开关 / 口播开关 / TTS 音色 / 画面预设 / 包装预设）/ 单段或批量重排素材 / 重出字卡。**唯独 AI 生图（Seedream）/ AI 视频（Seedance）请到 AIGC 面板手改提示词后再点重生**。',
+  step2: '**可以改的**：段落文案 / 段时长 / 删段 / 重排 / 分镜画面 / 分镜口播 / 分镜主体 / 分镜时长 / 整体口播重写 / Compose 编排设置（平台 / 比例 / 总时长 / 迁移倾向）/ 单段或批量重排素材 / 重出字卡。**字幕 / 包装项文字与时间 / 字卡视觉（文案与字号）/ 转场样式 / BGM 偏移与音量 / 封面 / 渲染级设置（字幕开关 / 口播开关 / TTS 音色 / 画面预设 / 包装预设）请切到 step3 编辑**；**AI 生图（Seedream）/ AI 视频（Seedance）请到 AIGC 面板手改提示词后再点重生**。',
   step3: '**可以改的**：字卡文案与字号 / 包装项文字与时间 / 转场样式（hard_cut / dissolve / slide / zoom / whip / wipe）/ 整体口播重写（hint）/ BGM 偏移与音量 / Compose 设置 / 单段或批量重排素材 / 重出字卡 / 重生 AI 生图。**禁止改内容轨**——要改段落文案 / 段时长 / 删段 / 重排 / 分镜文本请回 step2。',
 }
 
@@ -69,6 +69,23 @@ const STEP_EDIT_EXAMPLES: Record<'step2' | 'step3', string[]> = {
   ],
 }
 
+// 模糊指令：不给死值，由 LLM 套档位（light/medium/strong × amplify/attenuate）
+// 触发词："更快/紧凑/抓人/平和/紧"+"稍微/明显/大幅"；段落级用"稍短/更短/长很多"
+const MACRO_EXAMPLES: Record<'step2' | 'step3', string[]> = {
+  step2: [
+    '整体节奏再快一点',
+    '第 2 段稍微短一点',
+    '节奏放慢一点',
+    '所有段都再紧凑一些',
+  ],
+  step3: [
+    '整体更抓人一点',
+    '情绪明显加强',
+    'BGM 平和一点',
+    '节奏大幅放慢',
+  ],
+}
+
 const QA_EXAMPLES = [
   '当前项目主题是什么？结构怎样？',
   '哪些段还没填素材？空着会影响什么？',
@@ -76,9 +93,18 @@ const QA_EXAMPLES = [
   '现在的调性 / BGM / 比例是什么？',
 ]
 
+// 介绍 chip 顺序：3 个具体指令 + 2 个模糊宏调 + 2 个问答（让用户一眼看到 3 种能力）
 const STEP_EXAMPLES: Record<'step2' | 'step3', string[]> = {
-  step2: [...STEP_EDIT_EXAMPLES.step2.slice(0, 4), ...QA_EXAMPLES.slice(0, 2)],
-  step3: [...STEP_EDIT_EXAMPLES.step3.slice(0, 4), ...QA_EXAMPLES.slice(0, 2)],
+  step2: [
+    ...STEP_EDIT_EXAMPLES.step2.slice(0, 3),
+    ...MACRO_EXAMPLES.step2.slice(0, 2),
+    ...QA_EXAMPLES.slice(0, 2),
+  ],
+  step3: [
+    ...STEP_EDIT_EXAMPLES.step3.slice(0, 3),
+    ...MACRO_EXAMPLES.step3.slice(0, 2),
+    ...QA_EXAMPLES.slice(0, 2),
+  ],
 }
 
 type Role = 'agent' | 'user'
@@ -397,9 +423,10 @@ function makeIntro(step: 'step2' | 'step3'): ChatMessage {
   const examples = STEP_EXAMPLES[step]
   const text =
     `你好，我是 Compose 的对话编辑小助手 · 当前 ${STEP_TITLE[step]}。\n\n` +
-    `我能做两件事：\n` +
+    `我能做三件事：\n` +
     `1. **讲解项目**：聊聊本片当前的主题、结构、段落填充情况、调性/BGM/比例现状，帮你判断哪段空缺、要找什么素材。**不会编造**——上下文里没有的事我直说不知道。\n` +
-    `2. **执行编辑**：${STEP_SCOPE[step]}\n\n` +
+    `2. **执行精确编辑**：${STEP_SCOPE[step]}\n` +
+    `3. **听懂模糊指令**：「再快点」「整体更抓人」「稍微短一点」这类没给死值的话，我会自动套档位（轻/中/强 × 加强/减弱），按规则表批量改 ${step === 'step2' ? '段时长 / 镜头时长' : '转场时长 / BGM 音量'}。\n\n` +
     `直接说话就行，比如：\n` +
     examples.map((e) => `· ${e}`).join('\n') +
     `\n\n下指令我会先给你看 diff 再确认；问问题我直接答。`
