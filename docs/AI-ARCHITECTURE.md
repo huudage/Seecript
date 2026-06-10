@@ -690,6 +690,181 @@ stage-22 之前段是 Plan 的最小单元；用户改"调整第三段"就是整
 
 ---
 
+## 第五部分 · AI 节点全清单
+
+> §1.3 列的是 11 个 **agent**（代码模块层面）；本节列的是 **AI 决策节点**（业务功能层面）。一个 agent 内部可能含多个独立 LLM 调用，每个对应一个"业务上有名字的 AI 能力"。比如 `decompose_agent` 内部跑 5 次 LLM、1 次 ASR、2 次 BGM 音频理解；`packaging_agent` 一次 LLM 输出 6 类子方案（转场/封面/字幕/标题条/贴纸/调色板）—— 这些都是用户感知层面的独立 AI 节点。
+>
+> 全项目共 **28 个 AI 决策节点**：22 个 LLM 节点 + 1 个 ASR + 2 个 AIGC 视觉 + 1 个 TTS + 2 个规则降级（rule_fallback 也算节点，因为承担同等责任）。
+
+### 5.1 拆解链路节点（9 个）
+
+| # | 节点 | 模型 / 方式 | 输入 | 输出 | 代码 |
+|---|---|---|---|---|---|
+| D1 | **镜头切分** | PySceneDetect | mp4 | DetectedShot[] | `services/video/scene_detect.py` |
+| D2 | **音频能量曲线** | librosa RMS + onset + tempo | mp4 音轨 | rms[] + tempo + onset[] | `services/video/bgm_analysis.py` |
+| D3 | **VAD 口播判定** | librosa 300-3400Hz 频带能量阈值 0.35 | mp4 音轨 | `has_voice: bool` | `services/video/voice_detect.py` |
+| D4 | **ASR 口播转写** | 豆包 bigasr_auc_turbo（异步 submit + query） | audio.url（公网） | 段落 + 时间戳 | `services/asr_client.py` |
+| D5 | **多模态帧打标** | Doubao Seed-2.0-lite multimodal | 每镜头关键帧 + `_FRAME_TAG_SYSTEM` | `tags[] + script + subject` 每镜头 | `agent/decompose_agent.py:255` |
+| D6 | **镜头角色识别** | Doubao multimodal | 关键帧 + `_SHOT_ROLE_SYSTEM` | `role ∈ SectionRole` 每镜头 | `agent/decompose_agent.py:231` |
+| D7 | **整片画像** | Doubao multimodal | 抽样关键帧 + `_UNDERSTAND_SYSTEM` | archetype + narrative_summary + structural_pattern + tone | `agent/decompose_agent.py:205` |
+| D8 | **视觉脚本反推** | Doubao multimodal | 关键帧 + `_VISUAL_SCRIPT_SYSTEM` | 字幕原文摘录（纯画面有字幕但 ASR 没拾取时） | `agent/decompose_agent.py:851` |
+| D9 | **样例亮点 / 改进分析** | Doubao LLM | shots + sections + understanding + `_VIDEO_ANALYSIS_SYSTEM` | `highlights[] + improvements[]`（aspect + text + shot_indices） | `agent/decompose_agent.py:970` |
+
+### 5.2 音乐链路节点（2 个）
+
+| # | 节点 | 模型 / 方式 | 输入 | 输出 | 代码 |
+|---|---|---|---|---|---|
+| M1 | **样例音轨节奏画像** | Doubao 多模态音频 | 样例 mp4 音轨 url | `mood_tags + energy_shape + climaxes[] + calm_segments[] + title_guess` | `services/video/bgm_analysis.py:430` |
+| M2 | **Plan 绑定 BGM 分析** | Doubao 多模态音频 | 用户绑定的 BGM url + brief + video_goal | 同上 + 匹配建议 | `services/video/bgm_analysis.py:141` |
+
+### 5.3 素材链路节点（1 个）
+
+| # | 节点 | 模型 / 方式 | 输入 | 输出 | 代码 |
+|---|---|---|---|---|---|
+| U1 | **素材自动打标** | Doubao multimodal | 用户上传素材的中间帧 + `_MATERIAL_TAG_SYSTEM` | `tags[] + subjects[] + role + highlight_score + highlight_reason` | `routers/material.py:147` + `services/materials/preprocess.py:131`（视频按镜头切片各跑一次） |
+
+### 5.4 意图澄清节点（1 个 + 1 历史降级）
+
+| # | 节点 | 模型 / 方式 | 输入 | 输出 | 代码 |
+|---|---|---|---|---|---|
+| C1 | **clarify 多轮问答**（流式） | Doubao LLM `stream_complete` | brief + history | `ClarifyRound(question + options)` | `agent/clarify_agent.py:344` |
+| C0 | **clarify finalize**（**已退役 LLM，改纯结构化**） | 规则收尾 | 问答 history | `clarify_outline` 五件套 | stage-30 之后 finalize 不再调 LLM |
+
+`brief_subjects` 反推可拍物体（`fix(clarify)` `8c621e2`）—— LLM 不再字面抽 brief 词，而是反推用户实际能拍到的物体，注入 `clarify_outline.content`。
+
+### 5.5 Plan 构建节点（3 个）
+
+| # | 节点 | 模型 / 方式 | 输入 | 输出 | 代码 |
+|---|---|---|---|---|---|
+| P1 | **结构改编**（核心） | Doubao multimodal（带 ref_images） / 文本（无 ref） | 样例 sections + brief + video_goal + ref_images + `_ADAPT_SYSTEM` | `AdaptedSection[]`（含每段 theme/narration/subjects/shots[]） | `agent/plan_agent.py:413` |
+| P2 | **主体锚点匹配**（**非 LLM**） | embedding 余弦 + 角色匹配 + duration 权重 | 样例 ShotPlan + 用户 materials | `ShotMatch[]`（match_quality 三档 + 候选） | `agent/shot_matcher.py` |
+| P3 | **subject_anchors 反解注入**（stage-35） | 规则提取 | 样例 sections 的 subjects[] | 注入到 plan_agent prompt 作为硬约束 | `agent/plan_agent.py` |
+
+### 5.6 缺口补全节点（5 个）
+
+| # | 节点 | 模型 / 方式 | 输入 | 输出 | 代码 |
+|---|---|---|---|---|---|
+| G1 | **缺口检测**（**非 LLM**） | 槽位匹配纯算法 | Plan + materials + 9 个 SectionKind | `Gap[]`（缺哪段哪镜） | `agent/gap_agent.py` |
+| G2 | **段文案改写**（gap action=copy） | Doubao LLM | 段角色 + brief + `_COPY_SYSTEM` | `narration + text_card_lines + subjects` | `agent/gap_agent.py:624` / `agent/copy_outline_agent.py:249` |
+| G3 | **AIGC 视频 prompt 改写** | Doubao LLM | 段角色 + brief + ShotPlan + `_PROMPT_SYSTEM` | Seedance 可吃的 prompt（含运镜/主体/时长/风格 + negative） | `agent/aigc_prompt_agent.py:154` |
+| G4 | **AIGC image-spec 改写** | Doubao LLM | 同上 + `_IMAGE_SPEC_SYSTEM` | Seedream 多镜头 storyboard prompt | `agent/aigc_prompt_agent.py:369` |
+| G5 | **段落重排**（gap action=rerank，**非 LLM**） | 规则算法 | materials + match_quality | 重排后的 main_track | `agent/gap_agent.py` |
+
+### 5.7 AIGC 视觉节点（4 个）
+
+| # | 节点 | 模型 / 方式 | 输入 | 输出 | 代码 |
+|---|---|---|---|---|---|
+| V1 | **Seedance T2V**（短片 5-8s） | doubao-seedance-2-0-fast-260128 | prompt + size + duration | mp4 落地到 `var/aigc_videos/` | `services/t2v_client.py` + `agent/gap_agent.py:785` |
+| V2 | **Seedance 首尾帧串接长视频** | T2V image-to-video | 上一段尾帧 + 下一段首帧 + prompt | 长拼接 mp4 | `services/render/seedance_chain.py` |
+| V3 | **Seedream T2I**（多镜头 storyboard） | doubao-seedream | 多 shot prompt + ratio | N 张图落地到 `var/aigc_images/` | `services/seedream_client.py` + `agent/gap_agent.py:1408` |
+| V4 | **AIGC tail-frame 补帧** | Doubao LLM 写 prompt + Seedream 出图 | 已有相邻 scene + 段角色 | 单图（连接帧） | `routers/gap.py POST /aigc-tail-frame` |
+
+### 5.8 包装推荐节点（3 个 LLM × 6 类输出 = 18 个子决策）
+
+包装链路是 AI 决策最密集的部分。3 次 LLM 调用，每次输出多个子方案：
+
+| # | 节点 | 模型 / 方式 | 输入 | 输出（一次性给齐 6 类） | 代码 |
+|---|---|---|---|---|---|
+| K1 | **包装推荐 v1**（早期版本） | Doubao LLM | Plan + PackagingPreferences | 转场 + 封面 + 字幕 + 标题条（旧 schema） | `agent/packaging_agent.py:414` |
+| K2 | **包装推荐 v2**（当前主用） | Doubao LLM | Plan + prefs + 5 维偏好 + frame_design + catalog_hint | `transitions[6种] + cover[标题+副标题+调色板+布局] + subtitle_style + title_bar + sticker` | `agent/packaging_agent.py:1026` |
+| K3 | **场景级包装推荐**（stage-27） | Doubao LLM | 单个 Scene + 上下文 + prefs | 该 scene 的 sticker / title_bar 候选 | `agent/packaging_agent.py:1318` |
+
+K2 输出展开就是 6 类**独立 AI 子决策**——LLM 一次性给齐避免多次往返：
+
+| 子决策 | 候选数 | 落点字段 |
+|---|---|---|
+| 转场风格推荐 | 6 种（淡入/切换/粒子/光斑/位移/反相） | `PackagingItem.kind=transition` |
+| 封面方案 | 1 套 | `PackagingItem.kind=cover`（标题/副标题/调色板/布局） |
+| 字幕样式 | 1-3 候选 | `SubtitleStyleCandidate` |
+| 标题条样式 | 1-3 候选 | `TitleBarCandidate`（位置/字号/调色板） |
+| 贴纸推荐 | 0-N | `StickerCandidate` |
+| 调色板 | 1 套 | 内嵌在 cover / title_bar 内 |
+
+### 5.9 视频包装与渲染节点（3 个）
+
+| # | 节点 | 模型 / 方式 | 输入 | 输出 | 代码 |
+|---|---|---|---|---|---|
+| R1 | **frame.md 烧入 ffmpeg 滤镜**（stage-27） | 规则模板 → ffmpeg 滤镜串 | frame_design_preset + Scene[] | ffmpeg filter_complex 命令 | `services/render/pipeline.py` |
+| R2 | **AI 生图动效**（ken-burns / keyframe_morph） | 规则推导（基于 subject 位置） | aigc_image + subject 锚点 | Remotion AnimatedImage 参数 | `remotion/src/AnimatedImage.tsx` |
+| R3 | **TTS 配音合成** | 豆包 TTS | narration + voice_id | wav 落地到 `/voiceovers/` | `services/tts/` + `POST /api/voice/synthesize` |
+
+R3 关键纪律：**严禁凑时长**（stage-44/49 修复）——TTS wav 长度小于 scene duration 时不补无声段；同时段口播禁止复述凑时长。
+
+### 5.10 自然语言编辑节点（4 个）
+
+| # | 节点 | 模型 / 方式 | 输入 | 输出 | 代码 |
+|---|---|---|---|---|---|
+| E1 | **Render 态 NL 编辑** | Doubao LLM `complete_with_tools` | 用户指令 + 三轨 system prompt（main/packaging/voice 分流）+ track tools 子集 | `tool_calls[]` → Plan 局部 mutator | `routers/edit.py:342` |
+| E2 | **Compose 态 ⌘K NL 编辑** | Doubao LLM `complete_with_tools` | 用户指令 + step2/step3 分流 system + 19/11 tools | `ComposeEditDiff[]` | `agent/compose_edit_agent.py:1918` |
+| E3 | **对话三态判定**（编辑/讲解/追问） | LLM tool_choice 隐式分流 | 同 E2 + `_QA_RULES` | A/B/C 三态之一 | 同 E2 |
+| E4 | **段落识别强约束** | LLM 内置 + Router 校验 | 用户说"第 X 段" + 当前 plan sections | section_id 必须在实际列表内，否则路由 422 | `services/agent/compose_edit_agent.py` |
+
+`POST /api/edit/compose` 内部一次调用同时完成 E2 + E3 + E4——三个都是同一次 LLM 调用的不同 facets。`complete_json` 还会另调一次做 dry-run diff 预览（`agent/compose_edit_agent.py:1489`）。
+
+### 5.11 情绪与节奏节点（3 个）
+
+| # | 节点 | 模型 / 方式 | 输入 | 输出 | 代码 |
+|---|---|---|---|---|---|
+| F1 | **节奏曲线**（**非 LLM**） | 规则计算 | 镜头切换时间序列 + BGM 能量 | `RhythmCurve(cut_density + bgm_energy + tempo)` | `agent/decompose_agent.py` |
+| F2 | **LLM 情绪打分**（stage-28） | Doubao LLM | sections + shots + bgm_analysis + understanding + intent + `_EMOTION_SYSTEM` | `anchors[] + peaks[] + valleys[] + summary` | `agent/emotion_agent.py:576` |
+| F3 | **情绪曲线规则降级** | `_role_mood_value + _smooth` | sections | 60 点曲线（`backend="rule_fallback"`） | `agent/emotion_agent.py` |
+
+F2 输出后规则层做线性插值 + 凸包 bump + 滑动平均 → 60 个采样点。
+
+### 5.12 知识沉淀节点（2 个）
+
+| # | 节点 | 模型 / 方式 | 输入 | 输出 | 代码 |
+|---|---|---|---|---|---|
+| KB1 | **项目知识库蒸馏** | Doubao LLM `complete_json` | 该项目全部 trace（最近 N 条） | `ProjectKB`（4 类 scope：structure/source/narration/pacing） | `services/profile/distill.py:141` |
+| KB2 | **全段口播重写** | Doubao LLM | 全 plan scenes + 新主题 + 新语气 | `{scene_id → new_narration}` | `agent/narration_agent.py:115` |
+
+KB1 是 Hermes 风格规则提炼，把多轮编辑产生的用户偏好沉淀成下次复用的 PromptKB（用户级 + 项目级）。
+
+### 5.13 节点统计与分布
+
+| 链路 | 节点数 | LLM | ASR/TTS | AIGC | 算法 |
+|---|---:|---:|---:|---:|---:|
+| 拆解 | 9 | 5 | 1 | 0 | 3 |
+| 音乐 | 2 | 2 | 0 | 0 | 0 |
+| 素材 | 1 | 1 | 0 | 0 | 0 |
+| 澄清 | 1 | 1 | 0 | 0 | 0 |
+| Plan | 3 | 1 | 0 | 0 | 2 |
+| 缺口 | 5 | 3 | 0 | 0 | 2 |
+| AIGC 视觉 | 4 | 0 | 0 | 4 | 0 |
+| 包装 | 3 | 3 | 0 | 0 | 0 |
+| 渲染包装 | 3 | 0 | 1 | 0 | 2 |
+| NL 编辑 | 4 | 4 | 0 | 0 | 0 |
+| 情绪节奏 | 3 | 1 | 0 | 0 | 2 |
+| 知识沉淀 | 2 | 2 | 0 | 0 | 0 |
+| **合计** | **40** | **23** | **2** | **4** | **11** |
+
+> 上表 40 含同链路独立节点（如缺口 5 个 / 拆解 9 个）。其中 §5.8 K2 一次 LLM 调用展开是 6 类子决策——若按"用户感知的独立 AI 能力"计数则总数约 45+。
+
+### 5.14 节点失败级联表
+
+每个节点失败影响哪些下游：
+
+| 节点失败 | 直接影响 | 兜底 |
+|---|---|---|
+| D4 ASR | 没字幕；`has_voice=false` 走纯画面分析 | SSE `note: "ASR 不可用"`，pipeline 继续 |
+| D5 帧打标 | 镜头无 tags/subject | 单镜头 placeholder（stage-50 防"灰色背景"幻觉） |
+| D7 整片画像 | sections 缺 understanding 信号 | sections 仍能产出，缺 archetype |
+| D9 样例分析 | 拆解卡片无亮点/改进 chip | 卡片仍渲染，缺 chip |
+| M1 / M2 音轨分析 | BGM 卡片无 mood_tags / climaxes | 节奏曲线退化为纯能量 |
+| P1 plan_agent | 整个 Plan 失败 | `_fallback_adaptation` 镜像复制样例（规则降级） |
+| G2 copy | 段文案空 | `_fallback_outline` 角色模板（规则降级） |
+| G3/G4 prompt 改写 | AIGC 用 brief 直接当 prompt | 用户体验差但能跑 |
+| V1 T2V | 缺口 fill 返回 `error` | 前端展示"AIGC 失败，请改 prompt" |
+| V3 Seedream | 同上 | 同上 |
+| K2 包装推荐 | 无转场/封面候选 | `_rule_based_v2_candidates` 规则版兜底 |
+| R3 TTS | scene 无 voiceover | scene 仍渲染，缺配音；BGM 填充 |
+| E1/E2 NL 编辑 | 用户指令无效 | 502 + "请重试" |
+| F2 情绪打分 | EmotionCurve.backend="rule_fallback" | F3 规则版 |
+
+**节点失败永远不静默降级到 mock**——要么硬失败 5xx，要么走显式规则降级（rule_fallback / `_fallback_*`）。
+
+---
+
 ## 附录 A · 关键代码索引
 
 | 关注点 | 文件 |
