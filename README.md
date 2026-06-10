@@ -76,10 +76,10 @@ git clone https://github.com/huudage/Seecript.git
 cd Seecript
 
 # 方式 B · 下载源码包（13 MB，已剔除 venv / node_modules / 大视频）
-curl -LO https://seecript.zlhu.asia/release/seecript-source.tgz
+curl -LO https://seecript.zlhu.asia/release/seecript-source.zip
 # 可选：校验完整性
-curl -sL https://seecript.zlhu.asia/release/seecript-source.tgz.sha256 | sha256sum -c -
-tar xzf seecript-source.tgz
+curl -sL https://seecript.zlhu.asia/release/seecript-source.zip.sha256 | sha256sum -c -
+unzip seecript-source.zip
 cd seecript
 ```
 
