@@ -321,6 +321,14 @@ function PreviewModal({ item, onClose }: { item: LibraryItem; onClose: () => voi
     return () => document.removeEventListener('keydown', onKey)
   }, [onClose])
 
+  // 关键：system tab 的样例落在 server/samples/<id>/，user tab 的落在
+  // var/uploads/decompose/<id>/。统一硬编码 /samples/ 前缀会让用户上传的样例
+  // 预览视频 404（这是用户报告的「点了卡片预览不出来」根因）。
+  const videoUrl =
+    item.source === 'user'
+      ? `/uploads/decompose/${item.id}/video.mp4`
+      : `/samples/${item.id}/video.mp4`
+
   return (
     <div
       className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm px-4 py-8"
@@ -350,7 +358,7 @@ function PreviewModal({ item, onClose }: { item: LibraryItem; onClose: () => voi
         </div>
         <video
           key={item.id}
-          src={`/samples/${item.id}/video.mp4`}
+          src={videoUrl}
           controls
           autoPlay
           className="aspect-video w-full bg-black"

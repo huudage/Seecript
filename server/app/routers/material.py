@@ -361,17 +361,39 @@ def _uploads_root() -> Path:
     return root
 
 
-def _clone_one_file(src_url: str, src_root: Path, dst_dir: Path, new_id: str, suffix: str) -> Optional[str]:
-    """src_url 形如 /uploads/__system__/<id>_<file.mp4>；按文件名找回源文件再复制到目标项目。
+def _resolve_local_source(src_url: str) -> Optional[Path]:
+    """把 file_url / thumbnail_url 反解成本机绝对路径——克隆系统素材时找源文件用。
 
+    支持两种 URL：
+    - `/uploads/<project>/<file>` → `var/uploads/<project>/<file>`（普通用户上传）
+    - `/samples/<sample_id>/<file>` → `server/samples/<sample_id>/<file>`（启动 seed 出的内置爆款）
+
+    其它形态（外网 CDN、绝对路径等）一律返回 None；调用方按 None 跳过。
+    """
+    if not src_url:
+        return None
+    settings = get_settings()
+    server_root = settings.log_dir.parent
+    if src_url.startswith("/uploads/"):
+        return server_root / "var" / src_url.lstrip("/")
+    if src_url.startswith("/samples/"):
+        return server_root / src_url.lstrip("/")
+    return None
+
+
+def _clone_one_file(src_url: str, src_root: Path, dst_dir: Path, new_id: str, suffix: str) -> Optional[str]:
+    """src_url 形如 /uploads/__system__/<id>_<file.mp4> 或 /samples/<id>/video.mp4；
+    解析回本机源路径再复制到目标项目目录。
+
+    src_root 仅作 fallback——优先按 URL 自身解析；解析失败才用 src_root + basename。
     返回新文件的 file_url（同 /uploads/<dst_project>/<new_id>_xxx）；找不到源时返 None。
     """
     if not src_url:
         return None
     name = Path(src_url).name
-    src_path = src_root / name
+    src_path = _resolve_local_source(src_url) or (src_root / name)
     if not src_path.exists():
-        log.warning("[material/clone] missing source file: %s", src_path)
+        log.warning("[material/clone] missing source file: %s (url=%s)", src_path, src_url)
         return None
     dst_name = f"{new_id}_{suffix}" if suffix else f"{new_id}_{name}"
     dst_path = dst_dir / dst_name
@@ -426,9 +448,9 @@ async def clone_from_system(req: MaterialCloneFromSystemRequest) -> MaterialClon
             if src.thumbnail_url == src.file_url:
                 new_thumb_url = new_file_url
             else:
-                # 视频缩略图通常以 _thumb.jpg 结尾；直接按文件名复制
-                thumb_name = Path(src.thumbnail_url).name
-                thumb_src = src_dir / thumb_name
+                # 视频缩略图通常以 _thumb.jpg 结尾；先按 URL 反解（兼容 /samples/.../cover.jpg），
+                # 解析失败回退到 src_dir + basename。
+                thumb_src = _resolve_local_source(src.thumbnail_url) or (src_dir / Path(src.thumbnail_url).name)
                 if thumb_src.exists():
                     thumb_dst = dst_dir / f"{new_id}_thumb.jpg"
                     try:

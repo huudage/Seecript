@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { Link, useNavigate } from 'react-router-dom'
+import { Link, useNavigate, useSearchParams } from 'react-router-dom'
 import { LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid, ReferenceLine, ReferenceDot } from 'recharts'
 
 import { api, ApiError } from '@/api/client'
@@ -86,6 +86,19 @@ export default function DecomposePage() {
     [projects, currentProjectId],
   )
   const navigate = useNavigate()
+  const [searchParams] = useSearchParams()
+
+  // URL → store 同步：浏览器刷新 / 分享链接 / 后退 时，URL 上的 ?sample=X 必须
+  // 把会话 selectedSampleIds 拉到位——session 是内存态（无 persist），刷新后
+  // selectedSampleIds=[] 但 URL 仍是 ?sample=X，会出现「页面显示别的视频」的 bug。
+  // 来源推断：sample-*/sys-* 是系统样例，user-* 是用户上传——URL 前缀够用。
+  useEffect(() => {
+    const urlSample = searchParams.get('sample')
+    if (!urlSample) return
+    if (selectedSampleIds[0] === urlSample) return
+    const inferredSource: 'system' | 'user' = urlSample.startsWith('user-') ? 'user' : 'system'
+    selectSamples([urlSample], [], undefined, inferredSource)
+  }, [searchParams, selectedSampleIds, selectSamples])
 
   const [progress, setProgress] = useState<{ step: string; percent: number; note?: string }>({
     step: 'idle',

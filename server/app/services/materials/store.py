@@ -236,3 +236,83 @@ class GapStore:
 
 material_store = MaterialStore()
 gap_store = GapStore()
+
+
+# === 系统素材库 (__system__) 启动 seed ===
+# 用户可以从「系统素材库」picker 选共享视频克隆到自己的项目。这个 picker 调
+# `GET /material?project_id=__system__`——但仓库里 `__system__` 的 MaterialStore
+# 一直是空的（没人手动 upload 过），导致 picker 永远空。
+#
+# 修复：启动时自动从 `server/samples/sample-*` 目录扫出已有的内置爆款视频，
+# 给 `__system__` 落库一份占位 Material。每个 sample 一条 Material，使用：
+# - 确定性 material_id `sys_<sample_id>`，所以重复启动不会重复 seed
+# - file_url=`/samples/<id>/video.mp4`（已经被 main.py 挂载为 StaticFiles，浏览器可读）
+# - thumbnail_url=`/samples/<id>/cover.jpg`
+# - origin="system_clone"（最贴近现有语义；前端 originLabel "系统"）
+# - preprocess_status="skipped"（picker 不需要 shots；clone 后用户自己跑 decompose）
+def _seed_system_library() -> None:
+    """启动钩子：把 server/samples/sample-* 注入 __system__ 项目，让 picker 不再空空。
+
+    幂等：以 sys_<sample_id> 为 material_id 查重；已有就跳过该条。
+    samples 目录不存在或没匹配子目录时是 no-op，不报错。
+    """
+    from ...schemas import Material  # 局部 import 避免循环
+
+    samples_root = _var_root().parent / "samples"
+    if not samples_root.is_dir():
+        log.info("[materials/seed] samples dir missing, skip __system__ seed: %s", samples_root)
+        return
+
+    # 友好标题：与 routers/library.py:_SYSTEM_LIBRARY 保持一致；扫到的其它目录用
+    # 目录名兜底（运维自己丢进去的爆款样例也能被 picker 看到）。
+    titles: dict[str, tuple[str, list[str]]] = {
+        "sample-marketing-01": ("营销样例｜痛点开场+产品演示+行动引导", ["营销", "卖点演示", "行动引导"]),
+        "sample-vlog-01": ("剪辑样例｜Vlog 节奏 · 氛围铺垫到高潮收尾", ["剪辑", "Vlog", "氛围铺垫"]),
+        "sample-motion-01": ("Motion Graph 样例｜标题入场+信息铺陈+爆点落版", ["Motion Graph", "标题入场", "信息铺陈"]),
+    }
+
+    existing = {m.material_id for m in material_store.list("__system__")}
+    fresh: list[Material] = []
+    for child in sorted(samples_root.iterdir()):
+        if not child.is_dir():
+            continue
+        sample_id = child.name
+        # 只 seed 共享类目录：内置爆款 sample-* 与运维上传的 sys-*。
+        # user-* 是用户私人样例（decompose.py 注释明确「decompose 决不会碰内置目录」），
+        # 不能跨用户共享，否则违反素材隔离原则。
+        if not (sample_id.startswith("sample-") or sample_id.startswith("sys-")):
+            continue
+        video_path = child / "video.mp4"
+        cover_path = child / "cover.jpg"
+        if not video_path.is_file():
+            continue
+        mid = f"sys_{sample_id}"
+        if mid in existing:
+            continue
+        title, tags = titles.get(sample_id, (sample_id, ["系统样例"]))
+        fresh.append(Material(
+            material_id=mid,
+            filename=f"{sample_id}.mp4",
+            media_type="video",
+            file_url=f"/samples/{sample_id}/video.mp4",
+            thumbnail_url=f"/samples/{sample_id}/cover.jpg" if cover_path.is_file() else None,
+            tags=tags,
+            subjects=[],
+            recommended_section="development",
+            highlight_score=0.7,
+            highlight_reason=title,
+            origin="system_clone",
+            preprocess_status="skipped",
+            sort_order=len(existing) + len(fresh),
+        ))
+    if fresh:
+        material_store.put("__system__", fresh)
+        log.info("[materials/seed] __system__ seeded %d sample(s): %s",
+                 len(fresh), [m.material_id for m in fresh])
+
+
+# 启动时自动 seed。__init__.py 在 import store 时执行；幂等，所以多次启动安全。
+try:
+    _seed_system_library()
+except Exception as exc:  # noqa: BLE001
+    log.warning("[materials/seed] failed: %s", exc)
