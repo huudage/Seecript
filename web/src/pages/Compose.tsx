@@ -799,26 +799,53 @@ export default function ComposePage() {
       }
       setError(null)
       setUploading(true)
+      // 乐观占位：图片/视频上传 + LLM 打标可能耗时 30s+。立刻插入占位 Material 让用户看到
+      // 「正在处理 N 条」，否则在响应回来前 grid 像没动。
+      const fileArr = Array.from(files)
+      const stamp = Date.now()
+      const pendingIds = fileArr.map((_, i) => `__pending_${stamp}_${i}`)
+      const placeholders: Material[] = fileArr.map((f, i) => ({
+        material_id: pendingIds[i],
+        filename: f.name,
+        media_type: f.type.startsWith('video/') ? 'video' : f.type.startsWith('audio/') ? 'audio' : 'image',
+        tags: [],
+        subjects: [],
+        highlight_score: 0,
+        sort_order: 9_000_000 + i,
+        preprocess_status: 'running',
+      }))
+      appendMaterials(placeholders)
       try {
         const fd = new FormData()
-        Array.from(files).forEach((f) => fd.append('files', f))
+        fileArr.forEach((f) => fd.append('files', f))
         // project_id 是后端唯一隔离键；session_id 字段保留为别名（已等于 project_id）
         fd.append('project_id', currentProjectId)
         fd.append('video_type', videoType)
         const resp = await api.post<MaterialUploadResponse>('/material/upload', fd)
         setSession(resp.session_id)
+        // 移除占位，再以服务端返回为准重新载入；防御性 GET 兜底——保证服务端真值与
+        // grid 一致（避免 sort_order 错位 / 项目切换 / 多 tab 并发上传时漏条）。
+        for (const id of pendingIds) removeMaterial(id)
         appendMaterials(resp.materials)
+        try {
+          const fresh = await api.get<Material[]>(`/material?project_id=${encodeURIComponent(currentProjectId)}`)
+          setMaterials(fresh)
+        } catch {
+          /* GET 失败不阻断；上面 appendMaterials 已经把新素材插进去了 */
+        }
         // step 2 中上传 = 用户希望立刻把新素材纳入排列；自动跑一次 plan/build + gap/detect 重新计算缺口
         if (plan && runAnalyzeRef.current) {
           void runAnalyzeRef.current(fills)
         }
       } catch (err) {
+        // 失败：清掉占位
+        for (const id of pendingIds) removeMaterial(id)
         setError(err instanceof Error ? err.message : '上传失败')
       } finally {
         setUploading(false)
       }
     },
-    [appendMaterials, currentProjectId, fills, plan, setSession, videoType],
+    [appendMaterials, currentProjectId, fills, plan, removeMaterial, setMaterials, setSession, videoType],
   )
 
   /* -------------------- 智能分析（plan/build + gap/detect） -------------------- */
@@ -1643,7 +1670,12 @@ export default function ComposePage() {
         multiple
         hidden
         accept="video/*,image/*,audio/*"
-        onChange={(e) => void handlePickFiles(e.target.files)}
+        onChange={(e) => {
+          const files = e.target.files
+          // 清掉 value 让用户能立刻再选同一文件——浏览器在 value 不变时不会再次 fire onChange
+          e.target.value = ''
+          void handlePickFiles(files)
+        }}
       />
 
       {/* stage-15: ReferencePicker —— 从资产库挑 1-2 个 (sample, slot) 作为结构参考 */}

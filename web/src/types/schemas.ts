@@ -1654,6 +1654,12 @@ export interface ClarifyRoundProgress {
   /** outline_ready 阶段：LLM 从 brief/outline.content 抽出的具象名词（≤6 个），
    *  与 VLM detected_subjects 平行——前端分两组 chip 显示让用户检查。 */
   brief_subjects?: string[]
+  /** outline_ready 阶段：detected_subjects 经意图清洗后保留的子集——只这些会被
+   *  机械写进 outline.content 与下游 plan.subject_anchors。 */
+  relevant_detected_subjects?: string[]
+  /** outline_ready 阶段：detected_subjects 里被丢弃的陪衬物（耳钉/美甲/构图词等）。
+   *  前端用删除线灰显，让用户能看到 LLM 帮他过滤了哪些；不会进 content。 */
+  dropped_detected_subjects?: string[]
 }
 
 export interface ClarifyFinalizeRequest {

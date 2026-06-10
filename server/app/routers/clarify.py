@@ -117,6 +117,10 @@ async def clarify_round(p: str = Query(..., description="base64(JSON) 的 Clarif
                             "outline": ev.outline.model_dump(),
                             "thinking": ev.thinking,
                             "brief_subjects": ev.brief_subjects,
+                            # detected_subjects 经意图清洗后的子集 + 被丢弃的陪衬物。
+                            # 前端把 dropped 用删除线灰显出来，让用户看到 LLM 帮他过滤了哪些。
+                            "relevant_detected_subjects": ev.relevant_detected_subjects,
+                            "dropped_detected_subjects": ev.dropped_detected_subjects,
                         },
                     })
                 elif isinstance(ev, RoundDone):

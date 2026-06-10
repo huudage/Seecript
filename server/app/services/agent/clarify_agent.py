@@ -27,7 +27,7 @@ from __future__ import annotations
 import json
 import logging
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, AsyncIterator, Optional
 
 from pydantic import BaseModel
@@ -47,9 +47,24 @@ _CLARIFY_SYSTEM = (
     "- 用户没明说的字段，**根据 INITIAL_BRIEF 做最合理的推测**填入，并在 question 里说明你假设了什么；\n"
     "- 仅当字段在已有信息里完全无依据、且推测会误导时才允许 null；topic 必须永远非空。\n"
     "- 用户在后续轮次给出补充/纠正后，要把对应字段更新为新值。\n"
-    "- 如果用户输入里出现了 DETECTED_SUBJECTS 段（用户已上传素材里 VLM 识别到的物体/场景），\n"
-    "  你**必须**把这些对象在 outline.content 里点名出现（用顿号串联），缺的就拼上；\n"
-    "  比如 DETECTED_SUBJECTS 含「纸巾」，content 必须出现「纸巾」二字。\n\n"
+    "- 用户意图（INITIAL_BRIEF + TRANSCRIPT）权重最大；DETECTED_SUBJECTS 只是辅助参考，"
+    "  与意图冲突的 detected 一律丢弃，不要硬塞进 outline。\n\n"
+    "DETECTED_SUBJECTS 处理规则（重要）：\n"
+    "- DETECTED_SUBJECTS 是用户已上传素材里 VLM 自动识别到的物体/场景，**可能掺杂大量与脚本无关的陪衬**——"
+    "  典型脏数据：模特佩戴的耳钉/项链/手表、美甲、发型、妆容、衣着、构图词（近景特写/中景）、"
+    "  光线词（暖调光线/冷色调）、品类元词（美食展示/产品展示/美食种草）、活动名（探店/试吃）等。\n"
+    "- 你必须在输出里给 `relevant_detected_subjects` 字段——是 DETECTED_SUBJECTS 的**子集**——"
+    "  **只保留**与本次脚本主题/产品/核心场景紧密相关的对象：\n"
+    "    ✅ 保留：产品本体（干脆面饼/红色包装袋）、产品使用场景（居家室内/试吃工位）、人物的核心扮演角色（试吃女生）；\n"
+    "    ❌ 丢弃：与脚本无关的随身饰品/妆容/穿搭（耳钉/项链/美甲/卷发/发型）、构图/光线/营销 meta 词、"
+    "       与产品无关的环境陪衬（背景的盆栽除非 brief 强调植物）。\n"
+    "- 仅 `relevant_detected_subjects` 中的对象会被强制写进 outline.content（系统兜底机制）；"
+    "  未入选的不会出现在最终脚本里。\n"
+    "- 若 DETECTED_SUBJECTS 全是陪衬/无关物，relevant_detected_subjects 给空数组 []；"
+    "  宁可空，也不要把无关物塞进 content 害下游 plan 给它单独排镜头。\n\n"
+    "outline.content 撰写规则：\n"
+    "- 必须把 relevant_detected_subjects 里的对象都点名出现（用顿号串联），缺的就拼上；\n"
+    "- 不要点名 dropped 的陪衬物——这是用户绝对不想强调的。\n\n"
     "question 的语义（v3 调整）：\n"
     "- 不再是「让用户作答」的硬追问，而是「让用户检查」的提示——告诉用户你做了哪些假设，"
     "或哪个字段你还没把握，引导用户决定要不要补充。\n"
@@ -66,6 +81,7 @@ _CLARIFY_SYSTEM = (
     '    "tone":     "<语气风格：温柔/高能/沙雕/严肃 等>"\n'
     "  },\n"
     '  "brief_subjects": ["<从 INITIAL_BRIEF + outline.content 抽出的具象名词，≤6 个>"],\n'
+    '  "relevant_detected_subjects": ["<DETECTED_SUBJECTS 的子集；只保留与脚本主题强相关的对象；可为 []>"],\n'
     '  "question": "<向用户求证你做的假设；够清楚或最终轮请给 null；≤40 字>"\n'
     "}\n\n"
     "brief_subjects 抽取规则（核心）：\n"
@@ -78,7 +94,7 @@ _CLARIFY_SYSTEM = (
     "  例 4：「咖啡探店」→ [\"拿铁\", \"咖啡豆\", \"手冲壶\", \"吧台\"]，不要给 [\"咖啡\", \"探店\", \"饮品\"]。\n"
     "- 严禁抽：感受/情绪/形容词/动作/上位词/品类名/活动名/营销词（「氛围」「干净」「使用」「日用品」「好物」「品质」「文物」「展览」「探店」均不要）。\n"
     "- 优先 2–6 个字的实词；超过 12 字的短语丢弃。\n"
-    "- 与 DETECTED_SUBJECTS 去重——已在 DETECTED_SUBJECTS 出现的不要重复。\n"
+    "- 与 relevant_detected_subjects 去重——已在那边出现的不要重复。\n"
     "- 若 brief 太抽象、反推不到具体物体，给空数组 []，不要硬凑、不要回退到上位词。\n\n"
     "重要约束：\n"
     "- 输出**纯 JSON**，禁止三重反引号或任何前后缀。\n"
@@ -107,11 +123,17 @@ class OutlineReady:
 
     brief_subjects 是 LLM 从 INITIAL_BRIEF + outline.content 自抽的具象名词（≤6 个），
     与 detected_subjects（VLM 素材路径）平行，前端分两组显示让用户检查。
+
+    relevant_detected_subjects 是 LLM 用「意图最大权重」从 DETECTED_SUBJECTS 里挑出的
+    与脚本主题强相关的子集；dropped_detected_subjects 是被丢弃的陪衬物（耳钉/美甲/构图词等）——
+    前端可以分两组渲染让用户检查/翻案，下游 _enforce_subjects_in_content 只强制 relevant 部分。
     """
 
     outline: ClarifyOutline
     thinking: str
     brief_subjects: list[str]
+    relevant_detected_subjects: list[str] = field(default_factory=list)
+    dropped_detected_subjects: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -304,6 +326,81 @@ def _coerce_brief_subjects(raw: Any, detected: list[str] | None) -> list[str]:
     return out
 
 
+# 素材识别清洗：构图/光线/营销 meta 词从来不该当 subject，无论 LLM 是否漏过滤都直接 ban。
+# 与 _SUBJECT_BLACKLIST 互补——那个偏抽象上位词，这个偏视觉/营销 meta。
+_DETECTED_META_BLACKLIST: frozenset[str] = frozenset({
+    # 构图
+    "近景特写", "中景特写", "远景特写", "近景", "中景", "远景", "特写", "全景",
+    "俯拍", "仰拍", "平视", "侧拍", "正拍",
+    # 光线
+    "暖调光线", "冷色调光线", "暖调柔光", "冷色光", "顺光", "逆光", "自然光", "侧光",
+    "暖色调", "冷色调", "高对比", "低对比",
+    # 营销 meta
+    "美食展示", "产品展示", "美食种草", "好物种草", "高颜值", "高级感",
+    # 活动名
+    "生活化试吃", "试吃", "探店", "测评", "教程", "教学",
+    # 类别
+    "美食", "产品", "饮品", "穿搭", "护肤", "数码",
+})
+
+
+def _coerce_relevant_detected_subjects(
+    raw: Any, detected: list[str] | None
+) -> tuple[list[str], list[str]]:
+    """切分 detected_subjects 为 (relevant, dropped)。
+
+    LLM 的 relevant_detected_subjects 必须是 detected_subjects 的子集——任何 LLM 编造出
+    detected 里没有的项都丢弃（防止 LLM 从 brief 反向脑补污染素材标签）。
+
+    清洗规则：
+    - relevant 必须是 detected 子集（精确匹配；strip 后比较）
+    - 自动剔除 _DETECTED_META_BLACKLIST 里的视觉/营销 meta 词（即便 LLM 失误判为相关）
+    - 自动剔除明显的穿搭/饰品/妆容关键词——任何含「耳钉/项链/手表/美甲/发型」的项都丢弃
+    - dropped = detected - relevant
+    返回 (relevant_list, dropped_list)，dropped 用于前端展示。
+    """
+    detected_clean = [s.strip() for s in (detected or []) if s and s.strip()]
+    if not detected_clean:
+        return [], []
+    detected_set = set(detected_clean)
+
+    if isinstance(raw, str):
+        candidates = [x.strip() for x in re.split(r"[、,，\n;；]", raw) if x.strip()]
+    elif isinstance(raw, (list, tuple)):
+        candidates = [str(x).strip() for x in raw if str(x).strip()]
+    else:
+        candidates = []
+
+    # 强制黑名单：饰品 / 妆容 / 穿搭 / 视觉 meta —— 即便 LLM 留了也强行剔除
+    _ACCESSORY_HINTS = ("耳钉", "耳环", "项链", "手镯", "手表", "戒指", "美甲", "发型",
+                        "卷发", "直发", "短发", "长发", "假发", "口红", "眼妆", "妆容",
+                        "穿搭", "服装", "T恤", "卫衣", "外套", "毛衣")
+
+    def _is_blacklisted(item: str) -> bool:
+        if item in _DETECTED_META_BLACKLIST:
+            return True
+        for hint in _ACCESSORY_HINTS:
+            if hint in item:
+                return True
+        return False
+
+    relevant: list[str] = []
+    seen: set[str] = set()
+    for c in candidates:
+        if c not in detected_set:
+            continue  # LLM 编造的不收
+        if _is_blacklisted(c):
+            continue
+        if c in seen:
+            continue
+        seen.add(c)
+        relevant.append(c)
+
+    relevant_set = set(relevant)
+    dropped = [s for s in detected_clean if s not in relevant_set]
+    return relevant, dropped
+
+
 async def run_clarify_round(
     *,
     initial_brief: str,
@@ -375,20 +472,36 @@ async def run_clarify_round(
         thinking = ""
         question_raw: Any = None
         brief_subjects_raw: Any = None
+        relevant_raw: Any = None
     else:
         outline = _coerce_outline(parsed.get("outline") or {})
         thinking = str(parsed.get("thinking") or "").strip()
         question_raw = parsed.get("question")
         brief_subjects_raw = parsed.get("brief_subjects")
+        relevant_raw = parsed.get("relevant_detected_subjects")
+
+    # 用户意图（INITIAL_BRIEF + TRANSCRIPT）权重最大：从 detected_subjects 里挑出
+    # 真正与脚本主题相关的子集，丢掉陪衬物（耳钉/美甲/构图词等）。即便 LLM 漏过滤，
+    # _coerce_relevant_detected_subjects 里的强制黑名单也会兜底。
+    relevant_detected, dropped_detected = _coerce_relevant_detected_subjects(
+        relevant_raw, detected_subjects
+    )
 
     # detected_subjects 兜底：LLM 经常会忘把这些对象点名进 content。在 yield 前
     # 机械补回去——把缺的对象用顿号串拼到 content 末尾，括号注「（涉及 X、Y、Z）」。
-    # 与系统提示是双保险：用户上传纸巾 → content 一定能看到「纸巾」二字。
-    if detected_subjects:
-        outline = _enforce_subjects_in_content(outline, detected_subjects)
+    # 关键：只强制 relevant 子集进 content，dropped 的陪衬物绝不能进——否则下游
+    # plan_agent.extract_subject_anchors 又会把它们拉成独立分镜（耳钉单镜头 bug）。
+    if relevant_detected:
+        outline = _enforce_subjects_in_content(outline, relevant_detected)
 
     brief_subjects = _coerce_brief_subjects(brief_subjects_raw, detected_subjects)
-    yield OutlineReady(outline=outline, thinking=thinking, brief_subjects=brief_subjects)
+    yield OutlineReady(
+        outline=outline,
+        thinking=thinking,
+        brief_subjects=brief_subjects,
+        relevant_detected_subjects=relevant_detected,
+        dropped_detected_subjects=dropped_detected,
+    )
 
     question_out: Optional[str] = None if is_final else _coerce_question(question_raw)
     yield RoundDone(outline=outline, question=question_out, is_final=is_final)

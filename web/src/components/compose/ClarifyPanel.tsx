@@ -127,6 +127,11 @@ export function ClarifyPanel({
   const [briefSubjectsDirty, setBriefSubjectsDirty] = useState(false)
   /** 末尾添加输入框 draft */
   const [subjectDraft, setSubjectDraft] = useState('')
+  /** 由意图澄清清洗后留下的素材识别子集（≤detectedSubjects 全集）；handleAdopt 时只把这部分
+   *  union 进 outline.content，避免「耳钉/美甲」这类陪衬被当主体硬塞进段落分镜。 */
+  const [relevantDetected, setRelevantDetected] = useState<string[]>([])
+  /** 被意图清洗丢弃的素材识别项；UI 用删除线灰显告诉用户「这些 AI 已替你忽略」。 */
+  const [droppedDetected, setDroppedDetected] = useState<string[]>([])
   const sseRef = useRef<SSEHandle | null>(null)
 
   const round = transcript.length + 1
@@ -150,6 +155,8 @@ export function ClarifyPanel({
     setBriefSubjects([])
     setBriefSubjectsDirty(false)
     setSubjectDraft('')
+    setRelevantDetected([])
+    setDroppedDetected([])
   }
 
   /** chip 删除：reuse 后 mark dirty 防止下轮 LLM 覆盖。 */
@@ -212,6 +219,14 @@ export function ClarifyPanel({
               // 用户没动过 chip 才允许 LLM 覆盖；编辑过的尊重用户判断。
               setBriefSubjects(ev.payload.brief_subjects.slice(0, 6))
             }
+            // 意图清洗后的素材识别——拆成 relevant / dropped 两组。后端会强制把
+            // 黑名单（耳钉/美甲/构图词等）剔到 dropped 里；前端直接信任。
+            if (Array.isArray(ev.payload.relevant_detected_subjects)) {
+              setRelevantDetected(ev.payload.relevant_detected_subjects)
+            }
+            if (Array.isArray(ev.payload.dropped_detected_subjects)) {
+              setDroppedDetected(ev.payload.dropped_detected_subjects)
+            }
             if (ev.payload.thinking) {
               setStreaming((prev) =>
                 prev ? prev + '\n' + (ev.payload!.thinking || '') : ev.payload!.thinking || '',
@@ -267,13 +282,20 @@ export function ClarifyPanel({
       setPhase('error')
       return
     }
-    // 把用户编辑过的 briefSubjects + VLM detectedSubjects 合并，机械写进 outline.content
+    // 把用户编辑过的 briefSubjects + 意图清洗后的相关素材识别合并，机械写进 outline.content
     // 末尾「（涉及 X、Y、Z）」——保证下游 adapt / decompose / aigc prompt 看得到具体物体
     // （后端 brief 文本是唯一传输通道，所以必须落地到 content）。
+    // **关键**：只 union relevantDetected，不要把全集 detectedSubjects 塞进去——
+    // 否则被清洗丢弃的耳钉/美甲会通过 content 反向污染下游 plan.subject_anchors。
+    // relevantDetected 兜底：若 LLM/SSE 还没回填（异常路径），回退到全集，确保素材不丢。
+    const detectedToUnion =
+      relevantDetected.length > 0 || droppedDetected.length > 0
+        ? relevantDetected
+        : detectedSubjects ?? []
     const unionSubjects = Array.from(
       new Set([
         ...briefSubjects.map((s) => s.trim()).filter(Boolean),
-        ...(detectedSubjects ?? []).map((s) => s.trim()).filter(Boolean),
+        ...detectedToUnion.map((s) => s.trim()).filter(Boolean),
       ]),
     )
     let mergedOutline = outline
@@ -439,17 +461,43 @@ export function ClarifyPanel({
         </div>
         <div className="rounded-md border border-dashed border-border bg-card/50 px-2 py-1.5 text-[10px]">
           {detectedSubjects.length > 0 ? (
-            <div className="flex flex-wrap items-center gap-1">
-              <span className="text-muted-foreground">素材识别 {detectedSubjects.length}：</span>
-              {detectedSubjects.map((s) => (
-                <span
-                  key={`m-${s}`}
-                  className="rounded bg-sky-500/10 px-1.5 py-0.5 text-sky-700 dark:text-sky-300"
-                >
-                  {s}
+            <div className="space-y-1">
+              {/* 保留组：与本次脚本主题相关的——会进 content */}
+              <div className="flex flex-wrap items-center gap-1">
+                <span className="text-muted-foreground">
+                  素材识别 · 保留 {(relevantDetected.length || detectedSubjects.length)}：
                 </span>
-              ))}
-              <span className="text-muted-foreground">· 一定会出现在 content</span>
+                {(relevantDetected.length > 0 || droppedDetected.length > 0
+                  ? relevantDetected
+                  : detectedSubjects
+                ).map((s) => (
+                  <span
+                    key={`m-keep-${s}`}
+                    className="rounded bg-sky-500/10 px-1.5 py-0.5 text-sky-700 dark:text-sky-300"
+                  >
+                    {s}
+                  </span>
+                ))}
+                <span className="text-muted-foreground">· 一定会出现在 content</span>
+              </div>
+              {/* 丢弃组：陪衬物（耳钉/美甲/构图词等）——已被意图清洗剔除，不进 content */}
+              {droppedDetected.length > 0 && (
+                <div className="flex flex-wrap items-center gap-1">
+                  <span className="text-muted-foreground">
+                    AI 已忽略 {droppedDetected.length}：
+                  </span>
+                  {droppedDetected.map((s) => (
+                    <span
+                      key={`m-drop-${s}`}
+                      className="rounded bg-muted/60 px-1.5 py-0.5 text-muted-foreground line-through opacity-70"
+                      title="与脚本主题无关，已被意图清洗剔除"
+                    >
+                      {s}
+                    </span>
+                  ))}
+                  <span className="text-muted-foreground">· 不会进段落分镜</span>
+                </div>
+              )}
             </div>
           ) : (
             <span className="text-muted-foreground">
