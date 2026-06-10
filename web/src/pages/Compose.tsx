@@ -1127,35 +1127,33 @@ export default function ComposePage() {
   }, [plan, setPlanAndPush])
 
   /**
-   * 进入 step3 时的一次性筹备：
-   * 1. 综合段长 + 内容重写每段口播（禁复述凑时长）
-   * 2. 若开了配音，自动一键 TTS 全片
-   * 3. 自动转场推荐（仅写 scene.transition_in，不动其余包装项）
+   * 进入 step3 时的一次性筹备：所有耗时操作必须在切换到 step3 之前跑完，
+   * 否则用户进了 step3 还要干等 trackBusy 解锁才能操作（用户报障：转场生成卡很久）。
    *
-   * 审计修 B2：原本 setStep3Unlocked(true) + setActiveStep(3) 在 try 之前就执行——
-   * 若 regenerateNarrations 抛错，用户已经被推到 step3 看到没口播的轨。
-   * 改为：先在 try 内跑完关键路径（regenerateNarrations 是必须项），
-   * 再 setStep3Unlocked(true) + setActiveStep(3)。TTS / 转场失败仍走子 try-catch 不阻塞。
+   * 流程：
+   * 1. 综合段长 + 内容重写每段口播（关键路径，失败不进 step3）
+   * 2. 若开了配音，自动一键 TTS 全片（失败只 setError 不阻塞）
+   * 3. 自动转场推荐 + apply（失败只 setError 不阻塞）
+   * 4. 全部跑完才 setStep3Unlocked(true) + setActiveStep(3) + 释放 trackBusy
    */
   const handleEnterStep3 = useCallback(async () => {
     if (!plan) return
     setTrackBusy(true)
     setError(null)
+    let landedOk = false
     try {
       // 1) 重写口播（关键路径：失败就不进 step3）
       const ren = await regenerateNarrations(plan.plan_id)
       setPlanAndPush(ren.plan)
-      // 关键路径成功 → 解锁 step3 并切过去；后续 TTS / 转场失败仅设 error 不阻塞
-      setStep3Unlocked(true)
-      setActiveStep(3)
-      // 2) 自动 TTS（若启用了配音 + 有更新的段落）
+      landedOk = true
+
+      // 2) 自动 TTS（若启用了配音 + 有更新的段落）—— 必须 await 完，
+      // 否则用户进 step3 后口播条还在跑、refetchPlan 把当前 plan 覆盖回去。
       if (ren.plan.settings.voiceover_enabled && ren.updated_scene_ids.length > 0) {
         try {
           const tts = await synthesizeAll(plan.plan_id)
-          if (tts.failures.length === 0) {
-            await refetchPlan(plan.plan_id)
-          } else {
-            await refetchPlan(plan.plan_id)
+          await refetchPlan(plan.plan_id)
+          if (tts.failures.length > 0) {
             setError(
               `${tts.synthesized.length} 段已合成；${tts.failures.length} 段失败，可在口播轨手动重试`,
             )
@@ -1164,10 +1162,9 @@ export default function ComposePage() {
           setError(ttsErr instanceof Error ? `配音失败：${ttsErr.message}` : '配音失败')
         }
       }
-      // 3) 自动转场推荐：进 step3 即给每个段切换点挑首选样式落到 scene.transition_in。
-      //    之前关掉的「自动整套包装」与此不同——这里只动转场，不动 title_bar/sticker/cover。
-      //    apply 时 title_bar_ids/sticker_ids/cover_id 全空，packaging_track 重建后只剩字幕（受 settings.subtitle_enabled 控制），
-      //    与刚进 step3 时的空白状态一致；用户后续手动加包装组件不会被 wipe。
+
+      // 3) 自动转场推荐：必须 await recommend + apply 全跑完，
+      //    否则用户进 step3 内容轨上转场徽章还没刷新，点了也无效。
       if (plan.main_track.length > 1) {
         try {
           const recBody: PackagingRecommendRequest = { plan_id: plan.plan_id }
@@ -1190,13 +1187,18 @@ export default function ComposePage() {
             setPlanAndPush(fresh)
           }
         } catch (transErr) {
-          // 转场推荐失败不阻塞——用户在内容轨缝隙仍可手动点徽章选择
           console.warn('[step3] 自动转场推荐失败，可手动在内容轨缝隙切换样式', transErr)
         }
       }
     } catch (err) {
       setError(err instanceof Error ? err.message : '进入 step3 准备失败')
     } finally {
+      // 所有筹备跑完（成功/失败都算）→ 才切换并释放 busy，
+      // 用户落到 step3 的瞬间转场徽章、口播条、字幕都已就绪。
+      if (landedOk) {
+        setStep3Unlocked(true)
+        setActiveStep(3)
+      }
       setTrackBusy(false)
     }
   }, [plan, refetchPlan, setPlanAndPush])
@@ -2218,7 +2220,7 @@ export default function ComposePage() {
                   : pendingGapsCount > 0
                     ? `还有 ${pendingGapsCount} 段缺口待补 · 补齐后进入第 3 步`
                     : trackBusy
-                      ? '准备中…（重写口播 / 配音 / 包装推荐）'
+                      ? '准备中…（重写口播 / 配音 / 转场推荐）'
                       : '进入第 3 步 → 解锁口播 / 包装 / BGM 与实时预览'}
             </button>
             {pendingGapsCount === 0 && mainTrackUnfilledCount === 0 && (

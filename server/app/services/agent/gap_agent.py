@@ -1296,6 +1296,52 @@ async def _fill_with_seedream_image(gap: Gap, params: dict[str, Any]) -> FillRes
         multi_prompts = [base_prompt for _ in range(n_shots)]
 
     started = time.time()
+    # 路径 A：用户已经在 spec 阶段确认了参考图（imageSlots 里 Seedream 出过/手动传过）
+    # → 渲染时必须直接用这批图，不能再过一次 Seedream 重生。否则用户看到的
+    # "AI 生图再渲染" 结果和之前确认的参考图不一致（用户报障：渲染用图不是参考图）。
+    ref_images_raw = params.get("reference_images")
+    if isinstance(ref_images_raw, list) and ref_images_raw:
+        ref_urls = [str(u).strip() for u in ref_images_raw if str(u).strip()]
+    else:
+        ref_urls = []
+    if ref_urls:
+        log.info(
+            "[gap-fill] %s seedream skip: 用 %d 张参考图直接落地（reference_images 优先于重生）",
+            gap.gap_id, len(ref_urls),
+        )
+        persisted_urls_from_ref: list[str] = []
+        for idx, ref_url in enumerate(ref_urls[:n_shots] if n_shots > 0 else ref_urls):
+            suffix_id = gap.gap_id if idx == 0 else f"{gap.gap_id}-shot{idx+1}"
+            # 已经是同源 /aigc-images/... 的就保留；外站 CDN 再 persist 一次
+            if ref_url.startswith("/aigc-images/") or ref_url.startswith("/uploads/"):
+                persisted_urls_from_ref.append(ref_url)
+            else:
+                persisted = await _persist_aigc_image(ref_url, suffix_id)
+                persisted_urls_from_ref.append(persisted or ref_url)
+        elapsed = int(time.time() - started)
+        first_url = persisted_urls_from_ref[0] if persisted_urls_from_ref else ""
+        user_override = params.get("animation_spec") if isinstance(params.get("animation_spec"), dict) else None
+        try:
+            animation_spec_obj = _suggest_animation_spec(
+                current_section, len(persisted_urls_from_ref), user_override,
+            )
+            if len(persisted_urls_from_ref) > 1:
+                animation_spec_obj = animation_spec_obj.model_copy(update={"image_urls": persisted_urls_from_ref})
+        except Exception as exc:  # noqa: BLE001
+            log.warning("[gap-fill] %s animation_spec 推荐失败 → 走 ffmpeg 静帧: %s", gap.gap_id, exc)
+            animation_spec_obj = None
+        return FillResult(
+            gap_id=gap.gap_id, action="aigc_image",
+            new_material_id=f"img-{uuid.uuid4().hex[:8]}",
+            status="ok",
+            aigc_image_url=first_url,
+            aigc_image_urls=persisted_urls_from_ref if len(persisted_urls_from_ref) > 1 else [],
+            cover_url=first_url,
+            note=f"复用参考图（{ratio}，{len(persisted_urls_from_ref)} 张，{elapsed}s）",
+            section_id=gap.section_id,
+            animation_spec=animation_spec_obj,
+        )
+
     seedream = get_seedream_client()
     try:
         if n_shots > 1:
