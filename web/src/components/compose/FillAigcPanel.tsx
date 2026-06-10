@@ -12,9 +12,11 @@ import type {
   Gap,
   GapFillRequest,
   ImageSpec,
+  Material,
   Plan,
 } from '@/types/schemas'
 import { cn } from '@/lib/utils'
+import { LibraryImagePicker } from './LibraryImagePicker'
 import { ThinkingSteps } from './ThinkingSteps'
 
 /**
@@ -37,8 +39,10 @@ type Phase = 'idle' | 'analyzing-spec' | 'spec' | 'analyzing-prompt' | 'prompt'
 
 interface ImageSlot {
   url: string
-  source: 'upload' | 'seedream'
-  /** 已落入素材库的 asset_id；上传方式天然有，Seedream 走 save-from-url 才有。 */
+  /** library = 用户从项目素材库挑出的现有图（不再走上传/出图）；upload = 本次刚从硬盘上传；
+   *  seedream = 本次 AI 出图（CDN 临时图，需手动落库）。 */
+  source: 'upload' | 'seedream' | 'library'
+  /** 已落入素材库的 asset_id；library/upload 天然有，seedream 走 save-from-url 才有。 */
   assetId?: string
 }
 
@@ -94,6 +98,9 @@ export function FillAigcPanel({
   const [tailFrameLoading, setTailFrameLoading] = useState(false)
   const [tailFrameErr, setTailFrameErr] = useState<string | null>(null)
 
+  // -- 从素材库选图：当前打开 picker 的 slot_id（null = 关闭）--
+  const [pickerSlotId, setPickerSlotId] = useState<string | null>(null)
+
   // -- gap 切换：重置一切，回到 idle --
   // stage-36：依赖 section_id 而非 gap_id。后端 silent /gap/detect 会重写 gap_id（plan-scoped
   // 唯一性），但同一段的 section_id 跨 silent rebuild 稳定；这里若依赖 gap_id，会被无关重算
@@ -114,6 +121,7 @@ export function FillAigcPanel({
     setTailFrameDataUrl(null)
     setTailFrameErr(null)
     setErr(null)
+    setPickerSlotId(null)
   }, [gap.section_id])
 
   // gap.section_id → plan.main_track 的 scene_id + 本段已规划分镜清单
@@ -402,6 +410,29 @@ export function FillAigcPanel({
     setSlotSaveOk((m) => ({ ...m, [slotId]: false }))
   }, [])
 
+  // -- spec 阶段：从项目素材库选图填入 slot --
+  // 选中的图是已经落库的 Material，url 直接用 file_url（同源 /uploads/... 或 AIGC 入库后的 CDN）；
+  // 对下游：Seedream 二次出图把它当 reference_image_url 走 img2img；Seedance 把全部 slots url
+  // 当 reference_images 数组传入。是否把它视为"已入库"——是的，library 来源的图天然有 material_id，
+  // 不需要再点"保存到素材库"，UI 隐藏那个按钮。
+  const handlePickFromLibrary = useCallback(
+    (slotId: string, material: Material) => {
+      const url = material.file_url || material.thumbnail_url || ''
+      if (!url) {
+        setSlotErr((m) => ({ ...m, [slotId]: '该素材没有可用的图片 URL' }))
+        return
+      }
+      setImageSlots((m) => ({
+        ...m,
+        [slotId]: { url, source: 'library', assetId: material.material_id },
+      }))
+      setSlotErr((m) => ({ ...m, [slotId]: null }))
+      // library 来源天然已入库——把"已入库"标记打上，避免 UI 引导用户再点保存
+      setSlotSaveOk((m) => ({ ...m, [slotId]: true }))
+    },
+    [],
+  )
+
   // -- 尾帧抽取 --
   const handleTailFrameToggle = useCallback(
     async (next: boolean) => {
@@ -609,6 +640,7 @@ export function FillAigcPanel({
           onSeedreamAll={handleSeedreamAllSlots}
           onSaveToLibrary={handleSaveSlotToLibrary}
           onClear={handleClearSlot}
+          onPickFromLibrary={(slotId) => setPickerSlotId(slotId)}
           onSkip={() => void handleEnterPromptStage()}
           onNext={() => void handleEnterPromptStage()}
         />
@@ -664,6 +696,14 @@ export function FillAigcPanel({
           onReapply={() => onResult(fill)}
           projectId={plan?.project_id || gap.project_id || ''}
           saveTitle={gap.section || gap.section_id || (mode === 'image' ? 'AI 图片' : 'AI 视频')}
+        />
+      )}
+
+      {pickerSlotId && (
+        <LibraryImagePicker
+          projectId={plan?.project_id || gap.project_id || ''}
+          onPick={(material) => handlePickFromLibrary(pickerSlotId, material)}
+          onClose={() => setPickerSlotId(null)}
         />
       )}
     </div>
@@ -777,6 +817,7 @@ function SpecStage({
   onSeedreamAll,
   onSaveToLibrary,
   onClear,
+  onPickFromLibrary,
   onSkip,
   onNext,
 }: {
@@ -796,6 +837,7 @@ function SpecStage({
   onSeedreamAll: (opts?: { force?: boolean }) => void
   onSaveToLibrary: (spec: ImageSpec) => void
   onClear: (slotId: string) => void
+  onPickFromLibrary: (slotId: string) => void
   onSkip: () => void
   onNext: () => void
 }) {
@@ -890,7 +932,7 @@ function SpecStage({
                   />
                   <div className="flex-1 space-y-1 text-xs">
                     <p className="text-muted-foreground">
-                      已就绪 · {slot.source === 'upload' ? '用户上传' : 'AI 出图'}
+                      已就绪 · {slot.source === 'upload' ? '用户上传' : slot.source === 'library' ? '素材库选用' : 'AI 出图'}
                       {saveOk && (
                         <span className="ml-1 text-emerald-600 dark:text-emerald-300">· 已入库</span>
                       )}
@@ -931,11 +973,11 @@ function SpecStage({
                       'w-full resize-y rounded-md border border-border bg-background px-2 py-1 text-xs outline-none focus:border-primary',
                       busy && 'cursor-wait opacity-60',
                     )}
-                    placeholder="描述这张图（用于 AI 出图；上传方式可忽略）"
+                    placeholder="描述这张图（用于 AI 出图；上传 / 素材库选用方式可忽略）"
                   />
-                  <div className="flex items-center gap-2">
+                  <div className="grid grid-cols-3 gap-2">
                     <label className={cn(
-                      'flex-1 cursor-pointer rounded-md border border-border bg-secondary px-2 py-1 text-center text-xs hover:bg-secondary/80',
+                      'cursor-pointer rounded-md border border-border bg-secondary px-2 py-1 text-center text-xs hover:bg-secondary/80',
                       busy && 'pointer-events-none opacity-60',
                     )}>
                       上传图片
@@ -952,10 +994,22 @@ function SpecStage({
                     </label>
                     <button
                       type="button"
+                      onClick={() => onPickFromLibrary(spec.slot_id)}
+                      disabled={busy}
+                      title="从当前项目素材库挑一张图当参考——主体/构图/色调由这张图主导"
+                      className={cn(
+                        'rounded-md border border-border bg-secondary px-2 py-1 text-xs hover:bg-secondary/80',
+                        busy && 'cursor-not-allowed opacity-60',
+                      )}
+                    >
+                      素材库选图
+                    </button>
+                    <button
+                      type="button"
                       onClick={() => onSeedream(spec)}
                       disabled={busy || !slotPrompt.trim()}
                       className={cn(
-                        'flex-1 rounded-md bg-primary px-2 py-1 text-xs font-medium text-primary-foreground',
+                        'rounded-md bg-primary px-2 py-1 text-xs font-medium text-primary-foreground',
                         (busy || !slotPrompt.trim()) && 'cursor-not-allowed opacity-60',
                       )}
                     >
@@ -1064,7 +1118,7 @@ function PromptStage({
                     className="h-14 w-14 rounded border border-border object-cover"
                   />
                   <span className="absolute -bottom-1 -right-1 rounded bg-secondary px-1 text-[8px] text-muted-foreground">
-                    {slot.source === 'upload' ? '上传' : 'AI'}
+                    {slot.source === 'upload' ? '上传' : slot.source === 'library' ? '库' : 'AI'}
                   </span>
                 </div>
               )
