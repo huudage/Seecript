@@ -47,8 +47,6 @@ import type {
   Material,
   MaterialUploadResponse,
   PackagingItem,
-  PackagingItemDraftResponse,
-  PackagingItemPlaceRequest,
   PackagingRecommendationV2,
   PackagingRecommendRequest,
   PackagingSelection,
@@ -1298,33 +1296,6 @@ export default function ComposePage() {
     [plan, setPlanAndPush],
   )
 
-  // 场景级 AI 推荐生成：根据当前选中片段 + frame.md + 自然语言诉求生成单个包装组件草稿，
-  // 拿到后直接 place 到 plan.packaging_track（用户可点 item 进入编辑面板再调）。
-  const handleRecommendPackagingForScene = useCallback(
-    async (sceneId: string, kind: 'title_bar' | 'sticker' | 'cover', hint: string) => {
-      if (!plan) return
-      setTrackBusy(true)
-      setError(null)
-      try {
-        const draft = await api.post<PackagingItemDraftResponse>('/packaging/recommend-for-scene', {
-          plan_id: plan.plan_id,
-          scene_id: sceneId,
-          kind,
-          hint,
-        })
-        const placeBody: PackagingItemPlaceRequest = { plan_id: plan.plan_id, item: draft.item }
-        const fresh = await api.post<Plan>('/packaging/items/place', placeBody)
-        setPlanAndPush(fresh)
-        setSelectedPackagingItemId(draft.item.item_id)
-      } catch (err) {
-        setError(err instanceof Error ? err.message : 'AI 推荐生成失败')
-      } finally {
-        setTrackBusy(false)
-      }
-    },
-    [plan, setPlanAndPush],
-  )
-
   const handleDeletePackagingItem = useCallback(
     async (itemId: string) => {
       if (!plan) return
@@ -1914,7 +1885,6 @@ export default function ComposePage() {
                 onSynthesizeAll={handleSynthesizeAll}
                 onClearVoice={handleClearVoice}
                 onRecommendPackaging={handleRecommendPackaging}
-                onRecommendPackagingForScene={handleRecommendPackagingForScene}
                 onDeletePackagingItem={handleDeletePackagingItem}
                 onPickBgm={() => setBgmPickerOpen(true)}
                 onBgmAnchorChange={handleBgmAnchorChange}
@@ -2329,7 +2299,6 @@ export default function ComposePage() {
                 onSynthesizeAll={handleSynthesizeAll}
                 onClearVoice={handleClearVoice}
                 onRecommendPackaging={handleRecommendPackaging}
-                onRecommendPackagingForScene={handleRecommendPackagingForScene}
                 onDeletePackagingItem={handleDeletePackagingItem}
                 onPickBgm={() => setBgmPickerOpen(true)}
                 onBgmAnchorChange={handleBgmAnchorChange}
