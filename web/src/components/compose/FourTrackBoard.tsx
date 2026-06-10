@@ -820,24 +820,37 @@ export function FourTrackBoard({
                           <SceneThumb scene={sc} thumbnailUrl={scThumb} textCardSpec={scTextCard} />
                           <div className="pointer-events-none absolute inset-x-0 bottom-0 h-4 bg-gradient-to-t from-black/70 to-transparent" />
                         </div>
-                        {matchQuality && sc.source === 'user_material' && (
-                          // stage-58 G5：分镜匹配度圆点（绿/橙/灰）。与段卡顶部三色色条联动，
-                          // 让用户在 step2 一眼看出哪些 Scene 的素材按内容配得准、哪些只是顺位填充
+                        {sc.source === 'user_material' && (
+                          // stage-60: 分镜匹配状态徽章（替代旧 2px 圆点）——用户报障"是否匹配成功无清晰指示"
+                          // 优先级：needs_fill=true → 红"待补"；matched_material_id 有 → 绿"✓"；否则 → 灰"—"
+                          // 鼠标悬停 tooltip 给出 match_quality / match_score / 命中素材文件名
                           <span
                             className={cn(
-                              'pointer-events-none absolute left-0.5 top-0.5 z-[2] inline-block h-2 w-2 rounded-full ring-1 ring-black/40',
-                              matchQuality === 'good'
-                                ? 'bg-emerald-400'
-                                : matchQuality === 'weak'
-                                  ? 'bg-amber-400'
-                                  : 'bg-zinc-400',
+                              'pointer-events-none absolute left-0.5 top-0.5 z-[2] rounded px-1 text-[8px] font-bold leading-tight text-white shadow-sm',
+                              sc.needs_fill === true
+                                ? 'bg-rose-500/95'
+                                : (shotPlan?.matched_material_id || matchQuality === 'good')
+                                  ? 'bg-emerald-500/95'
+                                  : matchQuality === 'weak'
+                                    ? 'bg-amber-500/95'
+                                    : 'bg-zinc-500/85',
                             )}
                             title={
-                              `分镜匹配度：${matchQuality === 'good' ? '准（good）' : matchQuality === 'weak' ? '弱（weak）' : '缺（missing）'}` +
-                              (matchScore !== null ? `\n分数 ${(matchScore * 100).toFixed(0)}%` : '') +
-                              (matchedMat?.filename ? `\n命中素材：${matchedMat.filename}` : '')
+                              sc.needs_fill === true
+                                ? '本镜待补：素材未匹配上 / 兜底字卡占位'
+                                : shotPlan?.matched_material_id
+                                  ? `已匹配${matchQuality ? `（${matchQuality === 'good' ? '准' : matchQuality === 'weak' ? '弱' : '缺'}）` : ''}` +
+                                    (matchScore !== null ? `\n匹配分 ${(matchScore * 100).toFixed(0)}%` : '') +
+                                    (matchedMat?.filename ? `\n命中素材：${matchedMat.filename}` : '')
+                                  : '未匹配（顺位兜底）'
                             }
-                          />
+                          >
+                            {sc.needs_fill === true
+                              ? '待补'
+                              : shotPlan?.matched_material_id
+                                ? '✓'
+                                : '—'}
+                          </span>
                         )}
                         {sc.source === 'user_material' && typeof sc.fit_score === 'number' && (
                           // stage-59：素材-段落 适配度徽章。绿/黄/红三档，不抢戏但一眼看到「这条搭不搭」

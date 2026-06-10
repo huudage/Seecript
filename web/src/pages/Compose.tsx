@@ -1085,12 +1085,19 @@ export default function ComposePage() {
   // 不再用 pendingGapsCount 单独门控 step3（那是 gap 模型层面的"待补"，乐观更新会瞬间归零）；
   // 真正能反映轨道更新进度的是 plan.main_track 实际状态。
   const mainTrackUnfilledCount = useMemo(() => {
+    // stage-60: 按 "段" 聚合 —— 用户报障 "4 段 / 5 段未补完" 计数错位。
+    // multi-shot 物化后一段会被切成多个 Scene；只要段里任一 Scene 有 needs_fill
+    // 就算这一段还没补完，整段计 1。
     if (!plan) return 0
-    return plan.main_track.filter(
-      (sc) =>
+    const sectionsNeeding = new Set<string>()
+    for (const sc of plan.main_track) {
+      const isUnfilled =
         sc.needs_fill === true ||
-        (sc.source_ref ?? '').startsWith('text-card-fill-empty'),
-    ).length
+        (sc.source_ref ?? '').startsWith('text-card-fill-empty')
+      if (!isUnfilled) continue
+      sectionsNeeding.add(sc.parent_section_id || sc.scene_id)
+    }
+    return sectionsNeeding.size
   }, [plan])
 
   /* --------------------- 四轨：口播 / 包装 / BGM 动作 --------------------- */

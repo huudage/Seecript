@@ -601,6 +601,44 @@ def _parse_raw_items(raw: list, pattern: str = "dramatic") -> list[dict]:
                     "camera_technique": camera_clean,
                 })
 
+        # stage-60: 同段近重复 shot 折叠
+        # 用户报障：单段被切成 3-5 镜但所有镜 subject/visual 几乎一样，物化后看到
+        # 「砍价反差剧情」连续出现 3 次。LLM 在拆 shots 时若没有真实视觉差异
+        # （素材本来就是单镜头），会重复输出同一个 subject。这里在合并前做一次
+        # dedup：连续 shot 的 subject 归一化（去标点+小写截前 12 字）相同时，
+        # 合并为 1 个，duration 累加；narration 取首个非空。
+        if len(shots_clean) >= 2:
+            def _norm_subject(s: dict) -> str:
+                key = (s.get("subject") or "").strip()
+                if not key:
+                    key = (s.get("visual") or "").strip()
+                # 去标点+小写+截前 12 字
+                cleaned = "".join(ch for ch in key.lower() if ch.isalnum())[:12]
+                return cleaned
+
+            merged: list[dict] = []
+            for sh in shots_clean:
+                key = _norm_subject(sh)
+                if merged and key and _norm_subject(merged[-1]) == key:
+                    # 折叠：累加 duration，保留首个非空 narration
+                    last = merged[-1]
+                    last["duration_seconds"] = round(
+                        min(15.0, float(last["duration_seconds"]) + float(sh["duration_seconds"])),
+                        2,
+                    )
+                    if not (last.get("narration") or "").strip() and (sh.get("narration") or "").strip():
+                        last["narration"] = sh["narration"]
+                    if not (last.get("camera_technique") or "").strip():
+                        last["camera_technique"] = sh.get("camera_technique") or ""
+                else:
+                    merged.append(sh)
+            if len(merged) < len(shots_clean):
+                log.info(
+                    "[plan_agent] 折叠近重复 shot: role=%s %d→%d (subject 归一化重复)",
+                    role, len(shots_clean), len(merged),
+                )
+            shots_clean = merged
+
         out.append({
             "role": role,
             "theme": theme,

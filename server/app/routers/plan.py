@@ -455,10 +455,26 @@ async def build_plan(req: PlanBuildRequest) -> Plan:
         from ..services.agent.shot_matcher import apply_matches_to_section, match_section_shots
         material_pool: list[Material] = []
         if effective_project_id:
+            seen_ids: set[str] = set()
+            # 1) 显式 selected_materials 优先（用户在 step1 勾选过的）
             for mid in req.selected_materials:
+                if mid in seen_ids:
+                    continue
                 m = material_store.get(effective_project_id, mid)
                 if m is not None:
                     material_pool.append(m)
+                    seen_ids.add(mid)
+            # 2) stage-60: 兜底——若 selected_materials 为空 / 缺片，把项目里其它已上传的
+            #    user material（video / image）也纳入匹配池。用户报障"多镜片段没有打分"
+            #    根因：他没把素材加进 selected_materials 但素材库里有 → 不打分。
+            #    扩池后每个 sub-shot 都能拿到 match_quality + match_score。
+            for m in material_store.list(effective_project_id):
+                if m.material_id in seen_ids:
+                    continue
+                if m.media_type not in ("video", "image"):
+                    continue
+                material_pool.append(m)
+                seen_ids.add(m.material_id)
         if material_pool:
             adapted = [
                 apply_matches_to_section(sec, match_section_shots(sec, material_pool))
@@ -648,7 +664,60 @@ async def build_plan(req: PlanBuildRequest) -> Plan:
         # N 个 ShotPlan 数量不一致时，按数量小的对齐（保证不漏镜也不漏图）。
         n_shots = len(sec.shots)
         n_imgs = len(aigc_image_urls)
+        # stage-60: 拆分前的"视觉差异度"门禁——上游 LLM 把段拆成 N 个 sub-shot 是结构性意图,
+        # 但物化时若没有 N 份不同素材撑场, 物理上就是把同一片段连放 N 次（用户看到「砍价反差剧情」
+        # 重复 3 遍那种）. 这里检查是否有差异化素材池, 若没有就跳过 multi-shot 路径,
+        # 回到下方的单 Scene 路径占满 target_duration.
+        # 例外: text_card 即便没素材, 文案逐镜不同, 仍允许拆.
+        def _has_visual_variety_for_split(N: int) -> bool:
+            if source == "text_card":
+                return True
+            if source == "aigc_image":
+                return n_imgs >= max(2, N)
+            if source == "aigc_t2v":
+                return len(aigc_urls) >= max(2, N)
+            if source == "user_material":
+                # 1) PR-B 已给 ≥2 个不同的 matched_material_shot_index → 各 sub-shot 取不同 MaterialShot
+                idxs = [
+                    sh.matched_material_shot_index for sh in sec.shots
+                    if sh.matched_material_shot_index is not None
+                ]
+                if len(set(idxs)) >= 2:
+                    return True
+                if not effective_project_id:
+                    return False
+                # 探测主选材：优先 shots[0].matched_material_id, 次 source_ref
+                cand_mid = (
+                    sec.shots[0].matched_material_id
+                    if sec.shots and sec.shots[0].matched_material_id
+                    else source_ref
+                )
+                mat = material_store.get(effective_project_id, cand_mid)
+                if mat is None:
+                    return False
+                # 图片素材天然只有一帧，多镜没有视觉差异（运镜虽不同但底图同）→ 不拆
+                if mat.media_type == "image":
+                    return False
+                # 2) 素材自身有 ≥ 2 个 MaterialShot → cyclic 取不同段
+                if mat.shots and len(mat.shots) >= 2:
+                    return True
+                # 3) 素材时长足够长 → 按时间均匀切分（每片 ≥ 1.0s 才有意义）
+                total = float(mat.duration_seconds or 0.0)
+                return total >= max(N * 1.0, target_duration)
+            return True
+
         if n_shots >= 2 or (source == "aigc_image" and n_imgs > 1):
+            _N_check = n_shots if n_shots >= 2 else n_imgs
+            _can_split = _has_visual_variety_for_split(_N_check)
+            if not _can_split:
+                log.info(
+                    "[plan] sec=%s 拆分意图 N=%d 但视觉素材不足→回落单 Scene 占满 %.2fs (source=%s)",
+                    sec.section_id, _N_check, target_duration, source,
+                )
+        else:
+            _can_split = False
+
+        if _can_split:
             # 决定本段最终拆分镜头数 N：以 sec.shots 为准（plan_agent 给的拆分意图）；
             # 老 plan / fallback 没给 shots 时退回 aigc_image_urls 长度。
             if n_shots >= 2:
@@ -800,6 +869,13 @@ async def build_plan(req: PlanBuildRequest) -> Plan:
                                 in_pt = float(mshot.start)
                                 cut_end = min(float(mshot.end), in_pt + shot_dur)
                                 out_pt = cut_end
+                            elif mat.duration_seconds and float(mat.duration_seconds) >= max(N * 1.0, target_duration):
+                                # stage-60: shot_matcher 没给 idx, 但素材足够长——按时间均分,
+                                # 让每个 sub-shot 落在素材的不同时间窗, 避免 N 个 sub-scene
+                                # 都 in_pt=0 而画面相同.
+                                slice_len = float(mat.duration_seconds) / N
+                                in_pt = shot_idx * slice_len
+                                out_pt = min(in_pt + shot_dur, float(mat.duration_seconds))
                     elif effective_project_id:
                         mat = material_store.get(effective_project_id, source_ref)
                         if mat is not None and mat.shots:
@@ -808,6 +884,12 @@ async def build_plan(req: PlanBuildRequest) -> Plan:
                             cut_end = min(float(mshot.end), in_pt + shot_dur)
                             out_pt = cut_end
                             # 老 plan 没跑过 shot_matcher → cyclic 命中也要标待修补
+                            needs_fill = True
+                        elif mat is not None and mat.duration_seconds and float(mat.duration_seconds) >= max(N * 1.0, target_duration):
+                            # stage-60: 同上, 没 mat.shots 时按时间均分
+                            slice_len = float(mat.duration_seconds) / N
+                            in_pt = shot_idx * slice_len
+                            out_pt = min(in_pt + shot_dur, float(mat.duration_seconds))
                             needs_fill = True
                     main_track.append(Scene(
                         scene_id=sub_id,
