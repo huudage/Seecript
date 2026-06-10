@@ -1150,6 +1150,9 @@ export default function ComposePage() {
    * 2. 若开了配音，自动一键 TTS 全片（失败只 setError 不阻塞）
    * 3. 自动转场推荐 + apply（失败只 setError 不阻塞）
    * 4. 全部跑完才 setStep3Unlocked(true) + setActiveStep(3) + 释放 trackBusy
+   *
+   * stage-58：原 2)/3) 串行（TTS ~12s，packaging ~10s）。两条独立子任务，并发可省一半时间。
+   * 用 Promise.allSettled 把 TTS 和 packaging recommend 同时发起，最后 await 完，再串行 apply 转场。
    */
   const handleEnterStep3 = useCallback(async () => {
     if (!plan) return
@@ -1162,31 +1165,49 @@ export default function ComposePage() {
       setPlanAndPush(ren.plan)
       landedOk = true
 
-      // 2) 自动 TTS（若启用了配音 + 有更新的段落）—— 必须 await 完，
-      // 否则用户进 step3 后口播条还在跑、refetchPlan 把当前 plan 覆盖回去。
-      if (ren.plan.settings.voiceover_enabled && ren.updated_scene_ids.length > 0) {
-        try {
-          const tts = await synthesizeAll(plan.plan_id)
-          await refetchPlan(plan.plan_id)
-          if (tts.failures.length > 0) {
-            setError(
-              `${tts.synthesized.length} 段已合成；${tts.failures.length} 段失败，可在口播轨手动重试`,
-            )
-          }
-        } catch (ttsErr) {
-          setError(ttsErr instanceof Error ? `配音失败：${ttsErr.message}` : '配音失败')
-        }
+      // 2) & 3) 并发——TTS 与 packaging recommend 互不依赖。
+      //    TTS 改回写 plan.voiceover_url（后端 plan_store.put）；
+      //    recommend 只读 plan 不写；apply 写转场字段。
+      //    所以可以 Promise.all 跑 [TTS, recommend]，然后 refetchPlan + apply。
+      const ttsPromise: Promise<{ ok: boolean; failures: number; err?: unknown }> =
+        ren.plan.settings.voiceover_enabled && ren.updated_scene_ids.length > 0
+          ? synthesizeAll(plan.plan_id)
+              .then((tts) => ({ ok: true, failures: tts.failures.length }))
+              .catch((err) => ({ ok: false, failures: 0, err }))
+          : Promise.resolve({ ok: true, failures: 0 })
+
+      const recPromise: Promise<PackagingRecommendationV2 | null> =
+        plan.main_track.length > 1
+          ? api
+              .post<PackagingRecommendationV2>('/packaging/recommend', {
+                plan_id: plan.plan_id,
+              } as PackagingRecommendRequest)
+              .catch((err) => {
+                console.warn('[step3] 自动转场推荐失败', err)
+                return null
+              })
+          : Promise.resolve(null)
+
+      const [ttsRes, rec] = await Promise.all([ttsPromise, recPromise])
+
+      if (!ttsRes.ok) {
+        setError(
+          ttsRes.err instanceof Error ? `配音失败：${ttsRes.err.message}` : '配音失败',
+        )
+      } else if (ttsRes.failures > 0) {
+        setError(`部分段落配音失败（${ttsRes.failures} 段）；可在口播轨手动重试`)
       }
 
-      // 3) 自动转场推荐：必须 await recommend + apply 全跑完，
-      //    否则用户进 step3 内容轨上转场徽章还没刷新，点了也无效。
-      if (plan.main_track.length > 1) {
+      // 应用转场推荐：必须在 TTS 写完 plan 之后再 refetch，避免 apply 拿到的是过期 plan
+      if (rec) {
         try {
-          const recBody: PackagingRecommendRequest = { plan_id: plan.plan_id }
-          const rec = await api.post<PackagingRecommendationV2>('/packaging/recommend', recBody)
           const transition_selections: Record<string, TransitionStyle> = {}
           for (const b of rec.transition_bundles) {
-            if (b.options[0]) transition_selections[b.candidate_id] = b.options[0].style
+            // stage-58：之前默认选 options[0]，而 options[0] 可能是兜底的 hard_cut。
+            // 改成优先选第一个非 hard_cut 选项；没有则保留原 options[0]——
+            // 让规则兜底也能给出有视觉感的转场，而不是整片硬切。
+            const pick = b.options.find((o) => o.style !== 'hard_cut') ?? b.options[0]
+            if (pick) transition_selections[b.candidate_id] = pick.style
           }
           if (Object.keys(transition_selections).length > 0) {
             const selection: PackagingSelection = {
@@ -1200,10 +1221,17 @@ export default function ComposePage() {
             }
             const fresh = await api.post<Plan>('/packaging/apply', selection)
             setPlanAndPush(fresh)
+          } else if (ttsRes.ok) {
+            // TTS 跑了但没推荐转场——也要 refetch 让 voiceover_url 落地
+            await refetchPlan(plan.plan_id)
           }
         } catch (transErr) {
-          console.warn('[step3] 自动转场推荐失败，可手动在内容轨缝隙切换样式', transErr)
+          console.warn('[step3] 自动转场应用失败，可手动在内容轨缝隙切换样式', transErr)
+          if (ttsRes.ok) await refetchPlan(plan.plan_id)
         }
+      } else if (ttsRes.ok && ren.plan.settings.voiceover_enabled && ren.updated_scene_ids.length > 0) {
+        // 没要做转场（单段）但要 refetch 拿 TTS 写入的 voiceover_url
+        await refetchPlan(plan.plan_id)
       }
     } catch (err) {
       setError(err instanceof Error ? err.message : '进入 step3 准备失败')
@@ -2000,9 +2028,6 @@ export default function ComposePage() {
                         gapBusy={gapBusy}
                         materials={sortedMaterials}
                         targetSection={selectedGap.section}
-                        onPickStrategy={(strategy) =>
-                          void runFill(selectedGap, 'rerank', { strategy })
-                        }
                         onPickManual={(materialId) =>
                           void runFill(selectedGap, 'rerank', {
                             strategy: 'manual',
@@ -2018,14 +2043,6 @@ export default function ComposePage() {
                           materials={sortedMaterials}
                           targetSection={selectedGap.section}
                           currentMaterialId={selectedFill.new_material_id ?? null}
-                          onPickStrategy={(strategy) =>
-                            void runFill(selectedGap, 'rerank', {
-                              strategy,
-                              exclude_material_ids: selectedFill.new_material_id
-                                ? [selectedFill.new_material_id]
-                                : [],
-                            })
-                          }
                           onPickManual={(materialId) =>
                             void runFill(selectedGap, 'rerank', {
                               strategy: 'manual',

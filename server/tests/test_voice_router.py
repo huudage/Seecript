@@ -82,7 +82,8 @@ def test_synthesize_one_writes_voiceover_url(client):
     })
     assert resp.status_code == 200, resp.text
     body = resp.json()
-    assert body["voiceover_url"] == f"/voiceovers/{plan.plan_id}/sc-0.wav"
+    # stage-49 起 voice_store 给 voiceover_url 加了 ?v=ts 缓存破坏 query；测试只匹配前缀
+    assert body["voiceover_url"].split("?")[0] == f"/voiceovers/{plan.plan_id}/sc-0.wav"
     assert body["backend"] in ("mock", "volc")
     assert body["chars"] > 0
 

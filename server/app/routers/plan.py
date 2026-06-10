@@ -973,6 +973,22 @@ async def build_plan(req: PlanBuildRequest) -> Plan:
             len(plan.emotion_curve.anchors), len(plan.emotion_curve.peaks),
         )
 
+    # stage-59：素材适配度打分。给所有 user_material scene 写 fit_score / fit_reason，
+    # 让用户在 Compose 卡上看到"这条素材跟段意 NN% 搭"，便于人工挑替换。
+    if effective_project_id:
+        try:
+            from ..services.materials.fit import annotate_plan_fit_scores
+            mats_list = material_store.list(effective_project_id)
+            mats_by_id = {m.material_id: m for m in mats_list}
+            written = annotate_plan_fit_scores(
+                main_track=plan.main_track,
+                adapted_sections=plan.adapted_sections or [],
+                materials_by_id=mats_by_id,
+            )
+            log.info("[plan] fit_scores annotated plan=%s scenes=%d", plan_id, written)
+        except Exception as exc:  # noqa: BLE001
+            log.warning("[plan] fit_scores 计算失败 plan=%s: %s", plan_id, exc)
+
     plan_store.put(plan)
 
     # 回写到 Project，让首页/项目详情能拿到 last_plan_id
@@ -1085,6 +1101,33 @@ async def recompute_emotion(plan_id: str) -> Plan:
         "[plan] emotion 手动重算 plan=%s backend=%s",
         plan_id, plan.emotion_curve.backend if plan.emotion_curve else "-",
     )
+    return plan
+
+
+@router.post("/plan/{plan_id}/refresh-fit-scores", response_model=Plan)
+async def refresh_fit_scores(plan_id: str) -> Plan:
+    """手动重算所有 user_material scene 的素材-段落 适配度评分（stage-59）。
+
+    plan.build / scene.swap-source 都已自动调一次；本接口给用户在 Compose
+    手改了 section.theme / content_description / scene.duration 后想刷新评分用。
+    """
+    plan = plan_store.get(plan_id)
+    if plan is None:
+        raise HTTPException(status_code=404, detail=f"plan_id 不存在：{plan_id}")
+    proj_id = plan.project_id
+    if not proj_id:
+        # 无 project 的老 plan 也允许跑——但 materials_by_id 必为空，全部 scene 会被清空 fit
+        mats_by_id: dict[str, Material] = {}
+    else:
+        mats_by_id = {m.material_id: m for m in material_store.list(proj_id)}
+    from ..services.materials.fit import annotate_plan_fit_scores
+    written = annotate_plan_fit_scores(
+        main_track=plan.main_track,
+        adapted_sections=plan.adapted_sections or [],
+        materials_by_id=mats_by_id,
+    )
+    plan_store.put(plan)
+    log.info("[plan] refresh_fit_scores plan=%s scenes=%d", plan_id, written)
     return plan
 
 
@@ -1753,6 +1796,19 @@ async def swap_scene_source(
     # 又要把字幕加回来。统一走 _rebuild_subtitle_packaging（按 narration / text_card_spec
     # 重新判定每段是否出字幕），避免 source 变了但 subtitle 残留导致字幕错位。
     _rebuild_subtitle_packaging(plan)
+    # stage-59：换源后给被改动的 scene 重算 fit_score（其它 scene 维持原值不动）
+    try:
+        from ..services.materials.fit import annotate_plan_fit_scores
+        proj_id = plan.project_id
+        if proj_id:
+            mats_by_id = {m.material_id: m for m in material_store.list(proj_id)}
+            annotate_plan_fit_scores(
+                main_track=plan.main_track,
+                adapted_sections=plan.adapted_sections or [],
+                materials_by_id=mats_by_id,
+            )
+    except Exception as exc:  # noqa: BLE001
+        log.warning("[scene-swap] fit_score 重算失败 plan=%s scene=%s: %s", plan_id, scene_id, exc)
     plan_store.put(plan)
     log.info(
         "[plan] scene source swapped plan=%s scene=%s %s → %s",

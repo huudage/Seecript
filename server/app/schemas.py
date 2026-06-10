@@ -1413,6 +1413,22 @@ class Scene(BaseModel):
         description="与上一段衔接方式；sc-0 永远忽略此字段（无上一段）。"
                     "None 或 style=hard_cut 时走 concat demuxer 直拼；其他 style 走 xfade 滤镜。",
     )
+    fit_score: Optional[float] = Field(
+        default=None,
+        ge=0.0, le=1.0,
+        description=(
+            "stage-59：素材-段落 适配度评分（0-1）。仅 source=user_material 时有意义；"
+            "其它来源（aigc/text_card/sample）这里恒为 None。"
+            "由 services.materials.fit.compute_material_fit 综合 material 标签 / "
+            "recommended_section / 时长 / highlight 与 section.theme/content_description 算出。"
+            "前端在 Scene 卡上显示『适配 NN%』徽章，让用户决定是否换素材。"
+        ),
+    )
+    fit_reason: Optional[str] = Field(
+        default=None,
+        max_length=80,
+        description="stage-59：fit_score 的一句话原因（≤80 字），如『段位推荐 + 主体匹配』。",
+    )
 
     @model_validator(mode="before")
     @classmethod

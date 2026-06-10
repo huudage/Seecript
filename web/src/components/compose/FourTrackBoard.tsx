@@ -812,6 +812,22 @@ export function FourTrackBoard({
                           <SceneThumb scene={sc} thumbnailUrl={scThumb} textCardSpec={scTextCard} />
                           <div className="pointer-events-none absolute inset-x-0 bottom-0 h-4 bg-gradient-to-t from-black/70 to-transparent" />
                         </div>
+                        {sc.source === 'user_material' && typeof sc.fit_score === 'number' && (
+                          // stage-59：素材-段落 适配度徽章。绿/黄/红三档，不抢戏但一眼看到「这条搭不搭」
+                          <span
+                            className={cn(
+                              'pointer-events-none absolute right-0.5 top-0.5 z-[2] rounded px-1 text-[8px] font-bold leading-tight text-white shadow-sm',
+                              sc.fit_score >= 0.7
+                                ? 'bg-emerald-500/90'
+                                : sc.fit_score >= 0.4
+                                  ? 'bg-amber-500/90'
+                                  : 'bg-rose-500/90',
+                            )}
+                            title={`素材适配度 ${(sc.fit_score * 100).toFixed(0)}%${sc.fit_reason ? `\n${sc.fit_reason}` : ''}`}
+                          >
+                            {(sc.fit_score * 100).toFixed(0)}
+                          </span>
+                        )}
                         <div className="relative z-[1] flex h-full flex-col justify-end p-0.5">
                           <span className="truncate rounded bg-black/45 px-1 text-[9px] font-semibold leading-tight">
                             #{sc.shot_order + 1} · {sc.shot_subject || sc.scene_id}
@@ -878,6 +894,22 @@ export function FourTrackBoard({
                         title={`本段拆为 ${scenesInSec.length} 个分镜（▾ 展开后可单独编辑）`}
                       >
                         {scenesInSec.length}镜
+                      </span>
+                    )}
+                    {/* stage-59：单镜段时显示素材适配度（多镜段太挤就不挂了，分镜展开时各自有徽章） */}
+                    {scenesInSec.length === 1 && firstScene.source === 'user_material' && typeof firstScene.fit_score === 'number' && (
+                      <span
+                        className={cn(
+                          'inline-flex h-3 items-center justify-center rounded-full px-1 font-mono text-[9px] font-bold',
+                          firstScene.fit_score >= 0.7
+                            ? 'bg-emerald-300 text-emerald-900'
+                            : firstScene.fit_score >= 0.4
+                              ? 'bg-amber-300 text-amber-900'
+                              : 'bg-rose-300 text-rose-900',
+                        )}
+                        title={`素材适配度 ${(firstScene.fit_score * 100).toFixed(0)}%${firstScene.fit_reason ? `\n${firstScene.fit_reason}` : ''}`}
+                      >
+                        {(firstScene.fit_score * 100).toFixed(0)}%
                       </span>
                     )}
                     {gap && (

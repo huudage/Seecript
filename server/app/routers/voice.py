@@ -145,10 +145,19 @@ async def synthesize_all(req: VoiceSynthesizeAllRequest) -> VoiceSynthesizeAllRe
     # 段映射，给空 narration 兜底用
     sec_by_id = {sec.section_id: sec for sec in (plan.adapted_sections or [])}
 
+    # stage-58：原串行 for 循环挨个跑 TTS，8 段就要 10-15s，是 step3 启动慢的最大头。
+    # Doubao TTS v1 HTTP 支持并发（同账号不会冲突），用 asyncio.gather 把多个
+    # to_thread(synthesize_with_alignment) 并发起来，瓶颈降到「最慢那段」的时间。
+    # 三阶段：
+    #   A. 串行准备文本：dedupe + 空兜底（要 mutate scene.narration，串行才安全）
+    #   B. 并发 TTS：gather 所有 to_thread 调用
+    #   C. 串行写回：save_wav + scene.voiceover_url（store 不是线程安全的）
+
+    # Phase A：准备文本（mutate scene.narration）
+    prepared: list[tuple[object, str]] = []  # (scene, text)
     for scene in plan.main_track:
         text = (scene.narration or "").strip()
         if not text:
-            # 防御性兜底：narration_agent 应已填好，但万一手工清空也要给一句话避免音轨空缺
             sec = sec_by_id.get(scene.parent_section_id or "")
             subj = (scene.shot_subject or "").strip()
             theme = (sec.theme if sec else "").strip() if sec else ""
@@ -159,29 +168,39 @@ async def synthesize_all(req: VoiceSynthesizeAllRequest) -> VoiceSynthesizeAllRe
             scene.narration = text
             log.warning("[voice] synthesize_all plan=%s scene=%s narration 空 → 兜底填 %r",
                         req.plan_id, scene.scene_id, text)
-        # 防御性 dedupe：把 LLM/手编残留的『重复凑时长』压掉，再同步回 scene.narration——
-        # 这样字幕显示与 TTS 音频始终一致。
         cleaned = _dedupe_repetition_for_tts(text)
         if cleaned != text:
             log.info("[voice] synthesize_all dedupe scene=%s %r → %r",
                      scene.scene_id, text, cleaned)
             text = cleaned
             scene.narration = cleaned
+        prepared.append((scene, text))
+
+    # Phase B：并发 TTS——每段一个 task，gather 等齐
+    async def _one(scene_obj, text: str):
         try:
             wav_bytes, truncated = await asyncio.to_thread(
                 synthesize_with_alignment,
-                text, voice, float(scene.duration or 0.0),
+                text, voice, float(scene_obj.duration or 0.0),
             )
+            return scene_obj, text, wav_bytes, truncated, None
         except TTSError as exc:
-            failures.append({"scene_id": scene.scene_id, "code": exc.code, "error": str(exc)})
+            return scene_obj, text, None, False, exc
+
+    bundle = await asyncio.gather(*[_one(s, t) for s, t in prepared])
+
+    # Phase C：写回（voice_store / scene 不并发，逐个落盘）
+    for scene_obj, text, wav_bytes, truncated, exc in bundle:
+        if exc is not None:
+            failures.append({"scene_id": scene_obj.scene_id, "code": exc.code, "error": str(exc)})
             continue
-        url = voice_store.save_wav(plan.plan_id, scene.scene_id, wav_bytes)
-        scene.voiceover_url = url
+        url = voice_store.save_wav(plan.plan_id, scene_obj.scene_id, wav_bytes)
+        scene_obj.voiceover_url = url
         if truncated:
-            truncated_ids.append(scene.scene_id)
+            truncated_ids.append(scene_obj.scene_id)
         results.append(VoiceSynthesizeResponse(
             plan_id=plan.plan_id,
-            scene_id=scene.scene_id,
+            scene_id=scene_obj.scene_id,
             voiceover_url=url,
             backend=backend_name(),
             chars=len(text),

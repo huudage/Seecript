@@ -101,8 +101,9 @@ def test_burn_packaging_contains_text_and_window(fake_ffmpeg, tmp_path):
     assert "between(t" in vf and "3.500" in vf and "13.000" in vf
     # 注意：转场已迁移到 Scene.transition_in（xfade 滤镜），
     # burn_packaging_track 收到 kind="transition" 时只 log warning + 跳过；
-    # 这里断言它没有偷偷生成 drawbox/drawtext，但仍要把其它 4 类正常烧进去。
-    assert "drawbox" not in vf
+    # 这里断言它没有偷偷生成转场专用的 drawbox/drawtext，但 cover 自己用 drawbox 画底色是允许的。
+    # 只允许出现 1 个 drawbox（cover 的背景色块），多于此说明转场又偷偷渲染了。
+    assert vf.count("drawbox") <= 1, f"只允许 cover 用 1 个 drawbox 画底色，多了说明转场被偷渲：vf={vf[:200]}..."
     # subtitle/title_bar/sticker/cover 都用 drawtext
     assert vf.count("drawtext") >= 5  # 4 类 text + 1 个 cover subtitle
 

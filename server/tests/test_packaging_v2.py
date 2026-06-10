@@ -273,3 +273,57 @@ def test_router_apply_plan_mismatch(client):
     }
     resp = client.post("/api/packaging/apply", json=sel_body)
     assert resp.status_code == 400
+
+
+# ---------- stage-58: 转场不再默认硬切 + 同义词归一化 ----------
+
+def test_normalize_transition_synonyms():
+    """LLM 输出 'fade' / 'crossfade' / '硬切' 等同义词应被归一化到白名单 token。"""
+    from app.services.agent.packaging_agent import _normalize_transition_style
+
+    assert _normalize_transition_style("fade") == "dissolve"
+    assert _normalize_transition_style("Cross-Fade") == "dissolve"
+    assert _normalize_transition_style("crossfade") == "dissolve"
+    assert _normalize_transition_style("硬切") == "hard_cut"
+    assert _normalize_transition_style("镜头甩动") == "whip"
+    assert _normalize_transition_style("zoom_in") == "zoom"
+    # 已是白名单 token 不变
+    assert _normalize_transition_style("dissolve") == "dissolve"
+    # 未知保留 lower 形态（让白名单判定决定丢弃）
+    assert _normalize_transition_style("UnknownXYZ") == "unknownxyz"
+
+
+def test_prefer_soft_primary_skips_hard_cut():
+    """_prefer_soft_primary 应优先 dissolve/slide/zoom，不让 hard_cut 当默认。"""
+    from app.services.agent.packaging_agent import _prefer_soft_primary
+
+    full = PackagingPreferences()  # default allowed = [hard_cut, dissolve, slide, ...]
+    assert _prefer_soft_primary(full) == "dissolve"
+
+    # 白名单去掉 dissolve → 退到 slide
+    no_diss = full.model_copy(update={"allowed_transition_styles": ["hard_cut", "slide", "wipe"]})
+    assert _prefer_soft_primary(no_diss) == "slide"
+
+    # 白名单只剩 hard_cut → 这才用 hard_cut
+    only_hard = full.model_copy(update={"allowed_transition_styles": ["hard_cut"]})
+    assert _prefer_soft_primary(only_hard) == "hard_cut"
+
+
+@pytest.mark.asyncio
+async def test_rule_based_v2_does_not_default_to_hard_cut():
+    """规则兜底（mock LLM 也走类似路径）下 transition_bundles 主选不应是 hard_cut——
+    stage-58 之前 _rule_based_v2_candidates 用 allowed[0]=hard_cut 做兜底主选，
+    导致 step3 进入后整片硬切。"""
+    plan = _make_plan(f"plan-v2-no-hardcut-{int(time.time() * 1000)}")
+    _TEST_PLAN_IDS.append(plan.plan_id)
+    plan_store.put(plan)
+
+    rec = await recommend_packaging_v2(plan, preferences=PackagingPreferences())
+    assert rec.transition_bundles, "至少应该有 1 个转场 bundle"
+
+    # 主选 (options[0]) 不应是 hard_cut，规则表里 opening→development=dissolve、
+    # development→closing=zoom，都明确不是 hard_cut。
+    primaries = [b.options[0].style for b in rec.transition_bundles]
+    assert all(s != "hard_cut" for s in primaries), (
+        f"规则兜底不应给硬切作主选；实际 primaries={primaries}"
+    )

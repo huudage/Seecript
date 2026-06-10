@@ -64,16 +64,49 @@ _HEX_RE = re.compile(r"^#[0-9a-fA-F]{6}$")
 # 规则兜底：role 对 → 转场风格。LLM 失败时按这张表给。
 # 4 元 role 共 4*3=12 组有序对，覆盖常见的相邻切换。
 _RULE_TRANSITION: dict[tuple[str, str], TransitionStyle] = {
-    ("opening", "development"): "hard_cut",
+    # stage-58：opening→development 与 development→development 之前默认 hard_cut，
+    # 导致 step3 启动后整片基本全硬切，画面缺乏推进感。改成 dissolve（轻柔过渡），
+    # 让规则兜底也能给出可看的转场——硬切只在 LLM 显式选择时使用。
+    ("opening", "development"): "dissolve",
     ("opening", "climax"): "whip",
     ("opening", "closing"): "dissolve",
-    ("development", "development"): "hard_cut",
+    ("development", "development"): "dissolve",
     ("development", "climax"): "whip",
     ("development", "closing"): "zoom",
     ("climax", "closing"): "dissolve",
     ("climax", "development"): "slide",
     ("closing", "development"): "dissolve",
 }
+
+# stage-58：LLM 转场风格同义词归一化表。Doubao/DeepSeek 常输出 "fade" / "cross-fade" /
+# "fade_in" / "镜头甩动" / "硬切" 这种非白名单值；过去在 _coerce_transition_bundle:836
+# 静默丢弃，配合 allowed[0]=hard_cut 兜底，结果就是全片硬切。这里先归一化再过白名单。
+_TRANSITION_SYNONYMS: dict[str, str] = {
+    "cut": "hard_cut", "none": "hard_cut", "硬切": "hard_cut", "无转场": "hard_cut",
+    "fade": "dissolve", "fade_in": "dissolve", "fade_out": "dissolve",
+    "crossfade": "dissolve", "cross-fade": "dissolve", "cross_fade": "dissolve",
+    "溶解": "dissolve", "淡入淡出": "dissolve", "渐隐": "dissolve", "渐变": "dissolve",
+    "push": "slide", "slide_in": "slide", "slide_out": "slide", "滑动": "slide", "推移": "slide",
+    "zoom_in": "zoom", "zoom_out": "zoom", "缩放": "zoom", "推拉": "zoom",
+    "whip_pan": "whip", "whippan": "whip", "镜头甩动": "whip", "甩动": "whip", "甩镜": "whip",
+    "wipe_in": "wipe", "wipe_out": "wipe", "擦除": "wipe", "扫除": "wipe",
+}
+
+
+def _normalize_transition_style(s: str) -> str:
+    """归一化转场风格字符串到白名单 token；不匹配时返回原 lower 形态供白名单判定。"""
+    key = (s or "").strip().lower()
+    return _TRANSITION_SYNONYMS.get(key, key)
+
+
+def _prefer_soft_primary(prefs: "PackagingPreferences") -> "TransitionStyle":
+    """规则兜底首选风格——优先 dissolve（柔和），其次 slide，最后才回 allowed[0]。
+    避免 prefs.allowed_transition_styles 首位是 hard_cut 时整片硬切。
+    """
+    for cand in ("dissolve", "slide", "zoom"):
+        if cand in prefs.allowed_transition_styles:
+            return cand  # type: ignore[return-value]
+    return prefs.allowed_transition_styles[0]
 
 
 # 预设展开表 —— preset 不为 custom 时，这里的字段会覆盖用户 prefs 的对应字段。
@@ -206,6 +239,9 @@ def _build_system_prompt(prefs: PackagingPreferences, frame: Optional[FrameDesig
         "你是短视频包装设计师。根据给定的主轨分镜（每段标了 role+theme）与创作者主题文本，"
         "请输出两类建议：(a) 相邻段落切换处的转场风格；(b) 一份开场封面方案。\n"
         f"转场只能从这些风格里选：[{allowed}]，duration 必须 ≤ {max_dur:.2f}s。\n"
+        "重要：hard_cut（硬切）只用于「同一镜头组内的快速节奏切」或「为强调突兀感」的少数场景；"
+        "大多数 opening→development / development→development / climax→closing 段间切换应优先用"
+        " dissolve / slide / zoom / whip / wipe 等有视觉感的风格，避免整片连续硬切显得粗糙。\n"
         f"{cover_hint}。{bilingual_hint}\n"
         f"{_frame_design_block(frame)}"
         f"{_catalog_hint_block()}\n"
@@ -247,7 +283,8 @@ def _rule_based_transitions(
     duration 受 max_transition_duration 钳制。
     """
     whitelist = set(prefs.allowed_transition_styles)
-    primary: TransitionStyle = prefs.allowed_transition_styles[0]
+    # stage-58：兜底首选不再用 allowed[0]（默认是 hard_cut），改用 _prefer_soft_primary
+    primary: TransitionStyle = _prefer_soft_primary(prefs)
     duration = min(0.4, prefs.max_transition_duration)
     suggestions: list[TransitionSuggestion] = []
     for idx, (a, b) in enumerate(_section_pairs(plan.main_track)):
@@ -312,11 +349,13 @@ def _coerce_transition(
     """
     if not isinstance(raw, dict):
         return None
-    style = str(raw.get("style", "")).strip()
+    # stage-58：先做同义词归一化（cut/fade/crossfade/中文 → 白名单 token），再做白名单判定
+    style = _normalize_transition_style(str(raw.get("style", "")))
     if style not in _ALLOWED_STYLES:
         return None
     if style not in prefs.allowed_transition_styles:
-        style = prefs.allowed_transition_styles[0]
+        # 之前直接回落到 allowed[0]=hard_cut；改成软兜底
+        style = _prefer_soft_primary(prefs)
     try:
         at_s = float(raw.get("at_seconds", 0.0))
         dur = float(raw.get("duration", 0.4))
@@ -832,7 +871,8 @@ def _coerce_transition_bundle(
     for opt_idx, opt in enumerate(raw_options[:3]):
         if not isinstance(opt, dict):
             continue
-        style = str(opt.get("style", "")).strip()
+        # stage-58：LLM 常吐出 "fade"/"cross-fade"/"硬切" 这种同义词，先归一化再过白名单
+        style = _normalize_transition_style(str(opt.get("style", "")))
         if style not in prefs.allowed_transition_styles:
             continue
         try:
@@ -858,7 +898,9 @@ def _coerce_transition_bundle(
             reason=str(opt.get("reason", "") or f"{from_sec}→{to_sec}")[:60],
         ))
     if not options:
-        primary = prefs.allowed_transition_styles[0]
+        # stage-58：之前直接用 allowed[0]=hard_cut，整片全硬切。改用 _prefer_soft_primary
+        # 优先 dissolve/slide/zoom，hard_cut 只在白名单仅剩 hard_cut 时才用。
+        primary = _prefer_soft_primary(prefs)
         options.append(TransitionSuggestion(
             item_id=f"pkg-tr-{idx:02d}-0",
             at_seconds=at_s,
@@ -960,7 +1002,8 @@ def _rule_based_v2_candidates(plan: Plan, prefs: PackagingPreferences) -> dict[s
         ))
     bundles: list[TransitionCandidateBundle] = []
     pairs = _section_pairs(plan.main_track)
-    primary = prefs.allowed_transition_styles[0]
+    # stage-58：规则兜底首选改为 dissolve/slide/zoom（_prefer_soft_primary），不再让 hard_cut 当默认
+    primary = _prefer_soft_primary(prefs)
     for idx, (a, b) in enumerate(pairs):
         rule_pick: TransitionStyle = _RULE_TRANSITION.get((a.section, b.section), primary)
         if rule_pick not in prefs.allowed_transition_styles:
@@ -974,18 +1017,24 @@ def _rule_based_v2_candidates(plan: Plan, prefs: PackagingPreferences) -> dict[s
             duration=min(0.4, prefs.max_transition_duration),
             reason=f"规则推荐 {rule_pick}",
         )]
-        if len(prefs.allowed_transition_styles) >= 2:
-            alt = prefs.allowed_transition_styles[1]
-            if alt != rule_pick:
-                opts.append(TransitionSuggestion(
-                    item_id=f"pkg-tr-{idx:02d}-1",
-                    at_seconds=float(b.start),
-                    from_section=a.section,
-                    to_section=b.section,
-                    style=alt,
-                    duration=min(0.4, prefs.max_transition_duration),
-                    reason=f"备选 {alt}",
-                ))
+        # stage-58：备选取第一个 != rule_pick 的非 hard_cut 风格；hard_cut 只在用户白名单只剩它时才用
+        alt: Optional[TransitionStyle] = None
+        for cand in prefs.allowed_transition_styles:
+            if cand != rule_pick and cand != "hard_cut":
+                alt = cand
+                break
+        if alt is None and len(prefs.allowed_transition_styles) >= 2:
+            alt = next((c for c in prefs.allowed_transition_styles if c != rule_pick), None)
+        if alt is not None:
+            opts.append(TransitionSuggestion(
+                item_id=f"pkg-tr-{idx:02d}-1",
+                at_seconds=float(b.start),
+                from_section=a.section,
+                to_section=b.section,
+                style=alt,
+                duration=min(0.4, prefs.max_transition_duration),
+                reason=f"备选 {alt}",
+            ))
         bundles.append(TransitionCandidateBundle(
             candidate_id=f"tb-tr-{idx:02d}",
             at_seconds=float(b.start),
