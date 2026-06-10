@@ -494,17 +494,152 @@ def _slot_requirement(
     return f"{' · '.join(parts)}（{style}）"
 
 
+_RERANK_STRATEGIES = ("highlight", "duration", "tag", "manual")
+
+
+def _rerank_rank_key(
+    mat: Material,
+    strategy: str,
+    target_role: Optional[SectionRole],
+    target_duration: float,
+    keyword_pool: set[str],
+) -> tuple[float, ...]:
+    """生成排序键——返回元组越小越靠前。
+
+    - highlight：先看 recommended_section 是否命中（命中靠前），再 -highlight_score, sort_order
+    - duration：|mat.duration - target_duration| 升序，无 duration 的素材按 +∞ 排到末尾
+    - tag：tags+subjects 与 keyword_pool 的命中数（多者靠前），再 -highlight_score
+    """
+    role_hit = 0 if (target_role and mat.recommended_section == target_role) else 1
+    mat_dur = float(mat.duration_seconds or 0.0)
+    if strategy == "duration":
+        if mat_dur <= 0:
+            return (1.0, 1e9, mat.sort_order)
+        return (0.0, abs(mat_dur - target_duration), mat.sort_order)
+    if strategy == "tag":
+        joined = set((mat.tags or []) + (mat.subjects or []))
+        overlap = len(joined & keyword_pool) if keyword_pool else 0
+        return (float(-overlap), float(role_hit), -float(mat.highlight_score), float(mat.sort_order))
+    # highlight (default)
+    return (float(role_hit), -float(mat.highlight_score), float(mat.sort_order))
+
+
+def _extract_keywords(section) -> set[str]:  # type: ignore[no-untyped-def]
+    """从 AdaptedSection 抽取 tag-overlap 用的关键词池——主题词 + content_description 切分。"""
+    if section is None:
+        return set()
+    import re as _re
+
+    text = " ".join(
+        s for s in [getattr(section, "theme", "") or "", getattr(section, "content_description", "") or ""] if s
+    )
+    # 简易 tokenize：中文按 2-3 字滑窗，英文按词；两者各自截短。
+    tokens: set[str] = set()
+    for w in _re.findall(r"[A-Za-z][A-Za-z0-9_]{2,15}", text):
+        tokens.add(w.lower())
+    cleaned = _re.sub(r"[\s\W_]+", "", text)
+    for n in (2, 3):
+        for i in range(len(cleaned) - n + 1):
+            tokens.add(cleaned[i : i + n])
+    return tokens
+
+
+async def _fill_rerank(gap: Gap, params: dict[str, Any]) -> FillResult:
+    """从用户素材库挑一个真实素材填进 gap.section。
+
+    params:
+      - strategy: "highlight" | "duration" | "tag" | "manual"（默认 highlight）
+      - target_material_id: 指定 material_id（manual 模式必填；其余模式忽略）
+      - exclude_material_ids: list[str]，已用过/被排除的素材
+
+    返回 FillResult.new_material_id 为真 material_id；找不到任何候选时 status="warn" + note 说明，
+    new_material_id 留空，让 _pick 自然回退到顺位 user_material / 字卡兜底。
+    """
+    from ..materials import material_store
+
+    strategy = str(params.get("strategy") or "highlight").strip().lower()
+    if strategy not in _RERANK_STRATEGIES:
+        strategy = "highlight"
+    target_id = str(params.get("target_material_id") or "").strip() or None
+    raw_excl = params.get("exclude_material_ids") or []
+    excluded: set[str] = set()
+    if isinstance(raw_excl, list):
+        for x in raw_excl:
+            s = str(x or "").strip()
+            if s:
+                excluded.add(s)
+
+    project_id = (gap.project_id or "").strip() or None
+    pool: list[Material] = []
+    if project_id:
+        pool = list(material_store.list(project_id))
+
+    # manual 模式：必须 target_material_id 命中本项目素材库
+    if strategy == "manual":
+        if not target_id:
+            return FillResult(
+                gap_id=gap.gap_id, action="rerank", new_material_id=None,
+                status="warn", section_id=gap.section_id,
+                note="手动模式需要选中一个素材",
+            )
+        match = next((m for m in pool if m.material_id == target_id), None)
+        if not match:
+            return FillResult(
+                gap_id=gap.gap_id, action="rerank", new_material_id=None,
+                status="warn", section_id=gap.section_id,
+                note=f"素材 {target_id} 不在本项目库",
+            )
+        return FillResult(
+            gap_id=gap.gap_id, action="rerank", new_material_id=match.material_id,
+            status="ok", section_id=gap.section_id,
+            note=f"手动选中：{match.filename}",
+        )
+
+    if not pool:
+        return FillResult(
+            gap_id=gap.gap_id, action="rerank", new_material_id=None,
+            status="warn", section_id=gap.section_id,
+            note="本项目还没上传任何素材，无法重排",
+        )
+
+    _, section = _lookup_plan_section_for_gap(gap)
+    target_role: Optional[SectionRole] = gap.section
+    target_duration = float(getattr(section, "duration_seconds", 0.0) or 0.0) if section else 0.0
+    if target_duration <= 0:
+        target_duration = 4.0
+    keyword_pool = _extract_keywords(section) if strategy == "tag" else set()
+
+    # 不允许的素材：已排除 / 当前 gap 已绑的（避免点"换一个"返回同一条）
+    skip: set[str] = set(excluded)
+    if gap.matched_material_id:
+        skip.add(gap.matched_material_id)
+
+    candidates = [m for m in pool if m.material_id not in skip]
+    if not candidates:
+        # 排除清单把所有都过滤掉了——退到允许重复的全池，但仍按策略排序
+        candidates = list(pool)
+    candidates.sort(key=lambda m: _rerank_rank_key(m, strategy, target_role, target_duration, keyword_pool))
+    best = candidates[0]
+
+    strategy_label = {
+        "highlight": "按高光评分",
+        "duration": f"按时长接近 {target_duration:.1f}s",
+        "tag": "按主体/标签匹配",
+    }.get(strategy, strategy)
+    note = f"{strategy_label} → 选中 {best.filename}"
+    if best.highlight_reason:
+        note += f"（{best.highlight_reason[:24]}）"
+    return FillResult(
+        gap_id=gap.gap_id, action="rerank", new_material_id=best.material_id,
+        status="ok", section_id=gap.section_id, note=note,
+    )
+
+
 async def fill_gap(gap: Gap, action: FillAction, params: dict[str, Any]) -> FillResult:
-    """分发到三种动作：rerank（重排） / copy（LLM 文案） / aigc（Seedance T2V）。"""
+    """分发到四种动作：rerank（重排） / copy（LLM 文案） / aigc（Seedance T2V） / aigc_image（Seedream）。"""
     log.info("[gap-fill] %s action=%s", gap.gap_id, action)
     if action == "rerank":
-        target = params.get("target_material_id") or f"mat-rerank-{uuid.uuid4().hex[:6]}"
-        return FillResult(
-            gap_id=gap.gap_id, action="rerank",
-            new_material_id=target, status="ok",
-            note="已重排到该槽位",
-            section_id=gap.section_id,
-        )
+        return await _fill_rerank(gap, params)
 
     if action == "copy":
         llm = get_llm_client()

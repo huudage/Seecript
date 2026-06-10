@@ -22,6 +22,7 @@ import { MaterialGrid } from '@/components/compose/MaterialGrid'
 import { PackagingItemEditDialog } from '@/components/compose/PackagingItemEditDialog'
 import { PackagingPanel } from '@/components/compose/PackagingPanel'
 import { ReferencePicker } from '@/components/compose/ReferencePicker'
+import { RerankStrategyPicker } from '@/components/compose/RerankStrategyPicker'
 import { SceneEditPanel } from '@/components/compose/SceneEditPanel'
 import { SectionEditDialog } from '@/components/compose/SectionEditDialog'
 import { ShotEditDialog } from '@/components/compose/ShotEditDialog'
@@ -749,6 +750,16 @@ export default function ComposePage() {
   }, [currentProjectId])
 
   // mount：把后端已存的素材回灌进 zustand（材料 store 是 in-memory，刷浏览器还在但进程重启清空）
+  const refreshMaterials = useCallback(async () => {
+    if (!currentProjectId) return
+    try {
+      const items = await api.get<Material[]>(`/material?project_id=${encodeURIComponent(currentProjectId)}`)
+      setMaterials(items)
+    } catch {
+      /* 没素材或网络抖动不影响主流程 */
+    }
+  }, [currentProjectId, setMaterials])
+
   useEffect(() => {
     if (!currentProjectId) return
     let cancelled = false
@@ -972,6 +983,12 @@ export default function ComposePage() {
         const body: GapFillRequest = { gap_id: gap.gap_id, action, params }
         const result = await api.post<FillResult>('/gap/fill', body)
         upsertFill(result)
+        // stage-58：AIGC 产物会被后端 _record_aigc_to_library 写进素材库，立刻拉一次
+        // /material 让左侧素材库出现新条目。runFill 当前只被 rerank 用，rerank 不
+        // 增加素材；但保留这个保险——未来若 runFill 被复用为通用入口仍能正确刷新。
+        if (result.status === 'ok' && (result.action === 'aigc' || result.action === 'aigc_image')) {
+          void refreshMaterials()
+        }
         // 关键：从 store 拿最新 fills 而非 closure 中的 stale 快照。
         // 并行补全场景（A、B 两段同时点 fill）下，closure 里的 fills 只包含本次发起
         // 时的状态，B 提交时已不含 A 的结果——`[...fills.filter, B] 把 A 抹掉了`。
@@ -989,7 +1006,7 @@ export default function ComposePage() {
         markBusy(sectionId, false)
       }
     },
-    [markBusy, runAnalyze, upsertFill],
+    [markBusy, refreshMaterials, runAnalyze, upsertFill],
   )
 
   const handleRerankApply = useCallback(async () => {
@@ -1954,7 +1971,7 @@ export default function ComposePage() {
               则按 selectedGap 走条件分支。 */}
           <div className="mt-3 space-y-2 border-t border-border pt-3">
             <p className="rounded-md border border-primary/30 bg-primary/5 px-2 py-1.5 text-[11px] leading-relaxed text-foreground">
-              💡 这里只关心<strong>画面 + 字幕</strong>——三种方式都是给本段生成画面（挑素材 / 字卡画面 / AI 视频）；字幕轨开关默认关闭，开启后 AI 自动按段落生成可编辑字幕。口播留到第 3 步再切换音色合成。
+              💡 这里只关心<strong>画面 + 字幕</strong>——四种方式都是给本段生成画面（挑素材 / 字卡画面 / AI 视频 / AI 生图再渲染）；字幕轨开关默认关闭，开启后 AI 自动按段落生成可编辑字幕。口播留到第 3 步再切换音色合成。
             </p>
             {selectedGap && (
               <>
@@ -1979,25 +1996,51 @@ export default function ComposePage() {
                 {activeAction === 'rerank' && (
                   <>
                     {!selectedFill && (
-                      <button
-                        onClick={() => void runFill(selectedGap, 'rerank')}
-                        disabled={gapBusy}
-                        className={cn(
-                          'w-full rounded-md bg-primary px-3 py-1.5 text-xs font-medium text-primary-foreground',
-                          gapBusy && 'cursor-not-allowed opacity-60',
-                        )}
-                      >
-                        {gapBusy ? '生成候选中…' : '让 AI 挑一个素材填进来'}
-                      </button>
+                      <RerankStrategyPicker
+                        gapBusy={gapBusy}
+                        materials={sortedMaterials}
+                        targetSection={selectedGap.section}
+                        onPickStrategy={(strategy) =>
+                          void runFill(selectedGap, 'rerank', { strategy })
+                        }
+                        onPickManual={(materialId) =>
+                          void runFill(selectedGap, 'rerank', {
+                            strategy: 'manual',
+                            target_material_id: materialId,
+                          })
+                        }
+                      />
                     )}
                     {selectedFill && selectedFill.action === 'rerank' && (
-                      <FillRerankPanel
-                        plan={plan}
-                        fill={selectedFill}
-                        materials={sortedMaterials}
-                        onApply={handleRerankApply}
-                        loading={gapBusy}
-                      />
+                      <>
+                        <RerankStrategyPicker
+                          gapBusy={gapBusy}
+                          materials={sortedMaterials}
+                          targetSection={selectedGap.section}
+                          currentMaterialId={selectedFill.new_material_id ?? null}
+                          onPickStrategy={(strategy) =>
+                            void runFill(selectedGap, 'rerank', {
+                              strategy,
+                              exclude_material_ids: selectedFill.new_material_id
+                                ? [selectedFill.new_material_id]
+                                : [],
+                            })
+                          }
+                          onPickManual={(materialId) =>
+                            void runFill(selectedGap, 'rerank', {
+                              strategy: 'manual',
+                              target_material_id: materialId,
+                            })
+                          }
+                        />
+                        <FillRerankPanel
+                          plan={plan}
+                          fill={selectedFill}
+                          materials={sortedMaterials}
+                          onApply={handleRerankApply}
+                          loading={gapBusy}
+                        />
+                      </>
                     )}
                   </>
                 )}
@@ -2051,6 +2094,12 @@ export default function ComposePage() {
                 const sid = f.section_id ?? gapForKey.section_id ?? gapForKey.gap_id
                 markBusy(sid, true)
                 upsertFill(f)
+                // stage-58：AIGC 生成产物（aigc_image/aigc_video）会被后端
+                // _record_aigc_to_library 写进 material_store——必须立刻拉一次
+                // /material 让左侧素材库出现新条目，否则用户要刷页面才能看到。
+                if (f.status === 'ok' && (f.action === 'aigc' || f.action === 'aigc_image')) {
+                  void refreshMaterials()
+                }
                 // 取 store 最新 snapshot（含其它并发面板刚 upsert 的 fill），避免
                 // 用 closure 中的 stale `fills` 把别的段的成果覆盖掉。
                 const latest = usePlanStore.getState().fills

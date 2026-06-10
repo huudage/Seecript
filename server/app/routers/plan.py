@@ -479,7 +479,7 @@ async def build_plan(req: PlanBuildRequest) -> Plan:
     def _pick(sec: AdaptedSection) -> tuple[str, str, list[str], str | None, str | None, "TextCardSpec | None", str | None, list[str], "AnimationSpec | None"]:
         """返回 (source, source_ref, aigc_video_urls, narration_override, voiceover_url, text_card_spec, aigc_image_url, aigc_image_urls, animation_spec)。
 
-        优先级：本段 fill（aigc / aigc_image / copy） > 用户素材 > 文字卡兜底。
+        优先级：本段 fill（aigc / aigc_image / copy / rerank） > 用户素材 > 文字卡兜底。
         - aigc fill：source=aigc_t2v，source_ref=task_id，aigc_video_urls=video_urls
         - aigc_image fill：source=aigc_image，source_ref=new_material_id，aigc_image_url=fill.aigc_image_url
                           多镜头时 aigc_image_urls = fill.aigc_image_urls（path B 拆分用）
@@ -487,6 +487,8 @@ async def build_plan(req: PlanBuildRequest) -> Plan:
         - copy fill：source=text_card（字卡画面），text_card_spec=fill.text_card_spec；
                      narration 用 main_text + sub_text 拼接（供 TTS 与 LLM 上下文）；
                      若 fill.voiceover_url 已存在（gap 路由自动 TTS 写入），直接透传到 Scene。
+        - rerank fill：source=user_material，source_ref=new_material_id（gap_agent 真挑材后的真 material_id）；
+                     优先级在顺位 selected_materials 之前，避免"用户挑了素材 A 但 rebuild 用了 B"
         - 用户素材：顺位消费 selected_materials
         - 兜底：source=text_card，文案取自 content_description 首句
         """
@@ -554,6 +556,21 @@ async def build_plan(req: PlanBuildRequest) -> Plan:
                 [],
                 fallback_text or None,
                 None,
+                None,
+                None,
+                [],
+                None,
+            )
+        # stage-57：rerank fill 把用户挑/AI 挑的真 material_id 落到本段——优先级高于顺位消费 selected_materials，
+        # 这样用户在工作坊里挑了不同素材后，rebuild 出来的 Scene 真的会用那个素材，而不是默默被顺序覆盖。
+        # 空 new_material_id 的 rerank（material_store 空 / 手动模式没选）走顺位 fallback。
+        if fill and fill.action == "rerank" and fill.new_material_id:
+            return (
+                "user_material",
+                fill.new_material_id,
+                [],
+                narration_override,
+                voiceover_url,
                 None,
                 None,
                 [],
