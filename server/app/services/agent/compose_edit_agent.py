@@ -4,9 +4,12 @@
 - 那一组是渲染态的"改片"，作用对象是 Plan.main_track / packaging_track / 口播 wav
 - 本模块是 Compose 态的"改稿"
 
-作用域（stage-44，按用户最新需求重排）：
-- step2 (拆解-改编态)：内容轨 + 渲染/包装/全局 全部开放；**唯独 AI 生图（aigc_image）/ AI 视频（aigc_t2v）禁通过对话改**——走 AIGC 面板
-- step3 (包装-渲染态)：**禁内容轨**（段文案/段时长/删段/重排/分镜文本）；渲染/包装/全局/素材重排/字卡重出/AI 生图都开放
+作用域（stage-53，强分流 + 宏指令）：
+- step2 (拆解-改编态)：**只**改内容轨（段文案 / 段时长 / 删段 / 重排 / 分镜级 4 件套）+ 素材重排（rerank/copy）+ 编排级 Compose 设置（platform/ratio/duration/migration_preference）
+- step3 (包装-渲染态)：**只**改包装/字幕/BGM/转场/封面 + 渲染级 Compose 设置（subtitle/voiceover/tts_voice/frame_design/packaging_preset）+ aigc_image 重生
+- 跨 step 的指令 → D 态：不调任何 tool，明确返回"请去 stepX 改"的引导文案
+- 内容轨的 AI 生成结果（aigc_image / aigc_t2v）→ D 态：引导用户走 AIGC 面板手动改提示词
+- 宏指令 `apply_macro_adjustment` (amp_pace / amp_emotion × light/medium/strong) 在两 step 都开放，按 step 自动应用对应字段子集
 
 设计：
 1. LLM tool-call 提取意图 → 调度到本地 mutator
@@ -40,23 +43,30 @@ log = logging.getLogger("seecript.compose_edit")
 # 严守『信息不全 → 追问而非脑补』：不允许把『调整一下第二段』脑补成『改文案+改时长』。
 
 _QA_RULES = (
-    "你有三类回应方式：\n"
+    "你有四类回应方式：\n"
     "A) **编辑**（tool_calls）：用户**明确说了要改什么 + 改成什么**才用。例如：『把第 1 段改成 5 秒』『删除第 2 段』。\n"
     "B) **讲解**（不要 tool_calls，直接 1-3 句中文）：用户在问或聊本项目。答案必须建立在系统消息提供的『当前 Plan 概览』之上。\n"
     "C) **追问**（不要 tool_calls，直接 1 句反问）：用户的编辑意图**模糊或不全**时——\n"
     "   - 指了对象但没说怎么改：『调整一下第二段』『改一下 BGM』 → 反问『你想调时长 / 改文案 / 删段？要的话告诉我目标值』。\n"
     "   - 说了动作但没说目标：『删掉那段』『重排』 → 反问『指的是第几段？本片现在有 N 段，按顺序数』。\n"
     "   - 给了模糊量词没数值：『稍微短一点第 2 段』 → **允许执行**（按 ×0.85 惯例），但只能落『一项』时长变更，不要额外编『改文案』。\n"
+    "   - 给了形容词类指令（更抓人 / 节奏感 / 慢一些 / 更紧凑）但你不确定对应哪个 macro → 反问『你想要：① 节奏更紧凑（amp_pace）还是 ② 情绪更抓人（amp_emotion）？』\n"
+    "D) **越界引导**（不要 tool_calls，直接 1 句中文）：用户想改的内容不在当前 step 权限内——\n"
+    "   - **step2 用户想改包装/字幕/BGM/转场/封面/字卡视觉/标题条** → 回『这类包装类编辑在 step3 进行，请切到 step3 后再说一遍』。\n"
+    "   - **step2 用户想改 AI 生图/AI 视频本身** → 回『AI 生图 / AI 视频不通过对话改，请到 AIGC 面板手动改提示词后再点重新生成』。\n"
+    "   - **step3 用户想改内容轨**（段文案 / 段时长 / 删段 / 重排顺序 / 分镜画面 / 分镜口播 / 分镜主体 / 分镜时长） → 回『内容轨编辑在 step2 进行，请切到 step2 后再说一遍』。\n"
     "讲解能覆盖：项目主题/目标、段落结构（每段角色/主题/时长/描述）、结构空缺（没有 scene 或时长占比异常的段）、"
     "素材选择建议（基于段角色 + 全局调性 / 平台 / 关键词推断要找什么样素材）、"
     "BGM / 包装 / 调性 / 比例当前是什么、本 step 能改什么、为什么改不了。\n"
     "**禁止编造**：上下文里没有的信息一律答『这超出我对本项目的了解范围，没法编造，建议你直接告诉我你想改的是什么』。\n"
     "**禁止脑补**：不要把单一指令拆成多个 diff。一句『调整第二段』决不能产生『改文案 + 改时长』两个 tool_call——这是幻觉。\n"
-    "**禁止在讲解 / 追问里夹带 tool_calls**。"
+    "**禁止在讲解 / 追问 / 越界引导里夹带 tool_calls**。"
 )
 
 _SYSTEM_STEP2 = (
-    "你是 Compose 拆解-改编态的对话编辑小助手。当前作用域 step2，**所有渲染/包装/全局设置都开放编辑，唯独 AI 生图与 AI 视频不能通过对话改**（要去 AIGC 面板手动改提示词）。\n"
+    "你是 Compose 拆解-改编态的对话编辑小助手。当前作用域 step2，**只改内容轨**（段落 / 分镜 / 素材重排）+ 编排级 Compose 设置。\n"
+    "**包装 / 字幕 / BGM / 转场 / 封面 / 字卡视觉 / 标题条 / 贴纸**这些在 step3 改——用户问这些请走 D 态引导，**不要 tool_calls**。\n"
+    "**AI 生图 / AI 视频本身**（aigc_image / aigc_t2v）不通过对话改，请走 AIGC 面板手动改提示词——也是 D 态引导。\n"
     "可调用编辑工具：\n"
     "—— 内容轨 ——\n"
     "update_section_narration（改某段文案）、"
@@ -66,19 +76,17 @@ _SYSTEM_STEP2 = (
     "update_shot_visual（改某段下第 N 个分镜的画面描述）、"
     "update_shot_subject（改某段下第 N 个分镜的主体词 ≤40 字）、"
     "update_shot_narration（改某分镜的口播/字幕，同步主轨 scene）、"
-    "update_shot_duration（改某分镜的时长 1-12 秒，自动缩放段总时长与对应 scene）。\n"
-    "—— 渲染/包装/全局（与 step3 完全相同）——\n"
-    "update_text_card_spec（改字卡文案 / 字号）、"
-    "update_packaging_text（改包装项文字）、"
-    "update_packaging_item_time（沿时间轴平移/改时长）、"
-    "update_scene_transition（改入场转场风格 hard_cut/dissolve/slide/zoom/whip/wipe + 时长 0.1-1.5 秒）、"
-    "regenerate_narrations_all（按 hint 整体重写所有段落口播）、"
-    "update_bgm_offset（BGM 起点对齐）、"
-    "update_bgm_volume（BGM 音量 0-1.5）、"
-    "update_compose_setting（target_platform/aspect_ratio/target_duration_seconds/migration_preference/subtitle_enabled/voiceover_enabled/tts_voice/frame_design_preset/packaging_preset）。\n"
+    "update_shot_duration（改某分镜的时长 1-12 秒，自动缩放段总时长与对应 scene）、"
+    "regenerate_narrations_all（按 hint 整体重写所有段落口播）。\n"
     "—— 素材重排 / 字卡重出（仅 rerank 与 copy；aigc_image 在 step2 禁用）——\n"
     "regenerate_fill（重新生成某段 fill，action ∈ rerank/copy）、"
     "regenerate_all_fills（批量重生成所有段，action ∈ rerank/copy）。\n"
+    "—— 编排级设置（与 step3 共用同一 tool，但 step2 只接受这些 key）——\n"
+    "update_compose_setting（target_platform/aspect_ratio/target_duration_seconds/migration_preference）。\n"
+    "—— 宏指令（形容词类指令统一走它） ——\n"
+    "apply_macro_adjustment：用户说形容词如『更快/紧凑/节奏感/慢一些』→ macro=amp_pace；『更抓人/更有感染力/情绪强一点』→ macro=amp_emotion。"
+    "档位 intensity 凭语气词判：『稍微/有点』→ light；『明显/适中』→ medium；『大幅/强烈/很』→ strong。"
+    "scope 默认 'all'；用户指了某段 → 传 section_id。\n"
     "用户表达模糊时按惯例：『稍短=×0.85 / 更短=×0.7 / 更长=×1.25 / 长很多=×1.5』，时长统一钳制 [2, 30] 秒。\n"
     "**段落识别（很重要）**：用户**不会**说 section_id（『sec-0 / sec-1』），他们会说自然语言。请**严格**按下表把自然语言映射到上文【段落结构】里列出的 section_id：\n"
     "  · 『第 1 段 / 第一段 / 头一段 / 开头 / 开头段 / 开场 / 开场段 / 片头』 → 列表里**第 1 个段**的 section_id（通常 role=opening）。\n"
@@ -91,14 +99,13 @@ _SYSTEM_STEP2 = (
     "用户若**直接**说 sec-0/sec-1 也照旧支持识别。**禁止**自己造 sec-id（例如不能凭空说 sec-5 但实际只有 4 段）。\n"
     "**分镜级编辑**：用户说『第 1 段第 2 镜画面改成…』『开头段第 1 镜口播改成…』『高潮段第 3 镜短一点』时，"
     "先按上面规则定段，再用 update_shot_visual / update_shot_subject / update_shot_narration / update_shot_duration；shot_order 从 0 起（用户说『第 1 镜』即 shot_order=0）。\n"
-    "若用户说『换一张图 / 重新生图 第 N 段』『换 AI 视频』『重做 AI 视频』→ **不要 tool_calls**，直接讲解："
-    "『step2 不通过对话改 AI 生图 / 视频，请到 AIGC 面板手动改提示词后再点重新生成。』\n"
     "若用户说『重新挑素材』『重新生成字卡』『把 N 段重排』『所有段重排素材』『所有段重出字卡』→ regenerate_fill 或 regenerate_all_fills（action=rerank 或 copy）。\n\n"
     + _QA_RULES
 )
 
 _SYSTEM_STEP3 = (
-    "你是 Compose 包装态的对话编辑小助手。当前作用域 step3，**禁止改内容轨**（段落文案/段时长/删段/重排/分镜画面/分镜口播/分镜主体/分镜时长），其余全部开放。\n"
+    "你是 Compose 包装态的对话编辑小助手。当前作用域 step3，**只改包装 / 字幕 / BGM / 转场 / 封面 / 字卡视觉**，禁内容轨。\n"
+    "**段落文案 / 段落时长 / 删段 / 重排顺序 / 分镜画面 / 分镜口播 / 分镜主体 / 分镜时长**这些在 step2 改——用户问这些请走 D 态引导，**不要 tool_calls**。\n"
     "可调用编辑工具：\n"
     "update_text_card_spec（改字卡文案/字号）、"
     "update_packaging_text（改包装项 item 的文字）、"
@@ -107,15 +114,16 @@ _SYSTEM_STEP3 = (
     "regenerate_narrations_all（按 hint 批量重写所有段落口播；保留段落结构，仅改语言风格）、"
     "update_bgm_offset（BGM 起点对齐到视频第几秒，可负）、"
     "update_bgm_volume（BGM 音量 0-1.5）、"
-    "update_compose_setting（改 target_platform/aspect_ratio/target_duration_seconds/migration_preference"
-    "/subtitle_enabled/voiceover_enabled/tts_voice/frame_design_preset/packaging_preset）、"
+    "update_compose_setting（渲染级 key：subtitle_enabled/voiceover_enabled/tts_voice/frame_design_preset/packaging_preset；编排级 key 仍接受兼容）、"
     "regenerate_fill（重新生成某段 fill，action ∈ rerank/copy/aigc_image）、"
     "regenerate_all_fills（批量重生成所有段，action ∈ rerank/copy/aigc_image）。\n"
+    "—— 宏指令（形容词类指令统一走它） ——\n"
+    "apply_macro_adjustment：用户说形容词如『更快/紧凑/节奏感』→ macro=amp_pace（step3 下只动转场+BGM）；"
+    "『更抓人/更有感染力』→ macro=amp_emotion（step3 下只动 BGM 音量+字幕开关+迁移倾向）。"
+    "档位 intensity 凭语气词判（稍微/明显/大幅 → light/medium/strong）。scope 默认 'all'。\n"
     "**段落识别**：用户**只用『第 N 段』/『开头段』/『高潮段』/『最后一段』这类人话**——按列表顺序定位 section_id；"
     "**对外**也只回『第 N 段』，不要在回答里写 sec-0/sec-1 这种内部 id。\n"
-    "用户若说『改第 2 段文案』『把这段删掉』『重排段落』『改某分镜画面/口播』等内容轨指令，"
-    "**不要 tool_calls**，直接讲解：『step3 不可改内容轨，请回 step2 调整结构』。\n"
-    "用户若说『重新生成 AI 视频』→ 讲解：『AI 视频请到 AIGC 面板手动改提示词后重生成。』\n\n"
+    "用户若说『重新生成 AI 视频』→ D 态引导：『AI 视频请到 AIGC 面板手动改提示词后重生成。』\n\n"
     + _QA_RULES
 )
 
@@ -565,6 +573,66 @@ _TOOL_REGENERATE_FILL_NO_AIGC = {
 }
 
 
+# stage-53：宏指令——把"更抓人/更紧凑/更稳"这类形容词请求落到 2×3 的预设档位
+# scope=pace（节奏）  → 改 段落 duration（缩 / 扩）+ 字幕节奏
+# scope=emotion（情绪）→ 改 packaging 转场强度 + BGM 音量 + 段间动效（仅 step3）
+# level=light/medium/strong：每档对应一组系数
+_TOOL_APPLY_MACRO = {
+    "type": "function",
+    "function": {
+        "name": "apply_macro_adjustment",
+        "description": (
+            "应用宏指令调整。把『更抓人/更紧凑/更稳』这类形容词指令映射到预设系数：\n"
+            "- scope=pace：调整段落总节奏（duration × 系数），影响所有段落\n"
+            "- scope=emotion：调整情绪强度（仅 step3：转场强度 + BGM 音量）\n"
+            "- level=light/medium/strong：渐进力度\n"
+            "用户使用形容词（『再快点』『更稳一些』『加强节奏感』）时优先用这个 tool；"
+            "用户给的是具体改动（『把第二段改 5 秒』）时不要用，直接调对应单点 tool。"
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "scope": {
+                    "type": "string",
+                    "enum": ["pace", "emotion"],
+                    "description": "调整范围。pace=节奏（时长收缩/扩张）；emotion=情绪强度（转场+BGM）。",
+                },
+                "level": {
+                    "type": "string",
+                    "enum": ["light", "medium", "strong"],
+                    "description": "力度档位。light=轻微（≈10%）；medium=中等（≈20%）；strong=显著（≈35%）。",
+                },
+                "direction": {
+                    "type": "string",
+                    "enum": ["amplify", "attenuate"],
+                    "description": "方向。amplify=加强（更抓人/更紧凑/更激烈）；attenuate=削弱（更稳/更慢/更平和）。",
+                },
+            },
+            "required": ["scope", "level", "direction"],
+        },
+    },
+}
+
+
+# 宏指令系数表：{(scope, direction, level): {field: factor}}
+# pace amplify = 缩短时长（节奏更快）；pace attenuate = 延长时长（节奏更慢）
+# emotion amplify = 转场强度↑ + BGM↑；emotion attenuate = 反之
+MACRO_RULES: dict[tuple[str, str, str], dict[str, float]] = {
+    ("pace", "amplify", "light"):    {"duration_factor": 0.92},
+    ("pace", "amplify", "medium"):   {"duration_factor": 0.82},
+    ("pace", "amplify", "strong"):   {"duration_factor": 0.68},
+    ("pace", "attenuate", "light"):  {"duration_factor": 1.10},
+    ("pace", "attenuate", "medium"): {"duration_factor": 1.22},
+    ("pace", "attenuate", "strong"): {"duration_factor": 1.40},
+    ("emotion", "amplify", "light"):    {"transition_intensity_delta": 0.10, "bgm_volume_delta": 0.05},
+    ("emotion", "amplify", "medium"):   {"transition_intensity_delta": 0.20, "bgm_volume_delta": 0.10},
+    ("emotion", "amplify", "strong"):   {"transition_intensity_delta": 0.35, "bgm_volume_delta": 0.18},
+    ("emotion", "attenuate", "light"):  {"transition_intensity_delta": -0.10, "bgm_volume_delta": -0.05},
+    ("emotion", "attenuate", "medium"): {"transition_intensity_delta": -0.20, "bgm_volume_delta": -0.10},
+    ("emotion", "attenuate", "strong"): {"transition_intensity_delta": -0.32, "bgm_volume_delta": -0.15},
+}
+
+
 _TOOLS_STEP2: list[dict] = [
     # 内容轨（结构 / 文案 / 时长 / 顺序 / 分镜）
     _TOOL_UPDATE_NARRATION,
@@ -575,33 +643,33 @@ _TOOLS_STEP2: list[dict] = [
     _TOOL_UPDATE_SHOT_SUBJECT,
     _TOOL_UPDATE_SHOT_NARRATION,
     _TOOL_UPDATE_SHOT_DURATION,
-    # 渲染相关（除 AI 生图/视频外都开放）
-    _TOOL_UPDATE_TEXT_CARD,
-    _TOOL_UPDATE_PACKAGING_TEXT,
-    _TOOL_UPDATE_PACKAGING_ITEM_TIME,
-    _TOOL_UPDATE_SCENE_TRANSITION,
+    # 整轨级辅助
     _TOOL_REGENERATE_NARRATIONS_ALL,
-    _TOOL_UPDATE_BGM_OFFSET,
-    _TOOL_UPDATE_BGM_VOLUME,
+    # 编排级 Compose 设置
     _TOOL_UPDATE_COMPOSE_SETTING,
     # 素材重排 / 字卡重出（禁 aigc_image，AI 生图走 AIGC 面板）
     _TOOL_REGENERATE_FILL_NO_AIGC,
     _TOOL_REGENERATE_ALL_FILLS_NO_AIGC,
+    # 宏指令（节奏/情绪 × 三档）
+    _TOOL_APPLY_MACRO,
 ]
 
 _TOOLS_STEP3: list[dict] = [
-    # 包装与渲染
+    # 包装 / 字幕 / 转场 / 封面
     _TOOL_UPDATE_TEXT_CARD,
     _TOOL_UPDATE_PACKAGING_TEXT,
     _TOOL_UPDATE_PACKAGING_ITEM_TIME,
     _TOOL_UPDATE_SCENE_TRANSITION,
-    _TOOL_REGENERATE_NARRATIONS_ALL,
+    # BGM
     _TOOL_UPDATE_BGM_OFFSET,
     _TOOL_UPDATE_BGM_VOLUME,
+    # 渲染级 Compose 设置
     _TOOL_UPDATE_COMPOSE_SETTING,
-    # 素材重排 / 字卡重出 / 静图重生（不含 aigc_t2v 因为本来就禁）
+    # 字卡 / 静图重出（不含 aigc_t2v——内容轨能力，归 step2/AIGC 面板）
     _TOOL_REGENERATE_FILL,
     _TOOL_REGENERATE_ALL_FILLS,
+    # 宏指令
+    _TOOL_APPLY_MACRO,
 ]
 
 
@@ -1250,6 +1318,75 @@ def _mut_update_shot_subject(plan: Plan, args: dict) -> ComposeEditDiff | None:
     )
 
 
+def _mut_apply_macro(plan: Plan, args: dict) -> ComposeEditDiff | None:
+    """宏指令落地：把 (scope, direction, level) 映射到 MACRO_RULES 系数表，批量应用。
+
+    pace 路径：等比缩放所有 sec.duration_seconds 与对应 main_track scene.duration，
+              再 _rebuild_timeline 重置 start。
+    emotion 路径：BGM volume 加偏移（clamp 0..1.5）+ 主轨所有 transition_in.duration 加偏移
+                 （clamp 0.1..1.5）。intensity_delta 用作转场时长比例（强转场 = 长 duration）。
+    """
+    scope = (args.get("scope") or "").strip().lower()
+    direction = (args.get("direction") or "").strip().lower()
+    level = (args.get("level") or "").strip().lower()
+    if scope not in ("pace", "emotion") or direction not in ("amplify", "attenuate") \
+            or level not in ("light", "medium", "strong"):
+        return None
+    rule = MACRO_RULES.get((scope, direction, level))
+    if rule is None:
+        return None
+
+    if scope == "pace":
+        factor = float(rule.get("duration_factor") or 1.0)
+        if abs(factor - 1.0) < 0.005:
+            return None
+        before_total = plan.duration_seconds
+        for sec in plan.adapted_sections:
+            sec.duration_seconds = max(2.0, min(120.0, sec.duration_seconds * factor))
+            for sh in sec.shots or []:
+                sh.duration_seconds = max(0.5, min(12.0, sh.duration_seconds * factor))
+        for sc in plan.main_track:
+            sc.duration = max(0.5, sc.duration * factor)
+        info = _rebuild_timeline(plan)
+        base = (
+            f"宏调整 pace · {direction} · {level}（系数 {factor:.2f}）："
+            f"总时长 {before_total:.1f}s → {info['total']:.1f}s"
+        )
+        return ComposeEditDiff(
+            op="apply_macro_adjustment",
+            target_id=None,
+            before={"scope": scope, "direction": direction, "level": level, "total_before": round(before_total, 2)},
+            after={"factor": factor, "total_after": round(info['total'], 2)},
+            summary=_summary_with_rebuild(base, info),
+        )
+
+    # emotion
+    trans_delta = float(rule.get("transition_intensity_delta") or 0.0)
+    bgm_delta = float(rule.get("bgm_volume_delta") or 0.0)
+    bgm_before = plan.bgm.volume if plan.bgm else None
+    if plan.bgm is not None:
+        plan.bgm.volume = max(0.0, min(1.5, plan.bgm.volume + bgm_delta))
+    transitions_changed = 0
+    for sc in plan.main_track:
+        if sc.transition_in is None:
+            continue
+        new_dur = max(0.1, min(1.5, sc.transition_in.duration + trans_delta))
+        if abs(new_dur - sc.transition_in.duration) >= 0.01:
+            sc.transition_in.duration = new_dur
+            transitions_changed += 1
+    base = (
+        f"宏调整 emotion · {direction} · {level}（转场 ±{trans_delta:+.2f}s × {transitions_changed} 处；"
+        f"BGM volume {bgm_before} → {plan.bgm.volume if plan.bgm else 'n/a'}）"
+    )
+    return ComposeEditDiff(
+        op="apply_macro_adjustment",
+        target_id=None,
+        before={"scope": scope, "direction": direction, "level": level, "bgm_volume_before": bgm_before},
+        after={"transitions_changed": transitions_changed, "bgm_volume_after": plan.bgm.volume if plan.bgm else None},
+        summary=base,
+    )
+
+
 _MUTATORS: dict[str, Callable[[Plan, dict], ComposeEditDiff | None]] = {
     "update_section_narration": _mut_update_narration,
     "update_section_duration": _mut_update_duration,
@@ -1266,6 +1403,7 @@ _MUTATORS: dict[str, Callable[[Plan, dict], ComposeEditDiff | None]] = {
     "update_bgm_offset": _mut_update_bgm_offset,
     "update_bgm_volume": _mut_update_bgm_volume,
     "update_compose_setting": _mut_update_compose_setting,
+    "apply_macro_adjustment": _mut_apply_macro,
 }
 
 
@@ -1599,10 +1737,12 @@ _ASYNC_MUTATORS["regenerate_all_fills"] = _mut_regenerate_all_fills
 
 
 # step → 允许 mutator 集合（外部越界检测用）
-# stage-44：step2 = 内容轨 + 渲染（无 AI 生图/视频）；step3 = 渲染 + 素材重生（无内容轨）
+# stage-53：step2 = **只**内容轨 + Compose 设置 + 素材重排/字卡重出（禁包装/字幕/BGM/转场）
+#          step3 = **只**包装/字幕/BGM/转场/封面 + Compose 设置 + 字卡/静图重出（禁内容轨）
+#          越界 op 触发 D 态："请去 stepX 改"，不调任何 tool
 _STEP_ALLOWED_OPS: dict[ComposeEditStep, set[str]] = {
     "step2": {
-        # 内容轨
+        # 内容轨（段 / 镜）
         "update_section_narration",
         "update_section_duration",
         "delete_section",
@@ -1611,35 +1751,36 @@ _STEP_ALLOWED_OPS: dict[ComposeEditStep, set[str]] = {
         "update_shot_subject",
         "update_shot_narration",
         "update_shot_duration",
-        # 渲染相关
-        "update_text_card_spec",
-        "update_packaging_text",
-        "update_packaging_item_time",
-        "update_scene_transition",
+        # 内容轨整轨级
         "regenerate_narrations_all",
-        "update_bgm_offset",
-        "update_bgm_volume",
+        # 编排级 Compose 设置
         "update_compose_setting",
-        # 素材重排 / 字卡重出（禁 aigc_image，由 mutator 内部校验 action）
+        # 素材重排 / 字卡重出（禁 aigc_image / aigc_t2v —— mutator 内部 action 校验）
         "regenerate_fill",
         "regenerate_all_fills",
+        # 宏指令
+        "apply_macro_adjustment",
     },
     "step3": {
+        # 包装 / 字幕 / 转场 / 封面
         "update_text_card_spec",
         "update_packaging_text",
         "update_packaging_item_time",
         "update_scene_transition",
-        "regenerate_narrations_all",
+        # BGM
         "update_bgm_offset",
         "update_bgm_volume",
+        # 渲染级 Compose 设置
         "update_compose_setting",
+        # 字卡 / 静图重出
         "regenerate_fill",
         "regenerate_all_fills",
+        # 宏指令
+        "apply_macro_adjustment",
     },
 }
 
-# 内容轨 ops（用于在 step3 提示用户回 step2）
-# stage-44：regenerate_fill / regenerate_all_fills 不算内容轨——step3 也能调
+# 内容轨 ops（用于在 step3 触发 D 态："请去 step2 改"）
 _CONTENT_TRACK_OPS = {
     "update_section_narration",
     "update_section_duration",
@@ -1649,6 +1790,17 @@ _CONTENT_TRACK_OPS = {
     "update_shot_subject",
     "update_shot_narration",
     "update_shot_duration",
+    "regenerate_narrations_all",
+}
+
+# 包装/字幕/BGM/转场 ops（用于在 step2 触发 D 态："请去 step3 改"）
+_PACKAGING_OPS = {
+    "update_text_card_spec",
+    "update_packaging_text",
+    "update_packaging_item_time",
+    "update_scene_transition",
+    "update_bgm_offset",
+    "update_bgm_volume",
 }
 
 # 异步 mutator 集合：调外部 LLM / Seedream / fill_gap 链路；run_compose_edit 单独 await。
@@ -1955,18 +2107,32 @@ async def run_compose_edit(
 
     note: str | None = None
     if not diffs:
+        # stage-53 D 态越界引导（细分三种）
         if step == "step3" and any(op in _CONTENT_TRACK_OPS for op in out_of_scope_hits):
-            note = "step3 不可改内容轨（段落文案 / 段时长 / 删段 / 重排 / 分镜文本），请回 step2 调整结构。"
+            ops_hit = [op for op in out_of_scope_hits if op in _CONTENT_TRACK_OPS]
+            note = (
+                "step3 不可改内容轨（段落文案 / 段时长 / 删段 / 重排 / 分镜文本 / 整轨重写口播）。"
+                f"识别到的越界动作：{', '.join(sorted(set(ops_hit)))}。请回 step2 调整结构。"
+            )
+        elif step == "step2" and any(op in _PACKAGING_OPS for op in out_of_scope_hits):
+            ops_hit = [op for op in out_of_scope_hits if op in _PACKAGING_OPS]
+            note = (
+                "step2 不可改包装 / 字幕 / BGM / 转场（这些是 step3 的范畴）。"
+                f"识别到的越界动作：{', '.join(sorted(set(ops_hit)))}。请到 step3 渲染面板调整。"
+            )
         elif step == "step2" and out_of_scope_hits:
-            # stage-44：step2 现在开放了渲染/包装/全局；走到这里基本只剩 AI 生图/视频
-            note = "step2 不通过对话改 AI 生图 / 视频；请到 AIGC 面板手动改提示词后再点重新生成。"
+            # 剩下的越界基本就是 AI 生图/视频
+            note = (
+                "step2 不通过对话改内容轨上的 AI 生成结果（生图 / 生视频）；"
+                "请到 AIGC 面板手动改提示词后再点重新生成。"
+            )
         elif llm_text and not _looks_like_excuse(llm_text):
             # LLM 把指令理解成了讲解 / 问答 —— 把它说的话原样回给用户
             note = llm_text[:600]
         elif not cleaned:
             examples = {
-                "step2": "如『把第 1 段改成 5 秒』『删除第 2 段』『把段落顺序改成 第 1 段、第 3 段、第 2 段』『所有段重新挑素材』；也可以问『当前结构什么样？』『第 1 段时长够撑得起卖点吗？』",
-                "step3": "如『BGM 推迟 2 秒』『画面改方版』『把第 3 段字卡文字改成…』『第 2 段转场改 zoom 0.5 秒』『所有口播重写得更紧凑』；也可以问『当前迁移倾向是什么？』『现在的字卡密度合适吗？』",
+                "step2": "如『把第 1 段改成 5 秒』『删除第 2 段』『把段落顺序改成 第 1 段、第 3 段、第 2 段』『所有段重新挑素材』『再快点』『加强节奏感』；也可以问『当前结构什么样？』『第 1 段时长够撑得起卖点吗？』",
+                "step3": "如『BGM 推迟 2 秒』『画面改方版』『把第 3 段字卡文字改成…』『第 2 段转场改 zoom 0.5 秒』『情绪再强一些』；也可以问『当前迁移倾向是什么？』『现在的字卡密度合适吗？』",
             }[step]
             note = f"我没识别出可执行的编辑动作，请试更具体的指令——{examples}。"
         else:
