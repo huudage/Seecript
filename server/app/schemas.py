@@ -768,6 +768,21 @@ class Material(BaseModel):
         default_factory=list,
         description="PySceneDetect 切片产物；空列表 = 未预处理或失败回退。",
     )
+    origin: Literal["upload", "aigc_image", "aigc_video", "system_clone"] = Field(
+        default="upload",
+        description=(
+            "素材来源：upload=用户上传（默认）、aigc_image=Seedream 文生图自动入库、"
+            "aigc_video=Seedance 文生视频自动入库、system_clone=从系统素材库克隆。"
+            "用于素材库视图给 AI 生成结果打 badge，并允许同段一键换源对比。"
+        ),
+    )
+    gap_id: Optional[str] = Field(
+        default=None,
+        description=(
+            "origin=aigc_* 时回填来源 gap_id，用于 fill 重生成时按 gap_id 去重替换上一条 AIGC 记录，"
+            "避免每次重生都给同一段刷新 N 条历史。upload/system_clone 时为 None。"
+        ),
+    )
 
     @model_validator(mode="before")
     @classmethod

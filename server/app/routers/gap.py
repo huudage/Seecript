@@ -239,6 +239,91 @@ def _maybe_auto_tts(result: FillResult) -> FillResult:
     return result.model_copy(update={"voiceover_url": url})
 
 
+def _record_aigc_to_library(gap: Gap, result: FillResult) -> None:
+    """AIGC 自动入素材库 —— Seedream 出图 / Seedance 生视频成功后，按 (gap_id, origin)
+    去重写入项目素材库；同 gap 重生成会替换上一条。
+
+    设计原则：
+    - 只在 status='ok' 且确有产物 URL 时记录；warn / error / 空 URL 直接跳过
+    - 多镜头 storyboard / 链式视频 → 每个 URL 一条独立 Material（点击换源）
+    - material_id 取自 gap_id + 后缀，重生成时 add_aigc 按 gap_id+origin 替换旧记录
+    - project_id 为空的老 gap 跳过（落不到任何 store）
+
+    任何失败仅 warn，不阻塞 fill 成功语义。
+    """
+    if result.status != "ok":
+        return
+    project_id = (gap.project_id or "").strip()
+    if not project_id:
+        return
+
+    try:
+        existing = material_store.list(project_id)
+        sort_base = (max((m.sort_order for m in existing), default=0) + 1) if existing else 1
+
+        if result.action == "aigc_image":
+            urls = list(result.aigc_image_urls or [])
+            if not urls and result.aigc_image_url:
+                urls = [result.aigc_image_url]
+            urls = [u for u in urls if u]
+            if not urls:
+                return
+            material_store.clear_aigc_by_gap(project_id, gap.gap_id, "aigc_image")
+            for i, u in enumerate(urls):
+                suffix = "" if (len(urls) == 1 and i == 0) else f"-shot{i+1}"
+                mid = f"aigc-img-{gap.gap_id}{suffix}"
+                filename = u.rsplit("/", 1)[-1] or f"{mid}.jpg"
+                material_store.add_aigc(project_id, Material(
+                    material_id=mid,
+                    filename=filename,
+                    media_type="image",
+                    duration_seconds=None,
+                    thumbnail_url=u,
+                    file_url=u,
+                    tags=["AI 生图", "seedream", str(gap.section)],
+                    subjects=[],
+                    recommended_section=gap.section,
+                    highlight_score=0.62,
+                    highlight_reason=f"Seedream 出图｜{(gap.requirement or '')[:40]}",
+                    sort_order=sort_base + i,
+                    preprocess_status="skipped",
+                    origin="aigc_image",
+                    gap_id=gap.gap_id,
+                ))
+        elif result.action == "aigc":
+            urls = [u for u in (result.video_urls or []) if u]
+            if not urls:
+                return
+            cover = (result.cover_url or "").strip() or None
+            material_store.clear_aigc_by_gap(project_id, gap.gap_id, "aigc_video")
+            for i, u in enumerate(urls):
+                suffix = "" if (len(urls) == 1 and i == 0) else f"-chunk{i+1}"
+                mid = f"aigc-vid-{gap.gap_id}{suffix}"
+                filename = u.rsplit("/", 1)[-1] or f"{mid}.mp4"
+                material_store.add_aigc(project_id, Material(
+                    material_id=mid,
+                    filename=filename,
+                    media_type="video",
+                    duration_seconds=None,
+                    thumbnail_url=cover,
+                    file_url=u,
+                    tags=["AI 生视频", "seedance", str(gap.section)],
+                    subjects=[],
+                    recommended_section=gap.section,
+                    highlight_score=0.7,
+                    highlight_reason=f"Seedance 生视频｜{(gap.requirement or '')[:40]}",
+                    sort_order=sort_base + i,
+                    preprocess_status="skipped",
+                    origin="aigc_video",
+                    gap_id=gap.gap_id,
+                ))
+    except Exception as exc:  # noqa: BLE001
+        log.warning(
+            "[gap] aigc auto-add to library failed gap=%s action=%s: %s",
+            gap.gap_id, result.action, exc,
+        )
+
+
 def _resolve_plan_and_scene_for_gap_by_section(section_id: str, *, gap_id: Optional[str] = None):
     """section_id (+ 可选 gap_id) → (plan, scene)。
     若给了 gap_id，先按 gap_id 后缀锁到目标 plan；否则扫所有 plan 取首个匹配。
@@ -323,6 +408,7 @@ async def fill(req: GapFillRequest) -> FillResult:
     params = _inject_aigc_params(gap, req.params) if req.action == "aigc" else req.params
     result = await fill_gap(gap, req.action, params)
     result = await asyncio.to_thread(_maybe_auto_tts, result)
+    _record_aigc_to_library(gap, result)
     # Trace B：用户在 gap fill 上有自然语言输入时记一条。
     # - copy   ：params.prompt_hint（用户在 copy 面板填的文案要求）
     # - aigc   ：params.prompt（用户在 AIGC 面板填的 T2V prompt）
@@ -381,7 +467,9 @@ async def aigc_refresh(req: AigcRefreshRequest) -> FillResult:
             status_code=404,
             detail=f"gap not found: {req.gap_id}（请先调用 /gap/detect）",
         )
-    return await refresh_aigc_task(gap, req.task_id)
+    result = await refresh_aigc_task(gap, req.task_id)
+    _record_aigc_to_library(gap, result)
+    return result
 
 
 def _find_section_for_gap(gap: Gap):

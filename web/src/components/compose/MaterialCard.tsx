@@ -18,9 +18,25 @@ export function MaterialCard({
   onRemove?: (id: string) => void
 }) {
   const thumb = material.thumbnail_url
+  const fileUrl = material.file_url ?? thumb ?? ''
+  const isAigc = material.origin === 'aigc_image' || material.origin === 'aigc_video'
+  const aigcLabel =
+    material.origin === 'aigc_image' ? 'AI 生图'
+    : material.origin === 'aigc_video' ? 'AI 生视频'
+    : ''
+  const handlePreview = () => {
+    if (fileUrl) window.open(fileUrl, '_blank', 'noopener,noreferrer')
+  }
   return (
     <div className="group relative flex flex-col overflow-hidden rounded-md border border-border bg-background/60 transition-shadow hover:shadow-md">
-      <div className="relative h-24 w-full bg-muted">
+      <div
+        className={cn(
+          'relative h-24 w-full bg-muted',
+          fileUrl && 'cursor-zoom-in',
+        )}
+        onClick={fileUrl ? handlePreview : undefined}
+        title={fileUrl ? '点击查看原图/原片' : undefined}
+      >
         {material.media_type === 'video' && thumb ? (
           <video
             src={thumb}
@@ -41,10 +57,21 @@ export function MaterialCard({
         <button
           {...(dragHandleProps ?? {})}
           aria-label="拖拽排序"
+          onClick={(e) => e.stopPropagation()}
           className="absolute left-1 top-1 rounded bg-black/40 px-1.5 py-0.5 text-xs text-white opacity-0 transition-opacity group-hover:opacity-100 cursor-grab active:cursor-grabbing"
         >
           ⋮⋮
         </button>
+
+        {/* AIGC 来源 badge：右上贴在媒体类型 chip 上方 */}
+        {isAigc && (
+          <span
+            className="absolute right-1 top-7 rounded bg-fuchsia-500/90 px-1.5 py-0.5 text-xs font-medium text-white"
+            title="该素材由 AI 生成自动入库（重生成会替换此条）"
+          >
+            {aigcLabel}
+          </span>
+        )}
 
         {/* 媒体类型 chip */}
         <span className="absolute right-1 top-1 rounded bg-black/50 px-1.5 py-0.5 text-xs uppercase text-white">

@@ -1467,6 +1467,14 @@ async def _mut_regenerate_fill(plan: Plan, args: dict) -> ComposeEditDiff | None
             summary=f"重生成失败：{str(exc)[:80]}",
         )
 
+    # AIGC 重生 → 自动入素材库（与 /gap/fill 路径一致；按 gap_id 去重替换上一条）
+    if action in ("aigc_image",) and new_fill.status == "ok":
+        try:
+            from ...routers.gap import _record_aigc_to_library  # 延迟导入避免循环
+            _record_aigc_to_library(gap, new_fill)
+        except Exception as exc:  # noqa: BLE001
+            log.warning("[compose_edit.regenerate_fill] aigc 入库失败 sid=%s: %s", sid, exc)
+
     # patch 主轨：先收集本 section 现有 scenes（按 section role + scene_id 前缀 sc-{order} 双锚定）
     sec_role: SectionRole = sec.role
     sec_order = sec.order

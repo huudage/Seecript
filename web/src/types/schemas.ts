@@ -383,6 +383,10 @@ export interface Material {
   preprocess_error?: string | null
   /** PySceneDetect 切片产物；空数组 = 未预处理或失败回退。 */
   shots?: MaterialShot[]
+  /** 素材来源：upload=上传（默认），aigc_image=Seedream 自动入库，aigc_video=Seedance 自动入库，system_clone=系统素材克隆。 */
+  origin?: 'upload' | 'aigc_image' | 'aigc_video' | 'system_clone'
+  /** origin=aigc_* 时来源 gap_id（重生成会按此去重替换）。 */
+  gap_id?: string | null
 }
 
 export interface MaterialUploadResponse {

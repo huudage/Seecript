@@ -143,6 +143,38 @@ class MaterialStore:
                 return updated
             return None
 
+    def add_aigc(self, session_id: str, material: Material) -> Material:
+        """AIGC 自动入库：仅追加；调用方负责先用 clear_aigc_by_gap 删除老记录。
+
+        多镜头/多 chunk fill 一次产出 N 条记录共享同 gap_id+origin，因此本方法
+        不能在 append 时按 gap_id 自删（否则后追加的会把先追加的擦掉）。
+        """
+        if material.origin not in ("aigc_image", "aigc_video"):
+            raise ValueError(f"add_aigc 仅接受 aigc_image / aigc_video，当前 origin={material.origin}")
+        with self._lock:
+            items = self._by_session.setdefault(session_id, [])
+            items.append(material)
+            self._persist(session_id)
+        log.info(
+            "[materials] aigc append session=%s mid=%s origin=%s gap=%s",
+            session_id, material.material_id, material.origin, material.gap_id,
+        )
+        return material
+
+    def clear_aigc_by_gap(self, session_id: str, gap_id: str, origin: str) -> int:
+        """AIGC 重生前调用：删除该 (gap_id, origin) 下所有老记录。返回删除条数。"""
+        if not gap_id or not origin:
+            return 0
+        with self._lock:
+            items = self._by_session.get(session_id) or []
+            before = len(items)
+            kept = [m for m in items if not (m.gap_id == gap_id and m.origin == origin)]
+            removed = before - len(kept)
+            if removed:
+                self._by_session[session_id] = kept
+                self._persist(session_id)
+            return removed
+
 
 class GapStore:
     def __init__(self) -> None:
