@@ -1285,6 +1285,193 @@ def _camera_technique_to_anim_hints(text: str) -> dict:
     return hints
 
 
+_ANIM_LLM_SYSTEM = (
+    "你是短视频运镜决策助手。给定一个镜头的内容信息（主体、运镜短语、所在段落角色 / 节奏 / 主题），"
+    "你要为这一镜的『AI 生图再渲染』选择最合适的运镜参数。\n"
+    "\n"
+    "可选的 animation_type：\n"
+    "  • ken-burns ── 经典推近 / 拉远（in / out）\n"
+    "  • parallax  ── 横向 / 纵向平移（pan-left / pan-right / pan-up / pan-down）\n"
+    "  • static    ── 几乎静帧（开场陈述 / 信息密集 / 字幕主导）\n"
+    "可选的 motion_direction：in / out / pan-left / pan-right / pan-up / pan-down。\n"
+    "intensity 是 0..1 的小数：0.1 几乎不动，0.4 中等，0.7+ 强烈推/拉/平移；高潮段建议 0.55-0.85。\n"
+    "\n"
+    "决策原则：\n"
+    "  1. 先看 camera_technique 中文短语，它是 plan_agent 已经定下的运镜意图；\n"
+    "  2. 再看 role：opening 偏 ken-burns/in 引入；climax 偏 in 高强度；closing 偏 out 收束；development 偏 parallax 横移；\n"
+    "  3. 再看 tempo：peak/fast → intensity +0.1~0.2；slow → intensity -0.1；\n"
+    "  4. 主体是大件物体/建筑 → 倾向推近；主体是人物对话 → 倾向 parallax；环境空镜 → out 拉远；\n"
+    "  5. ken-burns 不能配 pan-* 方向；parallax 不能配 in/out；static 方向用 in（占位即可，强度极小）。\n"
+    "\n"
+    "严格只输出合法 JSON，禁止 markdown、解释、多余字段：\n"
+    "{\"animation_type\": \"<类型>\", \"motion_direction\": \"<方向>\", \"intensity\": <0..1 小数>, \"reason\": \"<≤25 字理由>\"}\n"
+)
+
+
+_ALLOWED_ANIM_TYPES = {"ken-burns", "parallax", "storyboard", "keyframe_morph", "static"}
+_ALLOWED_MOTION_DIRS = {"in", "out", "pan-left", "pan-right", "pan-up", "pan-down"}
+
+
+def _validate_anim_combo(anim_type: str, motion_dir: str) -> tuple[str, str]:
+    """ken-burns 必须配 in/out，parallax 必须配 pan-*；不合则纠正到合理默认。"""
+    if anim_type == "ken-burns" and motion_dir not in {"in", "out"}:
+        return anim_type, "in"
+    if anim_type == "parallax" and motion_dir not in {"pan-left", "pan-right", "pan-up", "pan-down"}:
+        return anim_type, "pan-left"
+    if anim_type == "static" and motion_dir not in _ALLOWED_MOTION_DIRS:
+        return anim_type, "in"
+    return anim_type, motion_dir
+
+
+async def score_animation_via_llm(
+    *,
+    shot_subject: str,
+    camera_technique: str,
+    section_role: str,
+    section_tempo: str,
+    section_theme: str = "",
+    section_summary: str = "",
+) -> Optional[dict]:
+    """stage-58：调 LLM 直接为本镜决定 AnimationSpec 关键字段。
+
+    返回 dict：{animation_type, motion_direction, intensity}（已 validate）
+    或 None：超时 / JSON 不合法 / 网络异常 → 上层走规则三级回落。
+    """
+    try:
+        client = get_llm_client()
+    except Exception as exc:  # noqa: BLE001
+        log.warning("[anim-llm] get_llm_client failed: %s", exc)
+        return None
+
+    parts = [
+        f"shot_subject: {shot_subject or '（未提供）'}",
+        f"camera_technique: {camera_technique or '（未提供）'}",
+        f"section_role: {section_role or 'development'}",
+        f"section_tempo: {section_tempo or 'medium'}",
+    ]
+    if section_theme:
+        parts.append(f"section_theme: {section_theme}")
+    if section_summary:
+        parts.append(f"section_summary: {section_summary[:120]}")
+    user_text = "\n".join(parts)
+
+    try:
+        data = await asyncio.wait_for(
+            client.complete_json(_ANIM_LLM_SYSTEM, user_text, temperature=0.3, max_tokens=200),
+            timeout=8.0,
+        )
+    except asyncio.TimeoutError:
+        log.warning("[anim-llm] LLM 调用超时（8s），走规则回落")
+        return None
+    except Exception as exc:  # noqa: BLE001
+        log.warning("[anim-llm] LLM 调用失败：%s", exc)
+        return None
+
+    if not isinstance(data, dict):
+        log.warning("[anim-llm] LLM 返回非 dict：%r", data)
+        return None
+
+    anim_type = str(data.get("animation_type", "")).strip()
+    motion_dir = str(data.get("motion_direction", "")).strip()
+    if anim_type not in _ALLOWED_ANIM_TYPES:
+        log.warning("[anim-llm] 非法 animation_type: %r", anim_type)
+        return None
+    if motion_dir not in _ALLOWED_MOTION_DIRS:
+        log.warning("[anim-llm] 非法 motion_direction: %r", motion_dir)
+        return None
+
+    try:
+        intensity = float(data.get("intensity", 0.4))
+    except (TypeError, ValueError):
+        intensity = 0.4
+    intensity = max(0.05, min(0.95, intensity))
+
+    anim_type, motion_dir = _validate_anim_combo(anim_type, motion_dir)
+    reason = str(data.get("reason", ""))[:50]
+    log.info(
+        "[anim-llm] LLM ok role=%s tempo=%s → %s/%s intensity=%.2f reason=%s",
+        section_role, section_tempo, anim_type, motion_dir, intensity, reason,
+    )
+    return {
+        "animation_type": anim_type,
+        "motion_direction": motion_dir,
+        "intensity": intensity,
+    }
+
+
+async def suggest_animation_spec_async(
+    section: "AdaptedSection | None",
+    n_images: int,
+    user_override: dict | None,
+    *,
+    shot: Optional[Any] = None,
+) -> "AnimationSpec":
+    """stage-58 异步版本：先调 LLM 直选运镜，失败回落 _suggest_animation_spec 三级规则。
+
+    多图模式（n_images > 1）跳过 LLM——多图是 storyboard/keyframe_morph 整段拼接，
+    单镜运镜决策粒度对不上；走规则版即可。
+    """
+    if n_images <= 1 and (shot is not None or section is not None):
+        target_shot = shot if shot is not None else (
+            (getattr(section, "shots", None) or [None])[0] if section else None
+        )
+        cam = (getattr(target_shot, "camera_technique", "") or "").strip() if target_shot else ""
+        subj = (getattr(target_shot, "subject", "") or "").strip() if target_shot else ""
+        role = (section.role if section else "development") or "development"
+        tempo = (section.tempo if section else None) or "medium"
+        theme = (getattr(section, "theme", "") or "") if section else ""
+        summary = (getattr(section, "summary", "") or "") if section else ""
+        llm_hints = await score_animation_via_llm(
+            shot_subject=subj,
+            camera_technique=cam,
+            section_role=role,
+            section_tempo=tempo,
+            section_theme=theme,
+            section_summary=summary,
+        )
+        if llm_hints:
+            spec = _suggest_animation_spec(section, n_images, user_override)
+            update = {k: v for k, v in llm_hints.items() if v is not None}
+            if isinstance(user_override, dict):
+                for k in ("animation_type", "motion_direction", "intensity"):
+                    if user_override.get(k) is not None:
+                        update.pop(k, None)
+            return spec.model_copy(update=update) if update else spec
+
+    return _suggest_animation_spec(section, n_images, user_override)
+
+
+async def suggest_animation_spec_for_shot_async(
+    shot: "ShotPlan | None",
+    section: "AdaptedSection | None",
+    user_override: dict | None = None,
+) -> "AnimationSpec":
+    """stage-58 异步版本：单镜头 LLM 直选 + 规则回落。"""
+    cam = (getattr(shot, "camera_technique", "") or "").strip() if shot else ""
+    subj = (getattr(shot, "subject", "") or "").strip() if shot else ""
+    role = (section.role if section else "development") or "development"
+    tempo = (section.tempo if section else None) or "medium"
+    theme = (getattr(section, "theme", "") or "") if section else ""
+    summary = (getattr(section, "summary", "") or "") if section else ""
+    llm_hints = await score_animation_via_llm(
+        shot_subject=subj,
+        camera_technique=cam,
+        section_role=role,
+        section_tempo=tempo,
+        section_theme=theme,
+        section_summary=summary,
+    )
+    if llm_hints:
+        spec = suggest_animation_spec_for_shot(shot, section, user_override)
+        update = {k: v for k, v in llm_hints.items() if v is not None}
+        if isinstance(user_override, dict):
+            for k in ("animation_type", "motion_direction", "intensity"):
+                if user_override.get(k) is not None:
+                    update.pop(k, None)
+        return spec.model_copy(update=update) if update else spec
+    return suggest_animation_spec_for_shot(shot, section, user_override)
+
+
 def _suggest_animation_spec(
     section: "AdaptedSection | None",
     n_images: int,
@@ -1503,7 +1690,7 @@ async def _fill_with_seedream_image(gap: Gap, params: dict[str, Any]) -> FillRes
         first_url = persisted_urls_from_ref[0] if persisted_urls_from_ref else ""
         user_override = params.get("animation_spec") if isinstance(params.get("animation_spec"), dict) else None
         try:
-            animation_spec_obj = _suggest_animation_spec(
+            animation_spec_obj = await suggest_animation_spec_async(
                 current_section, len(persisted_urls_from_ref), user_override,
             )
             if len(persisted_urls_from_ref) > 1:
@@ -1584,7 +1771,7 @@ async def _fill_with_seedream_image(gap: Gap, params: dict[str, Any]) -> FillRes
     # 让前端默认就能享受 Remotion 渲染；user_override 来自前端 panel。
     user_override = params.get("animation_spec") if isinstance(params.get("animation_spec"), dict) else None
     try:
-        animation_spec_obj = _suggest_animation_spec(
+        animation_spec_obj = await suggest_animation_spec_async(
             current_section, len(persisted_urls), user_override,
         )
         # 多图时同时把 image_urls 一起带上，让 Scene.animation_spec 自描述

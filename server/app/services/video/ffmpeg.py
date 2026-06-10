@@ -1251,6 +1251,130 @@ def image_to_video(
     return out
 
 
+def image_to_video_with_motion(
+    image: str | Path,
+    duration: float,
+    dst: str | Path,
+    *,
+    width: int = 1080,
+    height: int = 1920,
+    fps: int = 30,
+    sample_rate: int = 44100,
+    animation_type: str = "ken-burns",
+    motion_direction: str = "in",
+    intensity: float = 0.4,
+) -> Path:
+    """stage-58：带运镜的 image_to_video（ffmpeg fallback 路径，与 Remotion 6 方向对齐）。
+
+    支持的 animation_type / motion_direction 组合：
+    - ken-burns + in / out      → zoompan 推近 / 拉远
+    - parallax + pan-left/right/up/down → zoompan 横/竖向平移（基础 zoom 1.05）
+    - static / 不识别           → 退回 image_to_video（静帧）
+
+    intensity 0..1 → zoom 范围 1.0~1.5（推/拉）或 平移幅度 5%~25%。
+
+    技术坑（按 [[project-seecript-motion-upgrade]] 备注）：
+      ① zoompan 默认 d=25 是采样后帧数 → 必须 d=1:s=WxH:fps=fps 才逐帧平滑
+      ② 子像素抖动 → 先 scale=iw*4:ih*4:flags=neighbor 4 倍上采样再 zoompan
+    """
+    if not ffmpeg_available():
+        raise FFmpegError("ffmpeg not found in PATH")
+    src = Path(image)
+    if not src.exists():
+        raise FFmpegError(f"image_to_video_with_motion: source not found: {src}")
+    out = Path(dst)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    dur = max(0.5, float(duration))
+    total_frames = max(1, int(round(dur * fps)))
+
+    intensity = max(0.05, min(0.95, float(intensity)))
+    anim_t = (animation_type or "ken-burns").lower()
+    motion = (motion_direction or "in").lower()
+
+    # static / storyboard / keyframe_morph 在 ffmpeg 路径都退化为静帧（多图归 Remotion 渲染）
+    if anim_t in ("static", "storyboard", "keyframe_morph"):
+        return image_to_video(image, dur, dst, width=width, height=height, fps=fps, sample_rate=sample_rate)
+
+    # 4× 上采样底图，避免 zoompan 子像素抖动
+    base_filter = (
+        f"scale={width * 4}:{height * 4}:force_original_aspect_ratio=decrease,"
+        f"pad={width * 4}:{height * 4}:(ow-iw)/2:(oh-ih)/2:color=0x14181F,"
+        f"setsar=1"
+    )
+
+    # 计算运镜表达式
+    if anim_t == "ken-burns":
+        zoom_max = 1.0 + intensity * 0.5  # intensity=0.4 → zoom_max=1.20
+        if motion == "out":
+            # zoom 由 max → 1.0 拉远：z = max - (max-1) * (on/total)
+            z_expr = f"if(eq(on\\,0)\\,{zoom_max:.4f}\\,max(1.0\\,{zoom_max:.4f}-({zoom_max - 1.0:.4f})*on/{total_frames}))"
+        else:  # "in" 默认
+            z_expr = f"min({zoom_max:.4f}\\,1.0+({zoom_max - 1.0:.4f})*on/{total_frames})"
+        # 中心固定
+        x_expr = "iw/2-(iw/zoom/2)"
+        y_expr = "ih/2-(ih/zoom/2)"
+    elif anim_t == "parallax":
+        # 微 zoom + 平移
+        base_zoom = 1.0 + intensity * 0.3  # intensity=0.4 → zoom 1.12（提供平移余量）
+        z_expr = f"{base_zoom:.4f}"
+        # 平移幅度（占 iw/ih 的比例）：intensity 越高位移越大
+        shift_ratio = 0.05 + intensity * 0.20  # 0.05 ~ 0.25
+        if motion == "pan-left":
+            # 从右往左：x 由 (iw - iw/zoom) → 0
+            x_expr = f"(iw-iw/zoom)*(1-on/{total_frames})*{shift_ratio:.3f}+(iw-iw/zoom)*0.5*(1-{shift_ratio:.3f})"
+            y_expr = "ih/2-(ih/zoom/2)"
+        elif motion == "pan-right":
+            x_expr = f"(iw-iw/zoom)*(on/{total_frames})*{shift_ratio:.3f}+(iw-iw/zoom)*0.5*(1-{shift_ratio:.3f})"
+            y_expr = "ih/2-(ih/zoom/2)"
+        elif motion == "pan-up":
+            x_expr = "iw/2-(iw/zoom/2)"
+            y_expr = f"(ih-ih/zoom)*(1-on/{total_frames})*{shift_ratio:.3f}+(ih-ih/zoom)*0.5*(1-{shift_ratio:.3f})"
+        elif motion == "pan-down":
+            x_expr = "iw/2-(iw/zoom/2)"
+            y_expr = f"(ih-ih/zoom)*(on/{total_frames})*{shift_ratio:.3f}+(ih-ih/zoom)*0.5*(1-{shift_ratio:.3f})"
+        else:
+            # 不识别的 parallax 方向 → 中心微推
+            z_expr = f"min({1.0 + intensity * 0.2:.4f}\\,1.0+({intensity * 0.2:.4f})*on/{total_frames})"
+            x_expr = "iw/2-(iw/zoom/2)"
+            y_expr = "ih/2-(ih/zoom/2)"
+    else:
+        return image_to_video(image, dur, dst, width=width, height=height, fps=fps, sample_rate=sample_rate)
+
+    zoompan = (
+        f"zoompan="
+        f"z='{z_expr}':"
+        f"x='{x_expr}':"
+        f"y='{y_expr}':"
+        f"d=1:s={width}x{height}:fps={fps}"
+    )
+
+    vf = f"{base_filter},{zoompan},format=yuv420p,fps={fps}"
+
+    cmd = [
+        "ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
+        "-loop", "1", "-t", f"{dur:.3f}", "-i", str(src),
+        "-f", "lavfi", "-i", f"anullsrc=channel_layout=stereo:sample_rate={sample_rate}",
+        "-t", f"{dur:.3f}",
+        "-vf", vf,
+        "-c:v", "libx264", "-preset", "veryfast", "-crf", "22",
+        "-pix_fmt", "yuv420p",
+        "-c:a", "aac", "-b:a", "128k",
+        "-shortest",
+        str(out),
+    ]
+    proc = subprocess.run(cmd, capture_output=True, text=True, check=False)
+    if proc.returncode != 0:
+        # 失败时回落到静帧 image_to_video，保证渲染不中断
+        import logging
+        log = logging.getLogger("seecript.video.ffmpeg")
+        log.warning(
+            "image_to_video_with_motion failed (%s/%s) → fallback static. err=%s",
+            anim_t, motion, proc.stderr.strip()[:200],
+        )
+        return image_to_video(image, dur, dst, width=width, height=height, fps=fps, sample_rate=sample_rate)
+    return out
+
+
 # 字卡画面用：把 TextCardSpec 字段映射到 ffmpeg drawtext + fade。font_family 没有 4 套
 # 真字体文件，只能用 CJK 单字体 + 字号/字重/边框模拟差别。
 _TEXT_CARD_FONT_STYLE = {

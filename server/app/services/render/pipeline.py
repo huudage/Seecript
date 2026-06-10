@@ -417,6 +417,21 @@ async def _resolve_aigc_image_scene(
             log.warning("[render] aigc_image scene=%d remotion 调用异常: %s", idx, exc)
 
     try:
+        # stage-58：ffmpeg fallback 也跑通已有运镜（与 Remotion 6 方向对齐）。
+        # 没有 spec 或 spec 标了 ffmpeg/static → 退回静帧；否则走 zoompan 运镜版本。
+        if spec is not None:
+            anim_t = (getattr(spec, "animation_type", "") or "").lower()
+            motion = (getattr(spec, "motion_direction", "") or "").lower()
+            inten = float(getattr(spec, "intensity", 0.4) or 0.4)
+            if anim_t in ("ken-burns", "parallax"):
+                return await asyncio.to_thread(
+                    ffmpeg_svc.image_to_video_with_motion,
+                    local_path, dur, dst,
+                    width=width, height=height,
+                    animation_type=anim_t,
+                    motion_direction=motion or "in",
+                    intensity=inten,
+                )
         return await asyncio.to_thread(
             ffmpeg_svc.image_to_video,
             local_path, dur, dst,

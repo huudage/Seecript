@@ -420,9 +420,10 @@ async def build_plan(req: PlanBuildRequest) -> Plan:
         adapted = list(req.reuse_sections)
         log.info("[plan] reuse_sections=%d 跳过 adapt_structure", len(adapted))
     else:
+        # stage-58：reference_asset_ids 字段保留 schema 但不再传给 adapt_structure——
+        # 结构迁移已改为节奏画像注入（见 plan_agent._build_rhythm_block）。
         adapted = await adapt_structure(
             manifests, req.brief, req.video_goal, settings,
-            reference_asset_ids=req.reference_asset_ids,
         )
     if not adapted:
         # fallback：用第一份样例的 sections 1:1 兜底
@@ -475,6 +476,16 @@ async def build_plan(req: PlanBuildRequest) -> Plan:
     # 3. 把 fills 按 section_id 索引——这是修复『多段 development 全被路由到第一段』bug 的关键
     fill_by_section = _fill_section_lookup(req.fills)
     material_cursor = 0
+
+    # stage-58 G3：cursor 跳过 PR-B 已锁的素材，避免段 1 顺位抢走段 3 PR-B 锁定的素材。
+    # 先扫一遍所有 sec.shots 收集 matched_material_id 集合。
+    locked_material_ids: set[str] = set()
+    for _sec in adapted:
+        for _sh in (_sec.shots or []):
+            if getattr(_sh, "matched_material_id", None):
+                locked_material_ids.add(_sh.matched_material_id)
+    if locked_material_ids:
+        log.info("[plan] stage-58 cursor lockset = %d ids", len(locked_material_ids))
 
     def _pick(sec: AdaptedSection) -> tuple[str, str, list[str], str | None, str | None, "TextCardSpec | None", str | None, list[str], "AnimationSpec | None"]:
         """返回 (source, source_ref, aigc_video_urls, narration_override, voiceover_url, text_card_spec, aigc_image_url, aigc_image_urls, animation_spec)。
@@ -576,8 +587,17 @@ async def build_plan(req: PlanBuildRequest) -> Plan:
                 [],
                 None,
             )
-        if material_cursor < len(req.selected_materials):
+        # stage-58 G2：单镜段读 PR-B 匹配——优先用 sec.shots[0].matched_material_id
+        # （即使 cursor 还没消费到它），避免 cursor 顺位错位。
+        if sec.shots and getattr(sec.shots[0], "matched_material_id", None):
+            mid = sec.shots[0].matched_material_id
+            return ("user_material", mid, [], narration_override, voiceover_url, None, None, [], None)
+        # stage-58 G3：cursor 跳过 PR-B 已锁素材
+        while material_cursor < len(req.selected_materials):
             ref = req.selected_materials[material_cursor]
+            if ref in locked_material_ids:
+                material_cursor += 1
+                continue
             material_cursor += 1
             return ("user_material", ref, [], narration_override, voiceover_url, None, None, [], None)
         # 无 AIGC、无 copy 文案、无用户素材 → 文字卡（packaging 字幕负责显示真实文案）
@@ -660,8 +680,8 @@ async def build_plan(req: PlanBuildRequest) -> Plan:
                     # stage-49：每个 sub-scene 用单图独立 AnimationSpec，按本镜 camera_technique 推运镜。
                     # 关键：剥掉父段 spec.image_urls，否则前端 StoryboardLayer 会循环全 N 张图，
                     # 造成"3 张图在每个 sub-scene 都反复切"的观感（用户报障）。
-                    from ..services.agent.gap_agent import suggest_animation_spec_for_shot
-                    sub_anim_spec = suggest_animation_spec_for_shot(shot, sec, None)
+                    from ..services.agent.gap_agent import suggest_animation_spec_for_shot_async
+                    sub_anim_spec = await suggest_animation_spec_for_shot_async(shot, sec, None)
                     main_track.append(Scene(
                         scene_id=sub_id,
                         section=sec.role,  # type: ignore[arg-type]
@@ -760,18 +780,26 @@ async def build_plan(req: PlanBuildRequest) -> Plan:
                     in_pt = 0.0
                     out_pt: float | None = shot_dur
                     chosen_mat_id = source_ref
+                    is_image_match = False
                     if effective_project_id and shot is not None and shot.matched_material_id:
                         mat = material_store.get(effective_project_id, shot.matched_material_id)
-                        if mat is not None and mat.shots and shot.matched_material_shot_index is not None:
-                            # 按 matched_material_shot_index 找 MaterialShot，没找到回退到首镜
-                            mshot = next(
-                                (ms for ms in mat.shots if ms.index == shot.matched_material_shot_index),
-                                mat.shots[0],
-                            )
+                        if mat is not None:
                             chosen_mat_id = mat.material_id
-                            in_pt = float(mshot.start)
-                            cut_end = min(float(mshot.end), in_pt + shot_dur)
-                            out_pt = cut_end
+                            if mat.media_type == "image":
+                                # stage-58 G4：图片素材整段使用，不切 in/out。
+                                # 图片转视频时由 [[project-seecript-motion-upgrade]] 路径决定运镜。
+                                is_image_match = True
+                                in_pt = 0.0
+                                out_pt = None
+                            elif mat.shots and shot.matched_material_shot_index is not None:
+                                # 视频按 matched_material_shot_index 找 MaterialShot
+                                mshot = next(
+                                    (ms for ms in mat.shots if ms.index == shot.matched_material_shot_index),
+                                    mat.shots[0],
+                                )
+                                in_pt = float(mshot.start)
+                                cut_end = min(float(mshot.end), in_pt + shot_dur)
+                                out_pt = cut_end
                     elif effective_project_id:
                         mat = material_store.get(effective_project_id, source_ref)
                         if mat is not None and mat.shots:
@@ -1677,7 +1705,7 @@ async def swap_scene_source(
     elif body.source == "aigc_image":
         # 同步走 Seedream 单图：用 shot 主题 + 用户 hint
         from ..services.agent.aigc_prompt_agent import _fallback_prompt
-        from ..services.agent.gap_agent import _persist_aigc_image, _suggest_animation_spec
+        from ..services.agent.gap_agent import _persist_aigc_image, suggest_animation_spec_async
         from ..services.seedream_client import SeedreamError, get_seedream_client
         from ..schemas import Gap
         # 拼 prompt：优先用 shot.visual / subject，hint 拼到尾巴
@@ -1703,9 +1731,9 @@ async def swap_scene_source(
         persisted = await _persist_aigc_image(images[0].url, scene_id)
         final_url = persisted or images[0].url
         # stage-43：单图换源同样要 Remotion 动效（否则 step3 渲染只看到静态贴图）。
-        # 走 _suggest_animation_spec 让 shot.camera_technique 决定推/拉/横摇等运镜。
+        # stage-58：suggest_animation_spec_async 先调 LLM 直选运镜，失败回落到 camera_technique 字典。
         try:
-            anim_spec = _suggest_animation_spec(section, 1, None)
+            anim_spec = await suggest_animation_spec_async(section, 1, None)
         except Exception as exc:  # noqa: BLE001
             log.warning("[scene-swap] %s aigc_image 推荐动效失败 → 走 ken-burns 兜底：%s", scene_id, exc)
             anim_spec = AnimationSpec(

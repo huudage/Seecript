@@ -20,11 +20,11 @@ import re
 from typing import Optional
 
 from ..llm_client import get_llm_client, _extract_json
-from ..assets import resolve_reference_image_urls
 from .preference import preference_hint, analysis_hint
 from ...schemas import (
     AdaptedSection,
     ComposeSettings,
+    RhythmCurve,
     SampleManifest,
     Section,
     SectionRole,
@@ -119,6 +119,11 @@ _ADAPT_SYSTEM = (
     "  • 转场类：『匹配剪辑入画』『甩镜切入』。\n"
     "对应规则：opening/hook 偏推近/特写抓眼；development 偏横摇/跟随交代；"
     "climax/peak 偏快推/快摇/抖动放大冲击；resolve/closing 偏拉远/静止收尾。\n\n"
+    "【节奏迁移指引（stage-58 关键 · 结构迁移的真正通道）】\n"
+    "user 消息可能附带『原片节奏画像』段落，给出原片每段时长比例 + 情绪曲线峰值位置（按比例换算到新片）。"
+    "改编时新片对应段落应保持相似的相对时长比例与峰值落点——具体在 duration_seconds 字段里体现。"
+    "段落 tempo 字段也参照原片对应段落的能量级别填（peak/fast/medium/slow/deceleration）。"
+    "**这是迁移结构能量曲线的核心信号**——画面是用户自己的，节奏是样例的；不要为了照搬原片画面而改这个能量分布。\n\n"
     "返回 JSON：{\"adapted_sections\": [{\"role\": str, \"theme\": str, "
     "\"content_description\": str, \"adaptation_note\": str, \"tempo\": str|null, "
     "\"duration_seconds\": number, \"source_section_indices\": [int], "
@@ -232,13 +237,96 @@ _TONE_LABEL: dict[str, str] = {
     "casual_daily": "轻松日常（口语化 + 节奏自然）",
     "professional_cool": "专业冷静（信息密度高 + 弱情绪 + 重数据）",
 }
-
 _PLATFORM_LABEL: dict[str, str] = {
     "douyin": "抖音（9:16 竖屏，强字幕，节奏紧凑）",
     "wechat": "视频号（9:16 竖屏，节奏温和）",
     "xiaohongshu": "小红书（竖屏，文艺克制）",
     "bilibili": "B 站（16:9 横屏，叙事感）",
 }
+
+
+def _format_seconds(s: float) -> str:
+    """4.2 → '4.2s'；整数秒去掉小数。"""
+    if s >= 10 and abs(s - round(s)) < 0.05:
+        return f"{int(round(s))}s"
+    return f"{s:.1f}s"
+
+
+def _section_proportions(sections: list[Section], duration: float) -> str:
+    """opening 13%（4s）/ development 24%（8s）/ ... 按段顺序拼。"""
+    if not sections or duration <= 0.01:
+        return ""
+    parts: list[str] = []
+    for sec in sections:
+        seg = max(0.0, float(sec.end) - float(sec.start))
+        pct = round(100 * seg / duration)
+        parts.append(f"{sec.role} {pct}%（{_format_seconds(seg)}）")
+    return " / ".join(parts)
+
+
+def _peak_times_from_rhythm(rhythm: Optional[RhythmCurve]) -> list[tuple[float, float, str]]:
+    """优先 emotion.peaks（LLM 多信号情绪曲线已标好的高潮位），回落 mood_curve max 单点。
+
+    返回 [(t_秒, intensity, reason), ...]，最多 2 条；曲线太平的（max < 0.4）返回空。
+    """
+    if rhythm is None:
+        return []
+    out: list[tuple[float, float, str]] = []
+    if rhythm.emotion is not None and rhythm.emotion.peaks:
+        for p in rhythm.emotion.peaks[:2]:
+            out.append((float(p.t), float(p.intensity), (p.reason or "").strip()))
+        return out
+    if rhythm.times and rhythm.mood_curve and len(rhythm.times) == len(rhythm.mood_curve):
+        max_idx = max(range(len(rhythm.mood_curve)), key=lambda i: rhythm.mood_curve[i])
+        if rhythm.mood_curve[max_idx] >= 0.4:
+            out.append((float(rhythm.times[max_idx]), float(rhythm.mood_curve[max_idx]), ""))
+    return out
+
+
+def _build_rhythm_block(manifests: list[SampleManifest], target_total: float) -> str:
+    """把样例 manifest 的节奏 / 情绪 / 段落时长比例打包成给 LLM 的中文画像。
+
+    stage-58：取代旧的"参考风格图多模态注入"——结构迁移要传的是节奏不是画面。
+    输入：1-2 份样例 manifest + 目标总时长。
+    输出：多行 markdown 文本（无样例可用 → 空字符串，调用方据此跳过注入）。
+
+    每份样例独立一段：段落时长比例 + 情绪曲线峰值（按比例换算到新片对应秒数） + BGM 契合度备注。
+    """
+    if not manifests:
+        return ""
+    multi = len(manifests) > 1
+    lines: list[str] = []
+    for mi, manifest in enumerate(manifests):
+        dur = float(getattr(manifest, "duration_seconds", 0.0) or 0.0)
+        if not manifest.sections or dur <= 0.5:
+            continue
+        prefix = f"样例{chr(ord('A') + mi)}：" if multi else ""
+        proportions = _section_proportions(list(manifest.sections), dur)
+        if not proportions:
+            continue
+        lines.append(f"- {prefix}段落时长比例 → {proportions}")
+        peaks = _peak_times_from_rhythm(manifest.rhythm)
+        if peaks:
+            ratio = float(target_total) / dur if dur > 0 else 1.0
+            descs: list[str] = []
+            for t, inten, reason in peaks:
+                t_new = max(0.0, t * ratio)
+                desc = f"原片 {_format_seconds(t)} 处情绪到 {inten:.2f}（按比例换算到新片 {_format_seconds(t_new)} 附近）"
+                if reason:
+                    desc += f"——原因：{reason[:30]}"
+                descs.append(desc)
+            lines.append(f"- {prefix}情绪曲线峰值：{'；'.join(descs)}")
+        if manifest.rhythm and manifest.rhythm.bgm_fit_note:
+            lines.append(f"- {prefix}BGM 与结构契合度：{manifest.rhythm.bgm_fit_note[:60]}")
+    if not lines:
+        return ""
+    return (
+        "【原片节奏画像（结构迁移核心通道）】\n"
+        + "\n".join(lines)
+        + "\n（请按段落时长比例与峰值位置安排新片对应段落的能量分布——"
+        "新片在按比例换算后的峰值位置应有能撑起情绪的段落，"
+        "段落 tempo 字段参照原片对应段落能量级别填。）"
+    )
 
 
 async def adapt_structure(
@@ -251,7 +339,8 @@ async def adapt_structure(
     """改编 1-2 个参考样例的段落骨架成新结构。失败时回落到第一份样例的 1:1 拷贝。
 
     settings 注入目标总时长 / 平台 / 调性 / CTA / 关键词，驱动 LLM 分配每段 duration_seconds。
-    reference_asset_ids 是用户素材库参考图/参考视频，喂多模态 LLM 做风格/调性/结构对齐。
+    reference_asset_ids 字段保留作向后兼容（旧客户端可能仍传），**stage-58 起不再使用**——
+    结构迁移已改为"原片节奏画像注入"（_build_rhythm_block），传画面参考图对结构没有真信号。
     多样例时（len(manifests)==2）：两份 sections 被合并成一个 flat 参考池，行首加
     (样例A)/(样例B) tag 告诉 LLM 来源，但 LLM 输出的 source_section_indices 仍是
     合并后的 flat 下标，_materialize 直接 indexing 进 combined_sections。
@@ -376,9 +465,14 @@ async def adapt_structure(
     analysis_block = "\n\n".join(
         block for block in (analysis_hint(m.analysis) for m in manifests) if block
     )
+    # stage-58：原片节奏画像注入 —— 取代旧的"参考风格图多模态注入"。
+    # 结构迁移真正能用上的信号是节奏曲线与情绪峰值，不是画面气质。
+    rhythm_block = _build_rhythm_block(manifests, target_total)
     leading_blocks = [pref_block]
     if analysis_block:
         leading_blocks.append(analysis_block)
+    if rhythm_block:
+        leading_blocks.append(rhythm_block)
     user = "\n\n".join(leading_blocks) + "\n\n" + user
 
     # 个性知识库注入（top-10 最近完成项目 + 用户手动启用的额外项目）。
@@ -397,22 +491,17 @@ async def adapt_structure(
     except Exception as exc:  # noqa: BLE001
         log.warning("[plan-agent] KB 注入失败（跳过，不影响生成）: %s", exc)
 
-    # 参考素材：用户在素材库选定的参考图/参考视频抽帧，作为视觉风格/构图/调性指引
-    ref_images: list[str] = resolve_reference_image_urls(reference_asset_ids or [])
-    if ref_images:
-        user += (
-            f"\n\n附带 {len(ref_images)} 张『参考画面』——它们不是样例视频的镜头，"
-            f"而是用户希望本次新视频在风格/构图/调性上对齐的视觉参考。"
-            f"改编 theme 和 content_description 时请隐式靠拢这些参考的视觉气质，"
-            f"但不要把它们当成具体镜头来引用。"
+    # stage-58：reference_asset_ids 字段保留作 schema 向后兼容，但不再消费——
+    # 结构迁移已改为节奏画像注入（_build_rhythm_block 已写入 user prompt）。
+    if reference_asset_ids:
+        log.info(
+            "[plan-agent] reference_asset_ids ignored (stage-58: 结构迁移改为节奏画像注入); count=%d",
+            len(reference_asset_ids),
         )
 
     llm = get_llm_client()
     try:
-        if ref_images:
-            text = await llm.complete_multimodal(_ADAPT_SYSTEM, user, ref_images)
-        else:
-            text = await llm.complete(_ADAPT_SYSTEM, user)
+        text = await llm.complete(_ADAPT_SYSTEM, user)
         data = _extract_json(text)
         raw = data.get("adapted_sections", []) if isinstance(data, dict) else []
         items = _parse_raw_items(raw, pattern)

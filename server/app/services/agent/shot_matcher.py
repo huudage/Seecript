@@ -133,17 +133,43 @@ def match_section_shots(
 
     本函数不修改 section / material；返回新 ShotMatch 列表，调用方决定怎么消费
     （写回 ShotPlan.matched_material_* 或直接在 plan.py 物化时按 score 排序选用）。
+
+    stage-58：images 也参与匹配——为每个 image Material 合成一个虚拟 MaterialShot
+    （caption=highlight_reason 或 subjects+tags 拼接，role=recommended_section，
+    action_density=0.5 中性），与 video shots 同池竞争。
     """
     if not section.shots:
         return []
     pool: list[tuple[Material, MaterialShot]] = []
     for mat in materials:
-        if mat.media_type != "video":
-            continue
-        if not mat.shots:
-            continue
-        for ms in mat.shots:
-            pool.append((mat, ms))
+        if mat.media_type == "video":
+            if not mat.shots:
+                continue
+            for ms in mat.shots:
+                pool.append((mat, ms))
+        elif mat.media_type == "image":
+            # 合成虚拟单 MaterialShot 让图片参与全局最优匹配
+            cap = (mat.highlight_reason or "").strip()
+            if not cap:
+                # 拼 subjects + tags 当 caption（subjects 优先，标识具象主体）
+                pieces: list[str] = []
+                if mat.subjects:
+                    pieces.extend(s for s in mat.subjects if s)
+                if mat.tags:
+                    pieces.extend(t for t in mat.tags[:4] if t)
+                cap = " ".join(pieces).strip() or mat.filename or ""
+            virt_dur = max(1.0, float(mat.duration_seconds or 3.0))
+            virt_shot = MaterialShot(
+                index=0,
+                start=0.0,
+                end=virt_dur,
+                duration=virt_dur,
+                caption=cap or None,
+                action_density=0.5,
+                recommended_role=mat.recommended_section,
+            )
+            pool.append((mat, virt_shot))
+        # audio 类不参与
     if not pool:
         return [
             ShotMatch(shot_order=sh.order, material_id=None, material_shot_index=None, score=0.0)
