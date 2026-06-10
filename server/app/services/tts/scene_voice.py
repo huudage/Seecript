@@ -48,8 +48,10 @@ def _dedupe_repetition_for_tts(text: str) -> str:
     - 单字 4+ 连续 → 压成 2 次
     - 2-4 字短语连续重复 ≥2 次 → 只保留 1 次
     - 同一句子（按 。！？；分割）出现 ≥2 次 → 只保留首次
+    - 末尾后半段自重复（"...XYZ XYZ" 或 "...XYZ。XYZ。"，K 取 4..min(L//2,30)）→ 砍掉重复尾巴
 
-    用户体验底线：宁可 TTS 短于 scene.duration 留白，绝不让人听见『来来来来』『看看看看』。
+    用户体验底线：宁可 TTS 短于 scene.duration 留白，绝不让人听见『来来来来』『看看看看』
+    或『...这款奶茶很香 这款奶茶很香』那种结尾自重复（即使两者只各重复一次）。
     """
     if not text or len(text) < 4:
         return text
@@ -60,6 +62,13 @@ def _dedupe_repetition_for_tts(text: str) -> str:
     for _ in range(3):
         prev = s
         s = _re.sub(r"(.{2,4}?)\1{2,}", r"\1", s)
+        if s == prev:
+            break
+    # stage-49：2-8 字短语只重复 2 次（没 3 次）也压掉。原 {2,} 漏网，比如 "看看就知道了。看看就知道了。"
+    # 走句级 dedup 没问题，但 "...这款奶茶很香 这款奶茶很香" 没标点就漏。
+    for _ in range(3):
+        prev = s
+        s = _re.sub(r"(.{2,8}?)\1+", r"\1", s)
         if s == prev:
             break
 
@@ -87,7 +96,21 @@ def _dedupe_repetition_for_tts(text: str) -> str:
             seen.add(key)
         dedup.append(sent)
     out = "".join(dedup) if dedup else s
+
+    # stage-49：末尾后半段自重复检测——句级 dedup 抓不到的"无标点尾巴"。
+    # 例："这款奶茶很香 这款奶茶很香" / "现在下单立省一百 现在下单立省一百"
+    # 取后 K 字（K 从 max 向 4 递减）看是否等于前 K 字，是则砍一份。
     cleaned = out.strip()
+    L = len(cleaned)
+    if L >= 8:
+        max_k = min(L // 2, 30)
+        for k in range(max_k, 3, -1):
+            tail = cleaned[-k:]
+            prev = cleaned[-2 * k:-k]
+            if tail == prev and tail.strip():
+                cleaned = cleaned[:-k].rstrip("。！？；,，、;.!? ")
+                break
+
     if cleaned != text.strip():
         log.info("[tts] dedupe applied: %r → %r", text, cleaned)
     return cleaned or text

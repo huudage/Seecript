@@ -1313,6 +1313,33 @@ export default function ComposePage() {
     [plan, setPlanAndPush],
   )
 
+  const handleRecommendPackagingForScene = useCallback(
+    async (sceneId: string, kind: 'title_bar' | 'sticker' | 'cover') => {
+      if (!plan) return
+      setError(null)
+      setTrackBusy(true)
+      try {
+        // recommend-for-scene → place 链路：LLM 按段+类型出单个 PackagingItem 草稿，立即落进轨道。
+        const draft = await api.post<import('@/types/schemas').PackagingItemDraftResponse>(
+          '/packaging/recommend-for-scene',
+          { plan_id: plan.plan_id, scene_id: sceneId, kind },
+        )
+        const placeReq: import('@/types/schemas').PackagingItemPlaceRequest = {
+          plan_id: plan.plan_id,
+          item: draft.item,
+        }
+        const fresh = await api.post<Plan>('/packaging/items/place', placeReq)
+        setPlanAndPush(fresh)
+        setSelectedPackagingItemId(draft.item.item_id)
+      } catch (err) {
+        setError(err instanceof Error ? err.message : '智能添加包装组件失败')
+      } finally {
+        setTrackBusy(false)
+      }
+    },
+    [plan, setPlanAndPush],
+  )
+
   // 字幕开关：同时改 plan.settings + session.settings，让本次 plan 立刻生效，
   // 同时下次「重新分析」也保留用户偏好。
   const handleToggleSubtitle = useCallback(
@@ -1886,6 +1913,7 @@ export default function ComposePage() {
                 onClearVoice={handleClearVoice}
                 onRecommendPackaging={handleRecommendPackaging}
                 onDeletePackagingItem={handleDeletePackagingItem}
+                onRecommendPackagingForScene={handleRecommendPackagingForScene}
                 onPickBgm={() => setBgmPickerOpen(true)}
                 onBgmAnchorChange={handleBgmAnchorChange}
                 onClearBgm={handleClearBgm}
@@ -2300,6 +2328,7 @@ export default function ComposePage() {
                 onClearVoice={handleClearVoice}
                 onRecommendPackaging={handleRecommendPackaging}
                 onDeletePackagingItem={handleDeletePackagingItem}
+                onRecommendPackagingForScene={handleRecommendPackagingForScene}
                 onPickBgm={() => setBgmPickerOpen(true)}
                 onBgmAnchorChange={handleBgmAnchorChange}
                 onClearBgm={handleClearBgm}

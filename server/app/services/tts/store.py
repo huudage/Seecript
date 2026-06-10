@@ -34,11 +34,18 @@ def voice_url(plan_id: str, scene_id: str) -> str:
 
 
 def save_wav(plan_id: str, scene_id: str, data: bytes) -> str:
-    """落盘 .wav，返回相对 URL。"""
+    """落盘 .wav，返回相对 URL（带 cache-buster）。
+
+    URL 形如 `/voiceovers/<plan>/<scene>.wav?v=<mtime_ms>`。
+    cache-buster 让前端 <audio src> 在改文案重新合成后真的换掉旧音频——
+    文件名一直是 `<scene>.wav`，浏览器/proxy 会按 URL 缓存，没 query 就听不到新版。
+    """
     dst = voice_path(plan_id, scene_id)
     dst.write_bytes(data)
     log.info("[voice.store] saved plan=%s scene=%s size=%d", plan_id, scene_id, len(data))
-    return voice_url(plan_id, scene_id)
+    import time as _time
+    bust = int(_time.time() * 1000)
+    return f"{voice_url(plan_id, scene_id)}?v={bust}"
 
 
 def delete(plan_id: str, scene_id: str) -> bool:
@@ -54,10 +61,15 @@ def delete(plan_id: str, scene_id: str) -> bool:
 
 
 def url_to_local_path(url: str) -> Optional[Path]:
-    """`/voiceovers/<plan>/<scene>.wav` → 本地 Path；非 voiceovers URL 返 None。"""
+    """`/voiceovers/<plan>/<scene>.wav[?v=<ts>]` → 本地 Path；非 voiceovers URL 返 None。
+
+    URL 可能带 cache-buster query（save_wav 加的 `?v=<ms>`），剥掉后再拼路径。
+    """
     url = (url or "").strip()
     if not url.startswith("/voiceovers/"):
         return None
+    # 剥 cache-buster query
+    url = url.split("?", 1)[0]
     rel = url.removeprefix("/voiceovers/").strip("/")
     if not rel:
         return None

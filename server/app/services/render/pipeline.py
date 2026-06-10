@@ -778,18 +778,38 @@ async def run_pipeline(job_id: str, plan: Plan) -> RenderResult:
 
     # ---- Step 5b · voice mix：把各 scene 的 TTS 口播按 scene.start 偏移混入主轨 ----
     # voiceover_enabled=False 时跳过（纯 BGM 视频）
+    # stage-49 居中策略：当口播音频自然时长 > scene.duration（atempo 出区间没强对齐），
+    # 起始时间向前平移 (audio_dur - scene_dur)/2，让口播在 scene 视觉窗口居中——
+    # 用户底线："严禁重复凑时长，太长就居中"。第一段越界部分 clip 到 0，最后一段允许溢出。
+    import wave as _wave
     voice_clips: list[tuple[Path, float]] = []
     if plan.settings.voiceover_enabled:
         for sc in plan.main_track:
             url = (sc.voiceover_url or "").strip()
             if not url:
                 continue
-            if url.startswith("/"):
-                candidate = _outputs_root().parent.parent / url.lstrip("/")
+            # stage-49：URL 末尾带 cache-buster `?v=<ts>` 让浏览器换新文件，本地解析时要剥掉
+            local_rel = url.split("?", 1)[0]
+            if local_rel.startswith("/"):
+                candidate = _outputs_root().parent.parent / local_rel.lstrip("/")
             else:
-                candidate = Path(url)
+                candidate = Path(local_rel)
             if candidate.exists() and candidate.stat().st_size > 0:
-                voice_clips.append((candidate, float(sc.start)))
+                start_at = float(sc.start)
+                try:
+                    with _wave.open(str(candidate), "rb") as wf:
+                        audio_dur = wf.getnframes() / float(wf.getframerate() or 1)
+                except Exception:  # noqa: BLE001
+                    audio_dur = 0.0
+                scene_dur = float(sc.duration or 0.0)
+                if audio_dur > scene_dur > 0:
+                    overflow = audio_dur - scene_dur
+                    start_at = max(0.0, float(sc.start) - overflow / 2.0)
+                    log.info(
+                        "[%s] voice clip overflows scene=%s audio=%.2fs scene=%.2fs → centered start %.2f→%.2f",
+                        job_id, sc.scene_id, audio_dur, scene_dur, sc.start, start_at,
+                    )
+                voice_clips.append((candidate, start_at))
             else:
                 log.warning("[%s] voiceover 文件不存在 url=%s", job_id, url)
     voice_mixed_path = styled_path

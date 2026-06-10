@@ -72,6 +72,8 @@ interface Props {
   onRecommendPackaging?: () => void | Promise<void>
   /** 删除包装项——走 DELETE /packaging/items/{plan_id}/{item_id}。 */
   onDeletePackagingItem?: (itemId: string) => void | Promise<void>
+  /** 智能添加包装组件：父级负责 sceneId+kind 选择 + recommend-for-scene → place 链路。 */
+  onRecommendPackagingForScene?: (sceneId: string, kind: 'title_bar' | 'sticker' | 'cover') => void | Promise<void>
   /** 触发上传 BGM 弹窗（父级控制 Asset library 选择 / 上传 UI）。 */
   onPickBgm?: () => void
   /** 拖动 BGM anchor 到新位置（秒，可正可负）。 */
@@ -327,6 +329,7 @@ export function FourTrackBoard({
   onSynthesizeAll,
   onClearVoice,
   onDeletePackagingItem,
+  onRecommendPackagingForScene,
   onPickBgm,
   onBgmAnchorChange,
   onClearBgm,
@@ -1360,11 +1363,20 @@ export function FourTrackBoard({
         label="包装轨"
         hint={`${nonSubtitleItems.length} 项 · 3 轨${subtitleItems.length > 0 ? ` · 字幕 ${subtitleItems.length} 项见字幕轨` : ''}`}
         rowRef={packagingRowRef}
+        actions={
+          !readOnly && onRecommendPackagingForScene ? (
+            <PackagingSmartAddButton
+              scenes={scenes}
+              busy={busy}
+              onPick={(sceneId, kind) => onRecommendPackagingForScene(sceneId, kind)}
+            />
+          ) : null
+        }
         tall
       >
         {nonSubtitleItems.length === 0 ? (
           <div className="absolute inset-1 flex items-center justify-center rounded-md border border-dashed border-border bg-background/30 text-center text-[10px] text-muted-foreground">
-            还没生成包装项（标题 / 封面 / 贴纸）——用顶部「✨ AI 包装方案」批量生成或点轨上空白处插入
+            还没生成包装项——用顶部「✨ AI 包装方案」批量生成、左侧「✨ 添加组件」按段添加，或点轨上空白处插入
           </div>
         ) : (
           <>
@@ -1508,6 +1520,95 @@ export function FourTrackBoard({
 }
 
 /* ---------------- 私有子组件 ---------------- */
+
+function PackagingSmartAddButton({
+  scenes,
+  busy,
+  onPick,
+}: {
+  scenes: Scene[]
+  busy: boolean
+  onPick: (sceneId: string, kind: 'title_bar' | 'sticker' | 'cover') => void | Promise<void>
+}) {
+  const [open, setOpen] = useState(false)
+  const [pending, setPending] = useState(false)
+  const [sceneId, setSceneId] = useState<string>(scenes[0]?.scene_id ?? '')
+  const [kind, setKind] = useState<'title_bar' | 'sticker' | 'cover'>('title_bar')
+
+  useEffect(() => {
+    if (!sceneId && scenes[0]) setSceneId(scenes[0].scene_id)
+  }, [scenes, sceneId])
+
+  const submit = useCallback(async () => {
+    if (!sceneId) return
+    setPending(true)
+    try {
+      await onPick(sceneId, kind)
+      setOpen(false)
+    } finally {
+      setPending(false)
+    }
+  }, [sceneId, kind, onPick])
+
+  return (
+    <div className="relative">
+      <button
+        onClick={() => setOpen((v) => !v)}
+        disabled={busy || scenes.length === 0}
+        className="rounded border border-primary/40 bg-primary/10 px-2 py-0.5 text-[10px] text-primary hover:bg-primary/20 disabled:opacity-50"
+        title="智能添加包装组件（按段+类型走 LLM 推荐）"
+      >
+        ✨ 添加组件
+      </button>
+      {open && (
+        <div
+          className="absolute left-0 top-full z-30 mt-1 w-56 rounded-md border border-border bg-popover p-2 shadow-lg"
+          onClick={(e) => e.stopPropagation()}
+        >
+          <div className="mb-1 text-[10px] text-muted-foreground">按段落智能生成单个包装项</div>
+          <label className="mb-1 block text-[10px] text-muted-foreground">目标段</label>
+          <select
+            value={sceneId}
+            onChange={(e) => setSceneId(e.target.value)}
+            className="mb-2 w-full rounded border border-border bg-background px-1.5 py-1 text-[11px]"
+          >
+            {scenes.map((sc, idx) => (
+              <option key={sc.scene_id} value={sc.scene_id}>
+                {`段${idx + 1} · ${(sc.shot_subject || sc.narration || sc.scene_id).slice(0, 16)}`}
+              </option>
+            ))}
+          </select>
+          <label className="mb-1 block text-[10px] text-muted-foreground">类型</label>
+          <select
+            value={kind}
+            onChange={(e) => setKind(e.target.value as 'title_bar' | 'sticker' | 'cover')}
+            className="mb-2 w-full rounded border border-border bg-background px-1.5 py-1 text-[11px]"
+          >
+            <option value="title_bar">标题条</option>
+            <option value="sticker">贴纸</option>
+            <option value="cover">封面</option>
+          </select>
+          <div className="flex justify-end gap-1">
+            <button
+              onClick={() => setOpen(false)}
+              disabled={pending}
+              className="rounded border border-border bg-background px-2 py-0.5 text-[10px] hover:bg-secondary"
+            >
+              取消
+            </button>
+            <button
+              onClick={() => void submit()}
+              disabled={pending || !sceneId}
+              className="rounded bg-primary px-2 py-0.5 text-[10px] text-primary-foreground hover:opacity-90 disabled:opacity-50"
+            >
+              {pending ? '生成中…' : '生成并落轨'}
+            </button>
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}
 
 function TrackRow({
   label,

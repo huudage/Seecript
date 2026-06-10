@@ -1220,6 +1220,52 @@ def _suggest_animation_spec(
     return AnimationSpec.model_validate(defaults)
 
 
+def suggest_animation_spec_for_shot(
+    shot: "ShotPlan | None",
+    section: "AdaptedSection | None",
+    user_override: dict | None = None,
+) -> "AnimationSpec":
+    """Stage-49：单镜头维度的 AnimationSpec 推荐。
+
+    多镜头 AIGC 段落（plan.py 拆成 N 个 sub-scene）每个 sub-scene 只渲染一张图，
+    但需要按本镜的 camera_technique 决定运镜——不能继承父段的多图 storyboard spec
+    （否则每个 sub-scene 都会循环播放全 N 张图，造成"3 张图反复切"的观感）。
+
+    优先级：user_override > shot.camera_technique > section 默认（按 role/tempo）。
+    n_images 固定 1，不带 image_urls 字段。
+    """
+    role = (section.role if section else "development") or "development"
+    tempo = (section.tempo if section else None) or "medium"
+    if role == "opening":
+        anim_type, motion, intensity = "ken-burns", "in", 0.4
+    elif role == "closing":
+        anim_type, motion, intensity = "ken-burns", "out", 0.3
+    elif role == "climax":
+        anim_type, motion, intensity = "ken-burns", "in", 0.6
+    else:
+        anim_type, motion, intensity = "parallax", "in", 0.35
+    if tempo in ("peak", "fast"):
+        intensity = min(0.9, intensity + 0.1)
+
+    defaults: dict = {
+        "engine": "remotion",
+        "animation_type": anim_type,
+        "motion_direction": motion,
+        "intensity": intensity,
+        "transition": "cross-fade",
+        "transition_duration": 0.4,
+    }
+    cam = (getattr(shot, "camera_technique", "") or "").strip() if shot else ""
+    if cam:
+        for k, v in _camera_technique_to_anim_hints(cam).items():
+            defaults[k] = v
+    if isinstance(user_override, dict):
+        for k, v in user_override.items():
+            if k in defaults and v is not None:
+                defaults[k] = v
+    return AnimationSpec.model_validate(defaults)
+
+
 async def _fill_with_seedream_image(gap: Gap, params: dict[str, Any]) -> FillResult:
     """调 Seedream 文生图填补槽位（静态画面分支）。
 

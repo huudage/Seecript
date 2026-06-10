@@ -640,6 +640,11 @@ async def build_plan(req: PlanBuildRequest) -> Plan:
 
                 if source == "aigc_image":
                     pick_url = aigc_image_urls[shot_idx] if shot_idx < n_imgs else (aigc_image_urls[-1] if n_imgs else aigc_image_url)
+                    # stage-49：每个 sub-scene 用单图独立 AnimationSpec，按本镜 camera_technique 推运镜。
+                    # 关键：剥掉父段 spec.image_urls，否则前端 StoryboardLayer 会循环全 N 张图，
+                    # 造成"3 张图在每个 sub-scene 都反复切"的观感（用户报障）。
+                    from ..services.agent.gap_agent import suggest_animation_spec_for_shot
+                    sub_anim_spec = suggest_animation_spec_for_shot(shot, sec, None)
                     main_track.append(Scene(
                         scene_id=sub_id,
                         section=sec.role,  # type: ignore[arg-type]
@@ -657,7 +662,7 @@ async def build_plan(req: PlanBuildRequest) -> Plan:
                         aigc_video_urls=[],
                         aigc_image_url=pick_url,
                         text_card_spec=None,
-                        animation_spec=animation_spec,
+                        animation_spec=sub_anim_spec,
                     ))
                 elif source == "text_card":
                     # 每个 shot 一张字卡：main_text 取 subject（或 narration 首句），sub_text 取 narration 余文
