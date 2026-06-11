@@ -849,11 +849,12 @@ async def _fill_with_seedance(gap: Gap, params: dict[str, Any]) -> FillResult:
         else:
             raw_dur = 5.0
     requested = float(raw_dur)
-    requested = max(2.0, min(60.0, requested))
+    # Seedance 2.0 拒绝 duration<5；上限 60s 由调用方业务约束
+    requested = max(5.0, min(60.0, requested))
 
     # 分段策略：均分到每段 ≤12s
     n_chunks = max(1, math.ceil(requested / SEEDANCE_MAX_SECONDS))
-    per_chunk = max(2.0, min(float(SEEDANCE_MAX_SECONDS), requested / n_chunks))
+    per_chunk = max(5.0, min(float(SEEDANCE_MAX_SECONDS), requested / n_chunks))
 
     base_params: dict[str, Any] = {
         "first_frame": params.get("first_frame_url"),

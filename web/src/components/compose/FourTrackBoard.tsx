@@ -754,12 +754,14 @@ export function FourTrackBoard({
             firstScene.text_card_spec ?? fillForSection?.text_card_spec ?? null
 
           // stage-37 展开态：把段块按真实 scene.start/duration 拆成 N 个独立小镜块
+          // stage-69：段块边到边贴合（旧 -2px 的「视觉缝」会让段间看着像黑屏，
+          //           用户在 step2 误读为"分镜之间黑屏"——色块 + rounded 本身已能区分相邻段）
           if (expanded) {
             return (
               <div
                 key={section.section_id}
                 className="absolute top-1 bottom-1"
-                style={{ left: `${left}%`, width: `calc(${width}% - 2px)` }}
+                style={{ left: `${left}%`, width: `${width}%` }}
               >
                 {/* 段头条：✏ 编辑段 + ▾ 折叠回去；占 14px 高，下面才是分镜小块 */}
                 <div className="absolute inset-x-0 top-0 z-[1] flex h-3.5 items-center gap-1 rounded-t bg-black/55 px-1">
@@ -829,7 +831,7 @@ export function FourTrackBoard({
                         )}
                         style={{
                           left: `${innerLeft}%`,
-                          width: `calc(${innerWidth}% - 1px)`,
+                          width: `${innerWidth}%`,
                         }}
                         title={`第 ${sc.shot_order + 1} 镜 · ${sc.duration.toFixed(1)}s\n${sc.shot_subject || ''}\n${sc.narration || ''}\n点击：编辑本镜（subject / visual / narration）`}
                       >
@@ -918,7 +920,7 @@ export function FourTrackBoard({
                   ? 'z-10 scale-[1.02] ring-4 ring-white ring-offset-2 ring-offset-card shadow-lg brightness-110'
                   : 'hover:brightness-110',
               )}
-              style={{ left: `${left}%`, width: `calc(${width}% - 2px)` }}
+              style={{ left: `${left}%`, width: `${width}%` }}
               title={`${getSectionMeta(section.role).label} · ${section.theme}\n${section.content_description}\n（含 ${scenesInSec.length} 镜，✏ 编辑段、▾ 展开分镜逐镜编辑）`}
             >
               <div className="absolute inset-0">
@@ -1102,7 +1104,7 @@ export function FourTrackBoard({
                   ? 'z-10 scale-[1.02] ring-4 ring-white ring-offset-2 ring-offset-card shadow-lg brightness-110'
                   : 'hover:brightness-110',
               )}
-              style={{ left: `${left}%`, width: `calc(${width}% - 2px)` }}
+              style={{ left: `${left}%`, width: `${width}%` }}
               title={
                 section
                   ? `${getSectionMeta(scene.section).label} · ${section.theme}\n${section.content_description}`

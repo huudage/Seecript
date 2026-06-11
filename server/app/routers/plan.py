@@ -1931,7 +1931,8 @@ async def swap_scene_source(
             base_text = section.content_description if section else f"短视频画面：{scene.section}"
         prompt = base_text[:200]
         ratio_pref = (plan.settings.aspect_ratio if plan.settings else None) or "9:16"
-        per_chunk_seconds = int(round(min(float(SEEDANCE_MAX_SECONDS), max(2.0, shot_dur))))
+        # Seedance 2.0 拒绝 duration<5；shot_dur 可能短于 5（用户裁剪到 2-3s），floor 上去
+        per_chunk_seconds = int(round(min(float(SEEDANCE_MAX_SECONDS), max(5.0, shot_dur))))
         t2v = get_t2v_client()
         try:
             submit = await t2v.submit(

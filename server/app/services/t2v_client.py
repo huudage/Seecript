@@ -256,7 +256,8 @@ class DoubaoArkT2VClient(T2VClient):
             "content": content,
             "ratio": ratio or self._default_ratio,
             "resolution": self._resolution,
-            "duration": int(duration_seconds),
+            # Seedance 2.0 拒绝 duration<5：把硬下限收在这里，所有 caller 都被罩住
+            "duration": max(5, int(duration_seconds)),
             "generate_audio": (
                 self._default_generate_audio if generate_audio is None else bool(generate_audio)
             ),
