@@ -1031,6 +1031,67 @@ async def build_plan(req: PlanBuildRequest) -> Plan:
         main_track.append(scene)
         timeline_cursor += actual_duration
 
+    # stage-72：跨 section 去重 user_material 窗口。
+    # 现象：shot_matcher 给不同 section 的 shot 返回同一个 matched_material_shot_index
+    # → build 出来两段 Scene 引用同 (material_id, in_point, out_point) → 同一段源视频
+    # （含 burned-in 字幕/音频）被连播两次。
+    # 修复：扫描所有 user_material Scene，第二次及之后撞窗口的就向后 shift in_point
+    # 直到找到未占用窗口；若素材太短无法 shift，保留窗口但标 needs_fill=True 让
+    # 前端段卡显示待修补，并由用户在 step2 手动 swap-source / 裁剪。
+    if effective_project_id:
+        seen_windows: dict[tuple[str, int, int], str] = {}
+        for idx, sc in enumerate(main_track):
+            if sc.source != "user_material" or sc.out_point is None or not sc.source_ref:
+                continue
+            key = (sc.source_ref, round(sc.in_point * 100), round(sc.out_point * 100))
+            if key not in seen_windows:
+                seen_windows[key] = sc.scene_id
+                continue
+            mat = material_store.get(effective_project_id, sc.source_ref)
+            mat_dur = float(mat.duration_seconds or 0.0) if mat is not None else 0.0
+            win_len = float(sc.out_point - sc.in_point)
+            if mat_dur <= 0 or win_len <= 0 or mat_dur <= win_len:
+                # 素材太短或没有时长信息 → 没法 shift，标 needs_fill 让前端提醒
+                main_track[idx] = sc.model_copy(update={"needs_fill": True})
+                continue
+            shifted = False
+            for trial in range(1, 8):
+                trial_in = sc.in_point + trial * win_len
+                if trial_in + win_len > mat_dur:
+                    trial_in = max(0.0, mat_dur - win_len)
+                trial_out = min(trial_in + win_len, mat_dur)
+                trial_key = (
+                    sc.source_ref,
+                    round(trial_in * 100),
+                    round(trial_out * 100),
+                )
+                if trial_key in seen_windows:
+                    if trial_in <= 0 or trial_in + win_len >= mat_dur:
+                        break
+                    continue
+                main_track[idx] = sc.model_copy(update={
+                    "in_point": round(trial_in, 3),
+                    "out_point": round(trial_out, 3),
+                    "duration": round(trial_out - trial_in, 3),
+                })
+                seen_windows[trial_key] = sc.scene_id
+                log.info(
+                    "[plan] stage-72 dedup: %s 与 %s 窗口撞车 (%s,%.2f,%.2f) → shift 到 (%.2f,%.2f)",
+                    sc.scene_id, seen_windows[key], sc.source_ref, sc.in_point, sc.out_point,
+                    trial_in, trial_out,
+                )
+                shifted = True
+                break
+            if not shifted:
+                main_track[idx] = sc.model_copy(update={"needs_fill": True})
+
+        # dedup 可能改了 scene.duration（trial_out 触底时），重铺 scene.start
+        new_cursor = 0.0
+        for idx, sc in enumerate(main_track):
+            if abs(sc.start - new_cursor) > 1e-3:
+                main_track[idx] = sc.model_copy(update={"start": round(new_cursor, 3)})
+            new_cursor += main_track[idx].duration
+
     actual_total = sum(sc.duration for sc in main_track) or 1.0
 
     # 4. 包装轨：仅生成每段口播字幕；title_bar/sticker/cover/transition 全部走
