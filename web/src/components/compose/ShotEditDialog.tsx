@@ -10,6 +10,8 @@ import type {
   ShotPlan,
 } from '@/types/schemas'
 
+import { MaterialTrimPanel } from './MaterialTrimPanel'
+
 type SourceType = 'user_material' | 'aigc_image' | 'aigc_t2v' | 'text_card'
 
 const SOURCE_LABEL: Record<SourceType, string> = {
@@ -70,6 +72,9 @@ export function ShotEditDialog({
   const [swapSource, setSwapSource] = useState<SourceType>('user_material')
   const [swapMaterialId, setSwapMaterialId] = useState<string>('')
   const [swapMaterialShotIdx, setSwapMaterialShotIdx] = useState<number | null>(null)
+  // stage-29 手动裁剪：与 swapMaterialShotIdx 互斥；用户拖手柄就走手动路径
+  const [swapManualIn, setSwapManualIn] = useState<number | null>(null)
+  const [swapManualOut, setSwapManualOut] = useState<number | null>(null)
   const [swapPromptHint, setSwapPromptHint] = useState('')
   const [swapMainText, setSwapMainText] = useState('')
   const [swapSubText, setSwapSubText] = useState('')
@@ -95,6 +100,8 @@ export function ShotEditDialog({
     setSwapSource(cur)
     setSwapMaterialId(materials[0]?.material_id ?? '')
     setSwapMaterialShotIdx(null)
+    setSwapManualIn(null)
+    setSwapManualOut(null)
     setSwapPromptHint('')
     setSwapMainText('')
     setSwapSubText('')
@@ -153,6 +160,8 @@ export function ShotEditDialog({
         source: SourceType
         material_id?: string
         material_shot_index?: number
+        material_in_point?: number
+        material_out_point?: number
         prompt_hint?: string
         main_text?: string
         sub_text?: string
@@ -162,7 +171,14 @@ export function ShotEditDialog({
           throw new Error('请选择一条素材')
         }
         body.material_id = swapMaterialId
-        if (swapMaterialShotIdx !== null) {
+        // 手动裁剪优先：in+out 同时存在 → 后端按用户窗口写 scene.in_point/out_point/duration
+        if (swapManualIn !== null && swapManualOut !== null) {
+          if (swapManualOut - swapManualIn < 0.5) {
+            throw new Error('裁剪窗口太短，至少 0.5s')
+          }
+          body.material_in_point = swapManualIn
+          body.material_out_point = swapManualOut
+        } else if (swapMaterialShotIdx !== null) {
           body.material_shot_index = swapMaterialShotIdx
         }
       } else if (swapSource === 'aigc_image' || swapSource === 'aigc_t2v') {
@@ -345,6 +361,8 @@ export function ShotEditDialog({
                         onChange={(e) => {
                           setSwapMaterialId(e.target.value)
                           setSwapMaterialShotIdx(null)
+                          setSwapManualIn(null)
+                          setSwapManualOut(null)
                         }}
                         className="w-full rounded border border-border bg-background px-2 py-1.5 text-sm disabled:opacity-60"
                       >
@@ -358,10 +376,33 @@ export function ShotEditDialog({
                         ))}
                       </select>
                     </label>
+                    {selectedMaterial &&
+                      selectedMaterial.media_type === 'video' &&
+                      (selectedMaterial.duration_seconds ?? 0) > 0 && (
+                        <div className="space-y-1">
+                          <span className="text-xs text-muted-foreground">
+                            手动裁剪（拖手柄选片段，时长会直接覆盖本镜的 {scene.duration.toFixed(1)}s）
+                          </span>
+                          <MaterialTrimPanel
+                            material={selectedMaterial}
+                            targetDuration={scene.duration}
+                            initialIn={swapManualIn ?? 0}
+                            initialOut={
+                              swapManualOut ??
+                              Math.min(scene.duration, selectedMaterial.duration_seconds ?? scene.duration)
+                            }
+                            onChange={(i, o) => {
+                              setSwapManualIn(i)
+                              setSwapManualOut(o)
+                              setSwapMaterialShotIdx(null)
+                            }}
+                          />
+                        </div>
+                      )}
                     {materialShots.length > 0 && (
                       <label className="block space-y-1">
                         <span className="text-xs text-muted-foreground">
-                          挑哪段镜头（缺省取首镜，按本镜时长 {scene.duration.toFixed(1)}s 切入出点）
+                          或挑自动识别的镜头（缺省取首镜，按本镜时长 {scene.duration.toFixed(1)}s 切入出点）
                         </span>
                         <select
                           value={swapMaterialShotIdx === null ? '' : String(swapMaterialShotIdx)}
@@ -369,6 +410,8 @@ export function ShotEditDialog({
                           onChange={(e) => {
                             const v = e.target.value
                             setSwapMaterialShotIdx(v === '' ? null : Number(v))
+                            setSwapManualIn(null)
+                            setSwapManualOut(null)
                           }}
                           className="w-full rounded border border-border bg-background px-2 py-1.5 text-sm disabled:opacity-60"
                         >
