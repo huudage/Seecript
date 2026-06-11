@@ -152,10 +152,18 @@ const SceneClip: React.FC<{ scene: Scene; materials: Material[]; fps: number }> 
           />
         ) : (
           <Video
+            // stage-71：key 显式带 scene_id + in_point，避免两段同 URL 不同窗口的
+            // Scene 在 Remotion 内部共享同一 HTMLVideoElement / seek 队列，
+            // 表现为画面切换时短暂复播旧段尾巴。
+            key={`${scene.scene_id}-${Math.round(scene.in_point * 1000)}`}
             src={media.url}
             startFrom={Math.max(0, secsToFrames(scene.in_point, fps))}
             endAt={scene.out_point != null ? secsToFrames(scene.out_point, fps) : undefined}
             volume={voiceover ? 0 : 1}
+            // stage-71：默认 0.45s 漂移阈值会触发 Remotion 倒回 seek，看上去像"播
+            // 到中段突然跳回片头复播"。浏览器解 1080p mp4 + 跨 Sequence 切换时极易
+            // 超过 0.45s，调到 2s 让自然漂移落在容忍区。
+            acceptableTimeShiftInSeconds={2}
             style={{ width: '100%', height: '100%', objectFit: 'cover' }}
           />
         )}

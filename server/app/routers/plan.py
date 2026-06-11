@@ -882,9 +882,11 @@ async def build_plan(req: PlanBuildRequest) -> Plan:
                                 # stage-60: shot_matcher 没给 idx, 但素材足够长——按时间均分,
                                 # 让每个 sub-shot 落在素材的不同时间窗, 避免 N 个 sub-scene
                                 # 都 in_pt=0 而画面相同.
+                                # stage-71: out_pt 必须 ≤ 下一段 in_pt（slice_len 边界），否则
+                                # shot_dur > slice_len 时窗口重叠 → 预览段间重播同一段画面。
                                 slice_len = float(mat.duration_seconds) / N
                                 in_pt = shot_idx * slice_len
-                                out_pt = min(in_pt + shot_dur, float(mat.duration_seconds))
+                                out_pt = min(in_pt + min(shot_dur, slice_len), float(mat.duration_seconds))
                     elif effective_project_id:
                         mat = material_store.get(effective_project_id, source_ref)
                         if mat is not None and mat.shots:
@@ -896,9 +898,10 @@ async def build_plan(req: PlanBuildRequest) -> Plan:
                             needs_fill = True
                         elif mat is not None and mat.duration_seconds and float(mat.duration_seconds) >= max(N * 1.0, target_duration):
                             # stage-60: 同上, 没 mat.shots 时按时间均分
+                            # stage-71: 同样 cap shot_dur 到 slice_len 防窗口重叠。
                             slice_len = float(mat.duration_seconds) / N
                             in_pt = shot_idx * slice_len
-                            out_pt = min(in_pt + shot_dur, float(mat.duration_seconds))
+                            out_pt = min(in_pt + min(shot_dur, slice_len), float(mat.duration_seconds))
                             needs_fill = True
                     # 用户底线（2026-06-11）："裁哪段如实播放哪一段"——
                     # 视频素材：scene.duration = (out_pt - in_pt)，禁止渲染端凑时长。
