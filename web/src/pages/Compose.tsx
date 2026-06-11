@@ -27,6 +27,7 @@ import { SectionEditDialog } from '@/components/compose/SectionEditDialog'
 import { ShotEditDialog } from '@/components/compose/ShotEditDialog'
 import { StructureMapPanel } from '@/components/compose/StructureMapPanel'
 import { SubtitleEditPopover } from '@/components/compose/SubtitleEditPopover'
+import { SystemLibraryPicker } from '@/components/compose/SystemLibraryPicker'
 import { TransitionStylePicker } from '@/components/compose/TransitionStylePicker'
 import { VersionMenu } from '@/components/compose/VersionMenu'
 import { PageShell } from '@/components/layout/PageShell'
@@ -259,6 +260,8 @@ export default function ComposePage() {
   // 四轨板上的轨道动作 busy 锁（区别于 filling，避免与补全面板状态混淆）
   const [trackBusy, setTrackBusy] = useState(false)
   const [bgmPickerOpen, setBgmPickerOpen] = useState(false)
+  // step1 素材库标题栏「+ 从素材库选取」按钮的开关——打开 SystemLibraryPicker 克隆共享素材到本项目
+  const [systemLibraryOpen, setSystemLibraryOpen] = useState(false)
   const [editingSubtitleScene, setEditingSubtitleScene] = useState<Scene | null>(null)
   // step3 包装项：点击弹窗改文案/类型/归属段；时间轴上 left/right/move 拖动统一走 update_packaging_item_time 落盘；跨轴拖动不存在（packaging ↔ bgm 无语义）。转场节点同样点击改样式。
   const [editingPackagingItem, setEditingPackagingItem] = useState<PackagingItem | null>(null)
@@ -1628,7 +1631,18 @@ export default function ComposePage() {
             <div className="space-y-2">
               <div className="flex items-center justify-between">
                 <label className="text-xs font-semibold">素材库（拖拽可排序）</label>
-                <span className="text-[10px] text-muted-foreground">{sortedMaterials.length} 条</span>
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setSystemLibraryOpen(true)}
+                    disabled={!currentProjectId}
+                    className="rounded border border-border bg-background px-2 py-0.5 text-[10px] hover:bg-secondary disabled:opacity-50"
+                    title="从系统素材库挑选 → 克隆到本项目"
+                  >
+                    + 从素材库选取
+                  </button>
+                  <span className="text-[10px] text-muted-foreground">{sortedMaterials.length} 条</span>
+                </div>
               </div>
               <MaterialGrid
                 materials={sortedMaterials}
@@ -2392,7 +2406,14 @@ export default function ComposePage() {
 
       {/* 样例截图弹窗已废弃：选中内容轨改为直接切换右侧编辑区，不再弹窗。 */}
 
-      {/* 系统素材库（"样例库"）已下线：step1 只展示项目自有素材库 + 拖拽上传两条路径。 */}
+      {/* 系统素材库选择器 —— step1 素材库标题栏「+ 从素材库选取」按钮触发，
+          从共享 __system__ 项目挑素材克隆到当前项目，扩充本项目素材库。 */}
+      <SystemLibraryPicker
+        open={systemLibraryOpen}
+        projectId={currentProjectId}
+        onClose={() => setSystemLibraryOpen(false)}
+        onCloned={(materials) => appendMaterials(materials)}
+      />
 
       {/* BGM 选择 / 上传弹窗 */}
       {plan && currentProjectId && (
