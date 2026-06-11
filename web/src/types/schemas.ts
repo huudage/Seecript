@@ -409,6 +409,20 @@ export interface MaterialCloneFromSystemResponse {
   skipped: MaterialId[]
 }
 
+/** 从当前项目「我的素材」资产库克隆 reference_image / reference_video 为内容素材 ——
+ *  与 server schemas.py::MaterialCloneFromAssetRequest 镜像。bgm 类型会被后端 skip。 */
+export interface MaterialCloneFromAssetRequest {
+  project_id: string
+  source_asset_ids: string[]
+}
+
+export interface MaterialCloneFromAssetResponse {
+  project_id: string
+  materials: Material[]
+  /** 未找到 / kind=bgm / 缺文件 的 asset_id（不阻断）。 */
+  skipped: string[]
+}
+
 // =========================================================================
 // Module 4 — Gap
 // =========================================================================

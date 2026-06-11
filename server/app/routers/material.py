@@ -29,6 +29,8 @@ from fastapi import APIRouter, File, Form, HTTPException, UploadFile
 from ..config import get_settings
 from ..schemas import (
     Material,
+    MaterialCloneFromAssetRequest,
+    MaterialCloneFromAssetResponse,
     MaterialCloneFromSystemRequest,
     MaterialCloneFromSystemResponse,
     MaterialUploadResponse,
@@ -36,6 +38,7 @@ from ..schemas import (
     VideoType,
     all_role_names,
 )
+from ..services.assets import asset_store
 from ..services.llm_client import LLMError, get_llm_client
 from ..services.materials import material_store
 from ..services.materials.preprocess import dispatch as dispatch_preprocess
@@ -526,6 +529,126 @@ async def clone_from_system(req: MaterialCloneFromSystemRequest) -> MaterialClon
                  target_project, source_project, len(created), len(skipped))
 
     return MaterialCloneFromSystemResponse(
+        project_id=target_project,
+        materials=created,
+        skipped=skipped,
+    )
+
+
+@router.post("/material/clone-from-asset", response_model=MaterialCloneFromAssetResponse)
+async def clone_from_asset(req: MaterialCloneFromAssetRequest) -> MaterialCloneFromAssetResponse:
+    """从当前项目「我的素材」资产库克隆 reference_image / reference_video 到内容素材库。
+
+    与 clone-from-system 的差异：
+    - 源是 asset_store（var/assets/<project>/<kind>/），不是 material_store
+    - 仅接受 reference_image / reference_video；bgm 直接 skip（BGM 走 plan.bgm 配置不上内容轨）
+    - 复制源文件 + 缩略图到 uploads/<project>/；视频再走 dispatch_preprocess 跑 PySceneDetect
+      产物 shots —— 让用户后续可在 step2 的 SwapSourceDialog 里选具体切镜
+    - Material.origin = "system_clone"（与 clone-from-system 共用枚举值，前端 badge 通用）
+    """
+    target_project = req.project_id.strip()
+    if not target_project or target_project == SYSTEM_PROJECT_ID:
+        raise HTTPException(status_code=400, detail="project_id 非法（不能为空或 __system__）")
+    if not req.source_asset_ids:
+        raise HTTPException(status_code=400, detail="source_asset_ids 必填且非空")
+
+    settings = get_settings()
+    assets_root = settings.log_dir.parent / "var" / "assets" / target_project
+    dst_dir = _uploads_root() / target_project
+    dst_dir.mkdir(parents=True, exist_ok=True)
+
+    base_order = len(material_store.list(target_project))
+    created: list[Material] = []
+    skipped: list[str] = []
+
+    for offset, asset_id in enumerate(req.source_asset_ids):
+        asset = asset_store.get(asset_id)
+        if asset is None or asset.owner != target_project:
+            skipped.append(asset_id)
+            continue
+        if asset.kind == "bgm":
+            log.info("[material/clone-from-asset] skip bgm asset id=%s", asset_id)
+            skipped.append(asset_id)
+            continue
+
+        # 解析源文件路径：file_url 形如 /assets/<project>/<kind>/<name>
+        src_name = Path(asset.file_url).name
+        src_path = assets_root / asset.kind / src_name
+        if not src_path.exists():
+            log.warning("[material/clone-from-asset] missing source: %s", src_path)
+            skipped.append(asset_id)
+            continue
+
+        new_id = uuid.uuid4().hex[:12]
+        dst_name = f"{new_id}_{asset.file_name}"
+        dst_path = dst_dir / dst_name
+        try:
+            shutil.copy2(src_path, dst_path)
+        except Exception as exc:  # noqa: BLE001
+            log.warning("[material/clone-from-asset] copy %s → %s failed: %s",
+                        src_path, dst_path, exc)
+            skipped.append(asset_id)
+            continue
+
+        # 缩略图：reference_video 在 asset metadata.thumbnail_url；reference_image 复用文件本身
+        new_thumb_url: Optional[str] = None
+        media_type: str = "video" if asset.kind == "reference_video" else "image"
+        if media_type == "image":
+            new_thumb_url = f"/uploads/{target_project}/{dst_path.name}"
+        else:
+            thumb_meta = asset.metadata.get("thumbnail_url") if isinstance(asset.metadata, dict) else None
+            if isinstance(thumb_meta, str) and thumb_meta:
+                thumb_src = assets_root / asset.kind / Path(thumb_meta).name
+                if thumb_src.exists():
+                    thumb_dst = dst_dir / f"{new_id}_thumb.jpg"
+                    try:
+                        shutil.copy2(thumb_src, thumb_dst)
+                        new_thumb_url = f"/uploads/{target_project}/{thumb_dst.name}"
+                    except Exception as exc:  # noqa: BLE001
+                        log.warning("[material/clone-from-asset] thumb copy failed: %s", exc)
+
+        duration = None
+        if isinstance(asset.metadata, dict):
+            d = asset.metadata.get("duration_seconds")
+            if isinstance(d, (int, float)) and d > 0:
+                duration = float(d)
+
+        material = Material(
+            material_id=new_id,
+            filename=asset.file_name,
+            media_type=media_type,  # type: ignore[arg-type]
+            duration_seconds=duration,
+            thumbnail_url=new_thumb_url,
+            file_url=f"/uploads/{target_project}/{dst_path.name}",
+            tags=list(asset.tags) if asset.tags else ["[auto] 来自我的素材库"],
+            subjects=[],
+            recommended_section="development",
+            highlight_score=0.5,
+            highlight_reason="[auto] 来自素材库克隆，未重新打标",
+            sort_order=base_order + offset,
+            preprocess_status="pending" if media_type == "video" else "skipped",
+            origin="system_clone",
+        )
+        created.append(material)
+        # 触发触发 PySceneDetect（视频）让 step2 能选切镜
+        if media_type == "video":
+            try:
+                dispatch_preprocess(target_project, new_id, dst_path)
+            except Exception as exc:  # noqa: BLE001
+                log.warning("[material/clone-from-asset] preprocess dispatch failed material=%s: %s",
+                            new_id, exc)
+        # 资产「触发使用」
+        try:
+            asset_store.touch(asset_id)
+        except Exception as exc:  # noqa: BLE001
+            log.debug("[material/clone-from-asset] asset.touch failed id=%s: %s", asset_id, exc)
+
+    if created:
+        material_store.put(target_project, created)
+        log.info("[material/clone-from-asset] %s cloned=%d skipped=%d",
+                 target_project, len(created), len(skipped))
+
+    return MaterialCloneFromAssetResponse(
         project_id=target_project,
         materials=created,
         skipped=skipped,

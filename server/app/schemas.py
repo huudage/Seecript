@@ -831,6 +831,29 @@ class MaterialCloneFromSystemResponse(BaseModel):
     skipped: list[str] = Field(default_factory=list, description="未找到的源素材 id（不阻断）")
 
 
+class MaterialCloneFromAssetRequest(BaseModel):
+    """从当前项目资产库（Asset Library）克隆 reference_image / reference_video 到内容素材库。
+
+    场景：用户在 step1 "+ 从素材库选取" 弹窗里，除了挑其他项目的 Material，还希望直接
+    把自己保存在「我的素材」（AssetLibraryView）里的参考图/参考视频拿来用作内容素材。
+    Asset 文件落在 `var/assets/<project>/<kind>/`，Material 文件落在 `var/uploads/<project>/`，
+    两套独立的存储 —— 这里负责跨边界复制 + 在目标 store 铸一条新 Material。
+
+    禁 `bgm`：BGM 走 plan.bgm 配置而非内容轨；不让它进 Material 池避免误用。
+    """
+    project_id: str = Field(..., min_length=1, description="目标项目 id（克隆终点 = 当前项目）")
+    source_asset_ids: list[str] = Field(
+        ..., min_length=1, max_length=20,
+        description="要克隆的 asset_id 列表（来自同一 project_id 的 Asset Library）；单次最多 20 个",
+    )
+
+
+class MaterialCloneFromAssetResponse(BaseModel):
+    project_id: str
+    materials: list[Material] = Field(default_factory=list, description="克隆产生的新素材（带新 material_id）")
+    skipped: list[str] = Field(default_factory=list, description="未找到 / kind=bgm / 缺文件 的 asset_id")
+
+
 # =========================================================================
 # Module 4 — 缺口识别与补全 (Gap)
 # =========================================================================
