@@ -394,9 +394,11 @@ export interface MaterialUploadResponse {
   materials: Material[]
 }
 
-/** 从系统素材库克隆到当前项目 —— 与 server schemas.py::MaterialCloneFromSystemRequest 镜像。 */
+/** 从源项目素材库克隆到当前项目 —— 与 server schemas.py::MaterialCloneFromSystemRequest 镜像。
+ *  source_project_id 可选，默认 __system__；传自己的别的 project_id 可跨项目复用素材。 */
 export interface MaterialCloneFromSystemRequest {
   project_id: string
+  source_project_id?: string
   source_material_ids: MaterialId[]
 }
 

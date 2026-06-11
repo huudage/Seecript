@@ -1,7 +1,8 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 
 import { api } from '@/api/client'
 import { cn } from '@/lib/utils'
+import { useProjectsStore } from '@/stores/projects'
 import type {
   Material,
   MaterialCloneFromSystemRequest,
@@ -9,14 +10,19 @@ import type {
 } from '@/types/schemas'
 
 /**
- * 系统素材库选择器。
+ * 跨项目素材库选择器（"+ 从素材库选取"）。
  *
- * - 打开时拉 GET /material?project_id=__system__ 列出共享素材
- * - 多选 → 「克隆到本项目」 → POST /material/clone-from-system → 父级 appendMaterials
- * - 失败：分项 skipped 提示，不阻塞已成功克隆的部分
+ * 用户原话（2026-06-11）："从素材库选取看的是我的素材，不是样例视频"——
+ * 早先版本只看 __system__ 共享池（运维灌入的演示样例），用户不感兴趣；
+ * 现在改成枚举用户自己 useProjectsStore.projects[]（排除当前项目）：
  *
- * 系统素材库的灌入约定：运维通过 `POST /material/upload` 带 project_id=__system__ 上传，
- * 任何项目都可只读列出 + 克隆补充到自己的项目素材库；克隆走完整 file copy + 元数据复制。
+ * - 顶部下拉切换源项目（默认第一个非当前项目）
+ * - 中部网格展示该项目的 GET /material?project_id=<src> 列表
+ * - 多选 + 「克隆到本项目」 → POST /material/clone-from-system 带 source_project_id
+ * - 父级 onCloned 接住返回的新 Material[]，appendMaterials 进当前 session
+ *
+ * 文件名沿用 SystemLibraryPicker 是历史包袱（路由名也叫 clone-from-system），
+ * 后端已扩 source_project_id 参数（默认仍 __system__ 保持向后兼容）。
  */
 export function SystemLibraryPicker({
   open,
@@ -29,6 +35,16 @@ export function SystemLibraryPicker({
   onClose: () => void
   onCloned: (materials: Material[]) => void
 }) {
+  const projects = useProjectsStore((s) => s.projects)
+  const refreshProjects = useProjectsStore((s) => s.refresh)
+
+  // 候选源项目：用户其他项目（排除当前项目 + __system__）
+  const candidateProjects = useMemo(
+    () => projects.filter((p) => p.project_id !== projectId && p.project_id !== '__system__'),
+    [projects, projectId],
+  )
+
+  const [sourceProjectId, setSourceProjectId] = useState<string | null>(null)
   const [items, setItems] = useState<Material[]>([])
   const [loading, setLoading] = useState(false)
   const [cloning, setCloning] = useState(false)
@@ -36,25 +52,43 @@ export function SystemLibraryPicker({
   const [err, setErr] = useState<string | null>(null)
   const [skippedCount, setSkippedCount] = useState(0)
 
-  const refresh = useCallback(async () => {
+  // 打开时拉一次最新项目列表 —— 避免用户长开 tab 后看不到新项目
+  useEffect(() => {
+    if (!open) return
+    void refreshProjects()
+  }, [open, refreshProjects])
+
+  // 默认选中第一个候选项目；用户切项目时清掉已勾选
+  useEffect(() => {
+    if (!open) return
+    if (sourceProjectId && candidateProjects.some((p) => p.project_id === sourceProjectId)) return
+    setSourceProjectId(candidateProjects[0]?.project_id ?? null)
+    setPicked(new Set())
+  }, [open, candidateProjects, sourceProjectId])
+
+  const refresh = useCallback(async (sid: string) => {
     setLoading(true)
     setErr(null)
     try {
-      const list = await api.get<Material[]>('/material?project_id=__system__')
+      const list = await api.get<Material[]>(`/material?project_id=${encodeURIComponent(sid)}`)
       setItems(list)
     } catch (e) {
-      setErr(e instanceof Error ? e.message : '加载系统素材库失败')
+      setErr(e instanceof Error ? e.message : '加载源项目素材失败')
     } finally {
       setLoading(false)
     }
   }, [])
 
+  // 切源项目 → 重新拉素材；清掉已勾
   useEffect(() => {
-    if (!open) return
+    if (!open || !sourceProjectId) {
+      setItems([])
+      return
+    }
     setPicked(new Set())
     setSkippedCount(0)
-    void refresh()
-  }, [open, refresh])
+    void refresh(sourceProjectId)
+  }, [open, sourceProjectId, refresh])
 
   if (!open) return null
 
@@ -68,7 +102,7 @@ export function SystemLibraryPicker({
   }
 
   const handleClone = async () => {
-    if (!projectId || picked.size === 0) return
+    if (!projectId || !sourceProjectId || picked.size === 0) return
     if (picked.size > 20) {
       setErr('单次最多克隆 20 个；请分批选择')
       return
@@ -79,6 +113,7 @@ export function SystemLibraryPicker({
     try {
       const body: MaterialCloneFromSystemRequest = {
         project_id: projectId,
+        source_project_id: sourceProjectId,
         source_material_ids: Array.from(picked),
       }
       const resp = await api.post<MaterialCloneFromSystemResponse>(
@@ -90,14 +125,13 @@ export function SystemLibraryPicker({
       }
       setSkippedCount(resp.skipped.length)
       if (resp.materials.length > 0) {
-        // 全部成功 → 关闭；部分失败 → 留在面板看 skipped 提示
         if (resp.skipped.length === 0) {
           onClose()
         } else {
           setPicked(new Set())
         }
       } else {
-        setErr('全部源素材都缺文件，请联系运维补 seed')
+        setErr('全部源素材都缺文件，无法克隆')
       }
     } catch (e) {
       setErr(e instanceof Error ? e.message : '克隆失败')
@@ -105,6 +139,9 @@ export function SystemLibraryPicker({
       setCloning(false)
     }
   }
+
+  const selectedProjectName =
+    candidateProjects.find((p) => p.project_id === sourceProjectId)?.name ?? sourceProjectId
 
   return (
     <div
@@ -118,9 +155,9 @@ export function SystemLibraryPicker({
       >
         <header className="flex items-start justify-between border-b border-border px-4 py-3">
           <div>
-            <h3 className="text-sm font-semibold">从系统素材库添加</h3>
+            <h3 className="text-sm font-semibold">从我的素材库选取</h3>
             <p className="mt-0.5 text-xs text-muted-foreground">
-              共享素材池——点击勾选后克隆到本项目；克隆生成新 material_id，与系统库独立。
+              从你其他项目的素材库挑素材克隆到本项目；克隆生成新 material_id，与原项目独立。
             </p>
           </div>
           <button
@@ -133,16 +170,45 @@ export function SystemLibraryPicker({
           </button>
         </header>
 
+        <div className="flex items-center gap-2 border-b border-border px-4 py-2">
+          <label className="text-xs font-medium text-muted-foreground">源项目</label>
+          {candidateProjects.length === 0 ? (
+            <span className="text-xs text-muted-foreground">
+              你只有当前一个项目；建多几个项目并上传素材后，这里能跨项目复用
+            </span>
+          ) : (
+            <select
+              value={sourceProjectId ?? ''}
+              onChange={(e) => setSourceProjectId(e.target.value || null)}
+              disabled={cloning}
+              className="rounded border border-border bg-background px-2 py-1 text-xs disabled:opacity-50"
+            >
+              {candidateProjects.map((p) => (
+                <option key={p.project_id} value={p.project_id}>
+                  {p.name || p.project_id}
+                </option>
+              ))}
+            </select>
+          )}
+          {sourceProjectId && (
+            <span className="ml-auto text-[11px] text-muted-foreground">
+              {items.length} 条素材
+            </span>
+          )}
+        </div>
+
         <div className="flex-1 overflow-y-auto px-4 py-3">
-          {loading ? (
+          {!sourceProjectId ? (
+            <div className="rounded-md border border-dashed border-border bg-background/30 p-8 text-center text-xs text-muted-foreground">
+              请先在上方选择源项目
+            </div>
+          ) : loading ? (
             <div className="rounded-md border border-dashed border-border bg-background/30 p-8 text-center text-xs text-muted-foreground">
               加载中…
             </div>
           ) : items.length === 0 ? (
             <div className="rounded-md border border-dashed border-border bg-background/30 p-8 text-center text-xs text-muted-foreground">
-              系统素材库还是空的——运维通过 <code className="rounded bg-secondary/60 px-1">/material/upload</code>{' '}
-              带 <code className="rounded bg-secondary/60 px-1">project_id=__system__</code>{' '}
-              往里塞素材后，这里会列出。
+              「{selectedProjectName}」项目下还没素材；切到别的源项目再试
             </div>
           ) : (
             <div className="grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-4">
@@ -231,10 +297,16 @@ export function SystemLibraryPicker({
             </button>
             <button
               onClick={handleClone}
-              disabled={cloning || picked.size === 0 || picked.size > 20 || !projectId}
+              disabled={
+                cloning || picked.size === 0 || picked.size > 20 || !projectId || !sourceProjectId
+              }
               className={cn(
                 'rounded bg-primary px-3 py-1 text-xs font-medium text-primary-foreground',
-                (cloning || picked.size === 0 || picked.size > 20 || !projectId) &&
+                (cloning ||
+                  picked.size === 0 ||
+                  picked.size > 20 ||
+                  !projectId ||
+                  !sourceProjectId) &&
                   'cursor-not-allowed opacity-60',
               )}
             >

@@ -452,22 +452,30 @@ def _clone_one_file(src_url: str, src_root: Path, dst_dir: Path, new_id: str, su
 
 @router.post("/material/clone-from-system", response_model=MaterialCloneFromSystemResponse)
 async def clone_from_system(req: MaterialCloneFromSystemRequest) -> MaterialCloneFromSystemResponse:
-    """从系统素材库克隆若干素材到目标项目。
+    """从源项目素材库克隆若干素材到目标项目。
 
     流程：
-    1. 校验目标 project_id，源 project_id 固定 __system__
+    1. 校验目标 project_id 与源 project_id（不能相同；不能为空）
     2. 对每个 source_material_id：material_store.get → 复制原文件 + 缩略图到目标 uploads
     3. 铸新 material_id，复制 tags / recommended_section / shots / preprocess_status 等元数据
     4. 一并 put 到目标 store；视频类型已 ready 的不再触发 preprocess（已经预处理过）
+
+    历史：早期 source 固定 __system__，stage-67 起允许跨用户项目克隆
+    （用户："从素材库选取看的是我的素材，不是样例视频"）。
     """
     target_project = req.project_id.strip()
+    source_project = (req.source_project_id or SYSTEM_PROJECT_ID).strip()
     if not target_project or target_project == SYSTEM_PROJECT_ID:
         raise HTTPException(status_code=400, detail="目标 project_id 非法（不能为空或 __system__）")
+    if not source_project:
+        raise HTTPException(status_code=400, detail="source_project_id 非法（不能为空）")
+    if source_project == target_project:
+        raise HTTPException(status_code=400, detail="源项目与目标项目相同，无需克隆")
     if not req.source_material_ids:
         raise HTTPException(status_code=400, detail="source_material_ids 必填且非空")
 
     uploads_root = _uploads_root()
-    src_dir = uploads_root / SYSTEM_PROJECT_ID
+    src_dir = uploads_root / source_project
     dst_dir = uploads_root / target_project
     dst_dir.mkdir(parents=True, exist_ok=True)
 
@@ -476,7 +484,7 @@ async def clone_from_system(req: MaterialCloneFromSystemRequest) -> MaterialClon
     skipped: list[str] = []
 
     for offset, src_id in enumerate(req.source_material_ids):
-        src = material_store.get(SYSTEM_PROJECT_ID, src_id)
+        src = material_store.get(source_project, src_id)
         if src is None:
             skipped.append(src_id)
             continue
@@ -514,8 +522,8 @@ async def clone_from_system(req: MaterialCloneFromSystemRequest) -> MaterialClon
 
     if created:
         material_store.put(target_project, created)
-        log.info("[material/clone] %s ← __system__ cloned=%d skipped=%d",
-                 target_project, len(created), len(skipped))
+        log.info("[material/clone] %s ← %s cloned=%d skipped=%d",
+                 target_project, source_project, len(created), len(skipped))
 
     return MaterialCloneFromSystemResponse(
         project_id=target_project,

@@ -802,16 +802,26 @@ class MaterialUploadResponse(BaseModel):
 
 
 class MaterialCloneFromSystemRequest(BaseModel):
-    """从系统素材库克隆若干素材到当前项目素材库。
+    """从任意源项目克隆若干素材到当前项目素材库。
 
-    后端：每个 source_material_id 都从 project_id='__system__' 取，
-    复制底层文件 + 缩略图到目标 project 的 uploads 目录，铸新 material_id 落入目标 store。
+    历史包袱：路由名 + schema 名都带「from-system」，是因为最早只支持从
+    `__system__` 共享池克隆。stage-67 起 source_project_id 可选，默认仍是
+    `__system__`，但用户可以传自己的别的 project_id 来跨项目复用素材
+    （用户原话："从素材库选取看的是我的素材，不是样例视频"）。
+
+    后端：每个 source_material_id 都从 source_project_id 取，复制底层文件 +
+    缩略图到目标 project 的 uploads 目录，铸新 material_id 落入目标 store。
     返回新建的 Material 列表（前端 appendMaterials 即可）。
     """
     project_id: str = Field(..., min_length=1, description="目标项目 id（克隆终点）")
+    source_project_id: str = Field(
+        default="__system__",
+        min_length=1,
+        description="源项目 id；默认 __system__ 共享池，传自己的 project_id 可跨项目复用",
+    )
     source_material_ids: list[str] = Field(
         ..., min_length=1, max_length=20,
-        description="要克隆的系统素材 id 列表；单次最多 20 个，超出请分批",
+        description="要克隆的源素材 id 列表；单次最多 20 个，超出请分批",
     )
 
 
