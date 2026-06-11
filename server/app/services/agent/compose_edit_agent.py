@@ -829,6 +829,21 @@ def _find_section(plan: Plan, section_id: str) -> AdaptedSection | None:
     return None
 
 
+def _sync_user_material_window(sc: Scene) -> None:
+    """user_material scene 的 in/out_point 跟随 sc.duration 同步——
+    NL 改 scene.duration 但不更新 out_point 会导致 trim 窗口 ≠ 渲染目标时长，
+    渲染端 _align_to_scene_duration 只能 freeze 尾帧填补 → 用户感知是『最后一帧卡住复读』。
+    一处收束：任何 mutator 改了 sc.duration，调一下这个把 out_point 重新对齐。
+    """
+    if sc.source != "user_material":
+        return
+    if sc.in_point is None and sc.out_point is None:
+        return
+    in_pt = float(sc.in_point or 0.0)
+    new_out = round(in_pt + max(0.5, sc.duration), 3)
+    sc.out_point = new_out
+
+
 def _mut_update_narration(plan: Plan, args: dict) -> ComposeEditDiff | None:
     sid = args.get("section_id") or ""
     new_text = (args.get("content_description") or "").strip()
@@ -867,6 +882,7 @@ def _mut_update_duration(plan: Plan, args: dict) -> ComposeEditDiff | None:
         ratio = sec.duration_seconds / before
         for sc in matched_scenes:
             sc.duration = max(0.5, sc.duration * ratio)
+            _sync_user_material_window(sc)
     info = _rebuild_timeline(plan)
     base = f"段 {sid} 时长 {before:.1f}s → {sec.duration_seconds:.1f}s（总时长 {info['total']:.1f}s）"
     return ComposeEditDiff(
@@ -1042,6 +1058,7 @@ def _mut_update_shot_duration(plan: Plan, args: dict) -> ComposeEditDiff | None:
     sc = _matching_scene(plan, sec, shot_order)
     if sc is not None:
         sc.duration = max(0.5, sc.duration + delta)
+        _sync_user_material_window(sc)
         scene_synced = True
     info = _rebuild_timeline(plan)
     base = (
@@ -1490,6 +1507,7 @@ def _mut_apply_macro(plan: Plan, args: dict) -> ComposeEditDiff | None:
                 sh.duration_seconds = max(0.5, min(12.0, sh.duration_seconds * factor))
         for sc in plan.main_track:
             sc.duration = max(0.5, sc.duration * factor)
+            _sync_user_material_window(sc)
         info = _rebuild_timeline(plan)
         base = (
             f"宏调整 pace · {direction} · {level}（系数 {factor:.2f}）："

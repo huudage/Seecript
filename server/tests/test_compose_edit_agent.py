@@ -22,7 +22,9 @@ from app.schemas import (
 from app.services.agent.compose_edit_agent import (
     _mock_intent,
     _mut_delete_shot,
+    _mut_update_duration,
     _mut_update_packaging_item_time,
+    _mut_update_shot_duration,
     _rebuild_timeline,
 )
 
@@ -253,3 +255,58 @@ def test_update_packaging_item_time_invalid_lane_clamped():
     # lane=99 越界被无视，且没改时间 → 整个 mutation 视作 no-op
     assert diff is None
     assert plan.packaging_track[0].lane_index == 1
+
+
+def test_update_shot_duration_syncs_user_material_out_point():
+    """stage-65：NL 改 shot duration 时，若 scene 是 user_material 且有手动裁剪窗口，
+    scene.out_point 必须同步——否则渲染端 trim 窗口 ≠ scene.duration → 冻尾帧复读。"""
+    plan = _make_plan_with_shots()
+    sc = next(s for s in plan.main_track if s.scene_id == "sc-1-0")
+    sc.in_point = 2.0
+    sc.out_point = 5.0
+    assert abs(sc.duration - 3.0) < 0.001  # 前置：duration 3s 与窗口对齐
+
+    diff = _mut_update_shot_duration(plan, {
+        "section_id": "sec-1", "shot_order": 0, "duration_seconds": 5.0,
+    })
+    assert diff is not None
+    sc = next(s for s in plan.main_track if s.scene_id == "sc-1-0")
+    assert abs(sc.duration - 5.0) < 0.01
+    # 关键不变量：out_point - in_point == duration（防止冻尾帧）
+    assert sc.out_point is not None
+    assert abs((sc.out_point - sc.in_point) - sc.duration) < 0.01
+    assert abs(sc.out_point - 7.0) < 0.01  # 2 + 5 = 7
+
+
+def test_update_section_duration_syncs_user_material_out_point():
+    """段级时长按 ratio 缩放每个 scene.duration，对应的 user_material out_point 也得同步。"""
+    plan = _make_plan_with_shots()
+    for sc in plan.main_track:
+        if sc.parent_section_id == "sec-1":
+            sc.in_point = 1.0
+            sc.out_point = 1.0 + sc.duration
+
+    sec1_before = next(s for s in plan.adapted_sections if s.section_id == "sec-1").duration_seconds
+    diff = _mut_update_duration(plan, {"section_id": "sec-1", "duration_seconds": sec1_before * 1.5})
+    assert diff is not None
+
+    for sc in plan.main_track:
+        if sc.parent_section_id != "sec-1":
+            continue
+        assert sc.out_point is not None
+        assert abs((sc.out_point - sc.in_point) - sc.duration) < 0.01
+
+
+def test_update_shot_duration_skips_aigc_out_point():
+    """非 user_material（如 aigc_image）out_point 永远 None，不能被这条新逻辑误填。"""
+    plan = _make_plan_with_shots()
+    sc = next(s for s in plan.main_track if s.scene_id == "sc-1-0")
+    sc.source = "aigc_image"
+    sc.in_point = 0.0
+    sc.out_point = None
+
+    _mut_update_shot_duration(plan, {
+        "section_id": "sec-1", "shot_order": 0, "duration_seconds": 5.0,
+    })
+    sc = next(s for s in plan.main_track if s.scene_id == "sc-1-0")
+    assert sc.out_point is None
