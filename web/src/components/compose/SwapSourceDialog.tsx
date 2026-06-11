@@ -4,6 +4,8 @@ import { swapSceneSource, type SceneSwapSourceRequest } from '@/api/plan'
 import { cn } from '@/lib/utils'
 import type { Material, Plan, Scene, ShotPlan } from '@/types/schemas'
 
+import { MaterialTrimPanel } from './MaterialTrimPanel'
+
 /**
  * stage-26 PR-N.5 重构：单镜换源弹窗。
  *
@@ -62,6 +64,9 @@ export function SwapSourceDialog({
   // 真实素材选择
   const [pickedMaterial, setPickedMaterial] = useState<string | null>(null)
   const [pickedShotIdx, setPickedShotIdx] = useState<number | null>(null)
+  // stage-29 手动裁剪：与 pickedShotIdx 互斥
+  const [manualIn, setManualIn] = useState<number | null>(null)
+  const [manualOut, setManualOut] = useState<number | null>(null)
 
   useEffect(() => {
     if (!open) return
@@ -72,6 +77,8 @@ export function SwapSourceDialog({
     setHintText('')
     setPickedMaterial(null)
     setPickedShotIdx(null)
+    setManualIn(null)
+    setManualOut(null)
   }, [open, initialMode, shot.subject])
 
   const promptFallback = useMemo(
@@ -122,6 +129,20 @@ export function SwapSourceDialog({
     } else if (mode === 'user_material') {
       if (!pickedMaterial) {
         setErr('请先在下方选一个素材')
+        return
+      }
+      // 手动裁剪优先：in+out 同时存在 → 让后端按用户窗口写 scene.in_point/out_point/duration
+      if (manualIn !== null && manualOut !== null) {
+        if (manualOut - manualIn < 0.5) {
+          setErr('裁剪窗口太短，至少 0.5s')
+          return
+        }
+        void callSwap({
+          source: 'user_material',
+          material_id: pickedMaterial,
+          material_in_point: manualIn,
+          material_out_point: manualOut,
+        })
         return
       }
       void callSwap({
@@ -274,9 +295,23 @@ export function SwapSourceDialog({
               onPickMaterial={(id) => {
                 setPickedMaterial(id)
                 setPickedShotIdx(null)
+                setManualIn(null)
+                setManualOut(null)
               }}
-              onPickShot={setPickedShotIdx}
+              onPickShot={(idx) => {
+                setPickedShotIdx(idx)
+                setManualIn(null)
+                setManualOut(null)
+              }}
               targetMaterial={targetMaterial}
+              targetDuration={scene?.duration ?? shot.duration_seconds}
+              manualIn={manualIn}
+              manualOut={manualOut}
+              onTrimChange={(i, o) => {
+                setManualIn(i)
+                setManualOut(o)
+                setPickedShotIdx(null)
+              }}
             />
           )}
         </div>
@@ -318,6 +353,10 @@ function UserMaterialPicker({
   onPickMaterial,
   onPickShot,
   targetMaterial,
+  targetDuration,
+  manualIn,
+  manualOut,
+  onTrimChange,
 }: {
   materials: Material[]
   pickedMaterial: string | null
@@ -325,6 +364,10 @@ function UserMaterialPicker({
   onPickMaterial: (id: string) => void
   onPickShot: (idx: number | null) => void
   targetMaterial: Material | null
+  targetDuration: number
+  manualIn: number | null
+  manualOut: number | null
+  onTrimChange: (inPt: number, outPt: number) => void
 }) {
   if (materials.length === 0) {
     return (
@@ -375,6 +418,38 @@ function UserMaterialPicker({
           )
         })}
       </div>
+
+      {/* stage-29 视频素材手动裁剪：仅 video + 已识别时长才出 */}
+      {targetMaterial &&
+        targetMaterial.media_type === 'video' &&
+        (targetMaterial.duration_seconds ?? 0) > 0 && (
+          <div className="space-y-1.5">
+            <div className="flex items-center justify-between">
+              <span className="text-xs font-semibold text-muted-foreground">
+                手动裁剪（直接覆盖此分镜的时长）
+              </span>
+              {(manualIn !== null || manualOut !== null) && (
+                <button
+                  type="button"
+                  onClick={() => onTrimChange(NaN, NaN)}
+                  className="hidden text-xs text-muted-foreground hover:text-foreground"
+                >
+                  清除裁剪
+                </button>
+              )}
+            </div>
+            <MaterialTrimPanel
+              material={targetMaterial}
+              targetDuration={targetDuration}
+              initialIn={manualIn ?? 0}
+              initialOut={
+                manualOut ??
+                Math.min(targetDuration, targetMaterial.duration_seconds ?? targetDuration)
+              }
+              onChange={onTrimChange}
+            />
+          </div>
+        )}
 
       {/* shot index picker for video with multiple shots */}
       {targetMaterial && targetMaterial.shots && targetMaterial.shots.length > 1 && (

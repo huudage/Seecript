@@ -198,3 +198,152 @@ def test_patch_scene_narration_clears_voiceover_and_rebuilds_subtitle(client):
     subs = [it for it in body["packaging_track"] if it["kind"] == "subtitle"]
     assert any(it["text"] == "改后的口播" for it in subs), \
         f"subtitle 应按新 narration 重建，实际：{[it['text'] for it in subs]}"
+
+
+# ---------------------------------------------------------------------------
+# stage-29 swap-source 手动裁剪：用户在 step2 拖手柄选 in/out → scene.duration 跟随
+# ---------------------------------------------------------------------------
+
+def _make_plan_with_project(plan_id: str, project_id: str) -> Plan:
+    p = _make_plan(plan_id)
+    return p.model_copy(update={"project_id": project_id})
+
+
+def _put_test_material(project_id: str, material_id: str, duration: float) -> None:
+    """往 material_store 临时写一条 video material，测试结束 cleanup 一并清。"""
+    from app.schemas import Material
+    from app.services.materials.store import material_store
+
+    mat = Material(
+        material_id=material_id,
+        filename=f"{material_id}.mp4",
+        media_type="video",
+        duration_seconds=duration,
+        file_url=f"/uploads/test/{material_id}.mp4",
+        tags=[],
+    )
+    material_store.put(project_id, [mat])
+
+
+def _drop_test_material(project_id: str) -> None:
+    from app.services.materials.store import material_store
+    with material_store._lock:
+        material_store._by_session.pop(project_id, None)
+
+
+def test_swap_source_user_material_manual_trim_overrides_duration(client):
+    """用户原话："分镜时长要跟着用户裁剪结果走，完全听用户的"——后端必须按 in/out 写
+    scene.duration，并把 plan.duration_seconds 同步到 sum(scene.duration)。"""
+    project_id = f"proj-swap-trim-{int(time.time() * 1000)}"
+    plan_id = f"plan-swap-trim-{int(time.time() * 1000)}"
+    _put_test_material(project_id, "mat-trim-1", duration=10.0)
+    plan = _make_plan_with_project(plan_id, project_id)
+    _TEST_PLAN_IDS.append(plan_id)
+    plan_store.put(plan)
+
+    try:
+        # 原 sc-0 duration=3.0；用户裁剪窗口 [2.0, 7.5] → 期望 duration=5.5
+        resp = client.post(
+            f"/api/plan/{plan_id}/scene/sc-0/swap-source",
+            json={
+                "source": "user_material",
+                "material_id": "mat-trim-1",
+                "material_in_point": 2.0,
+                "material_out_point": 7.5,
+            },
+        )
+        assert resp.status_code == 200, resp.text
+        body = resp.json()
+        sc0 = next(s for s in body["main_track"] if s["scene_id"] == "sc-0")
+        assert sc0["in_point"] == 2.0
+        assert sc0["out_point"] == 7.5
+        assert abs(sc0["duration"] - 5.5) < 0.001, \
+            f"scene.duration 必须跟随 out-in，期望 5.5，实际 {sc0['duration']}"
+
+        # 后续 sc-1 顺移：sc-0 占 [0, 5.5] → sc-1.start=5.5
+        sc1 = next(s for s in body["main_track"] if s["scene_id"] == "sc-1")
+        assert abs(sc1["start"] - 5.5) < 0.001, f"sc-1.start 应顺移到 5.5，实际 {sc1['start']}"
+
+        # plan.duration_seconds 必须等于 sum(main_track.duration)
+        actual_total = sum(s["duration"] for s in body["main_track"])
+        assert abs(body["duration_seconds"] - actual_total) < 0.001, \
+            f"plan.duration_seconds 必须 = sum(scenes)；期望 {actual_total}，实际 {body['duration_seconds']}"
+    finally:
+        _drop_test_material(project_id)
+
+
+def test_swap_source_user_material_manual_trim_clamps_to_material_duration(client):
+    """out_point 超出素材时长：后端 clamp 到 mat.duration_seconds，不报 400。"""
+    project_id = f"proj-swap-clamp-{int(time.time() * 1000)}"
+    plan_id = f"plan-swap-clamp-{int(time.time() * 1000)}"
+    _put_test_material(project_id, "mat-clamp", duration=4.0)
+    plan = _make_plan_with_project(plan_id, project_id)
+    _TEST_PLAN_IDS.append(plan_id)
+    plan_store.put(plan)
+
+    try:
+        resp = client.post(
+            f"/api/plan/{plan_id}/scene/sc-0/swap-source",
+            json={
+                "source": "user_material",
+                "material_id": "mat-clamp",
+                "material_in_point": 1.0,
+                "material_out_point": 999.0,  # 远超素材时长
+            },
+        )
+        assert resp.status_code == 200, resp.text
+        body = resp.json()
+        sc0 = next(s for s in body["main_track"] if s["scene_id"] == "sc-0")
+        assert sc0["out_point"] == 4.0, f"out_point 应被 clamp 到素材时长 4.0，实际 {sc0['out_point']}"
+        assert abs(sc0["duration"] - 3.0) < 0.001
+    finally:
+        _drop_test_material(project_id)
+
+
+def test_swap_source_user_material_manual_trim_window_widens_to_min(client):
+    """用户给的窗口太窄（0.2s）：后端友好 clamp 到 in+0.5s 下限，不报 400。
+    保留用户的 in_point 不动，只把 out_point 抬到合理位置——比硬拒绝更顺手。"""
+    project_id = f"proj-swap-short-{int(time.time() * 1000)}"
+    plan_id = f"plan-swap-short-{int(time.time() * 1000)}"
+    _put_test_material(project_id, "mat-short", duration=10.0)
+    plan = _make_plan_with_project(plan_id, project_id)
+    _TEST_PLAN_IDS.append(plan_id)
+    plan_store.put(plan)
+
+    try:
+        resp = client.post(
+            f"/api/plan/{plan_id}/scene/sc-0/swap-source",
+            json={
+                "source": "user_material",
+                "material_id": "mat-short",
+                "material_in_point": 1.0,
+                "material_out_point": 1.2,  # 窗口仅 0.2s，会被 clamp 到 1.5
+            },
+        )
+        assert resp.status_code == 200, resp.text
+        body = resp.json()
+        sc0 = next(s for s in body["main_track"] if s["scene_id"] == "sc-0")
+        assert sc0["in_point"] == 1.0
+        assert sc0["out_point"] == 1.5, f"out_point 应被 clamp 到 in+0.5=1.5，实际 {sc0['out_point']}"
+        assert abs(sc0["duration"] - 0.5) < 0.001
+    finally:
+        _drop_test_material(project_id)
+
+
+def test_rebuild_timeline_writes_plan_duration_seconds():
+    """_rebuild_timeline 必须在末尾把 sum(scene.duration) 回写到 plan.duration_seconds，
+    所有走重铺路径的 mutator（NL 编辑改时长 / 删段 / 重排 / 手动裁剪 / regenerate_fill）
+    都靠这一处收束统一更新。"""
+    from app.services.agent.compose_edit_agent import _rebuild_timeline
+
+    plan = _make_plan(f"plan-rebuild-{int(time.time() * 1000)}")
+    # 人为把 plan.duration_seconds 改成不一致的值，模拟 mutator 改了 scene.duration 后未同步
+    plan.duration_seconds = 999.0
+    plan.main_track[0].duration = 5.0
+    plan.main_track[1].duration = 6.0
+
+    _rebuild_timeline(plan)
+
+    expected = 5.0 + 6.0
+    assert abs(plan.duration_seconds - expected) < 0.001, \
+        f"_rebuild_timeline 必须把 plan.duration_seconds 同步到 sum(scenes)；期望 {expected}，实际 {plan.duration_seconds}"

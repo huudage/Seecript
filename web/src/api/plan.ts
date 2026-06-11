@@ -83,6 +83,10 @@ export interface SceneSwapSourceRequest {
   source: 'user_material' | 'aigc_image' | 'aigc_t2v' | 'text_card'
   material_id?: string
   material_shot_index?: number
+  /** stage-29 手动裁剪起点（秒）；与 material_shot_index 互斥，需与 material_out_point 同时给。 */
+  material_in_point?: number
+  /** stage-29 手动裁剪终点（秒）；out>in，需 ≥ in+0.5s。 */
+  material_out_point?: number
   prompt_hint?: string
   main_text?: string
   sub_text?: string

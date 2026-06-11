@@ -761,6 +761,11 @@ def _rebuild_timeline(plan: Plan) -> dict:
     if plan.settings is not None and total > 0:
         plan.settings.target_duration_seconds = max(10.0, min(300.0, total))
 
+    # 一处收束：任何走 _rebuild_timeline 的 mutation（NL 编辑、删段、重排、手动裁剪等）
+    # 都会让 plan.duration_seconds 跟随 main_track 总和伸缩。FourTrackBoard 用此值算
+    # 所有轨道宽度——不回写就会出现段落 duration 改了但 UI 比例错位的问题。
+    plan.duration_seconds = total
+
     return {
         "scenes_moved": moved,
         "subtitles_cleared": subtitles_cleared,

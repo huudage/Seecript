@@ -1699,6 +1699,15 @@ class SceneSwapSourceRequest(BaseModel):
     material_shot_index: Optional[int] = Field(
         default=None, description="source=user_material 时指定 MaterialShot.index；缺省走首镜"
     )
+    material_in_point: Optional[float] = Field(
+        default=None, ge=0,
+        description="source=user_material 时手动裁剪起点（秒）；与 material_shot_index 互斥，"
+        "out > in 且需 ≥ 0.5s。给了 in+out 就走手动裁剪路径，scene.duration 跟随用户。",
+    )
+    material_out_point: Optional[float] = Field(
+        default=None, gt=0,
+        description="source=user_material 时手动裁剪终点（秒）；out>in，自动 clamp 到素材时长。",
+    )
     prompt_hint: Optional[str] = Field(
         default=None, max_length=200,
         description="source=aigc_image / aigc_t2v 时给 LLM 的额外提示；缺省走 shot.subject + visual",
@@ -1777,9 +1786,19 @@ async def swap_scene_source(
         mat = material_store.get(proj_id, body.material_id)
         if mat is None:
             raise HTTPException(status_code=404, detail=f"material_id 不存在：{body.material_id}")
-        in_pt = 0.0
-        out_pt: float | None = shot_dur
-        if mat.shots:
+        # 优先级 1：用户手动裁剪（in + out 都给）→ 分镜时长跟随用户
+        if body.material_in_point is not None and body.material_out_point is not None:
+            in_pt = float(body.material_in_point)
+            out_pt = float(body.material_out_point)
+            mat_dur = float(mat.duration_seconds or 0.0)
+            if mat_dur > 0:
+                in_pt = max(0.0, min(in_pt, mat_dur))
+                out_pt = max(in_pt + 0.5, min(out_pt, mat_dur))
+            if out_pt - in_pt < 0.5:
+                raise HTTPException(status_code=400, detail="裁剪窗口太短，至少 0.5s")
+            new_dur = round(out_pt - in_pt, 3)
+        # 优先级 2：传了 material_shot_index，按 PySceneDetect 切片取窗口
+        elif mat.shots:
             target_idx = body.material_shot_index
             mshot = None
             if target_idx is not None:
@@ -1788,11 +1807,18 @@ async def swap_scene_source(
                 mshot = mat.shots[0]
             in_pt = float(mshot.start)
             out_pt = min(float(mshot.end), in_pt + shot_dur)
+            new_dur = scene.duration
+        # 优先级 3：素材没切镜，按 scene.duration 从头取
+        else:
+            in_pt = 0.0
+            out_pt = shot_dur
+            new_dur = scene.duration
         new_scene = scene.model_copy(update={
             "source": "user_material",
             "source_ref": mat.material_id,
             "in_point": in_pt,
             "out_point": out_pt,
+            "duration": new_dur,
             "aigc_video_urls": [],
             "aigc_image_url": None,
             "text_card_spec": None,
@@ -1917,6 +1943,12 @@ async def swap_scene_source(
         raise HTTPException(status_code=400, detail=f"不支持的 source 类型：{body.source}")
 
     plan.main_track[scene_idx] = new_scene
+    # 只有 scene.duration 真改了（手动裁剪路径）才重铺 timeline。其它换源（text_card / aigc /
+    # 自动 shot）保留原 duration，跳过 _rebuild_timeline 避免清空全片字幕。
+    duration_changed = abs(new_scene.duration - scene.duration) > 0.001
+    if duration_changed:
+        from ..services.agent.compose_edit_agent import _rebuild_timeline
+        _rebuild_timeline(plan)
     # 字幕轨同步：swap 到 text_card 时该段不该再叠字幕；从 text_card 换回视频/AIGC 时
     # 又要把字幕加回来。统一走 _rebuild_subtitle_packaging（按 narration / text_card_spec
     # 重新判定每段是否出字幕），避免 source 变了但 subtitle 残留导致字幕错位。
