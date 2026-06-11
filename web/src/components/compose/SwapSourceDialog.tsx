@@ -1,6 +1,11 @@
 import { useEffect, useMemo, useState } from 'react'
 
-import { swapSceneSource, type SceneSwapSourceRequest } from '@/api/plan'
+import {
+  getMaterialShotFitScores,
+  swapSceneSource,
+  type SceneSwapSourceRequest,
+  type ShotFitScoreItem,
+} from '@/api/plan'
 import { cn } from '@/lib/utils'
 import type { Material, Plan, Scene, ShotPlan } from '@/types/schemas'
 
@@ -67,6 +72,14 @@ export function SwapSourceDialog({
   // stage-29 手动裁剪：与 pickedShotIdx 互斥
   const [manualIn, setManualIn] = useState<number | null>(null)
   const [manualOut, setManualOut] = useState<number | null>(null)
+  // stage-77 切片适配度评分：选中 material 后异步拉，按 shot_index 映射好给 picker 展示
+  const [shotScores, setShotScores] = useState<Record<number, ShotFitScoreItem>>({})
+  const [scoresLoading, setScoresLoading] = useState(false)
+
+  const sceneId = scene?.scene_id ?? null
+  const targetMaterial = pickedMaterial
+    ? materials.find((m) => m.material_id === pickedMaterial) ?? null
+    : null
 
   useEffect(() => {
     if (!open) return
@@ -79,7 +92,36 @@ export function SwapSourceDialog({
     setPickedShotIdx(null)
     setManualIn(null)
     setManualOut(null)
+    setShotScores({})
   }, [open, initialMode, shot.subject])
+
+  // stage-77：选中 material 时拉每个 shot 对当前 scene 的适配度评分
+  useEffect(() => {
+    if (!open) return
+    if (!sceneId) return
+    if (!pickedMaterial) {
+      setShotScores({})
+      return
+    }
+    let cancelled = false
+    setScoresLoading(true)
+    void getMaterialShotFitScores(planId, sceneId, pickedMaterial)
+      .then((resp) => {
+        if (cancelled) return
+        const map: Record<number, ShotFitScoreItem> = {}
+        for (const s of resp.scores) map[s.shot_index] = s
+        setShotScores(map)
+      })
+      .catch(() => {
+        if (!cancelled) setShotScores({})
+      })
+      .finally(() => {
+        if (!cancelled) setScoresLoading(false)
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [open, planId, sceneId, pickedMaterial])
 
   const promptFallback = useMemo(
     () =>
@@ -88,11 +130,6 @@ export function SwapSourceDialog({
         .join('；'),
     [shot.subject, shot.visual, shot.narration],
   )
-
-  const sceneId = scene?.scene_id ?? null
-  const targetMaterial = pickedMaterial
-    ? materials.find((m) => m.material_id === pickedMaterial) ?? null
-    : null
 
   if (!open) return null
 
@@ -312,6 +349,8 @@ export function SwapSourceDialog({
                 setManualOut(o)
                 setPickedShotIdx(null)
               }}
+              shotScores={shotScores}
+              scoresLoading={scoresLoading}
             />
           )}
         </div>
@@ -357,6 +396,8 @@ function UserMaterialPicker({
   manualIn,
   manualOut,
   onTrimChange,
+  shotScores,
+  scoresLoading,
 }: {
   materials: Material[]
   pickedMaterial: string | null
@@ -368,6 +409,8 @@ function UserMaterialPicker({
   manualIn: number | null
   manualOut: number | null
   onTrimChange: (inPt: number, outPt: number) => void
+  shotScores: Record<number, ShotFitScoreItem>
+  scoresLoading: boolean
 }) {
   if (materials.length === 0) {
     return (
@@ -456,7 +499,10 @@ function UserMaterialPicker({
         <div className="rounded border border-border bg-background/40 p-2">
           <div className="mb-1.5 flex items-center justify-between">
             <span className="text-xs font-semibold text-muted-foreground">
-              选具体哪一镜（不选则后端自动按 shot_matcher 配）
+              选具体哪一镜
+              <span className="ml-1 text-muted-foreground/70">
+                （右上角分数 = 与本分镜的适配度；越高越搭）
+              </span>
             </span>
             {pickedShotIdx != null && (
               <button
@@ -471,17 +517,19 @@ function UserMaterialPicker({
           <div className="grid grid-cols-3 gap-1 sm:grid-cols-4">
             {targetMaterial.shots.map((sh) => {
               const active = sh.index === pickedShotIdx
+              const fit = shotScores[sh.index]
               return (
                 <button
                   key={sh.index}
                   type="button"
                   onClick={() => onPickShot(sh.index)}
                   className={cn(
-                    'overflow-hidden rounded border text-left transition-colors',
+                    'relative overflow-hidden rounded border text-left transition-colors',
                     active
                       ? 'border-primary ring-1 ring-primary/40'
                       : 'border-border hover:border-primary/60',
                   )}
+                  title={fit ? `适配度 ${fit.score_pct}/100 · ${fit.quality}` : undefined}
                 >
                   <div className="aspect-video bg-muted">
                     {sh.thumbnail_url ? (
@@ -495,6 +543,26 @@ function UserMaterialPicker({
                       <div className="flex h-full w-full items-center justify-center text-xs text-muted-foreground">
                         无图
                       </div>
+                    )}
+                    {/* stage-77 适配度徽章：good=绿 / weak=黄 / missing=灰 */}
+                    {fit && (
+                      <span
+                        className={cn(
+                          'absolute right-1 top-1 rounded px-1 py-px text-[10px] font-bold leading-none shadow',
+                          fit.quality === 'good'
+                            ? 'bg-emerald-500/95 text-white'
+                            : fit.quality === 'weak'
+                              ? 'bg-amber-500/95 text-white'
+                              : 'bg-zinc-600/85 text-white',
+                        )}
+                      >
+                        {fit.score_pct}
+                      </span>
+                    )}
+                    {!fit && scoresLoading && (
+                      <span className="absolute right-1 top-1 rounded bg-zinc-500/70 px-1 py-px text-[10px] font-bold leading-none text-white">
+                        …
+                      </span>
                     )}
                   </div>
                   <div className="px-1 py-0.5 text-xs">

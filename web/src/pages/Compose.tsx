@@ -1825,6 +1825,10 @@ export default function ComposePage() {
       {/* ============ Row 2：步骤 2 = 样例 ↔ 新内容轨（顶部）+ 适配概要 + 补缺口 + 段落编辑 + 素材库（底） ============ */}
       {activeStep === 2 && plan && (
         <section className="mt-4 space-y-3 rounded-lg border border-border bg-card p-4">
+          {/* stage-76（2026-06-12）：用户原话「step2 一开始不要直接填入素材了，都让用户自己去选择」。
+              内容轨现在只产 plan 规划占位（text_card + needs_fill），真实素材 / 已切片画面需在
+              分镜卡上点击换源逐个挑选。第一次进 step2 弹一次说明，之后用 localStorage 静音。 */}
+          <Step2PlaceholderHint />
           {/* 顶部：左 sticky 实时预览 + 右 内容轨（step3 同款布局）
               用户在 step2 也能边补缺口边看整片预览；选中片段后会自动 seek 到段首。
               phase=content-only：只展示内容轨，口播 / 包装 / BGM 留到 step3 解锁。 */}
@@ -2929,3 +2933,48 @@ function UploadDropzone({
 
 // 未拆解样例拦截弹窗已移除——stage-15 用 ReferencePicker 取代该 gate:
 // 资产库为空时 ReferencePicker 直接引导去素材库,不再有"选了样例又没拆解"的中间态。
+
+/**
+ * stage-76（2026-06-12）说明卡：
+ * 用户原话「step2 一开始不要直接填入素材了，都让用户自己去选择」+
+ * 「我现在只让你对真实素材做切片，不要做其他处理」。
+ * 第一次进 step2 弹出，用户点"知道了"后写 localStorage，之后不再出现。
+ */
+const STEP2_PLACEHOLDER_HINT_KEY = 'seecript.step2.placeholder.dismissed.v1'
+
+function Step2PlaceholderHint() {
+  const [dismissed, setDismissed] = useState<boolean>(() => {
+    try {
+      return localStorage.getItem(STEP2_PLACEHOLDER_HINT_KEY) === '1'
+    } catch {
+      return false
+    }
+  })
+  if (dismissed) return null
+  return (
+    <div className="flex items-start gap-3 rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-xs text-amber-900 dark:border-amber-700 dark:bg-amber-900/30 dark:text-amber-100">
+      <span className="select-none text-base leading-none">💡</span>
+      <div className="flex-1 leading-relaxed">
+        <p className="font-medium">真实素材已解析，请在分镜上手动挑选切片</p>
+        <p className="mt-0.5 text-amber-900/80 dark:text-amber-100/80">
+          内容轨当前显示的是按样例规划的占位卡片；点击任一分镜卡 →「换源」即可挑选你的素材切片，
+          所选切片的时长会直接覆盖该分镜（其它分镜自动顺移）。
+        </p>
+      </div>
+      <button
+        type="button"
+        onClick={() => {
+          try {
+            localStorage.setItem(STEP2_PLACEHOLDER_HINT_KEY, '1')
+          } catch {
+            /* localStorage 不可用时仍允许本次会话内关闭 */
+          }
+          setDismissed(true)
+        }}
+        className="shrink-0 rounded border border-amber-400/60 bg-white/60 px-2 py-0.5 text-[11px] font-medium hover:bg-white dark:border-amber-500/40 dark:bg-amber-950/40 dark:hover:bg-amber-950/60"
+      >
+        知道了
+      </button>
+    </div>
+  )
+}

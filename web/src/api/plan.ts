@@ -112,3 +112,37 @@ export async function swapSceneSource(
 export async function recomputeEmotion(planId: PlanId): Promise<Plan> {
   return await api.post<Plan>(`/plan/${planId}/recompute-emotion`, {})
 }
+
+/**
+ * stage-77 (2026-06-12)：换源弹窗显示「切片适配度」。
+ *
+ * 给当前 scene × 指定 material 的每个 MaterialShot 打分（0-1），后端用
+ * shot_matcher._score_pair——跟 build_plan 自动匹配同一份评分函数，避免
+ * UI 跟物化层各走一套尺。前端在 video 素材展开的 shot 网格上显示分数 + 颜色徽章。
+ */
+export interface ShotFitScoreItem {
+  shot_index: number
+  score: number
+  score_pct: number
+  quality: 'good' | 'weak' | 'missing'
+}
+
+export interface ShotFitScoresResponse {
+  plan_id: string
+  scene_id: string
+  material_id: string
+  section_role: string
+  scene_shot_subject: string
+  scene_duration: number
+  scores: ShotFitScoreItem[]
+}
+
+export async function getMaterialShotFitScores(
+  planId: PlanId,
+  sceneId: string,
+  materialId: string,
+): Promise<ShotFitScoresResponse> {
+  return await api.get<ShotFitScoresResponse>(
+    `/plan/${planId}/scene/${sceneId}/material/${encodeURIComponent(materialId)}/shot-scores`,
+  )
+}

@@ -686,33 +686,10 @@ async def build_plan(req: PlanBuildRequest) -> Plan:
             if source == "aigc_t2v":
                 return len(aigc_urls) >= max(2, N)
             if source == "user_material":
-                # 1) PR-B 已给 ≥2 个不同的 matched_material_shot_index → 各 sub-shot 取不同 MaterialShot
-                idxs = [
-                    sh.matched_material_shot_index for sh in sec.shots
-                    if sh.matched_material_shot_index is not None
-                ]
-                if len(set(idxs)) >= 2:
-                    return True
-                if not effective_project_id:
-                    return False
-                # 探测主选材：优先 shots[0].matched_material_id, 次 source_ref
-                cand_mid = (
-                    sec.shots[0].matched_material_id
-                    if sec.shots and sec.shots[0].matched_material_id
-                    else source_ref
-                )
-                mat = material_store.get(effective_project_id, cand_mid)
-                if mat is None:
-                    return False
-                # 图片素材天然只有一帧，多镜没有视觉差异（运镜虽不同但底图同）→ 不拆
-                if mat.media_type == "image":
-                    return False
-                # 2) 素材自身有 ≥ 2 个 MaterialShot → cyclic 取不同段
-                if mat.shots and len(mat.shots) >= 2:
-                    return True
-                # 3) 素材时长足够长 → 按时间均匀切分（每片 ≥ 1.0s 才有意义）
-                total = float(mat.duration_seconds or 0.0)
-                return total >= max(N * 1.0, target_duration)
+                # stage-76: user_material 一律走拆分路径（如果 sec.shots ≥ 2）—— sub-shot
+                # 都是占位（text_card + needs_fill），让用户在 step2 按分镜粒度各自选素材。
+                # 不再探测"素材是否够分"——因为 build_plan 根本不自动用素材。
+                return True
             return True
 
         if n_shots >= 2 or (source == "aigc_image" and n_imgs > 1):
@@ -813,122 +790,39 @@ async def build_plan(req: PlanBuildRequest) -> Plan:
                         animation_spec=None,
                     ))
                 elif source == "user_material":
-                    # stage-26 PR-N.2 三档物化决策（替代 PR-B 的 cyclic 兜底）：
-                    #   good   → 按 matched_material_shot_index 精准切（原 PR-B 逻辑）
-                    #   weak   → 同上，但 needs_fill=True 让前端段卡显示『待修补』提醒
-                    #   missing→ 不再 cyclic 取错素材，直接降级 text_card 占位
-                    #            （main_text=shot.subject）+ needs_fill=True
-                    #   无 quality 字段（旧 plan 反序列化）→ 走原 cyclic 兜底，不标 needs_fill
-                    quality = getattr(shot, "match_quality", None) if shot else None
-                    needs_fill = quality in ("weak", "missing") if quality else False
-
-                    if quality == "missing":
-                        # 缺匹配：用 text_card 占位（避免 cyclic 把开场镜塞到收尾段）
-                        main_t = (shot_subject or (shot_narration.split("。")[0] if shot_narration else "") or "")[:24]
-                        sub_t = (shot_narration if shot_subject else "。".join(shot_narration.split("。")[1:]))[:40]
-                        from ..schemas import TextCardSpec  # 延迟避免循环
-                        spec = TextCardSpec(
-                            main_text=main_t or sec.theme or sec.role,
-                            sub_text=sub_t,
-                            duration_seconds=round(max(1.5, min(15.0, shot_dur)), 2),
-                        )
-                        main_track.append(Scene(
-                            scene_id=sub_id,
-                            section=sec.role,  # type: ignore[arg-type]
-                            parent_section_id=sec.section_id,
-                            shot_order=shot_idx,
-                            shot_subject=shot_subject,
-                            source="text_card",  # type: ignore[arg-type]
-                            source_ref=f"text-card-fallback-{sec.section_id}-sh-{shot_idx}",
-                            start=timeline_cursor,
-                            duration=shot_dur,
-                            in_point=0.0,
-                            out_point=None,
-                            narration=shot_narration,
-                            voiceover_url=voiceover_url if shot_idx == 0 else None,
-                            aigc_video_urls=[],
-                            aigc_image_url=None,
-                            text_card_spec=spec,
-                            animation_spec=None,
-                            needs_fill=True,
-                        ))
-                        timeline_cursor += shot_dur
-                        continue
-
-                    in_pt = 0.0
-                    out_pt: float | None = shot_dur
-                    chosen_mat_id = source_ref
-                    is_image_match = False
-                    if effective_project_id and shot is not None and shot.matched_material_id:
-                        mat = material_store.get(effective_project_id, shot.matched_material_id)
-                        if mat is not None:
-                            chosen_mat_id = mat.material_id
-                            if mat.media_type == "image":
-                                # stage-58 G4：图片素材整段使用，不切 in/out。
-                                # 图片转视频时由 [[project-seecript-motion-upgrade]] 路径决定运镜。
-                                is_image_match = True
-                                in_pt = 0.0
-                                out_pt = None
-                            elif mat.shots and shot.matched_material_shot_index is not None:
-                                # 视频按 matched_material_shot_index 找 MaterialShot
-                                mshot = next(
-                                    (ms for ms in mat.shots if ms.index == shot.matched_material_shot_index),
-                                    mat.shots[0],
-                                )
-                                in_pt = float(mshot.start)
-                                cut_end = min(float(mshot.end), in_pt + shot_dur)
-                                out_pt = cut_end
-                            elif mat.duration_seconds and float(mat.duration_seconds) >= max(N * 1.0, target_duration):
-                                # stage-60: shot_matcher 没给 idx, 但素材足够长——按时间均分,
-                                # 让每个 sub-shot 落在素材的不同时间窗, 避免 N 个 sub-scene
-                                # 都 in_pt=0 而画面相同.
-                                # stage-71: out_pt 必须 ≤ 下一段 in_pt（slice_len 边界），否则
-                                # shot_dur > slice_len 时窗口重叠 → 预览段间重播同一段画面。
-                                slice_len = float(mat.duration_seconds) / N
-                                in_pt = shot_idx * slice_len
-                                out_pt = min(in_pt + min(shot_dur, slice_len), float(mat.duration_seconds))
-                    elif effective_project_id:
-                        mat = material_store.get(effective_project_id, source_ref)
-                        if mat is not None and mat.shots:
-                            mshot = mat.shots[shot_idx % len(mat.shots)]
-                            in_pt = float(mshot.start)
-                            cut_end = min(float(mshot.end), in_pt + shot_dur)
-                            out_pt = cut_end
-                            # 老 plan 没跑过 shot_matcher → cyclic 命中也要标待修补
-                            needs_fill = True
-                        elif mat is not None and mat.duration_seconds and float(mat.duration_seconds) >= max(N * 1.0, target_duration):
-                            # stage-60: 同上, 没 mat.shots 时按时间均分
-                            # stage-71: 同样 cap shot_dur 到 slice_len 防窗口重叠。
-                            slice_len = float(mat.duration_seconds) / N
-                            in_pt = shot_idx * slice_len
-                            out_pt = min(in_pt + min(shot_dur, slice_len), float(mat.duration_seconds))
-                            needs_fill = True
-                    # 用户底线（2026-06-11）："裁哪段如实播放哪一段"——
-                    # 视频素材：scene.duration = (out_pt - in_pt)，禁止渲染端凑时长。
-                    # 图片素材：out_pt is None，duration 保留 shot_dur（图片本身无窗口）。
-                    if not is_image_match and out_pt is not None:
-                        sub_duration = round(max(0.5, out_pt - in_pt), 3)
-                    else:
-                        sub_duration = shot_dur
+                    # stage-76: 用户底线（2026-06-12）："只让你对真实素材做切片，不要做其他处理"。
+                    # 之前自动按 matched_material_shot_index / N 等分 / cyclic 三档填用户素材，
+                    # 是「腌入味了画面重复」bug 的根因（同 material 被复用 / 切碎）。
+                    # 现在 user_material 一律占位：text_card + needs_fill=True，让用户在 step2
+                    # 用 SwapSourceDialog 手动选 material + MaterialTrimPanel 裁剪（swap-source
+                    # 链路会写真实 in_point/out_point 并 _rebuild_timeline 重铺 plan.duration_seconds）。
+                    main_t = (shot_subject or sec.theme or sec.role)[:24]
+                    sub_t = (shot_narration[:40] if shot_narration else "请在分镜编辑界面手动选择素材")
+                    from ..schemas import TextCardSpec  # 延迟避免循环
+                    spec = TextCardSpec(
+                        main_text=main_t or "待选素材",
+                        sub_text=sub_t,
+                        duration_seconds=round(max(1.5, min(15.0, shot_dur)), 2),
+                    )
                     main_track.append(Scene(
                         scene_id=sub_id,
                         section=sec.role,  # type: ignore[arg-type]
                         parent_section_id=sec.section_id,
                         shot_order=shot_idx,
                         shot_subject=shot_subject,
-                        source="user_material",  # type: ignore[arg-type]
-                        source_ref=chosen_mat_id,
+                        source="text_card",  # type: ignore[arg-type]
+                        source_ref=f"placeholder-{sec.section_id}-sh-{shot_idx}",
                         start=timeline_cursor,
-                        duration=sub_duration,
-                        in_point=in_pt,
-                        out_point=out_pt,
+                        duration=shot_dur,
+                        in_point=0.0,
+                        out_point=None,
                         narration=shot_narration,
                         voiceover_url=voiceover_url if shot_idx == 0 else None,
                         aigc_video_urls=[],
                         aigc_image_url=None,
-                        text_card_spec=None,
+                        text_card_spec=spec,
                         animation_spec=None,
-                        needs_fill=needs_fill,
+                        needs_fill=True,
                     ))
                 else:  # aigc_t2v / sample / fallback
                     # 简化：aigc_t2v 按 shot 比例切割 video_urls；不够 N 时复用最后一段
@@ -968,38 +862,30 @@ async def build_plan(req: PlanBuildRequest) -> Plan:
         out_point: float | None = None
         actual_duration = target_duration
         if source == "user_material":
-            # 默认：取前 target_duration 秒。若该 material 有预处理 shots，
-            # 走 _pick_shot_for_section 选最配的一段（role / action_density / 时长）。
+            # stage-76: 单 Scene 路径同样占位——build_plan 不再自动用 user_material 切片。
+            # 用 text_card 占位渲染（main_text=section.theme / shot.subject），needs_fill=True
+            # 让 FourTrackBoard 高亮"待选素材"；用户在 step2 SwapSourceDialog 手动选 material
+            # + MaterialTrimPanel 裁剪后，swap-source 会把 source 改回 user_material 并写
+            # 真实 in/out/duration，再由 _rebuild_timeline 顺延 plan.duration_seconds。
+            only_subj = sec.shots[0].subject if sec.shots else ""
+            main_t = (only_subj or sec.theme or sec.role)[:24]
+            sub_t = (narration_override[:40] if narration_override else "请在分镜编辑界面手动选择素材")
+            from ..schemas import TextCardSpec  # 延迟避免循环
+            placeholder_spec = TextCardSpec(
+                main_text=main_t or "待选素材",
+                sub_text=sub_t,
+                duration_seconds=round(max(1.5, min(15.0, target_duration)), 2),
+            )
+            # 单 Scene 路径下文不区分 source，统一用占位变量族构造 Scene
+            source = "text_card"  # type: ignore[assignment]
+            source_ref = f"placeholder-{sec.section_id}"
+            text_card_spec = placeholder_spec
             in_point = 0.0
+            out_point = None
             actual_duration = target_duration
-            out_point = actual_duration
-            if effective_project_id:
-                mat = material_store.get(effective_project_id, source_ref)
-                if mat is not None:
-                    # 整片素材本身比目标时长短：scene.duration 跟着缩到素材实际时长，
-                    # 不再让 render pipeline 用 freeze/slow-mo 凑——用户底线"裁哪段播哪段"。
-                    mat_dur = float(mat.duration_seconds or 0.0)
-                    if mat_dur > 0 and mat_dur < target_duration:
-                        actual_duration = round(mat_dur, 3)
-                        out_point = actual_duration
-                if mat is not None and mat.shots:
-                    chosen = _pick_shot_for_section(mat, sec)
-                    if chosen is not None:
-                        # 用户底线（2026-06-11）："裁哪段如实播放哪一段"——
-                        # scene.duration 必须永远 = out_point - in_point，禁止 slow-mo / freeze 凑时长。
-                        # 镜头若比 target_duration 短，就让 scene.duration 跟着缩短；
-                        # 段总时长由 _rebuild_timeline 顺延，整片 plan.duration_seconds 自动收缩。
-                        in_point = float(chosen.start)
-                        shot_end = float(chosen.end)
-                        cut_end = min(shot_end, in_point + target_duration)
-                        out_point = cut_end
-                        actual_duration = round(cut_end - in_point, 3)
-                        log.info(
-                            "[plan] sec=%s role=%s 选中 shot#%d (%.2fs-%.2fs role=%s ad=%.2f)",
-                            sec.section_id, sec.role, chosen.index,
-                            chosen.start, chosen.end,
-                            chosen.recommended_role, chosen.action_density,
-                        )
+            _placeholder_needs_fill = True
+        else:
+            _placeholder_needs_fill = False
         # text_card / aigc_t2v / aigc_image：无 in/out 概念，actual_duration = target_duration
 
         # 不再用 content_description 自动种 narration——那会让用户在第 2 步看到"全段已有文案"，
@@ -1027,6 +913,7 @@ async def build_plan(req: PlanBuildRequest) -> Plan:
             aigc_image_url=aigc_image_url,
             text_card_spec=text_card_spec,
             animation_spec=animation_spec if source == "aigc_image" else None,
+            needs_fill=_placeholder_needs_fill,
         )
         main_track.append(scene)
         timeline_cursor += actual_duration
@@ -2092,6 +1979,162 @@ async def swap_scene_source(
         plan_id, scene_id, scene.source, body.source,
     )
     return plan
+
+
+# ---------------------------------------------------------------------------
+# stage-77 切片适配度评分（2026-06-12）
+# 用户原话：「在内容轨生成之后，基于不同分镜的内容要求，对每个真实素材切片
+# 对每一个分镜的适配程度进行打分，在分镜编辑的切片选择界面展示分数」
+#
+# 复用 shot_matcher._score_pair：score = 0.55*bigram_jaccard + 0.20*role_match
+# + 0.15*action_density_fit + 0.10*duration_fit，跟 build_plan 自动匹配同一份
+# 评分函数——避免 UI 显示的分跟物化时挑切片的依据不一致。
+# ---------------------------------------------------------------------------
+
+class ShotFitScore(BaseModel):
+    """单个 MaterialShot 对当前 Scene 的适配度。"""
+    shot_index: int = Field(..., description="MaterialShot.index")
+    score: float = Field(..., ge=0.0, le=1.0, description="0-1，越高越适配")
+    score_pct: int = Field(..., ge=0, le=100, description="UI 显示用 0-100 整数")
+    quality: Literal["good", "weak", "missing"] = Field(
+        ..., description="good ≥ 0.30 / weak ≥ 0.10 / missing < 0.10",
+    )
+
+
+class ShotFitScoresResponse(BaseModel):
+    """GET /plan/{plan_id}/scene/{scene_id}/material/{material_id}/shot-scores 返回。"""
+    plan_id: str
+    scene_id: str
+    material_id: str
+    section_role: str = Field(..., description="评分用到的段位 role")
+    scene_shot_subject: str = Field(..., description="评分用到的分镜主体（来自 ShotPlan）")
+    scene_duration: float = Field(..., description="评分用到的目标时长（秒）")
+    scores: list[ShotFitScore]
+
+
+def _quality_from_score(score: float) -> Literal["good", "weak", "missing"]:
+    """与 shot_matcher.ShotMatch.quality 保持一致的三档分级。"""
+    if score >= 0.30:
+        return "good"
+    if score >= 0.10:
+        return "weak"
+    return "missing"
+
+
+@router.get(
+    "/plan/{plan_id}/scene/{scene_id}/material/{material_id}/shot-scores",
+    response_model=ShotFitScoresResponse,
+)
+async def get_material_shot_fit_scores(
+    plan_id: str, scene_id: str, material_id: str
+) -> ShotFitScoresResponse:
+    """给当前 scene × 指定 material 的每个 shot 打适配度分。
+
+    用于 step2 换源弹窗：用户选了一个 video material 后，前端拉这个接口在
+    每个 shot 卡上显示分数 + 颜色标签，把"靠瞎猜"换成"靠数据挑"。
+
+    评分跟 shot_matcher 用的是同一个 `_score_pair`，避免 UI 跟物化层用两套尺。
+    """
+    plan = plan_store.get(plan_id)
+    if plan is None:
+        raise HTTPException(status_code=404, detail=f"plan_id 不存在：{plan_id}")
+    scene = next((s for s in plan.main_track if s.scene_id == scene_id), None)
+    if scene is None:
+        raise HTTPException(status_code=404, detail=f"scene_id 不在 plan 中：{scene_id}")
+
+    # 在 plan.adapted_sections 里找当前 scene 所属 section + ShotPlan
+    sec_by_id = {s.section_id: s for s in (plan.adapted_sections or [])}
+    section = sec_by_id.get(scene.parent_section_id or "")
+    if section is None:
+        # 老 plan 没 parent_section_id 时按 role fallback
+        section = next(
+            (s for s in (plan.adapted_sections or []) if s.role == scene.section),
+            None,
+        )
+    if section is None:
+        raise HTTPException(
+            status_code=400,
+            detail=f"scene {scene_id} 没法回查 AdaptedSection（plan.adapted_sections 空或不一致）",
+        )
+
+    # ShotPlan：按 scene.shot_order 在 section.shots 里取；缺时合成一个最小占位（
+    # subject 用 scene.shot_subject，visual=narration，duration=scene.duration）让 _score_pair
+    # 仍可跑——比 400 友好，且这种情况只在老 plan 上出现。
+    from ..schemas import ShotPlan
+    plan_shot: Optional[ShotPlan] = None
+    if section.shots:
+        plan_shot = next(
+            (sh for sh in section.shots if sh.order == scene.shot_order),
+            None,
+        )
+        if plan_shot is None:
+            plan_shot = section.shots[0]
+    if plan_shot is None:
+        plan_shot = ShotPlan(
+            order=scene.shot_order,
+            subject=scene.shot_subject or section.theme or section.role,
+            visual=scene.narration or section.content_description or "",
+            narration=scene.narration or "",
+            duration_seconds=float(scene.duration or 0.0),
+        )
+
+    # 取 material —— 必须属于本 plan 的 project；防跨项目泄漏
+    proj_id = plan.project_id
+    if not proj_id:
+        raise HTTPException(status_code=400, detail="plan 没绑 project，无法定位素材")
+    mats = material_store.list(proj_id)
+    mat = next((m for m in mats if m.material_id == material_id), None)
+    if mat is None:
+        raise HTTPException(
+            status_code=404,
+            detail=f"material_id 不在本项目素材库：{material_id}",
+        )
+
+    from ..services.agent.shot_matcher import _score_pair
+    scores: list[ShotFitScore] = []
+    if mat.media_type == "video" and mat.shots:
+        for ms in mat.shots:
+            s = _score_pair(plan_shot, ms, section.role)
+            scores.append(ShotFitScore(
+                shot_index=ms.index,
+                score=round(s, 4),
+                score_pct=int(round(s * 100)),
+                quality=_quality_from_score(s),
+            ))
+    elif mat.media_type == "image":
+        # 图片素材合成虚拟 shot 给一个分（与 match_section_shots 同口径）
+        virt_dur = max(1.0, float(mat.duration_seconds or 3.0))
+        virt_cap = (mat.highlight_reason or "").strip() or " ".join(
+            [*(mat.subjects or []), *(mat.tags or [])[:4]]
+        ).strip() or mat.filename
+        virt_shot = MaterialShot(
+            index=0,
+            start=0.0,
+            end=virt_dur,
+            duration=virt_dur,
+            caption=virt_cap or None,
+            action_density=0.5,
+            recommended_role=mat.recommended_section,
+        )
+        s = _score_pair(plan_shot, virt_shot, section.role)
+        scores.append(ShotFitScore(
+            shot_index=0,
+            score=round(s, 4),
+            score_pct=int(round(s * 100)),
+            quality=_quality_from_score(s),
+        ))
+    # video 没切镜 / audio 类 → 返回空 scores（前端只在长度 > 0 时显示徽章）
+
+    return ShotFitScoresResponse(
+        plan_id=plan_id,
+        scene_id=scene_id,
+        material_id=material_id,
+        section_role=section.role,
+        scene_shot_subject=plan_shot.subject or "",
+        scene_duration=float(scene.duration or 0.0),
+        scores=scores,
+    )
+
 
 
 # ---------------------------------------------------------------------------
