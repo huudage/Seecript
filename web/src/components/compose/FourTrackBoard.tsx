@@ -125,9 +125,8 @@ interface Props {
    * 字卡段不依赖 fill（Scene.text_card_spec 已携带规格直接 CSS 复刻）。
    */
   fills?: FillResult[]
-  /** @deprecated 拖动会触发 step 跳回 step2，且与 click-to-edit 弹窗模型语义重叠；保留 prop 仅供老调用方编译通过。 */
-  onMovePackagingItem?: (itemId: string, newStartSeconds: number) => void | Promise<void>
-  /** 拉伸包装项时长（剪映式拖手柄）：传 newStart 和 newEnd（秒），父级走 update_packaging_item_time op 落盘。 */
+  /** 拉伸包装项时长（剪映式拖手柄）：传 newStart 和 newEnd（秒），父级走 update_packaging_item_time op 落盘。
+      也涵盖"中部 move 拖动"——start/end 同步平移，只走这一条 op，不需要单独的 move op。 */
   onResizePackagingItem?: (itemId: string, newStart: number, newEnd: number) => void | Promise<void>
   /** 打开"包装方案"侧抽屉——配合 actions 区"打开方案 ⤢"按钮。 */
   onOpenPackagingDrawer?: () => void
@@ -329,7 +328,9 @@ export function FourTrackBoard({
   onSynthesizeAll,
   onClearVoice,
   onDeletePackagingItem,
+  onRecommendPackaging,
   onRecommendPackagingForScene,
+  onOpenPackagingDrawer,
   onPickBgm,
   onBgmAnchorChange,
   onClearBgm,
@@ -550,7 +551,7 @@ export function FourTrackBoard({
     [bgm?.track_url, busy, computeAnchorFromClientX, onBgmAnchorChange],
   )
 
-  /* ==================== 包装轨 row ref（被 packagingRowRef 仅作 DOM 测量用，已不再支持拖动平移）==================== */
+  /* ==================== 包装轨 row ref（被 packagingRowRef 仅作 DOM 测量用，跨轴拖动不存在；同轨内 move/resize 走 update_packaging_item_time，参见 PackagingItemBlock）==================== */
   const packagingRowRef = useRef<HTMLDivElement | null>(null)
 
   /* ==================== BGM 音量本地态 + 300ms debounce ==================== */
@@ -1439,19 +1440,45 @@ export function FourTrackBoard({
         hint={`${nonSubtitleItems.length} 项 · 3 轨${subtitleItems.length > 0 ? ` · 字幕 ${subtitleItems.length} 项见字幕轨` : ''}`}
         rowRef={packagingRowRef}
         actions={
-          !readOnly && onRecommendPackagingForScene ? (
-            <PackagingSmartAddButton
-              scenes={scenes}
-              busy={busy}
-              onPick={(sceneId, kind) => onRecommendPackagingForScene(sceneId, kind)}
-            />
+          !readOnly ? (
+            <div className="flex items-center gap-1.5">
+              {onOpenPackagingDrawer && (
+                <button
+                  type="button"
+                  onClick={onOpenPackagingDrawer}
+                  disabled={busy}
+                  title="打开 AI 包装方案抽屉：5 维度（字幕 / 标题条 / 贴纸 / 转场 / 封面）候选 + 自定义组合后批量落盘"
+                  className="rounded border border-primary/40 bg-primary/10 px-2 py-0.5 text-[11px] font-medium text-primary hover:bg-primary/20 disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  ✨ AI 包装方案
+                </button>
+              )}
+              {onRecommendPackaging && (
+                <button
+                  type="button"
+                  onClick={() => void onRecommendPackaging()}
+                  disabled={busy}
+                  title="一键重新生成：用首候选直接覆写当前包装轨（清空旧字幕 / 标题 / 贴纸 / 封面 / 转场再批量落盘）"
+                  className="rounded border border-border bg-background/70 px-2 py-0.5 text-[11px] hover:bg-secondary/40 disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  {busy ? '生成中…' : '↻ 重新生成'}
+                </button>
+              )}
+              {onRecommendPackagingForScene && (
+                <PackagingSmartAddButton
+                  scenes={scenes}
+                  busy={busy}
+                  onPick={(sceneId, kind) => onRecommendPackagingForScene(sceneId, kind)}
+                />
+              )}
+            </div>
           ) : null
         }
         tall
       >
         {nonSubtitleItems.length === 0 ? (
           <div className="absolute inset-1 flex items-center justify-center rounded-md border border-dashed border-border bg-background/30 text-center text-[10px] text-muted-foreground">
-            还没生成包装项——用顶部「✨ AI 包装方案」批量生成、左侧「✨ 添加组件」按段添加，或点轨上空白处插入
+            还没生成包装项——点右上「✨ AI 包装方案」批量生成、「↻ 重新生成」一键覆写、或「✨ 添加组件」按段单加
           </div>
         ) : (
           <>

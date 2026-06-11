@@ -4,6 +4,9 @@
 
 # Web framework
 fastapi>=0.115,<0.120
+# starlette 1.x 是 Kludex fork（2026-06 发布）改了 Router.__init__ 签名（去掉 on_startup/on_shutdown），
+# 与 fastapi<0.120 不兼容（FastAPI 仍把这俩 kwargs 透传给父类）。锁到 fastapi 自己声明的范围避免 pip 误装新版。
+starlette>=0.40,<0.49
 uvicorn[standard]>=0.30,<0.35
 pydantic>=2.7,<3.0
 pydantic-settings>=2.4,<3.0

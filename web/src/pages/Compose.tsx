@@ -264,7 +264,7 @@ export default function ComposePage() {
   const [trackBusy, setTrackBusy] = useState(false)
   const [bgmPickerOpen, setBgmPickerOpen] = useState(false)
   const [editingSubtitleScene, setEditingSubtitleScene] = useState<Scene | null>(null)
-  // PR-I.2 step3 包装轨：组件改用点击弹窗（不再支持拖动平移），转场节点同样走弹窗
+  // step3 包装项：点击弹窗改文案/类型/归属段；时间轴上 left/right/move 拖动统一走 update_packaging_item_time 落盘；跨轴拖动不存在（packaging ↔ bgm 无语义）。转场节点同样点击改样式。
   const [editingPackagingItem, setEditingPackagingItem] = useState<PackagingItem | null>(null)
   const [editingTransition, setEditingTransition] = useState<{
     sceneId: string
@@ -1346,27 +1346,6 @@ export default function ComposePage() {
     [plan, setPlanAndPush],
   )
 
-  const handleMovePackagingItem = useCallback(
-    async (itemId: string, newStartSeconds: number) => {
-      if (!plan) return
-      setError(null)
-      try {
-        const body = {
-          plan_id: plan.plan_id,
-          step: 'step3' as const,
-          instruction: `拖动包装项 ${itemId} 到 ${newStartSeconds.toFixed(1)}s`,
-          apply: true,
-          confirmed_ops: [{ op: 'move_packaging_item', item_id: itemId, start_seconds: newStartSeconds }],
-        }
-        const resp = await api.post<{ plan?: Plan }>('/edit/compose', body)
-        if (resp.plan) setPlanAndPush(resp.plan)
-      } catch (err) {
-        setError(err instanceof Error ? err.message : '包装项移动失败')
-      }
-    },
-    [plan, setPlanAndPush],
-  )
-
   /** 包装项剪映式拉伸：start/end 同时改（move 时也走这条路径，保持单 op 落盘）。 */
   const handleResizePackagingItem = useCallback(
     async (itemId: string, newStart: number, newEnd: number) => {
@@ -2007,7 +1986,6 @@ export default function ComposePage() {
                 contentTrackMode="sections"
                 playheadSeconds={playheadSeconds}
                 onSeek={seekPlayer}
-                onMovePackagingItem={handleMovePackagingItem}
                 onResizePackagingItem={handleResizePackagingItem}
                 onOpenPackagingDrawer={() => setPackagingDrawerOpen(true)}
                 onEditPackagingItem={(item) => {
@@ -2419,7 +2397,6 @@ export default function ComposePage() {
                 phase={pendingGapsCount === 0 ? 'full' : 'content-only'}
                 playheadSeconds={playheadSeconds}
                 onSeek={seekPlayer}
-                onMovePackagingItem={handleMovePackagingItem}
                 onResizePackagingItem={handleResizePackagingItem}
                 onOpenPackagingDrawer={() => setPackagingDrawerOpen(true)}
                 onEditPackagingItem={(item) => {
