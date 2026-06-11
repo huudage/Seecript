@@ -199,10 +199,18 @@ def trim(
     out.parent.mkdir(parents=True, exist_ok=True)
 
     if reencode:
+        # stage-79：组合 seek 防 "单镜头内突然复读前零点几秒内容" 复读 bug。
+        # 原写法 `-ss <start> -i src` 是 fast input seek：ffmpeg 跳到 start 前最近的关键帧，
+        # 再让 libx264 重编码；如果起点远离关键帧，decoder 暖机产生的前置帧偶发会泄漏到
+        # 输出 0.X 秒位置（B 帧 DTS 异常 / 源文件已被前置裁剪过时尤甚），表现为开头复读。
+        # 解决方案：先 fast seek 到 (start - 1s) 附近，再用 output -ss 做精确帧级 seek
+        # —— output seek 强制 decoder 从输入开始解到精确目标，永远 frame-accurate。
+        pre_ss = max(0.0, start - 1.0)
+        fine_ss = max(0.0, start - pre_ss)
         cmd = [
             "ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
-            "-ss", f"{start:.3f}", "-i", str(src_p),
-            "-t", f"{duration:.3f}",
+            "-ss", f"{pre_ss:.3f}", "-i", str(src_p),
+            "-ss", f"{fine_ss:.3f}", "-t", f"{duration:.3f}",
         ]
         if canvas is not None:
             w, h = canvas
@@ -214,6 +222,7 @@ def trim(
             str(out),
         ]
     else:
+        # -c copy 路径只能在关键帧切：用 fast input seek 即可（精确切片不可能不重编码）
         cmd = [
             "ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
             "-ss", f"{start:.3f}", "-i", str(src_p),
