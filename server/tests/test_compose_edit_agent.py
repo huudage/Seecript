@@ -14,6 +14,7 @@ import time
 from app.schemas import (
     AdaptedSection,
     ComposeSettings,
+    PackagingItem,
     Plan,
     Scene,
     ShotPlan,
@@ -21,6 +22,7 @@ from app.schemas import (
 from app.services.agent.compose_edit_agent import (
     _mock_intent,
     _mut_delete_shot,
+    _mut_update_packaging_item_time,
     _rebuild_timeline,
 )
 
@@ -209,3 +211,45 @@ def test_rebuild_timeline_writes_plan_duration_seconds():
     expected = sum(sc.duration for sc in plan.main_track)
     assert abs(plan.duration_seconds - expected) < 0.001
     assert abs(info["total"] - expected) < 0.001
+
+
+def test_update_packaging_item_time_persists_lane_index():
+    """stage-64：用户拖动包装项跨子轨 → mutator 必须把 lane_index 写回 plan.packaging_track。"""
+    plan = _make_plan_with_shots()
+    plan.packaging_track = [
+        PackagingItem(item_id="pkg-1", kind="subtitle", start=0.0, end=2.0, text="字幕一"),
+    ]
+    diff = _mut_update_packaging_item_time(
+        plan, {"item_id": "pkg-1", "start": 1.0, "end": 3.0, "lane_index": 2}
+    )
+    assert diff is not None
+    assert diff.op == "update_packaging_item_time"
+    assert plan.packaging_track[0].lane_index == 2
+    assert abs(plan.packaging_track[0].start - 1.0) < 0.001
+    assert abs(plan.packaging_track[0].end - 3.0) < 0.001
+
+
+def test_update_packaging_item_time_lane_only_change():
+    """只改 lane_index 不改时间也得是合法的 mutation——前端用户拖中间纯垂直跨轨场景。"""
+    plan = _make_plan_with_shots()
+    plan.packaging_track = [
+        PackagingItem(item_id="pkg-2", kind="title_bar", start=2.0, end=4.0, text="标题",
+                      lane_index=0),
+    ]
+    diff = _mut_update_packaging_item_time(plan, {"item_id": "pkg-2", "lane_index": 1})
+    assert diff is not None
+    assert plan.packaging_track[0].lane_index == 1
+    assert abs(plan.packaging_track[0].start - 2.0) < 0.001
+    assert abs(plan.packaging_track[0].end - 4.0) < 0.001
+
+
+def test_update_packaging_item_time_invalid_lane_clamped():
+    """lane_index 超出 [0,2] 必须无视——mutator 不能把脏值写进 plan。"""
+    plan = _make_plan_with_shots()
+    plan.packaging_track = [
+        PackagingItem(item_id="pkg-3", kind="sticker", start=0.0, end=1.0, lane_index=1),
+    ]
+    diff = _mut_update_packaging_item_time(plan, {"item_id": "pkg-3", "lane_index": 99})
+    # lane=99 越界被无视，且没改时间 → 整个 mutation 视作 no-op
+    assert diff is None
+    assert plan.packaging_track[0].lane_index == 1

@@ -1250,28 +1250,29 @@ export default function ComposePage() {
 
   /** 包装项剪映式拉伸：start/end 同时改（move 时也走这条路径，保持单 op 落盘）。 */
   const handleResizePackagingItem = useCallback(
-    async (itemId: string, newStart: number, newEnd: number) => {
+    async (itemId: string, newStart: number, newEnd: number, newLaneIndex: number | null) => {
       if (!plan) return
       setError(null)
       try {
+        const op: Record<string, unknown> = {
+          op: 'update_packaging_item_time',
+          item_id: itemId,
+          start: newStart,
+          end: newEnd,
+        }
+        if (newLaneIndex !== null) op.lane_index = newLaneIndex
+        const laneTail = newLaneIndex !== null ? ` · 落在第 ${newLaneIndex + 1} 轨` : ''
         const body = {
           plan_id: plan.plan_id,
           step: 'step3' as const,
-          instruction: `拉伸包装项 ${itemId} 到 [${newStart.toFixed(1)},${newEnd.toFixed(1)}]s`,
+          instruction: `拉伸包装项 ${itemId} 到 [${newStart.toFixed(1)},${newEnd.toFixed(1)}]s${laneTail}`,
           apply: true,
-          confirmed_ops: [
-            {
-              op: 'update_packaging_item_time',
-              item_id: itemId,
-              start: newStart,
-              end: newEnd,
-            },
-          ],
+          confirmed_ops: [op],
         }
         const resp = await api.post<{ plan?: Plan }>('/edit/compose', body)
         if (resp.plan) setPlanAndPush(resp.plan)
       } catch (err) {
-        setError(err instanceof Error ? err.message : '包装项调整时长失败')
+        setError(err instanceof Error ? err.message : '包装项调整失败')
       }
     },
     [plan, setPlanAndPush],

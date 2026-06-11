@@ -736,6 +736,8 @@ export interface PackagingItem {
   end: number
   text?: string | null
   style: Record<string, unknown>
+  /** 用户手动指定的轨道编号（0/1/2）；null 表示走前端贪心自动分轨。仅作视觉布局，不影响渲染。 */
+  lane_index?: number | null
 }
 
 export type BGMEnergyShape = 'flat' | 'single_peak' | 'multi_peak' | 'build_up' | 'wave'

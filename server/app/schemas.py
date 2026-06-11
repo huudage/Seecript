@@ -1459,6 +1459,13 @@ class PackagingItem(BaseModel):
     end: float
     text: Optional[str] = None
     style: dict[str, Any] = Field(default_factory=dict, description="字体/颜色/位置/动画参数")
+    lane_index: Optional[int] = Field(
+        default=None, ge=0, le=2,
+        description=(
+            "用户手动指定的轨道编号（0/1/2）——仅作前端 3 轨视觉布局，不影响渲染。"
+            "None 表示走前端贪心算法自动分轨。用户拖动包装项跨轨后会写入此字段。"
+        ),
+    )
 
 
 EnergyShape = Literal["flat", "single_peak", "multi_peak", "build_up", "wave"]

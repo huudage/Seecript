@@ -124,8 +124,14 @@ interface Props {
    */
   fills?: FillResult[]
   /** 拉伸包装项时长（剪映式拖手柄）：传 newStart 和 newEnd（秒），父级走 update_packaging_item_time op 落盘。
-      也涵盖"中部 move 拖动"——start/end 同步平移，只走这一条 op，不需要单独的 move op。 */
-  onResizePackagingItem?: (itemId: string, newStart: number, newEnd: number) => void | Promise<void>
+      也涵盖"中部 move 拖动"——start/end 同步平移；垂直拖动跨轨时第 4 个参数 newLaneIndex 携带新轨道编号
+      （0/1/2）；不跨轨时该参数 null。父级把 start/end/lane_index 一并写进 update_packaging_item_time op。 */
+  onResizePackagingItem?: (
+    itemId: string,
+    newStart: number,
+    newEnd: number,
+    newLaneIndex: number | null,
+  ) => void | Promise<void>
   /** 点击包装组件 → 父级唤起编辑弹窗（PR-I.2：替代拖动平移与重生按钮）。 */
   onEditPackagingItem?: (item: PackagingItem) => void
   /** 点击分镜间的转场节点 → 唤起转场样式选择弹窗。 */
@@ -191,17 +197,33 @@ function pctOf(seconds: number, total: number): number {
 }
 
 /**
- * 包装轨 3 轨道分配——贪心算法，按 start 升序遍历，每一项放进第一条不冲突的 lane（0/1/2）。
+ * 包装轨 3 轨道分配——优先尊重 item.lane_index（用户手动拖动后的固定轨），
+ * 未指定的项目走贪心：按 start 升序遍历，每一项放进第一条不冲突的 lane（0/1/2）。
  * 第 4 条及以后超出的项目会回退到 lane 0（视觉上仍可见但叠在底层）。
  *
  * 之所以做：用户反馈一条轨道不好调整；多个 packaging item 时间窗重叠时挤一行看不清，
  * 也无法精准点中下面那一项。3 轨够用，超出概率极低。
  */
 function assignPackagingLanes(items: PackagingItem[]): Map<string, number> {
-  const sorted = [...items].sort((a, b) => a.start - b.start)
-  const lanes: number[] = [0, 0, 0] // 每条 lane 当前已占到的 end 时间
   const result = new Map<string, number>()
-  for (const it of sorted) {
+  // pin 阶段：先把用户拖动过的项目按它们指定的 lane 落位
+  for (const it of items) {
+    const li = it.lane_index
+    if (typeof li === 'number' && li >= 0 && li <= 2) {
+      result.set(it.item_id, li)
+    }
+  }
+  // 贪心阶段：剩下的按 start 升序贪心分轨——其上限受 pinned 项目影响
+  const auto = items
+    .filter((it) => !result.has(it.item_id))
+    .sort((a, b) => a.start - b.start)
+  // 计算每条 lane 当前已占到的 end 时间——pinned 项目也参与冲突计算
+  const lanes: number[] = [0, 0, 0]
+  for (const it of items) {
+    const li = result.get(it.item_id)
+    if (li !== undefined && it.end > lanes[li]) lanes[li] = it.end
+  }
+  for (const it of auto) {
     let placed = false
     for (let i = 0; i < lanes.length; i++) {
       if (it.start >= lanes[i] - 1e-3) {
@@ -1486,6 +1508,7 @@ export function FourTrackBoard({
                   left={left}
                   width={span}
                   laneTopPx={laneTop}
+                  currentLane={lane}
                   pkgSelected={pkgSelected}
                   canEdit={canEdit}
                   canDelete={canDelete}
@@ -1745,13 +1768,14 @@ function TrackRow({
 }
 
 /**
- * 包装项单条——支持点击编辑 / 左右手柄拖拽改时长（剪映式）。
+ * 包装项单条——支持点击编辑 / 左右手柄拖拽改时长 / 中部拖拽水平+垂直跨轨改位置。
  *
  * 拖手柄落地：onmousemove 在像素级算 dx，按 (rowWidth / total) 折算回秒，松手时调
- * onResizePackagingItem(itemId, newStart, newEnd)。clamp 到 [0, total]，最短 0.3s。
+ * onResizePackagingItem(itemId, newStart, newEnd, null)。clamp 到 [0, total]，最短 0.3s。
  *
- * 平移整条：抓内部主体（非手柄）拖动会平移 start/end（保持 duration），松手调
- * onResizePackagingItem 一并落盘。
+ * 平移整条：抓内部主体（非手柄）拖动会同时改 start/end + lane_index（垂直越过 32px 阈值
+ * 即换到 0/1/2 三轨之一）；松手调 onResizePackagingItem(itemId, start, end, newLane)。
+ * 不跨轨时第 4 参数为 null（父级保留原 lane_index）。
  */
 function PackagingItemBlock({
   item,
@@ -1759,6 +1783,7 @@ function PackagingItemBlock({
   left,
   width,
   laneTopPx,
+  currentLane,
   pkgSelected,
   canEdit,
   canDelete,
@@ -1775,6 +1800,8 @@ function PackagingItemBlock({
   left: number
   width: number
   laneTopPx: number
+  /** 当前 item 所在的视觉 lane（由 assignPackagingLanes 算出，0/1/2）。 */
+  currentLane: number
   pkgSelected: boolean
   canEdit: boolean
   canDelete: boolean
@@ -1784,7 +1811,12 @@ function PackagingItemBlock({
   onEditPackagingItem?: (it: PackagingItem) => void
   onSelectPackaging?: (it: PackagingItem) => void
   onDeletePackagingItem?: (id: string) => void | Promise<void>
-  onResizePackagingItem?: (id: string, newStart: number, newEnd: number) => void | Promise<void>
+  onResizePackagingItem?: (
+    id: string,
+    newStart: number,
+    newEnd: number,
+    newLaneIndex: number | null,
+  ) => void | Promise<void>
 }) {
   const [drag, setDrag] = useState<null | {
     mode: 'left' | 'right' | 'move'
@@ -1792,7 +1824,11 @@ function PackagingItemBlock({
     origStart: number
     origEnd: number
     rowPx: number
-    livePreview: { start: number; end: number }
+    rowHeightPx: number
+    rowTopPx: number
+    startY: number
+    origLane: number
+    livePreview: { start: number; end: number; lane: number }
   }>(null)
   // 痛报：『包装轨的组件拖动完成之后会自动触发弹窗编辑』
   // 修：mouseup 把 drag 置 null 后，浏览器仍会把 mousedown→mouseup 派发为 click，
@@ -1806,14 +1842,18 @@ function PackagingItemBlock({
     e.stopPropagation()
     const row = rowRef.current
     if (!row || total <= 0) return
-    const rowPx = row.getBoundingClientRect().width
+    const rect = row.getBoundingClientRect()
     setDrag({
       mode,
       startX: e.clientX,
       origStart: item.start,
       origEnd: item.end,
-      rowPx,
-      livePreview: { start: item.start, end: item.end },
+      rowPx: rect.width,
+      rowHeightPx: rect.height,
+      rowTopPx: rect.top,
+      startY: e.clientY,
+      origLane: currentLane,
+      livePreview: { start: item.start, end: item.end, lane: currentLane },
     })
   }
 
@@ -1824,6 +1864,7 @@ function PackagingItemBlock({
       const dt = (dx / drag.rowPx) * total
       let newStart = drag.origStart
       let newEnd = drag.origEnd
+      let newLane = drag.livePreview.lane
       if (drag.mode === 'left') {
         newStart = Math.max(0, Math.min(drag.origEnd - 0.3, drag.origStart + dt))
       } else if (drag.mode === 'right') {
@@ -1832,16 +1873,24 @@ function PackagingItemBlock({
         const dur = drag.origEnd - drag.origStart
         newStart = Math.max(0, Math.min(total - dur, drag.origStart + dt))
         newEnd = newStart + dur
+        // 垂直跨轨：每条 lane 高 32px，视觉中心位于 [16, 48, 80]
+        // 用相对 row top 的 Y 直接除 32 落到 0/1/2，超界 clamp。
+        const cursorY = e.clientY - drag.rowTopPx
+        const targetLane = Math.max(0, Math.min(2, Math.floor(cursorY / 32)))
+        newLane = targetLane
       }
-      setDrag({ ...drag, livePreview: { start: newStart, end: newEnd } })
+      setDrag({ ...drag, livePreview: { start: newStart, end: newEnd, lane: newLane } })
     }
     const handleUp = () => {
-      const { livePreview, origStart, origEnd } = drag
-      const moved =
+      const { livePreview, origStart, origEnd, origLane, mode } = drag
+      const movedTime =
         Math.abs(livePreview.start - origStart) > 0.05 ||
         Math.abs(livePreview.end - origEnd) > 0.05
-      if (moved) {
-        void onResizePackagingItem?.(item.item_id, livePreview.start, livePreview.end)
+      const movedLane = mode === 'move' && livePreview.lane !== origLane
+      if (movedTime || movedLane) {
+        // mode=left/right 不改 lane → 传 null；move 模式如果 lane 真换了才传新值
+        const laneArg = movedLane ? livePreview.lane : null
+        void onResizePackagingItem?.(item.item_id, livePreview.start, livePreview.end, laneArg)
         suppressNextClickRef.current = true
       }
       setDrag(null)
@@ -1859,6 +1908,8 @@ function PackagingItemBlock({
   const renderWidth = drag
     ? Math.max(0.6, pctOf(drag.livePreview.end - drag.livePreview.start, total))
     : width
+  // 中部 move 拖动时垂直跟手；左右手柄拖动时 lane 不变
+  const renderLaneTopPx = drag && drag.mode === 'move' ? drag.livePreview.lane * 32 + 2 : laneTopPx
 
   const handleClick = () => {
     if (drag) return
@@ -1886,13 +1937,13 @@ function PackagingItemBlock({
       style={{
         left: `${renderLeft}%`,
         width: `calc(${renderWidth}% - 1px)`,
-        top: `${laneTopPx}px`,
+        top: `${renderLaneTopPx}px`,
       }}
       title={
         (item.text
           ? `${PACKAGING_KIND_LABEL[item.kind]} · ${item.text}`
           : `${PACKAGING_KIND_LABEL[item.kind]} · ${(item.end - item.start).toFixed(1)}s`) +
-        '\n点击：打开编辑弹窗 · 拖动两端：改时长 · 拖中间：整体平移'
+        '\n点击：打开编辑弹窗 · 拖中间：水平平移 + 垂直跨轨 · 拖两端：改时长'
       }
     >
       {/* 左手柄 */}

@@ -353,8 +353,10 @@ _TOOL_UPDATE_PACKAGING_ITEM_TIME = {
     "function": {
         "name": "update_packaging_item_time",
         "description": (
-            "改包装项 item 的时间区间（start/end，秒）。两端都给则强制 end ≥ start+0.1；"
-            "只给 start 则保持原 duration 平移；只给 end 则保持 start 不变拉长/缩短。"
+            "改包装项 item 的时间区间（start/end，秒）和/或视觉轨道（lane_index 0/1/2）。"
+            "两端都给则强制 end ≥ start+0.1；只给 start 则保持原 duration 平移；"
+            "只给 end 则保持 start 不变拉长/缩短。lane_index 仅作前端 3 轨视觉布局，不影响渲染——"
+            "用户在 UI 上垂直拖动包装项跨轨时会带上此字段。"
         ),
         "parameters": {
             "type": "object",
@@ -362,6 +364,7 @@ _TOOL_UPDATE_PACKAGING_ITEM_TIME = {
                 "item_id": {"type": "string"},
                 "start": {"type": "number", "description": "新起点（秒，≥0）"},
                 "end": {"type": "number", "description": "新终点（秒，≤总时长）"},
+                "lane_index": {"type": "integer", "minimum": 0, "maximum": 2, "description": "用户手动指定的视觉轨道（0/1/2），不传则保留原值"},
             },
             "required": ["item_id"],
         },
@@ -1361,14 +1364,17 @@ def _mut_update_packaging_item_time(plan: Plan, args: dict) -> ComposeEditDiff |
         return None
     raw_start = args.get("start")
     raw_end = args.get("end")
+    raw_lane = args.get("lane_index")
     has_start = raw_start is not None
     has_end = raw_end is not None
-    if not has_start and not has_end:
+    has_lane = raw_lane is not None
+    if not has_start and not has_end and not has_lane:
         return None
     for it in plan.packaging_track:
         if it.item_id != iid:
             continue
         before = (round(it.start, 2), round(it.end, 2))
+        before_lane = it.lane_index
         new_start = it.start
         new_end = it.end
         cur_dur = max(0.1, float(it.end - it.start))
@@ -1379,7 +1385,7 @@ def _mut_update_packaging_item_time(plan: Plan, args: dict) -> ComposeEditDiff |
             elif has_start:
                 new_start = max(0.0, float(raw_start))
                 new_end = new_start + cur_dur
-            else:  # has_end only
+            elif has_end:
                 new_end = max(it.start + 0.1, float(raw_end))
         except (TypeError, ValueError):
             return None
@@ -1389,16 +1395,34 @@ def _mut_update_packaging_item_time(plan: Plan, args: dict) -> ComposeEditDiff |
             new_end = min(new_end, total)
             if new_end - new_start < 0.1:
                 new_start = max(0.0, new_end - 0.1)
-        if abs(new_start - it.start) < 1e-3 and abs(new_end - it.end) < 1e-3:
+        new_lane = before_lane
+        if has_lane:
+            try:
+                lane_int = int(raw_lane)
+                if 0 <= lane_int <= 2:
+                    new_lane = lane_int
+            except (TypeError, ValueError):
+                pass
+        time_changed = abs(new_start - it.start) > 1e-3 or abs(new_end - it.end) > 1e-3
+        lane_changed = new_lane != before_lane
+        if not time_changed and not lane_changed:
             return None
         it.start = round(new_start, 2)
         it.end = round(new_end, 2)
+        it.lane_index = new_lane
+        # summary 只在时间真的变了时显示时间段；纯换轨场景给独立文案
+        if time_changed and lane_changed:
+            tail = f"时间 [{before[0]:.1f},{before[1]:.1f}]s → [{it.start:.1f},{it.end:.1f}]s · 轨道 {before_lane} → {new_lane}"
+        elif time_changed:
+            tail = f"时间 [{before[0]:.1f},{before[1]:.1f}]s → [{it.start:.1f},{it.end:.1f}]s"
+        else:
+            tail = f"轨道 {before_lane} → {new_lane}"
         return ComposeEditDiff(
             op="update_packaging_item_time",
             target_id=iid,
             before=before,
             after=(it.start, it.end),
-            summary=f"包装项 {iid} 时间 [{before[0]:.1f},{before[1]:.1f}]s → [{it.start:.1f},{it.end:.1f}]s",
+            summary=f"包装项 {iid} {tail}",
         )
     return None
 
