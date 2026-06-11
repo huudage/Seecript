@@ -407,11 +407,13 @@ export default function ComposePage() {
     }
     // stage-26 PR-N.6：已经进入 step3 但批量补字卡或换源把内容轨打回了 needs_fill /
     // text-card-fill-empty 兜底——把用户拉回 step2 补齐再放行。
+    // stage-61：user_edited=true 的 Scene 视作『已补齐』，无视 needs_fill / fill-empty 占位。
     const unfilled = plan
       ? plan.main_track.filter(
           (sc) =>
-            sc.needs_fill === true ||
-            (sc.source_ref ?? '').startsWith('text-card-fill-empty'),
+            sc.user_edited !== true &&
+            (sc.needs_fill === true ||
+              (sc.source_ref ?? '').startsWith('text-card-fill-empty')),
         ).length
       : 0
     if (activeStep === 3 && unfilled > 0) {
@@ -1082,19 +1084,18 @@ export default function ComposePage() {
   // 不再用 pendingGapsCount 单独门控 step3（那是 gap 模型层面的"待补"，乐观更新会瞬间归零）；
   // 真正能反映轨道更新进度的是 plan.main_track 实际状态。
   const mainTrackUnfilledCount = useMemo(() => {
-    // stage-60: 按 "段" 聚合 —— 用户报障 "4 段 / 5 段未补完" 计数错位。
-    // multi-shot 物化后一段会被切成多个 Scene；只要段里任一 Scene 有 needs_fill
-    // 就算这一段还没补完，整段计 1。
+    // stage-61: 用户原话『step2 的补齐缺口检查以分镜为单位』+『手动调整过的分镜无论如何视作已补齐』
+    // → 按 Scene 数计（不再按段聚合），且把 user_edited=true 的 Scene 排除。
     if (!plan) return 0
-    const sectionsNeeding = new Set<string>()
+    let count = 0
     for (const sc of plan.main_track) {
+      if (sc.user_edited === true) continue
       const isUnfilled =
         sc.needs_fill === true ||
         (sc.source_ref ?? '').startsWith('text-card-fill-empty')
-      if (!isUnfilled) continue
-      sectionsNeeding.add(sc.parent_section_id || sc.scene_id)
+      if (isUnfilled) count++
     }
-    return sectionsNeeding.size
+    return count
   }, [plan])
 
   /* --------------------- 四轨：口播 / 包装 / BGM 动作 --------------------- */
@@ -2271,7 +2272,7 @@ export default function ComposePage() {
               {analyzing
                 ? '内容轨重排中…'
                 : mainTrackUnfilledCount > 0
-                  ? `内容轨还有 ${mainTrackUnfilledCount} 段未补完 · 补齐后进入第 3 步`
+                  ? `内容轨还有 ${mainTrackUnfilledCount} 镜未补完 · 补齐后进入第 3 步`
                   : pendingGapsCount > 0
                     ? `还有 ${pendingGapsCount} 段缺口待补 · 补齐后进入第 3 步`
                     : trackBusy
@@ -2776,7 +2777,7 @@ function WorkshopStepNav({
   const step3Reason = !hasPlan
     ? '先在第 2 步生成内容轨'
     : mainTrackUnfilledCount > 0
-      ? `内容轨还有 ${mainTrackUnfilledCount} 段未补完，请先在第 2 步补齐再进入第 3 步`
+      ? `内容轨还有 ${mainTrackUnfilledCount} 镜未补完，请先在第 2 步补齐再进入第 3 步`
       : !step3Unlocked
         ? '请在第 2 步底部点「进入第 3 步」解锁'
         : pendingGapsCount > 0

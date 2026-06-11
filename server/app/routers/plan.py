@@ -1429,9 +1429,11 @@ async def patch_plan_scene(plan_id: str, scene_id: str, body: SceneEditPatch) ->
     if "narration" in patch:
         # narration 改了 → 旧 voiceover_url 指向的 wav 是旧文案合成的，必须废弃；
         # step3 PlanPlayer 才不会播放对不上嘴的旧音频。下次 /voice/synthesize 会按新 narration 重合。
+        # stage-61：用户改文本视为对本镜的手动确认，user_edited 翻成 True。
         plan.main_track[scene_idx] = scene.model_copy(update={
             "narration": patch["narration"],
             "voiceover_url": None,
+            "user_edited": True,
         })
 
     if section_idx is not None and any(k in patch for k in ("theme", "content_description")):
@@ -1442,6 +1444,11 @@ async def patch_plan_scene(plan_id: str, scene_id: str, body: SceneEditPatch) ->
         if "content_description" in patch:
             update["content_description"] = patch["content_description"]
         plan.adapted_sections[section_idx] = sec.model_copy(update=update)
+        # stage-61：用户改了 section 描述，整段所有 scene 都视为人工已审过——
+        # narration 没动也要落 user_edited=True（仅当本 scene 还没被前一分支翻过）。
+        cur_sc = plan.main_track[scene_idx]
+        if not cur_sc.user_edited:
+            plan.main_track[scene_idx] = cur_sc.model_copy(update={"user_edited": True})
 
     # 字幕轨同步刷新：narration / duration 变更后，packaging_track 上的 subtitle 必须重生
     # 否则 step3 预览仍按旧 text + 旧时间窗 渲染，用户看到画面有字幕条但内容对不上
@@ -1554,7 +1561,10 @@ async def patch_shot_subject(plan_id: str, scene_id: str, body: ShotSubjectPatch
     scene = plan.main_track[scene_idx]
     new_subject = (body.subject or "").strip()[:40]
 
-    plan.main_track[scene_idx] = scene.model_copy(update={"shot_subject": new_subject})
+    plan.main_track[scene_idx] = scene.model_copy(update={
+        "shot_subject": new_subject,
+        "user_edited": True,
+    })
 
     # 同步父 AdaptedSection.shots[order].subject——下游 aigc_prompt_agent 读这里
     if scene.parent_section_id:
@@ -1632,6 +1642,8 @@ async def patch_shot_fields(plan_id: str, scene_id: str, body: ShotFieldsPatch) 
         # narration 改了 → 旧 voiceover_url 指向的 wav 是旧文案合成的，必须废弃；
         # 不清掉 step3 PlanPlayer 会用旧音频对不上新字幕，用户报『改了文案 step3 没刷』就是这个。
         scene_update["voiceover_url"] = None
+    # stage-61：弹窗里改任何字段 → 整个 scene 视为人工已审过；step2 缺口检查不再把它当作待补
+    scene_update["user_edited"] = True
     if scene_update:
         plan.main_track[scene_idx] = scene.model_copy(update=scene_update)
 
@@ -1776,6 +1788,7 @@ async def swap_scene_source(
             "text_card_spec": spec,
             "animation_spec": None,
             "needs_fill": False,
+            "user_edited": True,
         })
     elif body.source == "user_material":
         if not body.material_id:
@@ -1824,6 +1837,7 @@ async def swap_scene_source(
             "text_card_spec": None,
             "animation_spec": None,
             "needs_fill": False,
+            "user_edited": True,
         })
     elif body.source == "aigc_image":
         # 同步走 Seedream 单图：用 shot 主题 + 用户 hint
@@ -1874,6 +1888,7 @@ async def swap_scene_source(
             "text_card_spec": None,
             "animation_spec": anim_spec,
             "needs_fill": False,
+            "user_edited": True,
         })
         log.info(
             "[scene-swap] %s → aigc_image url=%s prompt='%s' anim=%s/%s",
@@ -1934,6 +1949,7 @@ async def swap_scene_source(
             "text_card_spec": None,
             "animation_spec": None,
             "needs_fill": False,
+            "user_edited": True,
         })
         log.info(
             "[scene-swap] %s → aigc_t2v url=%s prompt='%s'",

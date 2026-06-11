@@ -696,6 +696,10 @@ export interface Scene {
    *  true 时段卡质量色条把这一镜计入『待修补』，UI 挂橙色提示 chip。
    *  换源接口成功后清回 false。 */
   needs_fill?: boolean
+  /** stage-61：用户是否手动调整过本 Scene（换源 / 改文本 / 改时长）。
+   *  true 时 step2 补齐缺口检查必须把本镜视作『已补齐』，无视 needs_fill / fill-empty 占位。
+   *  一旦置 true 不再翻回 false（除非整段重生 / regenerate fill 显式覆盖）。 */
+  user_edited?: boolean
   /** 与上一段衔接方式；sc-0 永远忽略此字段。None / hard_cut 走 concat demuxer，其他走 xfade。 */
   transition_in?: SceneTransition | null
   /** stage-59：素材-段落 适配度评分（0-1）。仅 source=user_material 时有值；

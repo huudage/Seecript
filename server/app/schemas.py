@@ -1408,6 +1408,15 @@ class Scene(BaseModel):
             "默认 False（匹配良好或用户已主动确认）。换源接口成功后会清回 False。"
         ),
     )
+    user_edited: bool = Field(
+        default=False,
+        description=(
+            "stage-61：用户是否手动调整过本 Scene（换源 / 改文本 / 拖时长 / 编辑分镜内容）。"
+            "True 时前端 step2 补齐缺口检查必须把本镜视作『已补齐』，无视 needs_fill 与 "
+            "fill-empty 占位 source_ref——用户原话『手动进行过分镜换源调整，则无论如何该分镜都视作已补齐』。"
+            "一旦置 True 不再翻回 False（除非整段重生 / regenerate fill 显式覆盖）。"
+        ),
+    )
     transition_in: Optional[SceneTransition] = Field(
         default=None,
         description="与上一段衔接方式；sc-0 永远忽略此字段（无上一段）。"

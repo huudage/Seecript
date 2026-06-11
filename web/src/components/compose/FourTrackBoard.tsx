@@ -823,34 +823,42 @@ export function FourTrackBoard({
                         </div>
                         {sc.source === 'user_material' && (
                           // stage-60: 分镜匹配状态徽章（替代旧 2px 圆点）——用户报障"是否匹配成功无清晰指示"
-                          // 优先级：needs_fill=true → 红"待补"；matched_material_id 有 → 绿"✓"；否则 → 灰"—"
-                          // 鼠标悬停 tooltip 给出 match_quality / match_score / 命中素材文件名
+                          // 优先级：user_edited=true → 蓝"已审"（覆盖一切）；needs_fill=true → 红"待补"；
+                          //         matched_material_id 有 → 绿"✓"；否则 → 灰"—"
+                          // stage-61：user_edited 视作"已补齐"（用户原话『手动调整过的分镜无论如何视作已补齐』），
+                          //          它要把『待补』红牌完全压住——否则用户改过还看到"待补"会困惑。
                           <span
                             className={cn(
                               'pointer-events-none absolute left-0.5 top-0.5 z-[2] rounded px-1 text-[8px] font-bold leading-tight text-white shadow-sm',
-                              sc.needs_fill === true
-                                ? 'bg-rose-500/95'
-                                : (shotPlan?.matched_material_id || matchQuality === 'good')
-                                  ? 'bg-emerald-500/95'
-                                  : matchQuality === 'weak'
-                                    ? 'bg-amber-500/95'
-                                    : 'bg-zinc-500/85',
+                              sc.user_edited === true
+                                ? 'bg-sky-500/95'
+                                : sc.needs_fill === true
+                                  ? 'bg-rose-500/95'
+                                  : (shotPlan?.matched_material_id || matchQuality === 'good')
+                                    ? 'bg-emerald-500/95'
+                                    : matchQuality === 'weak'
+                                      ? 'bg-amber-500/95'
+                                      : 'bg-zinc-500/85',
                             )}
                             title={
-                              sc.needs_fill === true
-                                ? '本镜待补：素材未匹配上 / 兜底字卡占位'
-                                : shotPlan?.matched_material_id
-                                  ? `已匹配${matchQuality ? `（${matchQuality === 'good' ? '准' : matchQuality === 'weak' ? '弱' : '缺'}）` : ''}` +
-                                    (matchScore !== null ? `\n匹配分 ${(matchScore * 100).toFixed(0)}%` : '') +
-                                    (matchedMat?.filename ? `\n命中素材：${matchedMat.filename}` : '')
-                                  : '未匹配（顺位兜底）'
+                              sc.user_edited === true
+                                ? '已人工审过：换源 / 改文本 / 拖时长后置位，step2 缺口检查不再算这一镜'
+                                : sc.needs_fill === true
+                                  ? '本镜待补：素材未匹配上 / 兜底字卡占位'
+                                  : shotPlan?.matched_material_id
+                                    ? `已匹配${matchQuality ? `（${matchQuality === 'good' ? '准' : matchQuality === 'weak' ? '弱' : '缺'}）` : ''}` +
+                                      (matchScore !== null ? `\n匹配分 ${(matchScore * 100).toFixed(0)}%` : '') +
+                                      (matchedMat?.filename ? `\n命中素材：${matchedMat.filename}` : '')
+                                    : '未匹配（顺位兜底）'
                             }
                           >
-                            {sc.needs_fill === true
-                              ? '待补'
-                              : shotPlan?.matched_material_id
-                                ? '✓'
-                                : '—'}
+                            {sc.user_edited === true
+                              ? '已审'
+                              : sc.needs_fill === true
+                                ? '待补'
+                                : shotPlan?.matched_material_id
+                                  ? '✓'
+                                  : '—'}
                           </span>
                         )}
                         {sc.source === 'user_material' && typeof sc.fit_score === 'number' && (
@@ -924,14 +932,17 @@ export function FourTrackBoard({
                 )}
               </div>
               <div className="relative z-[1] flex h-full flex-col justify-between p-1">
+                {/* stage-60 fix: 角标行拆 3 段——role / 徽章组（可挤）/ 按钮组（永远 shrink-0）。
+                    用户报障：单镜段的 fit% 徽章 + gap 徽章 + ✏ + ▾ 全在一行，窄段把 ▾ 挤出可视区
+                    导致无法进分镜编辑。徽章给 min-w-0 + overflow-hidden 让它先被挤掉，按钮永远在。 */}
                 <div className="flex items-center justify-between gap-1">
-                  <span className="rounded bg-black/40 px-1 font-mono text-[9px] text-white">
+                  <span className="shrink-0 rounded bg-black/40 px-1 font-mono text-[9px] text-white">
                     {getSectionMeta(section.role).short}
                   </span>
-                  <div className="flex items-center gap-1">
+                  <div className="flex min-w-0 flex-1 items-center justify-end gap-1 overflow-hidden">
                     {scenesInSec.length > 1 && (
                       <span
-                        className="inline-flex h-3 items-center justify-center rounded-full bg-violet-300/95 px-1 font-mono text-[9px] font-bold text-violet-900"
+                        className="inline-flex h-3 shrink-0 items-center justify-center rounded-full bg-violet-300/95 px-1 font-mono text-[9px] font-bold text-violet-900"
                         title={`本段拆为 ${scenesInSec.length} 个分镜（▾ 展开后可单独编辑）`}
                       >
                         {scenesInSec.length}镜
@@ -941,7 +952,7 @@ export function FourTrackBoard({
                     {scenesInSec.length === 1 && firstScene.source === 'user_material' && typeof firstScene.fit_score === 'number' && (
                       <span
                         className={cn(
-                          'inline-flex h-3 items-center justify-center rounded-full px-1 font-mono text-[9px] font-bold',
+                          'inline-flex h-3 shrink-0 items-center justify-center rounded-full px-1 font-mono text-[9px] font-bold',
                           firstScene.fit_score >= 0.7
                             ? 'bg-emerald-300 text-emerald-900'
                             : firstScene.fit_score >= 0.4
@@ -956,7 +967,7 @@ export function FourTrackBoard({
                     {gap && (
                       <span
                         className={cn(
-                          'inline-flex h-3 min-w-3 items-center justify-center rounded-full px-1 text-[9px] font-bold',
+                          'inline-flex h-3 min-w-3 shrink-0 items-center justify-center rounded-full px-1 text-[9px] font-bold',
                           effectiveStatus === 'ok'
                             ? 'bg-emerald-300 text-emerald-900'
                             : effectiveStatus === 'warn'
@@ -967,10 +978,10 @@ export function FourTrackBoard({
                         {STATUS_GLYPH[effectiveStatus]}
                       </span>
                     )}
-                    {/* stage-37：✏ 编辑段、▾ 展开看分镜——挂在角标行右侧
-                        stage-60：去掉 canExpand 门禁——上游 dedup / 视觉差异度门禁会把
-                        近重复 sub-shot 折叠到 1 镜，单镜段也允许展开进入分镜级编辑入口，
-                        避免「明明本来有展开按钮，重新生成后没了」的体感。 */}
+                  </div>
+                  {/* 按钮组：永远 shrink-0，徽章再挤也不会把 ▾ 顶出可视区。
+                      stage-37 / stage-60：✏ 编辑段、▾ 展开看分镜——挂在角标行右侧。 */}
+                  <div className="flex shrink-0 items-center gap-1">
                     {onEditSection && (
                       <span
                         role="button"

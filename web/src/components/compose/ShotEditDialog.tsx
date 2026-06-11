@@ -152,44 +152,24 @@ export function ShotEditDialog({
     }
   }
 
-  const handleSwap = async () => {
+  // user_material 模式拆三个独立入口（手动裁剪 / 自动镜头 / 默认首镜），
+  // 用户在面板里直接看到"我点这个按钮做什么"，不再让一个含糊的"切到用户素材"
+  // 同时承担三种语义。aigc / text_card 仍走 handleSwap 统一入口。
+  const callSwap = async (
+    body: {
+      source: SourceType
+      material_id?: string
+      material_shot_index?: number
+      material_in_point?: number
+      material_out_point?: number
+      prompt_hint?: string
+      main_text?: string
+      sub_text?: string
+    },
+  ) => {
     setSwapping(true)
     setSwapErr(null)
     try {
-      const body: {
-        source: SourceType
-        material_id?: string
-        material_shot_index?: number
-        material_in_point?: number
-        material_out_point?: number
-        prompt_hint?: string
-        main_text?: string
-        sub_text?: string
-      } = { source: swapSource }
-      if (swapSource === 'user_material') {
-        if (!swapMaterialId) {
-          throw new Error('请选择一条素材')
-        }
-        body.material_id = swapMaterialId
-        // 手动裁剪优先：in+out 同时存在 → 后端按用户窗口写 scene.in_point/out_point/duration
-        if (swapManualIn !== null && swapManualOut !== null) {
-          if (swapManualOut - swapManualIn < 0.5) {
-            throw new Error('裁剪窗口太短，至少 0.5s')
-          }
-          body.material_in_point = swapManualIn
-          body.material_out_point = swapManualOut
-        } else if (swapMaterialShotIdx !== null) {
-          body.material_shot_index = swapMaterialShotIdx
-        }
-      } else if (swapSource === 'aigc_image' || swapSource === 'aigc_t2v') {
-        const hint = swapPromptHint.trim()
-        if (hint) body.prompt_hint = hint
-      } else if (swapSource === 'text_card') {
-        const m = swapMainText.trim()
-        const s = swapSubText.trim()
-        if (m) body.main_text = m
-        if (s) body.sub_text = s
-      }
       const fresh = await swapSceneSource(plan.plan_id, scene.scene_id, body)
       onSaved(fresh)
       onClose()
@@ -198,6 +178,59 @@ export function ShotEditDialog({
     } finally {
       setSwapping(false)
     }
+  }
+
+  const applyManualTrim = () => {
+    if (!swapMaterialId) {
+      setSwapErr('请选择一条素材')
+      return
+    }
+    if (swapManualIn === null || swapManualOut === null) {
+      setSwapErr('请先在裁剪条上拖手柄选片段')
+      return
+    }
+    if (swapManualOut - swapManualIn < 0.5) {
+      setSwapErr('裁剪窗口太短，至少 0.5s')
+      return
+    }
+    void callSwap({
+      source: 'user_material',
+      material_id: swapMaterialId,
+      material_in_point: swapManualIn,
+      material_out_point: swapManualOut,
+    })
+  }
+
+  const applyAutoShot = () => {
+    if (!swapMaterialId) {
+      setSwapErr('请选择一条素材')
+      return
+    }
+    void callSwap({
+      source: 'user_material',
+      material_id: swapMaterialId,
+      ...(swapMaterialShotIdx !== null ? { material_shot_index: swapMaterialShotIdx } : {}),
+    })
+  }
+
+  const handleSwap = async () => {
+    setSwapErr(null)
+    const body: {
+      source: SourceType
+      prompt_hint?: string
+      main_text?: string
+      sub_text?: string
+    } = { source: swapSource }
+    if (swapSource === 'aigc_image' || swapSource === 'aigc_t2v') {
+      const hint = swapPromptHint.trim()
+      if (hint) body.prompt_hint = hint
+    } else if (swapSource === 'text_card') {
+      const m = swapMainText.trim()
+      const s = swapSubText.trim()
+      if (m) body.main_text = m
+      if (s) body.sub_text = s
+    }
+    await callSwap(body)
   }
 
   const busy = disabled || saving || swapping
@@ -379,9 +412,9 @@ export function ShotEditDialog({
                     {selectedMaterial &&
                       selectedMaterial.media_type === 'video' &&
                       (selectedMaterial.duration_seconds ?? 0) > 0 && (
-                        <div className="space-y-1">
-                          <span className="text-xs text-muted-foreground">
-                            手动裁剪（拖手柄选片段，时长会直接覆盖本镜的 {scene.duration.toFixed(1)}s）
+                        <div className="space-y-1.5 rounded-md border border-indigo-200 bg-indigo-50/40 p-2">
+                          <span className="text-xs font-semibold text-indigo-700">
+                            ① 手动裁剪（拖手柄选片段，时长会直接覆盖本镜的 {scene.duration.toFixed(1)}s）
                           </span>
                           <MaterialTrimPanel
                             material={selectedMaterial}
@@ -397,12 +430,26 @@ export function ShotEditDialog({
                               setSwapMaterialShotIdx(null)
                             }}
                           />
+                          <div className="flex items-center justify-end pt-1">
+                            <button
+                              onClick={applyManualTrim}
+                              disabled={
+                                busy ||
+                                !swapMaterialId ||
+                                swapManualIn === null ||
+                                swapManualOut === null
+                              }
+                              className="rounded-md bg-indigo-600 px-3 py-1 text-xs font-medium text-white hover:bg-indigo-700 disabled:opacity-50"
+                            >
+                              {swapping ? '切源中…' : '应用此手动裁剪'}
+                            </button>
+                          </div>
                         </div>
                       )}
                     {materialShots.length > 0 && (
-                      <label className="block space-y-1">
-                        <span className="text-xs text-muted-foreground">
-                          或挑自动识别的镜头（缺省取首镜，按本镜时长 {scene.duration.toFixed(1)}s 切入出点）
+                      <div className="space-y-1.5 rounded-md border border-emerald-200 bg-emerald-50/40 p-2">
+                        <span className="text-xs font-semibold text-emerald-700">
+                          ② 或挑自动识别的镜头（缺省取首镜，按本镜时长 {scene.duration.toFixed(1)}s 切入出点）
                         </span>
                         <select
                           value={swapMaterialShotIdx === null ? '' : String(swapMaterialShotIdx)}
@@ -423,8 +470,33 @@ export function ShotEditDialog({
                             </option>
                           ))}
                         </select>
-                      </label>
+                        <div className="flex items-center justify-end pt-1">
+                          <button
+                            onClick={applyAutoShot}
+                            disabled={busy || !swapMaterialId}
+                            className="rounded-md bg-emerald-600 px-3 py-1 text-xs font-medium text-white hover:bg-emerald-700 disabled:opacity-50"
+                          >
+                            {swapping
+                              ? '切源中…'
+                              : swapMaterialShotIdx !== null
+                                ? '应用此镜头'
+                                : '应用首镜（默认）'}
+                          </button>
+                        </div>
+                      </div>
                     )}
+                    {selectedMaterial &&
+                      selectedMaterial.media_type !== 'video' && (
+                        <div className="flex items-center justify-end pt-1">
+                          <button
+                            onClick={applyAutoShot}
+                            disabled={busy || !swapMaterialId}
+                            className="rounded-md bg-primary px-3 py-1.5 text-xs font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
+                          >
+                            {swapping ? '切源中…' : '切到此素材'}
+                          </button>
+                        </div>
+                      )}
                   </>
                 )}
               </div>
@@ -475,25 +547,24 @@ export function ShotEditDialog({
               </div>
             )}
 
-            <div className="flex items-center justify-between gap-2 pt-1">
-              <span className="text-[10px] text-muted-foreground">{longSwapHint}</span>
-              <button
-                onClick={() => void handleSwap()}
-                disabled={
-                  busy ||
-                  (swapSource === 'user_material' && (materials.length === 0 || !swapMaterialId))
-                }
-                className="rounded-md bg-primary px-3 py-1.5 text-xs font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
-              >
-                {swapping
-                  ? swapSource === 'aigc_t2v'
-                    ? 'Seedance 生成中…（最长 3 分钟）'
-                    : swapSource === 'aigc_image'
-                      ? 'Seedream 生成中…'
-                      : '切源中…'
-                  : `切到「${SOURCE_LABEL[swapSource]}」`}
-              </button>
-            </div>
+            {swapSource !== 'user_material' && (
+              <div className="flex items-center justify-between gap-2 pt-1">
+                <span className="text-[10px] text-muted-foreground">{longSwapHint}</span>
+                <button
+                  onClick={() => void handleSwap()}
+                  disabled={busy}
+                  className="rounded-md bg-primary px-3 py-1.5 text-xs font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
+                >
+                  {swapping
+                    ? swapSource === 'aigc_t2v'
+                      ? 'Seedance 生成中…（最长 3 分钟）'
+                      : swapSource === 'aigc_image'
+                        ? 'Seedream 生成中…'
+                        : '切源中…'
+                    : `切到「${SOURCE_LABEL[swapSource]}」`}
+                </button>
+              </div>
+            )}
             {swapErr && <p className="text-xs text-destructive">{swapErr}</p>}
           </section>
         </div>

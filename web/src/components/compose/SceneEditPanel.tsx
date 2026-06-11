@@ -327,7 +327,8 @@ function ShotRow({
   const quality: 'good' | 'weak' | 'missing' =
     (shot.match_quality as 'good' | 'weak' | 'missing' | undefined) ?? 'good'
   const sceneId = scene?.scene_id
-  const needsFill = scene?.needs_fill === true
+  // stage-61：user_edited=true 后无视 needs_fill（用户原话『手动调整过的分镜无论如何视作已补齐』）
+  const needsFill = scene?.user_edited !== true && scene?.needs_fill === true
   const canSwap = !!sceneId && !disabled
   const canEditSubject = !!sceneId && !disabled
 

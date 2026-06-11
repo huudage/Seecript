@@ -347,3 +347,84 @@ def test_rebuild_timeline_writes_plan_duration_seconds():
     expected = 5.0 + 6.0
     assert abs(plan.duration_seconds - expected) < 0.001, \
         f"_rebuild_timeline 必须把 plan.duration_seconds 同步到 sum(scenes)；期望 {expected}，实际 {plan.duration_seconds}"
+
+
+# ---------------------------------------------------------------------------
+# stage-61 user_edited sticky flag：用户原话『手动调整过的分镜无论如何视作已补齐』
+# ---------------------------------------------------------------------------
+
+def test_patch_scene_narration_sets_user_edited(client):
+    plan = _make_plan(f"plan-edited-narr-{int(time.time() * 1000)}")
+    _TEST_PLAN_IDS.append(plan.plan_id)
+    plan.main_track[0].needs_fill = True  # 模拟 build_plan 标了"待补"
+    plan_store.put(plan)
+
+    resp = client.patch(
+        f"/api/plan/{plan.plan_id}/scene/sc-0",
+        json={"narration": "用户改的口播"},
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    sc0 = next(s for s in body["main_track"] if s["scene_id"] == "sc-0")
+    assert sc0["user_edited"] is True, "PATCH /scene narration 必须翻 user_edited=True"
+    # needs_fill 不被这条接口动；前端按 user_edited 自行覆盖显示
+    assert sc0["needs_fill"] is True, "patch-scene 不动 needs_fill；user_edited 由前端覆盖"
+
+
+def test_patch_scene_theme_only_also_sets_user_edited(client):
+    """用户只改了 section.theme（没改 narration），整段所有 scene 也算人工已审。"""
+    plan = _make_plan(f"plan-edited-theme-{int(time.time() * 1000)}")
+    _TEST_PLAN_IDS.append(plan.plan_id)
+    plan_store.put(plan)
+
+    resp = client.patch(
+        f"/api/plan/{plan.plan_id}/scene/sc-0",
+        json={"theme": "新主题"},
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    sc0 = next(s for s in body["main_track"] if s["scene_id"] == "sc-0")
+    assert sc0["user_edited"] is True
+
+
+def test_swap_source_user_material_sets_user_edited(client):
+    project_id = f"proj-edited-{int(time.time() * 1000)}"
+    plan_id = f"plan-edited-swap-{int(time.time() * 1000)}"
+    _put_test_material(project_id, "mat-edited", duration=8.0)
+    plan = _make_plan_with_project(plan_id, project_id)
+    _TEST_PLAN_IDS.append(plan_id)
+    plan.main_track[0].needs_fill = True
+    plan_store.put(plan)
+
+    try:
+        resp = client.post(
+            f"/api/plan/{plan_id}/scene/sc-0/swap-source",
+            json={
+                "source": "user_material",
+                "material_id": "mat-edited",
+                "material_in_point": 1.0,
+                "material_out_point": 4.0,
+            },
+        )
+        assert resp.status_code == 200, resp.text
+        body = resp.json()
+        sc0 = next(s for s in body["main_track"] if s["scene_id"] == "sc-0")
+        assert sc0["user_edited"] is True, "swap-source 必须把 user_edited 翻到 True"
+        assert sc0["needs_fill"] is False, "swap-source 也清掉 needs_fill"
+    finally:
+        _drop_test_material(project_id)
+
+
+def test_patch_shot_fields_sets_user_edited(client):
+    plan = _make_plan(f"plan-edited-shot-{int(time.time() * 1000)}")
+    _TEST_PLAN_IDS.append(plan.plan_id)
+    plan_store.put(plan)
+
+    resp = client.patch(
+        f"/api/plan/{plan.plan_id}/scene/sc-0/shot-fields",
+        json={"subject": "改后主体"},
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    sc0 = next(s for s in body["main_track"] if s["scene_id"] == "sc-0")
+    assert sc0["user_edited"] is True
