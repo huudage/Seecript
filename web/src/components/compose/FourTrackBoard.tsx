@@ -913,7 +913,9 @@ export function FourTrackBoard({
               key={section.section_id}
               onClick={() => onSelectScene(firstScene, gap, section)}
               className={cn(
-                'absolute top-1 bottom-1 overflow-hidden rounded-md border-2 text-left text-[10px] text-white shadow-sm transition-all',
+                // stage-29 fix: 父层改 overflow-visible，让 ✏/▾ 按钮能溢出窄段不被裁；
+                // 缩略图/背景的裁剪丢给下面 absolute inset-0 的 overflow-hidden 层处理。
+                'absolute top-1 bottom-1 overflow-visible rounded-md border-2 text-left text-[10px] text-white shadow-sm transition-all',
                 getSectionMeta(section.role).bg,
                 sectionBorderById.get(section.section_id) ?? 'border-border',
                 selected
@@ -923,7 +925,7 @@ export function FourTrackBoard({
               style={{ left: `${left}%`, width: `${width}%` }}
               title={`${getSectionMeta(section.role).label} · ${section.theme}\n${section.content_description}\n（含 ${scenesInSec.length} 镜，✏ 编辑段、▾ 展开分镜逐镜编辑）`}
             >
-              <div className="absolute inset-0">
+              <div className="absolute inset-0 overflow-hidden rounded-md">
                 <SceneThumb scene={firstScene} thumbnailUrl={thumbUrl} textCardSpec={textCardSpec} />
                 <div className="pointer-events-none absolute inset-x-0 top-0 h-4 bg-gradient-to-b from-black/55 to-transparent" />
                 <div className="pointer-events-none absolute inset-x-0 bottom-0 h-6 bg-gradient-to-t from-black/65 to-transparent" />
@@ -952,8 +954,10 @@ export function FourTrackBoard({
               <div className="relative z-[1] flex h-full flex-col justify-between p-1">
                 {/* stage-60 fix: 角标行拆 3 段——role / 徽章组（可挤）/ 按钮组（永远 shrink-0）。
                     用户报障：单镜段的 fit% 徽章 + gap 徽章 + ✏ + ▾ 全在一行，窄段把 ▾ 挤出可视区
-                    导致无法进分镜编辑。徽章给 min-w-0 + overflow-hidden 让它先被挤掉，按钮永远在。 */}
-                <div className="flex items-center justify-between gap-1">
+                    导致无法进分镜编辑。徽章给 min-w-0 + overflow-hidden 让它先被挤掉，按钮永远在。
+                    stage-29 fix: 按钮组提到 absolute top-right，父层 overflow-visible 后再短的段
+                    都能露出 ▾ 给用户点。pr-7 给徽章腾出右侧 28px 别压住按钮。 */}
+                <div className="flex items-center justify-between gap-1 pr-7">
                   <span className="shrink-0 rounded bg-black/40 px-1 font-mono text-[9px] text-white">
                     {getSectionMeta(section.role).short}
                   </span>
@@ -997,56 +1001,57 @@ export function FourTrackBoard({
                       </span>
                     )}
                   </div>
-                  {/* 按钮组：永远 shrink-0，徽章再挤也不会把 ▾ 顶出可视区。
-                      stage-37 / stage-60：✏ 编辑段、▾ 展开看分镜——挂在角标行右侧。 */}
-                  <div className="flex shrink-0 items-center gap-1">
-                    {onEditSection && (
-                      <span
-                        role="button"
-                        tabIndex={0}
-                        onClick={(e) => {
-                          e.stopPropagation()
-                          onEditSection(section, firstScene)
-                        }}
-                        onKeyDown={(e) => {
-                          if (e.key === 'Enter' || e.key === ' ') {
-                            e.preventDefault()
-                            e.stopPropagation()
-                            onEditSection(section, firstScene)
-                          }
-                        }}
-                        title="编辑段（主题 / 描述）"
-                        className="inline-flex h-3 w-3 cursor-pointer items-center justify-center rounded bg-white/70 text-[9px] font-bold text-foreground hover:bg-white"
-                      >
-                        ✏
-                      </span>
-                    )}
-                    {onEditShot && (
-                      <span
-                        role="button"
-                        tabIndex={0}
-                        onClick={(e) => {
-                          e.stopPropagation()
-                          toggleExpand(section.section_id)
-                        }}
-                        onKeyDown={(e) => {
-                          if (e.key === 'Enter' || e.key === ' ') {
-                            e.preventDefault()
-                            e.stopPropagation()
-                            toggleExpand(section.section_id)
-                          }
-                        }}
-                        title={canExpand ? '展开看分镜（点击各分镜独立编辑）' : '展开本段进入分镜编辑（单镜段）'}
-                        className="inline-flex h-3 w-3 cursor-pointer items-center justify-center rounded bg-white/70 text-[9px] font-bold text-foreground hover:bg-white"
-                      >
-                        ▾
-                      </span>
-                    )}
-                  </div>
                 </div>
                 <div className="truncate rounded bg-black/40 px-1 text-[10px] font-semibold leading-tight text-white">
                   {section.theme || getSectionMeta(section.role).label}
                 </div>
+              </div>
+              {/* stage-29 fix: 按钮组绝对定位到右上角，挂在父层 overflow-visible 之上；
+                  即使段宽窄到几像素，▾ 也能溢出本段视觉边界但保持可点。z-[3] 高于段块内部
+                  渐变 (z-1) 和缩略图层，避免被相邻段挡住。 */}
+              <div className="absolute right-0.5 top-0.5 z-[3] flex shrink-0 items-center gap-0.5">
+                {onEditSection && (
+                  <span
+                    role="button"
+                    tabIndex={0}
+                    onClick={(e) => {
+                      e.stopPropagation()
+                      onEditSection(section, firstScene)
+                    }}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter' || e.key === ' ') {
+                        e.preventDefault()
+                        e.stopPropagation()
+                        onEditSection(section, firstScene)
+                      }
+                    }}
+                    title="编辑段（主题 / 描述 / 补素材）"
+                    className="inline-flex h-3 w-3 cursor-pointer items-center justify-center rounded bg-white/90 text-[9px] font-bold text-foreground shadow-sm hover:bg-white"
+                  >
+                    ✏
+                  </span>
+                )}
+                {onEditShot && (
+                  <span
+                    role="button"
+                    tabIndex={0}
+                    onClick={(e) => {
+                      e.stopPropagation()
+                      toggleExpand(section.section_id)
+                    }}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter' || e.key === ' ') {
+                        e.preventDefault()
+                        e.stopPropagation()
+                        toggleExpand(section.section_id)
+                      }
+                    }}
+                    title={canExpand ? '展开看分镜（每镜独立编辑）' : '展开本段进入分镜编辑（单镜段）'}
+                    className="inline-flex h-3 w-3 cursor-pointer items-center justify-center rounded bg-white/90 text-[9px] font-bold text-foreground shadow-sm hover:bg-white"
+                  >
+                    ▾
+                  </span>
+                )}
               </div>
             </button>
           )

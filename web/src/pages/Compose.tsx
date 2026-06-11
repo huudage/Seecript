@@ -2940,7 +2940,17 @@ function UploadDropzone({
  * 「我现在只让你对真实素材做切片，不要做其他处理」。
  * 第一次进 step2 弹出，用户点"知道了"后写 localStorage，之后不再出现。
  */
-const STEP2_PLACEHOLDER_HINT_KEY = 'seecript.step2.placeholder.dismissed.v1'
+/**
+ * stage-76 提示：换 user_material 自动匹配后用户希望「占位 + 手动挑切片」流程。
+ * 「我现在只让你对真实素材做切片，不要做其他处理」。
+ * 第一次进 step2 弹出，用户点"知道了"后写 localStorage，之后不再出现。
+ *
+ * stage-29 (2026-06-12) 重写：在原"占位需手挑"基础上，把【片段 vs 分镜】的层级关系、
+ * 如何展开分镜、如何对片段做补全 vs 对分镜做编辑全部讲清楚——避免用户分不清
+ * 片段卡上的 ✏ 是改主题、▾ 是展开、外圈点击是选中片段。bump key v1→v2 让老用户
+ * 重新见到这版更完整的说明。
+ */
+const STEP2_PLACEHOLDER_HINT_KEY = 'seecript.step2.placeholder.dismissed.v2'
 
 function Step2PlaceholderHint() {
   const [dismissed, setDismissed] = useState<boolean>(() => {
@@ -2954,11 +2964,31 @@ function Step2PlaceholderHint() {
   return (
     <div className="flex items-start gap-3 rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-xs text-amber-900 dark:border-amber-700 dark:bg-amber-900/30 dark:text-amber-100">
       <span className="select-none text-base leading-none">💡</span>
-      <div className="flex-1 leading-relaxed">
-        <p className="font-medium">真实素材已解析，请在分镜上手动挑选切片</p>
-        <p className="mt-0.5 text-amber-900/80 dark:text-amber-100/80">
-          内容轨当前显示的是按样例规划的占位卡片；点击任一分镜卡 →「换源」即可挑选你的素材切片，
-          所选切片的时长会直接覆盖该分镜（其它分镜自动顺移）。
+      <div className="flex-1 leading-relaxed space-y-1.5">
+        <p className="font-medium">片段（Section） vs 分镜（Shot）——两层结构怎么动</p>
+        <p className="text-amber-900/85 dark:text-amber-100/85">
+          内容轨上的每个色块是一个 <b>片段</b>（开场 / 痛点 / 解决方案…），片段内可能含 1 或多个 <b>分镜</b>。
+          当前所有「真实素材类」分镜还是占位卡——按下面的方式手动落地：
+        </p>
+        <ul className="list-disc pl-4 space-y-0.5 text-amber-900/85 dark:text-amber-100/85">
+          <li>
+            <b>选片段做补全</b>：点片段卡本体（除按钮以外的区域）→ 下方
+            <span className="mx-0.5 rounded bg-amber-200/60 px-1 font-mono dark:bg-amber-700/40">补全工作台</span>
+            出现「挑素材 / 字卡画面 / AI 生图 / AI 视频」四种入口，针对整段做一次补全。
+          </li>
+          <li>
+            <b>编辑片段属性</b>：片段卡右上 <span className="rounded bg-white/80 px-1 font-mono text-foreground">✏</span>
+            ——改段主题 / 描述 / 时长。
+          </li>
+          <li>
+            <b>展开看分镜</b>：片段卡右上 <span className="rounded bg-white/80 px-1 font-mono text-foreground">▾</span>
+            ——把片段拆成 N 个分镜小块。再点其中任一分镜小块 → 进
+            <span className="mx-0.5 rounded bg-amber-200/60 px-1 dark:bg-amber-700/40">单镜编辑弹窗</span>
+            （改 主体/画面/口播/时长 + 单镜换源 + 手动裁剪视频切片）。
+          </li>
+        </ul>
+        <p className="text-amber-900/70 dark:text-amber-100/70">
+          手动裁剪视频时，所选区间会直接覆盖该分镜的时长，后续分镜自动顺移、整轨总长跟着伸缩。
         </p>
       </div>
       <button
