@@ -68,8 +68,6 @@ interface Props {
   onSynthesizeAll?: () => void | Promise<void>
   /** 删除某段 TTS 音频。 */
   onClearVoice?: (sceneId: string) => void | Promise<void>
-  /** 触发"一键包装推荐"。 */
-  onRecommendPackaging?: () => void | Promise<void>
   /** 删除包装项——走 DELETE /packaging/items/{plan_id}/{item_id}。 */
   onDeletePackagingItem?: (itemId: string) => void | Promise<void>
   /** 智能添加包装组件：父级负责 sceneId+kind 选择 + recommend-for-scene → place 链路。 */
@@ -128,8 +126,6 @@ interface Props {
   /** 拉伸包装项时长（剪映式拖手柄）：传 newStart 和 newEnd（秒），父级走 update_packaging_item_time op 落盘。
       也涵盖"中部 move 拖动"——start/end 同步平移，只走这一条 op，不需要单独的 move op。 */
   onResizePackagingItem?: (itemId: string, newStart: number, newEnd: number) => void | Promise<void>
-  /** 打开"包装方案"侧抽屉——配合 actions 区"打开方案 ⤢"按钮。 */
-  onOpenPackagingDrawer?: () => void
   /** 点击包装组件 → 父级唤起编辑弹窗（PR-I.2：替代拖动平移与重生按钮）。 */
   onEditPackagingItem?: (item: PackagingItem) => void
   /** 点击分镜间的转场节点 → 唤起转场样式选择弹窗。 */
@@ -328,9 +324,7 @@ export function FourTrackBoard({
   onSynthesizeAll,
   onClearVoice,
   onDeletePackagingItem,
-  onRecommendPackaging,
   onRecommendPackagingForScene,
-  onOpenPackagingDrawer,
   onPickBgm,
   onBgmAnchorChange,
   onClearBgm,
@@ -1453,28 +1447,6 @@ export function FourTrackBoard({
         actions={
           !readOnly ? (
             <div className="flex items-center gap-1.5">
-              {onOpenPackagingDrawer && (
-                <button
-                  type="button"
-                  onClick={onOpenPackagingDrawer}
-                  disabled={busy}
-                  title="打开 AI 包装方案抽屉：5 维度（字幕 / 标题条 / 贴纸 / 转场 / 封面）候选 + 自定义组合后批量落盘"
-                  className="rounded border border-primary/40 bg-primary/10 px-2 py-0.5 text-[11px] font-medium text-primary hover:bg-primary/20 disabled:cursor-not-allowed disabled:opacity-50"
-                >
-                  ✨ AI 包装方案
-                </button>
-              )}
-              {onRecommendPackaging && (
-                <button
-                  type="button"
-                  onClick={() => void onRecommendPackaging()}
-                  disabled={busy}
-                  title="一键重新生成：用首候选直接覆写当前包装轨（清空旧字幕 / 标题 / 贴纸 / 封面 / 转场再批量落盘）"
-                  className="rounded border border-border bg-background/70 px-2 py-0.5 text-[11px] hover:bg-secondary/40 disabled:cursor-not-allowed disabled:opacity-50"
-                >
-                  {busy ? '生成中…' : '↻ 重新生成'}
-                </button>
-              )}
               {onRecommendPackagingForScene && (
                 <PackagingSmartAddButton
                   scenes={scenes}
@@ -1489,7 +1461,7 @@ export function FourTrackBoard({
       >
         {nonSubtitleItems.length === 0 ? (
           <div className="absolute inset-1 flex items-center justify-center rounded-md border border-dashed border-border bg-background/30 text-center text-[10px] text-muted-foreground">
-            还没生成包装项——点右上「✨ AI 包装方案」批量生成、「↻ 重新生成」一键覆写、或「✨ 添加组件」按段单加
+            还没生成包装项——点右上「✨ 添加组件」按段落单加一个
           </div>
         ) : (
           <>

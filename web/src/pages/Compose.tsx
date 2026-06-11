@@ -20,7 +20,6 @@ import { FillRerankPanel } from '@/components/compose/FillRerankPanel'
 import { FourTrackBoard } from '@/components/compose/FourTrackBoard'
 import { MaterialGrid } from '@/components/compose/MaterialGrid'
 import { PackagingItemEditDialog } from '@/components/compose/PackagingItemEditDialog'
-import { PackagingPanel } from '@/components/compose/PackagingPanel'
 import { ReferencePicker } from '@/components/compose/ReferencePicker'
 import { RerankStrategyPicker } from '@/components/compose/RerankStrategyPicker'
 import { SceneEditPanel } from '@/components/compose/SceneEditPanel'
@@ -47,9 +46,6 @@ import type {
   Material,
   MaterialUploadResponse,
   PackagingItem,
-  PackagingRecommendationV2,
-  PackagingRecommendRequest,
-  PackagingSelection,
   Plan,
   PlanBuildRequest,
   RenderDonePayload,
@@ -258,7 +254,7 @@ export default function ComposePage() {
   const [clarifiedOnce, setClarifiedOnce] = useState(false)
   // 「下一步」三阶段：补缺口 → 生成包装 → 跳渲染
   const [finalizing, setFinalizing] = useState<
-    'idle' | 'filling-gaps' | 'packaging' | 'done'
+    'idle' | 'filling-gaps' | 'done'
   >('idle')
   // 四轨板上的轨道动作 busy 锁（区别于 filling，避免与补全面板状态混淆）
   const [trackBusy, setTrackBusy] = useState(false)
@@ -351,9 +347,6 @@ export default function ComposePage() {
   // analyzing=true 期间显示 spinner；analyzing 结束 + planJustGenerated=true 显示预览 + 双按钮。
   // 用户点「进入第 2 步」/「重新澄清」其一才关闭并继续后续动作。
   const [planJustGenerated, setPlanJustGenerated] = useState(false)
-
-  // step 3 包装方案抽屉：从右侧滑出 60vw，里面是完整 V2 PackagingPanel
-  const [packagingDrawerOpen, setPackagingDrawerOpen] = useState(false)
 
   // 三步工作流（视频工坊拆分）：
   //   1 = 选参考样例 + 主题 + 设置
@@ -627,7 +620,7 @@ export default function ComposePage() {
     return plan.main_track[0].scene_id
   })()
 
-  // 包装段选中：选中包装时优先渲染 PackagingPanel，scene 面板让位（避免上下文混淆）。
+  // 包装段选中：包装项被点中时取出当前 item，让右侧编辑面板让位给 PackagingItemEditDialog。
   const selectedPackagingItem = useMemo(
     () =>
       selectedPackagingItemId
@@ -1166,49 +1159,12 @@ export default function ComposePage() {
     [plan, setPlanAndPush],
   )
 
-  const handleRecommendPackaging = useCallback(async () => {
-    if (!plan) return
-    setTrackBusy(true)
-    setError(null)
-    try {
-      // V2：先 /recommend 拿 5 维度候选，立刻用首候选组装 PackagingSelection 调 /apply。
-      // 这是「快速一键包装」的兜底路径；要精细挑就用 PackagingPanel 自己点。
-      const recBody: PackagingRecommendRequest = { plan_id: plan.plan_id }
-      const rec = await api.post<PackagingRecommendationV2>('/packaging/recommend', recBody)
-      const transition_selections: Record<string, TransitionStyle> = {}
-      for (const b of rec.transition_bundles) {
-        if (b.options[0]) transition_selections[b.candidate_id] = b.options[0].style
-      }
-      const selection: PackagingSelection = {
-        plan_id: plan.plan_id,
-        subtitle_style_id: rec.subtitle_styles[0]?.candidate_id ?? null,
-        title_bar_ids: rec.title_bars.slice(0, 1).map((c) => c.candidate_id),
-        sticker_ids: rec.stickers.slice(0, 1).map((c) => c.candidate_id),
-        transition_selections,
-        cover_id: rec.covers[0]?.candidate_id ?? null,
-        recommendation: rec,
-      }
-      const fresh = await api.post<Plan>('/packaging/apply', selection)
-      setPlanAndPush(fresh)
-    } catch (err) {
-      setError(err instanceof Error ? err.message : '包装推荐失败')
-    } finally {
-      setTrackBusy(false)
-    }
-  }, [plan, setPlanAndPush])
-
   /**
-   * 进入 step3 时的一次性筹备：所有耗时操作必须在切换到 step3 之前跑完，
-   * 否则用户进了 step3 还要干等 trackBusy 解锁才能操作（用户报障：转场生成卡很久）。
+   * 进入 step3 时的一次性筹备：先重写口播 → 若开了配音则一键 TTS 全片 →
+   * 全部跑完才 setStep3Unlocked(true) + setActiveStep(3) + 释放 trackBusy。
    *
-   * 流程：
-   * 1. 综合段长 + 内容重写每段口播（关键路径，失败不进 step3）
-   * 2. 若开了配音，自动一键 TTS 全片（失败只 setError 不阻塞）
-   * 3. 自动转场推荐 + apply（失败只 setError 不阻塞）
-   * 4. 全部跑完才 setStep3Unlocked(true) + setActiveStep(3) + 释放 trackBusy
-   *
-   * stage-58：原 2)/3) 串行（TTS ~12s，packaging ~10s）。两条独立子任务，并发可省一半时间。
-   * 用 Promise.allSettled 把 TTS 和 packaging recommend 同时发起，最后 await 完，再串行 apply 转场。
+   * stage-63 起：包装项一律由用户手动「✨ 添加组件」单加，不再做自动批量包装/转场推荐。
+   * 用户原话：『step3的一键生成包装轨和重新生成包装轨的功能取消吧，乱七八糟的』『只支持添加组件生成』。
    */
   const handleEnterStep3 = useCallback(async () => {
     if (!plan) return
@@ -1221,79 +1177,24 @@ export default function ComposePage() {
       setPlanAndPush(ren.plan)
       landedOk = true
 
-      // 2) & 3) 并发——TTS 与 packaging recommend 互不依赖。
-      //    TTS 改回写 plan.voiceover_url（后端 plan_store.put）；
-      //    recommend 只读 plan 不写；apply 写转场字段。
-      //    所以可以 Promise.all 跑 [TTS, recommend]，然后 refetchPlan + apply。
-      const ttsPromise: Promise<{ ok: boolean; failures: number; err?: unknown }> =
-        ren.plan.settings.voiceover_enabled && ren.updated_scene_ids.length > 0
-          ? synthesizeAll(plan.plan_id)
-              .then((tts) => ({ ok: true, failures: tts.failures.length }))
-              .catch((err) => ({ ok: false, failures: 0, err }))
-          : Promise.resolve({ ok: true, failures: 0 })
-
-      const recPromise: Promise<PackagingRecommendationV2 | null> =
-        plan.main_track.length > 1
-          ? api
-              .post<PackagingRecommendationV2>('/packaging/recommend', {
-                plan_id: plan.plan_id,
-              } as PackagingRecommendRequest)
-              .catch((err) => {
-                console.warn('[step3] 自动转场推荐失败', err)
-                return null
-              })
-          : Promise.resolve(null)
-
-      const [ttsRes, rec] = await Promise.all([ttsPromise, recPromise])
-
-      if (!ttsRes.ok) {
-        setError(
-          ttsRes.err instanceof Error ? `配音失败：${ttsRes.err.message}` : '配音失败',
-        )
-      } else if (ttsRes.failures > 0) {
-        setError(`部分段落配音失败（${ttsRes.failures} 段）；可在口播轨手动重试`)
-      }
-
-      // 应用转场推荐：必须在 TTS 写完 plan 之后再 refetch，避免 apply 拿到的是过期 plan
-      if (rec) {
+      // 2) 若开了配音且有更新口播，自动一键 TTS 全片（失败只 setError 不阻塞）
+      if (ren.plan.settings.voiceover_enabled && ren.updated_scene_ids.length > 0) {
         try {
-          const transition_selections: Record<string, TransitionStyle> = {}
-          for (const b of rec.transition_bundles) {
-            // stage-58：之前默认选 options[0]，而 options[0] 可能是兜底的 hard_cut。
-            // 改成优先选第一个非 hard_cut 选项；没有则保留原 options[0]——
-            // 让规则兜底也能给出有视觉感的转场，而不是整片硬切。
-            const pick = b.options.find((o) => o.style !== 'hard_cut') ?? b.options[0]
-            if (pick) transition_selections[b.candidate_id] = pick.style
+          const tts = await synthesizeAll(plan.plan_id)
+          if (tts.failures.length > 0) {
+            setError(`部分段落配音失败（${tts.failures.length} 段）；可在口播轨手动重试`)
           }
-          if (Object.keys(transition_selections).length > 0) {
-            const selection: PackagingSelection = {
-              plan_id: plan.plan_id,
-              subtitle_style_id: null,
-              title_bar_ids: [],
-              sticker_ids: [],
-              transition_selections,
-              cover_id: null,
-              recommendation: rec,
-            }
-            const fresh = await api.post<Plan>('/packaging/apply', selection)
-            setPlanAndPush(fresh)
-          } else if (ttsRes.ok) {
-            // TTS 跑了但没推荐转场——也要 refetch 让 voiceover_url 落地
-            await refetchPlan(plan.plan_id)
-          }
-        } catch (transErr) {
-          console.warn('[step3] 自动转场应用失败，可手动在内容轨缝隙切换样式', transErr)
-          if (ttsRes.ok) await refetchPlan(plan.plan_id)
+          // 把 TTS 写入的 voiceover_url 拉回前端
+          await refetchPlan(plan.plan_id)
+        } catch (err) {
+          setError(err instanceof Error ? `配音失败：${err.message}` : '配音失败')
         }
-      } else if (ttsRes.ok && ren.plan.settings.voiceover_enabled && ren.updated_scene_ids.length > 0) {
-        // 没要做转场（单段）但要 refetch 拿 TTS 写入的 voiceover_url
-        await refetchPlan(plan.plan_id)
       }
     } catch (err) {
       setError(err instanceof Error ? err.message : '进入 step3 准备失败')
     } finally {
       // 所有筹备跑完（成功/失败都算）→ 才切换并释放 busy，
-      // 用户落到 step3 的瞬间转场徽章、口播条、字幕都已就绪。
+      // 用户落到 step3 的瞬间口播条、字幕都已就绪。
       if (landedOk) {
         setStep3Unlocked(true)
         setActiveStep(3)
@@ -1523,29 +1424,7 @@ export default function ComposePage() {
         activePlanId = rebuilt.plan_id
       }
 
-      // 阶段 2 · 包装生成：V2 /recommend 拿 5 维度候选，立即用首候选组装 selection /apply 落盘。
-      setFinalizing('packaging')
-      const recBody: PackagingRecommendRequest = { plan_id: activePlanId }
-      const rec = await api.post<PackagingRecommendationV2>('/packaging/recommend', recBody)
-      const transition_selections: Record<string, TransitionStyle> = {}
-      for (const b of rec.transition_bundles) {
-        if (b.options[0]) transition_selections[b.candidate_id] = b.options[0].style
-      }
-      const selection: PackagingSelection = {
-        plan_id: activePlanId,
-        subtitle_style_id: rec.subtitle_styles[0]?.candidate_id ?? null,
-        title_bar_ids: rec.title_bars.slice(0, 1).map((c) => c.candidate_id),
-        sticker_ids: rec.stickers.slice(0, 1).map((c) => c.candidate_id),
-        transition_selections,
-        cover_id: rec.covers[0]?.candidate_id ?? null,
-        recommendation: rec,
-      }
-      try {
-        const fresh = await api.post<Plan>('/packaging/apply', selection)
-        setPlanAndPush(fresh)
-      } catch {
-        /* apply 失败不阻塞渲染：后端按 plan_id 仍有上次落盘的 packaging_track */
-      }
+      // 阶段 2 · 包装项不再自动批量生成（stage-63 起，用户手动单加）。直接进 commit。
 
       // 阶段 3 · commit compose 步骤快照（顶部 nav 标 saved + current_step 推进）
       try {
@@ -1870,7 +1749,6 @@ export default function ComposePage() {
                   onSynthesizeScene={async () => {}}
                   onSynthesizeAll={async () => {}}
                   onClearVoice={async () => {}}
-                  onRecommendPackaging={async () => {}}
                   onPickBgm={() => {}}
                   onBgmAnchorChange={async () => {}}
                   onClearBgm={async () => {}}
@@ -1972,7 +1850,6 @@ export default function ComposePage() {
                 onSynthesizeScene={handleSynthesizeScene}
                 onSynthesizeAll={handleSynthesizeAll}
                 onClearVoice={handleClearVoice}
-                onRecommendPackaging={handleRecommendPackaging}
                 onDeletePackagingItem={handleDeletePackagingItem}
                 onRecommendPackagingForScene={handleRecommendPackagingForScene}
                 onPickBgm={() => setBgmPickerOpen(true)}
@@ -1988,7 +1865,6 @@ export default function ComposePage() {
                 playheadSeconds={playheadSeconds}
                 onSeek={seekPlayer}
                 onResizePackagingItem={handleResizePackagingItem}
-                onOpenPackagingDrawer={() => setPackagingDrawerOpen(true)}
                 onEditPackagingItem={(item) => {
                   setEditingPackagingItem(item)
                   setSelectedPackagingItemId(item.item_id)
@@ -2384,7 +2260,6 @@ export default function ComposePage() {
                 onSynthesizeScene={handleSynthesizeScene}
                 onSynthesizeAll={handleSynthesizeAll}
                 onClearVoice={handleClearVoice}
-                onRecommendPackaging={handleRecommendPackaging}
                 onDeletePackagingItem={handleDeletePackagingItem}
                 onRecommendPackagingForScene={handleRecommendPackagingForScene}
                 onPickBgm={() => setBgmPickerOpen(true)}
@@ -2399,7 +2274,6 @@ export default function ComposePage() {
                 playheadSeconds={playheadSeconds}
                 onSeek={seekPlayer}
                 onResizePackagingItem={handleResizePackagingItem}
-                onOpenPackagingDrawer={() => setPackagingDrawerOpen(true)}
                 onEditPackagingItem={(item) => {
                   setEditingPackagingItem(item)
                   setSelectedPackagingItemId(item.item_id)
@@ -2436,31 +2310,27 @@ export default function ComposePage() {
                 analyzing ||
                 anyGapBusy ||
                 isRendering ||
-                finalizing === 'filling-gaps' ||
-                finalizing === 'packaging'
+                finalizing === 'filling-gaps'
               }
-              title="先用文案补全所有未补缺口，再生成包装轨（转场 + 封面），最后直接渲染成片"
+              title="先用文案补全所有未补缺口，再直接渲染成片"
               className={cn(
                 'rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90',
                 (analyzing ||
                   anyGapBusy ||
                   isRendering ||
-                  finalizing === 'filling-gaps' ||
-                  finalizing === 'packaging') &&
+                  finalizing === 'filling-gaps') &&
                   'cursor-not-allowed opacity-60',
               )}
             >
               {finalizing === 'filling-gaps' && '补全剩余缺口中…'}
-              {finalizing === 'packaging' && '生成包装轨中…'}
               {isRendering && `渲染中 · ${renderPercent}%`}
               {!isRendering &&
                 finalizing !== 'filling-gaps' &&
-                finalizing !== 'packaging' &&
                 (renderDone ? '重新生成视频' : '一键生成视频')}
             </button>
             <button
               onClick={() => setActiveStep(2)}
-              disabled={finalizing === 'filling-gaps' || finalizing === 'packaging'}
+              disabled={finalizing === 'filling-gaps'}
               className="rounded-md border border-border bg-card px-3 py-2 text-xs font-medium hover:bg-secondary disabled:opacity-60"
             >
               ← 返回第 2 步调整内容
@@ -2469,7 +2339,7 @@ export default function ComposePage() {
               <span className="text-[11px] text-muted-foreground">
                 {pendingGapsCount > 0
                   ? `还有 ${pendingGapsCount} 段缺口未补，请回到第 2 步逐段补齐再渲染`
-                  : '所有缺口已补，将直接生成包装并渲染成片'}
+                  : '所有缺口已补，将直接渲染成片'}
               </span>
             )}
           </div>
@@ -2647,36 +2517,6 @@ export default function ComposePage() {
                 plan={plan}
                 gaps={gaps}
               />
-            </div>
-          </div>
-        </div>
-      )}
-      {/* ============ 包装方案抽屉：step 3 顶部按钮触发；从右侧滑出 60vw，渲染完整 V2 PackagingPanel ============ */}
-      {packagingDrawerOpen && plan && (
-        <div
-          role="dialog"
-          aria-modal="true"
-          className="fixed inset-0 z-50 flex"
-        >
-          <div
-            onClick={() => setPackagingDrawerOpen(false)}
-            className="flex-1 bg-black/50"
-            aria-label="关闭遮罩"
-          />
-          <div className="flex h-full w-full max-w-[60vw] flex-col overflow-hidden border-l border-border bg-background shadow-2xl">
-            <div className="flex items-center justify-between border-b border-border px-4 py-2">
-              <h3 className="text-sm font-semibold">内容包装方案 · 5 维度多候选</h3>
-              <button
-                type="button"
-                onClick={() => setPackagingDrawerOpen(false)}
-                className="rounded text-muted-foreground hover:text-foreground"
-                aria-label="关闭"
-              >
-                ✕
-              </button>
-            </div>
-            <div className="flex-1 overflow-auto p-3">
-              <PackagingPanel plan={plan} onPlanUpdated={setPlanAndPush} />
             </div>
           </div>
         </div>
