@@ -607,13 +607,11 @@ async def run_pipeline(job_id: str, plan: Plan) -> RenderResult:
             seg_dst = segments_dir / f"scene-{i:02d}.mp4"
             trimmed = _trim_segment(src, sc, seg_dst, canvas_w, canvas_h)
         if trimmed is not None:
-            # 切片完成后再做一次时长对齐：素材实际时长不一定等于 scene.duration
-            # （out_point 缺失 / 浮点误差 / 镜头切片选段比 scene 短）。允许变速。
-            aligned = await _align_to_scene_duration(
-                trimmed, sc, segments_dir, i,
-                label="user", allow_speed_change=True,
-            )
-            inputs.append(aligned)
+            # 用户底线（2026-06-11）："裁哪段如实播放哪一段"——
+            # _trim_segment 已经按 (in_point, out_point) 精确切出窗口；
+            # 上游 build_plan / swap-source / NL 编辑均强制 scene.duration == out-in，
+            # 所以这里不再做 slow-mo / freeze / head-trim 凑长度——避免用户感知"片段复读"。
+            inputs.append(trimmed)
             continue
         # 解析失败或切片失败：落文字卡
         reason = "素材未解析" if src is None else "切片失败"

@@ -900,6 +900,13 @@ async def build_plan(req: PlanBuildRequest) -> Plan:
                             in_pt = shot_idx * slice_len
                             out_pt = min(in_pt + shot_dur, float(mat.duration_seconds))
                             needs_fill = True
+                    # 用户底线（2026-06-11）："裁哪段如实播放哪一段"——
+                    # 视频素材：scene.duration = (out_pt - in_pt)，禁止渲染端凑时长。
+                    # 图片素材：out_pt is None，duration 保留 shot_dur（图片本身无窗口）。
+                    if not is_image_match and out_pt is not None:
+                        sub_duration = round(max(0.5, out_pt - in_pt), 3)
+                    else:
+                        sub_duration = shot_dur
                     main_track.append(Scene(
                         scene_id=sub_id,
                         section=sec.role,  # type: ignore[arg-type]
@@ -909,7 +916,7 @@ async def build_plan(req: PlanBuildRequest) -> Plan:
                         source="user_material",  # type: ignore[arg-type]
                         source_ref=chosen_mat_id,
                         start=timeline_cursor,
-                        duration=shot_dur,
+                        duration=sub_duration,
                         in_point=in_pt,
                         out_point=out_pt,
                         narration=shot_narration,
@@ -949,7 +956,9 @@ async def build_plan(req: PlanBuildRequest) -> Plan:
                         text_card_spec=None,
                         animation_spec=None,
                     ))
-                timeline_cursor += shot_dur
+                # 推进 cursor 用刚 append 的 scene.duration——user_material 裁剪可能 < shot_dur，
+                # 用 shot_dur 会留缝；text_card / aigc 分支 duration == shot_dur，行为不变。
+                timeline_cursor += main_track[-1].duration
             continue
 
         in_point = 0.0
@@ -963,17 +972,25 @@ async def build_plan(req: PlanBuildRequest) -> Plan:
             out_point = actual_duration
             if effective_project_id:
                 mat = material_store.get(effective_project_id, source_ref)
+                if mat is not None:
+                    # 整片素材本身比目标时长短：scene.duration 跟着缩到素材实际时长，
+                    # 不再让 render pipeline 用 freeze/slow-mo 凑——用户底线"裁哪段播哪段"。
+                    mat_dur = float(mat.duration_seconds or 0.0)
+                    if mat_dur > 0 and mat_dur < target_duration:
+                        actual_duration = round(mat_dur, 3)
+                        out_point = actual_duration
                 if mat is not None and mat.shots:
                     chosen = _pick_shot_for_section(mat, sec)
                     if chosen is not None:
-                        # 镜头本身长度可能不够目标时长——取镜头起点为 in_point，
-                        # 终点取 min(镜头终点, in_point + target_duration)，
-                        # 短了由 render pipeline 的 _align_to_scene_duration（slowmo/freeze）补齐。
+                        # 用户底线（2026-06-11）："裁哪段如实播放哪一段"——
+                        # scene.duration 必须永远 = out_point - in_point，禁止 slow-mo / freeze 凑时长。
+                        # 镜头若比 target_duration 短，就让 scene.duration 跟着缩短；
+                        # 段总时长由 _rebuild_timeline 顺延，整片 plan.duration_seconds 自动收缩。
                         in_point = float(chosen.start)
                         shot_end = float(chosen.end)
                         cut_end = min(shot_end, in_point + target_duration)
                         out_point = cut_end
-                        actual_duration = target_duration  # 保持 timeline 槽位长度不变
+                        actual_duration = round(cut_end - in_point, 3)
                         log.info(
                             "[plan] sec=%s role=%s 选中 shot#%d (%.2fs-%.2fs role=%s ad=%.2f)",
                             sec.section_id, sec.role, chosen.index,
@@ -1820,12 +1837,17 @@ async def swap_scene_source(
                 mshot = mat.shots[0]
             in_pt = float(mshot.start)
             out_pt = min(float(mshot.end), in_pt + shot_dur)
-            new_dur = scene.duration
+            # scene.duration 严格 = out_pt - in_pt，禁止渲染端 freeze/slow-mo 凑长度。
+            new_dur = round(max(0.5, out_pt - in_pt), 3)
         # 优先级 3：素材没切镜，按 scene.duration 从头取
         else:
             in_pt = 0.0
-            out_pt = shot_dur
-            new_dur = scene.duration
+            mat_dur = float(mat.duration_seconds or 0.0)
+            if mat_dur > 0:
+                out_pt = min(shot_dur, mat_dur)
+            else:
+                out_pt = shot_dur
+            new_dur = round(max(0.5, out_pt - in_pt), 3)
         new_scene = scene.model_copy(update={
             "source": "user_material",
             "source_ref": mat.material_id,
