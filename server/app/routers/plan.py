@@ -1031,53 +1031,70 @@ async def build_plan(req: PlanBuildRequest) -> Plan:
         main_track.append(scene)
         timeline_cursor += actual_duration
 
-    # stage-72：跨 section 去重 user_material 窗口。
+    # stage-72/74：跨 section 去重 user_material 窗口（含 partial overlap）。
     # 现象：shot_matcher 给不同 section 的 shot 返回同一个 matched_material_shot_index
-    # → build 出来两段 Scene 引用同 (material_id, in_point, out_point) → 同一段源视频
-    # （含 burned-in 字幕/音频）被连播两次。
-    # 修复：扫描所有 user_material Scene，第二次及之后撞窗口的就向后 shift in_point
-    # 直到找到未占用窗口；若素材太短无法 shift，保留窗口但标 needs_fill=True 让
-    # 前端段卡显示待修补，并由用户在 step2 手动 swap-source / 裁剪。
+    # → build 出来两段 Scene 引用同 material；窗口可能完全相同（stage-72 已修），
+    # 也可能 partial overlap（同 material 但 [0,2.19] 与 [0,2.63]——两段都包含"腌
+    # 入味了"那几个音节，用户感知是"音画都重复了"）。
+    # 修复：seen 用 list[(in,out)] 而非精确点；每个后续段 shift in_point 直到与所有
+    # seen 区间无重叠；找不到位置就标 needs_fill。
+    # 重叠判定：a 与 b 重叠 iff max(a_in,b_in) < min(a_out,b_out) - 0.05s
+    # （允许 50ms 之内的瞬时碰边作为"相邻不算重叠"）。
     if effective_project_id:
-        seen_windows: dict[tuple[str, int, int], str] = {}
+        seen_intervals: dict[str, list[tuple[float, float, str]]] = {}
+        OVERLAP_TOL = 0.05
+
+        def _overlaps(a_in: float, a_out: float, intervals: list[tuple[float, float, str]]) -> str | None:
+            for b_in, b_out, b_scene in intervals:
+                if max(a_in, b_in) < min(a_out, b_out) - OVERLAP_TOL:
+                    return b_scene
+            return None
+
         for idx, sc in enumerate(main_track):
             if sc.source != "user_material" or sc.out_point is None or not sc.source_ref:
                 continue
-            key = (sc.source_ref, round(sc.in_point * 100), round(sc.out_point * 100))
-            if key not in seen_windows:
-                seen_windows[key] = sc.scene_id
+            intervals = seen_intervals.setdefault(sc.source_ref, [])
+            hit = _overlaps(sc.in_point, sc.out_point, intervals)
+            if hit is None:
+                intervals.append((sc.in_point, sc.out_point, sc.scene_id))
                 continue
             mat = material_store.get(effective_project_id, sc.source_ref)
             mat_dur = float(mat.duration_seconds or 0.0) if mat is not None else 0.0
             win_len = float(sc.out_point - sc.in_point)
-            if mat_dur <= 0 or win_len <= 0 or mat_dur <= win_len:
-                # 素材太短或没有时长信息 → 没法 shift，标 needs_fill 让前端提醒
+            if mat_dur <= 0 or win_len <= 0 or mat_dur <= win_len + OVERLAP_TOL:
+                # 素材太短或没有时长 → 没法挪，标 needs_fill 让前端提醒
                 main_track[idx] = sc.model_copy(update={"needs_fill": True})
                 continue
             shifted = False
-            for trial in range(1, 8):
-                trial_in = sc.in_point + trial * win_len
-                if trial_in + win_len > mat_dur:
-                    trial_in = max(0.0, mat_dur - win_len)
-                trial_out = min(trial_in + win_len, mat_dur)
-                trial_key = (
-                    sc.source_ref,
-                    round(trial_in * 100),
-                    round(trial_out * 100),
-                )
-                if trial_key in seen_windows:
-                    if trial_in <= 0 or trial_in + win_len >= mat_dur:
-                        break
+            # 跳步：先按 win_len 跳，找不到再用 0.5s 细步扫一遍兜底
+            trial_offsets: list[float] = []
+            step_coarse = max(win_len * 0.5, 0.5)
+            t = step_coarse
+            while t < mat_dur:
+                trial_offsets.append(t)
+                t += step_coarse
+            trial_offsets.append(max(0.0, mat_dur - win_len))  # 尾段兜底
+            seen_offsets: set[int] = set()
+            for offset in trial_offsets:
+                trial_in = round(min(max(0.0, offset), max(0.0, mat_dur - win_len)), 3)
+                key = int(trial_in * 1000)
+                if key in seen_offsets:
+                    continue
+                seen_offsets.add(key)
+                trial_out = round(min(trial_in + win_len, mat_dur), 3)
+                if trial_out - trial_in < 0.5:
+                    continue
+                if _overlaps(trial_in, trial_out, intervals) is not None:
                     continue
                 main_track[idx] = sc.model_copy(update={
-                    "in_point": round(trial_in, 3),
-                    "out_point": round(trial_out, 3),
+                    "in_point": trial_in,
+                    "out_point": trial_out,
                     "duration": round(trial_out - trial_in, 3),
                 })
-                seen_windows[trial_key] = sc.scene_id
+                intervals.append((trial_in, trial_out, sc.scene_id))
                 log.info(
-                    "[plan] stage-72 dedup: %s 与 %s 窗口撞车 (%s,%.2f,%.2f) → shift 到 (%.2f,%.2f)",
-                    sc.scene_id, seen_windows[key], sc.source_ref, sc.in_point, sc.out_point,
+                    "[plan] stage-74 dedup: %s 与 %s 窗口重叠 (%s,%.2f,%.2f) → shift 到 (%.2f,%.2f)",
+                    sc.scene_id, hit, sc.source_ref, sc.in_point, sc.out_point,
                     trial_in, trial_out,
                 )
                 shifted = True
