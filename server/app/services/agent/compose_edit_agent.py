@@ -77,6 +77,7 @@ _SYSTEM_STEP2 = (
     "update_shot_subject（改某段下第 N 个分镜的主体词 ≤40 字）、"
     "update_shot_narration（改某分镜的口播/字幕，同步主轨 scene）、"
     "update_shot_duration（改某分镜的时长 1-12 秒，自动缩放段总时长与对应 scene）、"
+    "delete_shot（**删除**某段下第 N 个分镜——用户说『删除/去掉/砍掉/不要 第 N 段第 M 镜』时调用此工具，**不要**用 update_shot_duration 把它压成 1 秒来糊弄；段内只剩这 1 镜会自动 cascade 成整段删除）、"
     "regenerate_narrations_all（按 hint 整体重写所有段落口播）。\n"
     "—— 素材重排 / 字卡重出（仅 rerank 与 copy；aigc_image 在 step2 禁用）——\n"
     "regenerate_fill（重新生成某段 fill，action ∈ rerank/copy）、"
@@ -514,6 +515,30 @@ _TOOL_UPDATE_SHOT_DURATION = {
     },
 }
 
+_TOOL_DELETE_SHOT = {
+    "type": "function",
+    "function": {
+        "name": "delete_shot",
+        "description": (
+            "删除某段下第 shot_order 个分镜：移除 section.shots[shot_order]，"
+            "并连带删掉 main_track 中 parent_section_id+shot_order 匹配的 scene；"
+            "段内剩余 shot 的 order 与对应 scene.shot_order 都会重新排成 0..N-1。"
+            "段总时长缩短，整片时长同步收缩。"
+            "若该段只剩这一个分镜，**改为整段删除**——返回结果会注明，等同 delete_section。"
+            "用户说『删除/去掉/砍掉/不要 第 N 段第 M 镜』『删某段最后一镜』时调用本工具，"
+            "**不要**降低 update_shot_duration 把镜头硬压到 1 秒来代替删除——那不是删。"
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "section_id": {"type": "string"},
+                "shot_order": {"type": "integer", "description": "要删除的分镜序号，从 0 起；用户『第 1 镜』即 shot_order=0。"},
+            },
+            "required": ["section_id", "shot_order"],
+        },
+    },
+}
+
 
 _TOOL_REGENERATE_FILL = {
     "type": "function",
@@ -645,6 +670,7 @@ _TOOLS_STEP2: list[dict] = [
     _TOOL_UPDATE_SHOT_SUBJECT,
     _TOOL_UPDATE_SHOT_NARRATION,
     _TOOL_UPDATE_SHOT_DURATION,
+    _TOOL_DELETE_SHOT,
     # 整轨级辅助
     _TOOL_REGENERATE_NARRATIONS_ALL,
     # 编排级 Compose 设置
@@ -1030,6 +1056,90 @@ def _mut_update_shot_duration(plan: Plan, args: dict) -> ComposeEditDiff | None:
     )
 
 
+def _mut_delete_shot(plan: Plan, args: dict) -> ComposeEditDiff | None:
+    """删某段下第 shot_order 个分镜：从 section.shots 移除 + 连带删 main_track 匹配 scene。
+
+    后续 shot 的 order 与对应 scene.shot_order 重排到 0..N-1，保证『第 N 镜』语义一直是
+    section.shots 列表里的第 N 项。section.duration_seconds 重算 = sum(剩余 shots)；
+    最终走 _rebuild_timeline → 整片 plan.duration_seconds 同步缩短。
+
+    若该段只剩这一个分镜，cascade 成 delete_section（用户原话『删除某镜』通常隐含
+    『不留空段』；空段在前端会成为只剩 0 镜的死区，没价值）。
+    """
+    sid = args.get("section_id") or ""
+    try:
+        shot_order = int(args.get("shot_order"))
+    except (TypeError, ValueError):
+        return None
+    if not sid:
+        return None
+    sec = _find_section(plan, sid)
+    if sec is None:
+        return None
+    shots = list(sec.shots or [])
+    target = _find_shot(sec, shot_order)
+    if target is None:
+        return ComposeEditDiff(
+            op="delete_shot", target_id=f"{sid}#{shot_order}",
+            before=None, after=None,
+            summary=f"段 {sid} 没有第 {shot_order+1} 镜（共 {len(shots)} 镜）",
+        )
+
+    # cascade：只剩这一个分镜 → 等同删段
+    if len(shots) <= 1:
+        cascaded = _mut_delete_section(plan, {"section_id": sid})
+        if cascaded is not None:
+            cascaded = cascaded.model_copy(update={
+                "op": "delete_shot",
+                "target_id": f"{sid}#{shot_order}",
+                "summary": f"段 {sid} 仅剩这一个分镜，已整段删除（cascade）—— " + cascaded.summary,
+            })
+        return cascaded
+
+    before_subject = target.subject
+    before_dur = float(target.duration_seconds)
+
+    # 1) 从 section.shots 移除并重排剩余 order
+    remaining = [sh for sh in shots if sh.order != shot_order]
+    for i, sh in enumerate(remaining):
+        sh.order = i
+    sec.shots = remaining
+    sec.duration_seconds = max(1.0, round(sum(sh.duration_seconds for sh in remaining), 3))
+
+    # 2) main_track 联动：删 parent_section_id+shot_order 匹配的 scene；
+    #    同段后续 scene 的 shot_order -1 以保持 0..N-1 连续。
+    removed_scene_id: str | None = None
+    new_main: list = []
+    for sc in plan.main_track:
+        psid = getattr(sc, "parent_section_id", None)
+        sho = getattr(sc, "shot_order", -1)
+        if psid == sid and sho == shot_order:
+            removed_scene_id = sc.scene_id
+            continue
+        if psid == sid and sho > shot_order:
+            sc.shot_order = sho - 1
+        new_main.append(sc)
+    plan.main_track = new_main
+
+    # 3) 重铺时间轴 + 整片时长同步收缩
+    info = _rebuild_timeline(plan)
+
+    base = (
+        f"段 {sid} 第 {shot_order+1} 镜已删除（{before_dur:.1f}s · 主体『{before_subject[:20]}』）；"
+        f"段内剩 {len(remaining)} 镜 / {sec.duration_seconds:.1f}s；整片总时长 {info['total']:.1f}s"
+    )
+    if removed_scene_id is not None:
+        base += f"；主轨 scene {removed_scene_id} 已移除"
+
+    return ComposeEditDiff(
+        op="delete_shot",
+        target_id=f"{sid}#{shot_order}",
+        before={"subject": before_subject, "duration_seconds": before_dur},
+        after=None,
+        summary=_summary_with_rebuild(base, info),
+    )
+
+
 def _mut_update_text_card(plan: Plan, args: dict) -> ComposeEditDiff | None:
     sid = args.get("scene_id") or ""
     if not sid:
@@ -1405,6 +1515,7 @@ _MUTATORS: dict[str, Callable[[Plan, dict], ComposeEditDiff | None]] = {
     "update_shot_subject": _mut_update_shot_subject,
     "update_shot_narration": _mut_update_shot_narration,
     "update_shot_duration": _mut_update_shot_duration,
+    "delete_shot": _mut_delete_shot,
     "update_text_card_spec": _mut_update_text_card,
     "update_packaging_text": _mut_update_packaging_text,
     "update_packaging_item_time": _mut_update_packaging_item_time,
@@ -1915,7 +2026,7 @@ def _build_user_prompt(plan: Plan, instruction: str, step: ComposeEditStep) -> s
 
     parts.append(
         f"\n【本 step={step} 能改什么】"
-        + ("段落文案 / 段落时长 / 删段 / 重排顺序 / 分镜画面 / 分镜主体 / 分镜口播 / 分镜时长 / 重生成单段 fill / 批量重生成全部 fill" if step == "step2"
+        + ("段落文案 / 段落时长 / 删段 / 重排顺序 / 分镜画面 / 分镜主体 / 分镜口播 / 分镜时长 / 删某分镜 / 重生成单段 fill / 批量重生成全部 fill" if step == "step2"
            else "字卡文案 / 包装项文字 / 包装项时间区间 / scene 入场转场 / 批量重写所有 narration / BGM 偏移 / BGM 音量 / Compose 设置（platform/ratio/duration/migration_preference/字幕/TTS/frame_design/packaging）")
     )
     parts.append(f"\n【用户消息】{instruction}")
@@ -2057,15 +2168,35 @@ def _mock_intent(plan: Plan, instruction: str, step: ComposeEditStep) -> list[di
                         "shot_order": int(m_shot_narr.group(2)) - 1,
                         "narration": narr[:200],
                     }}]
+        # 删某段下第 N 镜：必须在 delete_section 之前判，否则『删除第二段第三镜』会先被段删兜底吃掉。
+        # 支持阿拉伯数字 + 中文数字（一/二/三...）匹配镜号。
+        _CN_NUM = {"一": 1, "二": 2, "三": 3, "四": 4, "五": 5, "六": 6, "七": 7, "八": 8, "九": 9, "十": 10}
+        m_del_shot = re.search(
+            r"(?:删除?|去掉|砍掉|不要)\s*" + _SEC_REF_PATTERN + _SEC_SHOT_GAP
+            + r"第\s*(\d+|[一二三四五六七八九十])\s*镜",
+            txt,
+        )
+        if m_del_shot:
+            sid = _resolve_section_alias(plan, m_del_shot.group(1))
+            shot_token = m_del_shot.group(2)
+            try:
+                shot_no = int(shot_token)
+            except ValueError:
+                shot_no = _CN_NUM.get(shot_token, 0)
+            if sid and shot_no >= 1:
+                return [{"name": "delete_shot", "arguments": {
+                    "section_id": sid,
+                    "shot_order": shot_no - 1,
+                }}]
         # 段时长（无镜级修饰）
         m_dur = re.search(_SEC_REF_PATTERN + r".{0,15}?(\d+(?:\.\d+)?)\s*秒", txt)
         if m_dur and "镜" not in txt:
             sid = _resolve_section_alias(plan, m_dur.group(1))
             if sid:
                 return [{"name": "update_section_duration", "arguments": {"section_id": sid, "duration_seconds": float(m_dur.group(2))}}]
-        # 删段
+        # 删段：trailing 出现『镜』时不当作整段删（避免吃掉『删除第 N 段第 M 镜』）
         m_del = re.search(r"删除?\s*" + _SEC_REF_PATTERN, txt)
-        if m_del:
+        if m_del and "镜" not in txt:
             sid = _resolve_section_alias(plan, m_del.group(1))
             if sid:
                 return [{"name": "delete_section", "arguments": {"section_id": sid}}]
