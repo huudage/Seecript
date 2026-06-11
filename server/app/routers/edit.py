@@ -202,11 +202,6 @@ def _dispatch_main(plan: Plan, name: str, args: dict) -> str:
         for sc in plan.main_track:
             if sc.scene_id == sid:
                 sc.duration = max(0.5, dur)
-                # user_material 的 in/out_point 必须随 duration 同步，否则渲染端
-                # trim 窗口 ≠ scene.duration → freeze 尾帧或 slow-mo 凑时长 → 用户感知"片段重复"。
-                if sc.source == "user_material" and (sc.in_point is not None or sc.out_point is not None):
-                    in_pt = float(sc.in_point or 0.0)
-                    sc.out_point = round(in_pt + sc.duration, 3)
                 return f"duration({sid}={sc.duration:.1f}s)"
         return f"miss(duration {sid})"
     if name == "replace_scene_material":
