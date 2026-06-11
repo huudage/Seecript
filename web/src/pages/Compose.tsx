@@ -1062,13 +1062,35 @@ export default function ComposePage() {
 
   // copy fill 已迁移到 FillCopyPanel 内部状态机（T5），不再在 Compose 这一层触发或采纳。
 
-  const pendingGapsCount = useMemo(
-    () =>
-      gaps.filter(
-        (g) => g.status !== 'ok' && !fills.some((f) => f.gap_id === g.gap_id && f.status === 'ok'),
-      ).length,
-    [gaps, fills],
-  )
+  // stage-70：gap 待补数必须以 scene 级状态为最终依据。
+  // 用户报障：『所有镜都换源审过了（"已审"），但仍显示 N 段缺口待补、无法进 step3』
+  // 根因：旧版本只看 gap.status / fills 数组。后端 /gap/detect 重新分析时不知道用户在
+  //       SwapSourceDialog 里做过手动换源（这条路径不写 fill 记录，只翻 scene.user_edited
+  //       和 plan.main_track），于是 gap 状态停留在 miss/warn，pendingGapsCount 永远 >0。
+  // 新语义：一个 gap "pending" 只有当它所在 section 还有镜既不是 user_edited，又是 needs_fill
+  //         / text-card-fill-empty 占位时才算。这与 mainTrackUnfilledCount 的 scene 级口径
+  //         保持一致，避免两个数字打架。
+  const pendingGapsCount = useMemo(() => {
+    if (!plan) return 0
+    const sectionHasUnfilled = new Map<string, boolean>()
+    for (const sc of plan.main_track) {
+      const sid = sc.parent_section_id
+      if (!sid) continue
+      if (!sectionHasUnfilled.has(sid)) sectionHasUnfilled.set(sid, false)
+      if (sc.user_edited === true) continue
+      const unfilled =
+        sc.needs_fill === true ||
+        (sc.source_ref ?? '').startsWith('text-card-fill-empty')
+      if (unfilled) sectionHasUnfilled.set(sid, true)
+    }
+    return gaps.filter((g) => {
+      if (g.status === 'ok') return false
+      if (fills.some((f) => f.gap_id === g.gap_id && f.status === 'ok')) return false
+      // 老 plan / 老 gap 没有 section_id → 退回旧语义防止漏门控
+      if (!g.section_id) return true
+      return sectionHasUnfilled.get(g.section_id) === true
+    }).length
+  }, [gaps, fills, plan])
 
   // stage-26 PR-N.6：内容轨『还未补齐』的 Scene 数。两类都算：
   //   - 后端 PR-N.2 标记 needs_fill=true（匹配 weak/missing 物化时落下的兜底）
@@ -2106,13 +2128,23 @@ export default function ComposePage() {
             <h2 className="text-sm font-semibold">
               适配结构（{plan.adapted_sections.length} 段 / 缺口 {gaps.length}
               {pendingGapsCount > 0 && (
-                <span className="ml-2 text-amber-500">待补 {pendingGapsCount}</span>
+                <span
+                  className="ml-2 text-amber-500"
+                  title="待补按镜级状态算：该段还有镜没被人工换源（badge 显示「已审」）也没被工作台采纳；换源或采纳后此数字自动归零。"
+                >
+                  待补 {pendingGapsCount}
+                </span>
               )}
               ）
             </h2>
             <div className="flex items-center gap-2">
               {fills.length > 0 && (
-                <span className="text-[10px] text-muted-foreground">已采纳 {fills.length}</span>
+                <span
+                  className="text-[10px] text-muted-foreground"
+                  title="工作台采纳记录：通过下方「补全工作台」点过「采纳」的 fill 数量。手动换源（SwapSourceDialog）不进这里——那走镜级 user_edited 标记。"
+                >
+                  工作台采纳 {fills.length}
+                </span>
               )}
             </div>
           </div>
