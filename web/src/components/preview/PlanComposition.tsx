@@ -2,12 +2,9 @@ import { AbsoluteFill, Audio, Img, interpolate, Sequence, useCurrentFrame, useVi
 
 import { SECTION_HEX, SECTION_LABEL } from '@/lib/sections'
 import { resolveSceneMedia } from '@/lib/scene_url'
-import type { AnimationSpec, BGMConfig, Material, PackagingItem, Plan, Scene, TextCardSpec } from '@/types/schemas'
+import type { AnimationSpec, Material, Plan, Scene, TextCardSpec } from '@/types/schemas'
 
-import { Cover, type CoverStyle } from './packaging/Cover'
-import { StickerOverlay } from './packaging/StickerOverlay'
-import { Subtitles } from './packaging/Subtitles'
-import { TitleBar } from './packaging/TitleBar'
+import { BgmAudio, PackagingLayer, fallbackTitle, secsToFrames } from './_overlays'
 import { TransitionVisual } from './TransitionVisual'
 
 export interface PlanCompositionProps {
@@ -101,23 +98,6 @@ export const PlanComposition: React.FC<PlanCompositionProps> = ({ plan, material
       {plan.bgm.track_url && <BgmAudio bgm={plan.bgm} fps={FPS} />}
     </AbsoluteFill>
   )
-}
-
-function secsToFrames(seconds: number, fps: number): number {
-  return Math.round(seconds * fps)
-}
-
-function fallbackTitle(
-  item: PackagingItem,
-  sectionsByOrder: Map<string, { theme: string }>,
-): string {
-  if (item.text && item.text.trim()) return item.text
-  const sid = (item.style as { section_id?: string } | undefined)?.section_id
-  if (sid) {
-    const sec = sectionsByOrder.get(sid)
-    if (sec?.theme) return sec.theme
-  }
-  return item.kind === 'cover' ? '封面' : ''
 }
 
 const SceneClip: React.FC<{ scene: Scene; materials: Material[]; fps: number }> = ({
@@ -329,49 +309,6 @@ const TextCardScene: React.FC<{ spec: TextCardSpec }> = ({ spec }) => {
       )}
     </AbsoluteFill>
   )
-}
-
-const PackagingLayer: React.FC<{ item: PackagingItem; sectionTitle: string }> = ({
-  item,
-  sectionTitle,
-}) => {
-  const text = item.text?.trim() || sectionTitle
-  const style = (item.style ?? {}) as Record<string, unknown>
-  switch (item.kind) {
-    case 'cover':
-      return <Cover title={text} style={style as CoverStyle} />
-    case 'subtitle':
-      return <Subtitles text={text} style={style} />
-    case 'title_bar':
-      return <TitleBar text={text} style={style} />
-    case 'sticker':
-      return <StickerOverlay text={text} style={style} />
-    default:
-      return null
-  }
-}
-
-const BgmAudio: React.FC<{ bgm: BGMConfig; fps: number }> = ({ bgm, fps }) => {
-  if (!bgm.track_url) return null
-  const anchorFrames = Math.round(bgm.video_anchor_seconds * fps)
-  const volume = clamp01(bgm.volume ?? 0.6)
-  if (anchorFrames >= 0) {
-    return (
-      <Sequence from={anchorFrames} layout="none">
-        <Audio src={bgm.track_url} volume={volume} />
-      </Sequence>
-    )
-  }
-  return (
-    <Sequence from={0} layout="none">
-      <Audio src={bgm.track_url} startFrom={-anchorFrames} volume={volume} />
-    </Sequence>
-  )
-}
-
-function clamp01(n: number): number {
-  if (Number.isNaN(n)) return 0.6
-  return Math.max(0, Math.min(1, n))
 }
 
 /**
