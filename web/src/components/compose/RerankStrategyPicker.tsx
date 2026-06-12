@@ -70,6 +70,19 @@ export function RerankStrategyPicker({
         )}
       </div>
 
+      {/* stage-81 (2026-06-12)：解释排序逻辑 + 标签含义；用户原话："没看到打分的解释说明" */}
+      <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-[10px] text-muted-foreground">
+        <span>
+          排序：<span className="text-foreground/80">段位推荐</span> 优先 ＞{' '}
+          <span className="text-foreground/80">高光分</span> 倒序
+        </span>
+        <span className="flex items-center gap-1">
+          <span className="rounded bg-emerald-500/15 px-1 py-px font-medium text-emerald-600">段位推荐</span>
+          = 该素材最适合放在本段位（{targetSection}）
+        </span>
+        <span>高光分（0–1）= 素材本身的亮眼程度，越高越抓人</span>
+      </div>
+
       <div className="max-h-56 overflow-y-auto rounded border border-border bg-background/60">
         <ul className="divide-y divide-border">
           {visible.map((m) => {

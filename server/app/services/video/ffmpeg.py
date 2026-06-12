@@ -1511,7 +1511,11 @@ def text_card_clip(
         f"drawtext=text='{main_esc}':fontcolor={text_hex_for_ffmpeg}"
         f":fontsize={main_size}:borderw={font_style['main_borderw']}"
         f":bordercolor=black@0.55"
-        f":x=(w-text_w)/2:y={main_y}"
+        # stage-80 (2026-06-12) 关键修：y 表达式里 bounce_word 动画含 `,`（嵌套 if + sin），
+        # 不加单引号会被 ffmpeg 滤镜串当成 filter 分隔符切碎——典型报错：
+        # `No such filter: '0.7)'` 来自 `if(lt(t,0.7),sin(...),0)` 被切成
+        # `if(lt(t` / `0.7)` / `sin(...)` / `0)` 四段。同理 alpha 早就用 `'...'` 包了。
+        f":x=(w-text_w)/2:y='{main_y}'"
         f":alpha='{main_alpha_expr}'"
         f"{fontfile_arg}"
     )
@@ -1527,7 +1531,7 @@ def text_card_clip(
             f"drawtext=text='{sub_esc}':fontcolor={accent_hex_for_ffmpeg}"
             f":fontsize={sub_size}:borderw={font_style['sub_borderw']}"
             f":bordercolor=black@0.45"
-            f":x=(w-text_w)/2:y={sub_y_expr}"
+            f":x=(w-text_w)/2:y='{sub_y_expr}'"
             f":alpha='{sub_alpha}'"
             f"{fontfile_arg}"
         )
