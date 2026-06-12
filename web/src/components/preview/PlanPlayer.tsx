@@ -1,91 +1,57 @@
-import { Player, type PlayerRef } from '@remotion/player'
-import { forwardRef, useEffect, useImperativeHandle, useRef } from 'react'
+/**
+ * stage-80 (2026-06-12)：PlanPlayer 改用后端合成的主轨 mp4。
+ *
+ * 接口契约保留：
+ *   - <PlanPlayer ref={playerRef} plan={plan} materials={materials} onTimeUpdate={...} />
+ *   - playerRef.current.seek(seconds)
+ * 调用方（Compose.tsx step2/step3）零改动。
+ *
+ * `materials` 参数已不再需要（后端拿 plan_id 自己解析素材），保留 prop 仅为兼容签名。
+ */
+import { forwardRef, useImperativeHandle, useRef } from 'react'
 
 import type { Material, Plan } from '@/types/schemas'
 
-import { PlanComposition } from './PlanComposition'
-
-const FPS = 30
-const WIDTH = 1080
-const HEIGHT = 1920
+import { MainlinePreviewPlayer, type MainlinePreviewPlayerHandle } from './MainlinePreviewPlayer'
 
 export interface PlanPlayerHandle {
-  /** seek 到指定秒；秒会被换算成 30fps 的整数帧。 */
+  /** seek 到指定秒。 */
   seek: (seconds: number) => void
-  /** 当前 PlayerRef，进阶交互用。 */
-  player: PlayerRef | null
+  /** 触发后端重新合成（plan 变更后可手动调一次）。 */
+  refresh?: () => Promise<void>
+  /** 兼容旧签名占位（原 Remotion PlayerRef，新栈下永远为 null）。 */
+  player: null
 }
 
 interface Props {
   plan: Plan
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
   materials: Material[]
-  /** Player 每帧回调当前时间（秒），父级用来驱动时间轴游标。 */
   onTimeUpdate?: (seconds: number) => void
 }
 
-/**
- * Compose 页 Remotion 实时预览外壳：
- *
- * - 1080×1920 9:16 画布、30fps，与 remotion/ 子项目 Root.tsx 对齐
- * - durationInFrames = ceil(plan.duration_seconds × 30)；plan 空时退化成 1 帧避免崩
- * - 暴露 seek(seconds) 给父级（FourTrackBoard scene 点击 → 跳转 Player）
- * - 订阅 'frameupdate' 同步播放头给 FourTrackBoard 画游标
- */
 export const PlanPlayer = forwardRef<PlanPlayerHandle, Props>(function PlanPlayer(
-  { plan, materials, onTimeUpdate },
+  { plan, onTimeUpdate },
   ref,
 ) {
-  const playerRef = useRef<PlayerRef>(null)
-  const durationInFrames = Math.max(1, Math.ceil(plan.duration_seconds * FPS))
+  const innerRef = useRef<MainlinePreviewPlayerHandle>(null)
 
   useImperativeHandle(
     ref,
     () => ({
-      seek: (seconds: number) => {
-        const frame = Math.max(0, Math.round(seconds * FPS))
-        playerRef.current?.seekTo(frame)
-      },
-      get player() {
-        return playerRef.current
-      },
+      seek: (seconds: number) => innerRef.current?.seek(seconds),
+      refresh: () => innerRef.current?.refresh() ?? Promise.resolve(),
+      player: null,
     }),
     [],
   )
 
-  useEffect(() => {
-    if (!onTimeUpdate) return
-    const p = playerRef.current
-    if (!p) return
-    const handler = (e: { detail: { frame: number } }) => {
-      onTimeUpdate(e.detail.frame / FPS)
-    }
-    p.addEventListener('frameupdate', handler)
-    return () => {
-      p.removeEventListener('frameupdate', handler)
-    }
-  }, [onTimeUpdate])
-
   return (
-    <Player
-      ref={playerRef}
-      component={PlanComposition}
-      inputProps={{ plan, materials }}
-      durationInFrames={durationInFrames}
-      fps={FPS}
-      compositionWidth={WIDTH}
-      compositionHeight={HEIGHT}
-      style={{
-        width: '100%',
-        aspectRatio: `${WIDTH} / ${HEIGHT}`,
-        maxHeight: 520,
-        backgroundColor: '#000',
-        borderRadius: 8,
-        overflow: 'hidden',
-      }}
-      controls
-      clickToPlay
-      doubleClickToFullscreen
-      acknowledgeRemotionLicense
+    <MainlinePreviewPlayer
+      ref={innerRef}
+      plan={plan}
+      onTimeUpdate={onTimeUpdate}
+      maxHeight={520}
     />
   )
 })

@@ -146,3 +146,23 @@ export async function getMaterialShotFitScores(
     `/plan/${planId}/scene/${sceneId}/material/${encodeURIComponent(materialId)}/shot-scores`,
   )
 }
+
+/**
+ * stage-80 (2026-06-12)：主轨预览 mp4。
+ *
+ * 把 plan.main_track 在后端实时合成 480p mp4，前端单 <video> 播替换 Remotion <Video>
+ * —— 根治「单镜头内复读前 0.X 秒」（HTMLVideoElement 的 currentTime seek 不是 frame-accurate）。
+ *
+ * 后端按 main_track 关键字段 hash 缓存：plan 没改 → 返同一 url，毫秒命中；plan 改了 →
+ * 重跑 ffmpeg（一般 3-15s）。前端用此接口的 url 喂 MainlinePreviewPlayer。
+ */
+export interface PreviewMainlineResponse {
+  plan_id: string
+  signature: string
+  url: string
+  duration_seconds: number
+}
+
+export async function buildMainlinePreview(planId: PlanId): Promise<PreviewMainlineResponse> {
+  return await api.post<PreviewMainlineResponse>(`/plan/${planId}/preview-mainline`, {})
+}

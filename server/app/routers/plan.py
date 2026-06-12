@@ -1125,6 +1125,53 @@ async def get_plan(plan_id: str) -> Plan:
     return plan
 
 
+class PreviewMainlineResponse(BaseModel):
+    """stage-80：主轨预览 mp4 的 URL + 缓存签名 + 总时长。"""
+    plan_id: str
+    signature: str
+    url: str
+    duration_seconds: float
+
+
+@router.post("/plan/{plan_id}/preview-mainline", response_model=PreviewMainlineResponse)
+async def post_plan_preview_mainline(plan_id: str) -> PreviewMainlineResponse:
+    """stage-80：把 plan 主轨实时拼成 480p mp4，前端用单 <video> 播替换 Remotion <Video>。
+
+    根因：Remotion <Video startFrom endAt> 在浏览器里每帧重设 video.currentTime，
+    HTMLVideoElement 的 seek 不是 frame-accurate，落到关键帧附近偶发回退几帧 →
+    单镜头内复读前 0.X 秒内容。后端把整条主轨预先合好成单 mp4，浏览器只需顺序
+    播放（零 seek 抖动）。
+
+    缓存：以 main_track 关键字段 hash 为 signature；plan 没改 → 同 signature 命中
+    缓存直接返回，不重跑 ffmpeg。同一 plan_id 同时只能跑一个合成（asyncio.Lock）。
+
+    跳过：包装轨 / 字幕 / BGM / 转场 / 口播 mux —— 预览的核心是验证主轨内容；要看
+    完整效果走 step4 的全量渲染。
+    """
+    from ..services.render.preview import (
+        build_mainline_preview,
+        compute_signature,
+        preview_url_for,
+    )
+
+    plan = plan_store.get(plan_id)
+    if plan is None:
+        raise HTTPException(status_code=404, detail=f"plan_id 不存在：{plan_id}")
+
+    try:
+        await build_mainline_preview(plan)
+    except RuntimeError as exc:
+        raise HTTPException(status_code=500, detail=f"预览合成失败：{exc}") from exc
+
+    sig = compute_signature(plan)
+    return PreviewMainlineResponse(
+        plan_id=plan_id,
+        signature=sig,
+        url=preview_url_for(plan_id, sig),
+        duration_seconds=plan.duration_seconds,
+    )
+
+
 class PlanBgmPatch(BaseModel):
     """PATCH /plan/{plan_id}/bgm：BGM 替换 / 锚点拖动 / 音量调节。
 

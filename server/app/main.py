@@ -203,6 +203,14 @@ def create_app() -> FastAPI:
     aigc_images_dir.mkdir(parents=True, exist_ok=True)
     app.mount("/aigc-images", StaticFiles(directory=str(aigc_images_dir)), name="aigc_images")
 
+    # /preview/<plan_id>-<sig>.mp4 → server/var/preview/...
+    # stage-80：把 step2/step3 的 Remotion <Video> 预览换成「后端 ffmpeg 实时合主轨 mp4 + 前端
+    # 单 <video> 播」。Remotion <Video> 内部按帧重设 currentTime，浏览器 seek 不是 frame-accurate
+    # 在关键帧附近偶发回退，表现为单镜头内复读前 0.X 秒——只有彻底脱离 video element seek 才能根治。
+    preview_dir = settings.log_dir.parent / "var" / "preview"
+    preview_dir.mkdir(parents=True, exist_ok=True)
+    app.mount("/preview", StaticFiles(directory=str(preview_dir)), name="preview")
+
     return app
 
 
