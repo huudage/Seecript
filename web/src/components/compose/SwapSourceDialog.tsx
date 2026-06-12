@@ -501,7 +501,7 @@ function UserMaterialPicker({
             <span className="text-xs font-semibold text-muted-foreground">
               选具体哪一镜
               <span className="ml-1 text-muted-foreground/70">
-                （右上角分数 = 与本分镜的适配度；越高越搭）
+                （已按适配度从高到低排序；右上角分数越大越搭）
               </span>
             </span>
             {pickedShotIdx != null && (
@@ -515,7 +515,15 @@ function UserMaterialPicker({
             )}
           </div>
           <div className="grid grid-cols-3 gap-1 sm:grid-cols-4">
-            {targetMaterial.shots.map((sh) => {
+            {[...targetMaterial.shots]
+              .sort((a, b) => {
+                // stage-81 (2026-06-12)：按适配度倒序排，没分到底；同分按 index 升序保持稳定。
+                const sa = shotScores[a.index]?.score ?? -1
+                const sb = shotScores[b.index]?.score ?? -1
+                if (sb !== sa) return sb - sa
+                return a.index - b.index
+              })
+              .map((sh) => {
               const active = sh.index === pickedShotIdx
               const fit = shotScores[sh.index]
               return (
