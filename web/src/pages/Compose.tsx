@@ -401,20 +401,10 @@ export default function ComposePage() {
       setActiveStep(2)
       return
     }
-    // stage-26 PR-N.6：已经进入 step3 但批量补字卡或换源把内容轨打回了 needs_fill /
-    // text-card-fill-empty 兜底——把用户拉回 step2 补齐再放行。
-    // stage-61：user_edited=true 的 Scene 视作『已补齐』，无视 needs_fill / fill-empty 占位。
-    const unfilled = plan
-      ? plan.main_track.filter(
-          (sc) =>
-            sc.user_edited !== true &&
-            (sc.needs_fill === true ||
-              (sc.source_ref ?? '').startsWith('text-card-fill-empty')),
-        ).length
-      : 0
-    if (activeStep === 3 && unfilled > 0) {
-      setActiveStep(2)
-    }
+    // stage-82 (2026-06-12)：取消「step3 内若残留 needs_fill / fill-empty 占位就弹回 step2」的强制门
+    // 用户原话：「把step3的进入限制取消，改为提示用户仍有缺口，但不强制必须补全才能进入第三步」
+    // 现在改为：进入门控（按钮 + handleEnterStep3 的 confirm）允许带缺口进 step3；
+    // 进了之后不再因为 unfilled scene 把用户弹回 step2，否则用户原地一直被踢回去。
   }, [plan, activeStep, step3Unlocked, setActiveStep])
 
   /* --------------------- 渲染流水线（内联 · 无独立页面）--------------------- */
@@ -1193,6 +1183,22 @@ export default function ComposePage() {
    */
   const handleEnterStep3 = useCallback(async () => {
     if (!plan) return
+    // stage-82 (2026-06-12)：带缺口进入 step3 前弹一次 confirm 提示，但不阻断。
+    // 用户原话：「改为提示用户仍有缺口，但不强制必须补全才能进入第三步」
+    const unfilled = plan.main_track.filter(
+      (sc) =>
+        sc.user_edited !== true &&
+        (sc.needs_fill === true ||
+          (sc.source_ref ?? '').startsWith('text-card-fill-empty')),
+    ).length
+    if (unfilled > 0) {
+      const ok = window.confirm(
+        `内容轨还有 ${unfilled} 镜未补完（占位字卡 / 待补素材）。\n` +
+          `继续进入第 3 步可以照常做口播 / 包装 / BGM 与渲染，但占位画面会出现在最终视频里——通常用户会回 step2 把它补成真实素材。\n\n` +
+          `是否仍要继续？`,
+      )
+      if (!ok) return
+    }
     setTrackBusy(true)
     setError(null)
     let landedOk = false
@@ -2181,40 +2187,34 @@ export default function ComposePage() {
               onClick={() => {
                 void handleEnterStep3()
               }}
-              disabled={
-                pendingGapsCount > 0 ||
-                trackBusy ||
-                mainTrackUnfilledCount > 0 ||
-                analyzing
-              }
+              disabled={trackBusy || analyzing}
               className={cn(
                 'flex-1 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground transition-colors',
-                (pendingGapsCount > 0 ||
-                  trackBusy ||
-                  mainTrackUnfilledCount > 0 ||
-                  analyzing) &&
+                (trackBusy || analyzing) &&
                   'cursor-not-allowed opacity-60',
+                (pendingGapsCount > 0 || mainTrackUnfilledCount > 0) &&
+                  !trackBusy && !analyzing &&
+                  'bg-amber-600 hover:bg-amber-700',
               )}
             >
               {analyzing
                 ? '内容轨重排中…'
-                : mainTrackUnfilledCount > 0
-                  ? `内容轨还有 ${mainTrackUnfilledCount} 镜未补完 · 补齐后进入第 3 步`
-                  : pendingGapsCount > 0
-                    ? `还有 ${pendingGapsCount} 段缺口待补 · 补齐后进入第 3 步`
-                    : trackBusy
-                      ? '准备中…（重写口播 / 配音 / 转场推荐）'
+                : trackBusy
+                  ? '准备中…（重写口播 / 配音 / 转场推荐）'
+                  : mainTrackUnfilledCount > 0
+                    ? `⚠ 还有 ${mainTrackUnfilledCount} 镜未补完 · 仍进入第 3 步`
+                    : pendingGapsCount > 0
+                      ? `⚠ 还有 ${pendingGapsCount} 段缺口未补 · 仍进入第 3 步`
                       : '进入第 3 步 → 解锁口播 / 包装 / BGM 与实时预览'}
             </button>
-            {pendingGapsCount === 0 && mainTrackUnfilledCount === 0 && (
-              <button
-                type="button"
-                onClick={() => setActiveStep(1)}
-                className="rounded-md border border-border bg-card px-4 py-2 text-sm font-medium hover:bg-secondary"
-              >
-                ← 返回第 1 步重生成
-              </button>
-            )}
+            {/* stage-82：缺口/未补镜不再阻断进入第 3 步，按钮改为黄色「仍进入」并 confirm 提示；返回按钮始终展示 */}
+            <button
+              type="button"
+              onClick={() => setActiveStep(1)}
+              className="rounded-md border border-border bg-card px-4 py-2 text-sm font-medium hover:bg-secondary"
+            >
+              ← 返回第 1 步重生成
+            </button>
           </div>
         </section>
       )}
