@@ -32,6 +32,7 @@ import asyncio
 import hashlib
 import json
 import logging
+import uuid
 from pathlib import Path
 
 from ...config import get_settings
@@ -134,6 +135,14 @@ async def build_mainline_preview(plan: Plan) -> Path:
 
     返回值：磁盘路径，调用方自行根据 plan_id+signature 计算 URL。
     异常：合成失败 → RuntimeError，由 router 转 500。
+
+    stage-80 (2026-06-12) race condition 修复
+    ------------------------------------------
+    生产用 gunicorn 多 worker，asyncio.Lock 是 per-process 的——两个 worker 看到 sig 一致
+    会各自跑一遍 _build_segments。原代码 work_dir 是 `.work-{plan_id}-{sig}`（共享路径），
+    A 写完 finally cleanup 删 segments_dir 时 B 还没 concat → 报 "Output file #0 does not
+    contain any stream"。改 work_dir 加请求级 UUID 后缀彻底隔离；concat 前再做一次 cache
+    check（如果 A 已经写完最终文件，B 直接命中跳过）。
     """
     sig = compute_signature(plan)
     target = _preview_path(plan.plan_id, sig)
@@ -156,18 +165,26 @@ async def build_mainline_preview(plan: Plan) -> Path:
             return target
 
         canvas_w, canvas_h = _preview_canvas(plan)
-        work_dir = _preview_root() / f".work-{plan.plan_id}-{sig}"
+        # 请求级 UUID 隔离：每个请求独占 work_dir，互不干扰，cleanup 也不会误删别人的输入
+        req_id = uuid.uuid4().hex[:8]
+        work_dir = _preview_root() / f".work-{plan.plan_id}-{sig}-{req_id}"
         work_dir.mkdir(parents=True, exist_ok=True)
         segments_dir = work_dir / "segments"
         segments_dir.mkdir(parents=True, exist_ok=True)
 
         try:
+            log.info("[preview] start plan=%s sig=%s req=%s scenes=%d canvas=%dx%d",
+                     plan.plan_id, sig, req_id, len(plan.main_track), canvas_w, canvas_h)
             inputs = await _build_segments(plan, segments_dir, canvas_w, canvas_h)
             if not inputs:
-                raise RuntimeError("预览合成：所有 scene 段落生成失败")
+                raise RuntimeError("预览合成：所有 scene 段落生成失败（详见 warning 日志）")
 
-            # 一律走 hard cut concat（reencode）：预览不要 xfade，省时间也避免转场叠加
-            # 引入新的复杂度。最终视频带不带转场用户在 step4 渲染时再确认。
+            # concat 前最后一次 cache check：另一 worker 可能已经写完最终文件
+            if target.exists() and target.stat().st_size > 0:
+                log.info("[preview] another worker finished first plan=%s sig=%s req=%s",
+                         plan.plan_id, sig, req_id)
+                return target
+
             tmp_out = work_dir / "preview.mp4"
             await asyncio.to_thread(
                 ffmpeg_svc.concat, [str(p) for p in inputs], tmp_out, reencode=True,
@@ -178,17 +195,16 @@ async def build_mainline_preview(plan: Plan) -> Path:
             # 原子替换到最终文件名
             target.parent.mkdir(parents=True, exist_ok=True)
             tmp_out.replace(target)
-            log.info("[preview] built plan=%s sig=%s scenes=%d size=%dKB canvas=%dx%d",
-                     plan.plan_id, sig, len(inputs),
-                     target.stat().st_size // 1024, canvas_w, canvas_h)
+            log.info("[preview] built plan=%s sig=%s req=%s scenes=%d size=%dKB",
+                     plan.plan_id, sig, req_id, len(inputs),
+                     target.stat().st_size // 1024)
             return target
         finally:
-            # 清掉中间产物（单镜片段不再需要；最终 mp4 已经原子搬走）
+            # 仅清理本请求自己的 work_dir（UUID 隔离后不会动到别人的）
             try:
                 for p in segments_dir.glob("*"):
                     p.unlink(missing_ok=True)
                 segments_dir.rmdir()
-                # work_dir 里可能还有 preview.mp4（如果 replace 还没跑），保险删一遍
                 for p in work_dir.glob("*"):
                     p.unlink(missing_ok=True)
                 work_dir.rmdir()
@@ -203,14 +219,20 @@ async def _build_segments(plan, segments_dir: Path, canvas_w: int, canvas_h: int
     - 不发 job_store 进度（预览是同步阻塞接口）
     - 失败的 scene 落 text_card 占位（不抛错），保证整体能合成
     - 不做 _normalize_to_canvas 之外的额外处理
+
+    stage-80 修：每个 scene 失败时 log 具体原因（user_material 路径不存在 / trim 失败 /
+    aigc 解析失败 / text_card 渲染失败）。原 generic warning 看不出根因。
     """
     inputs: list[Path] = []
+    fallbacks: list[int] = []  # 哪些 scene 走了 text_card 兜底
     for i, sc in enumerate(plan.main_track):
         try:
             if sc.source == "text_card":
                 tc = _render_text_card(sc, segments_dir, i, width=canvas_w, height=canvas_h)
                 if tc is not None:
                     inputs.append(tc)
+                else:
+                    log.warning("[preview] scene %d (%s) text_card 渲染返回 None", i, sc.scene_id)
                 continue
 
             if sc.source == "aigc_t2v":
@@ -220,6 +242,9 @@ async def _build_segments(plan, segments_dir: Path, canvas_w: int, canvas_h: int
                                                   width=canvas_w, height=canvas_h)
                     inputs.append(normed if normed is not None else aigc)
                     continue
+                log.warning("[preview] scene %d (%s) aigc_t2v 解析失败 → fallback text_card",
+                            i, sc.scene_id)
+                fallbacks.append(i)
                 tc = await asyncio.to_thread(_render_text_card, sc, segments_dir, i,
                                              width=canvas_w, height=canvas_h)
                 if tc is not None:
@@ -232,6 +257,9 @@ async def _build_segments(plan, segments_dir: Path, canvas_w: int, canvas_h: int
                 if img is not None:
                     inputs.append(img)
                     continue
+                log.warning("[preview] scene %d (%s) aigc_image 解析失败 → fallback text_card",
+                            i, sc.scene_id)
+                fallbacks.append(i)
                 tc = await asyncio.to_thread(_render_text_card, sc, segments_dir, i,
                                              width=canvas_w, height=canvas_h)
                 if tc is not None:
@@ -240,16 +268,33 @@ async def _build_segments(plan, segments_dir: Path, canvas_w: int, canvas_h: int
 
             # user_material / sample
             src = _resolve_scene_path(plan, sc)
-            if src is not None:
+            if src is None:
+                log.warning(
+                    "[preview] scene %d (%s) source=%s ref=%s 路径解析失败"
+                    "（session=%s 下未找到对应素材）→ fallback text_card",
+                    i, sc.scene_id, sc.source, sc.source_ref, plan.session_id,
+                )
+                fallbacks.append(i)
+            else:
                 seg_dst = segments_dir / f"scene-{i:02d}.mp4"
                 trimmed = _trim_segment(src, sc, seg_dst, canvas_w, canvas_h)
                 if trimmed is not None:
                     inputs.append(trimmed)
                     continue
-            # 解析失败 → text_card 占位
+                log.warning(
+                    "[preview] scene %d (%s) trim 失败 src=%s in=%s out=%s dur=%s → fallback text_card",
+                    i, sc.scene_id, src.name, sc.in_point, sc.out_point, sc.duration,
+                )
+                fallbacks.append(i)
+            # 解析或 trim 失败 → text_card 占位
             tc = _render_text_card(sc, segments_dir, i, width=canvas_w, height=canvas_h)
             if tc is not None:
                 inputs.append(tc)
         except Exception as exc:  # noqa: BLE001
-            log.warning("[preview] scene %d 生成失败：%s，跳过", i, exc)
+            log.warning("[preview] scene %d (%s) source=%s 生成异常：%r，跳过",
+                        i, sc.scene_id, sc.source, exc)
+    if fallbacks:
+        log.warning("[preview] 共 %d/%d scene 走 text_card 兜底（indices=%s）——"
+                    "用户看到的预览不是真实素材，请检查上方具体失败原因",
+                    len(fallbacks), len(plan.main_track), fallbacks)
     return inputs

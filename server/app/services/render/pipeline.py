@@ -451,14 +451,39 @@ def _resolve_scene_path(plan: Plan, scene: Scene) -> Path | None:
     - source="aigc_t2v"      : 通过 _resolve_aigc_scene 异步下载 + concat，不在这里处理
 
     本同步函数对 aigc_t2v / sample 返回 None，让上层 pipeline 的异步分支或文字卡兜底处理。
+
+    stage-80 (2026-06-12) 关键修：原实现 `if source_ref in f.name: return f` 会优先匹到
+    `{material_id}_thumb.jpg`（上传时同 material_id 同时落 thumb + 原文件），ffmpeg 当成
+    视频去 trim 拿不到流 → preview/render 回退到 text_card 占位。改为：
+      1. 优先匹视频后缀（.mp4 .mov .webm .mkv .avi .m4v）
+      2. 跳过缩略图/图片后缀（.jpg .jpeg .png .webp .gif）
+      3. 都没视频再退回任意匹配（兼容老素材）
     """
     source_ref = scene.source_ref
     if scene.source == "user_material" and plan.session_id:
         d = _uploads_root() / plan.session_id
-        if d.exists():
-            for f in d.iterdir():
-                if source_ref in f.name:
-                    return f
+        if not d.exists() or not source_ref:
+            return None
+        video_exts = {".mp4", ".mov", ".webm", ".mkv", ".avi", ".m4v"}
+        skip_exts = {".jpg", ".jpeg", ".png", ".webp", ".gif"}
+        candidates: list[Path] = []
+        for f in d.iterdir():
+            if source_ref not in f.name:
+                continue
+            if f.suffix.lower() in skip_exts:
+                continue
+            candidates.append(f)
+        # 优先视频后缀
+        for f in candidates:
+            if f.suffix.lower() in video_exts:
+                return f
+        # 没视频后缀但有别的（old 上传可能没扩展名）：取第一个非缩略图
+        if candidates:
+            return candidates[0]
+        log.warning(
+            "[resolve_scene_path] user_material source_ref=%s 在 session=%s 下未找到非缩略图文件",
+            source_ref, plan.session_id,
+        )
         return None
 
     # source == "sample"（老 plan 残留）/ 其它未知 source：一律走文字卡

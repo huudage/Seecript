@@ -514,6 +514,19 @@ function UserMaterialPicker({
               </button>
             )}
           </div>
+          {/* stage-81 (2026-06-12)：色块对应徽章颜色 + 一行档位说明 */}
+          <div className="mb-1.5 flex flex-wrap items-center gap-x-3 gap-y-1 text-[10px] text-muted-foreground">
+            <span>右上角分数 = 适配度：</span>
+            <span className="flex items-center gap-1">
+              <span className="inline-block h-2 w-2 rounded-sm bg-emerald-500" />≥30 推荐
+            </span>
+            <span className="flex items-center gap-1">
+              <span className="inline-block h-2 w-2 rounded-sm bg-amber-500" />10–29 一般
+            </span>
+            <span className="flex items-center gap-1">
+              <span className="inline-block h-2 w-2 rounded-sm bg-zinc-500" />&lt;10 不太搭
+            </span>
+          </div>
           <div className="grid grid-cols-3 gap-1 sm:grid-cols-4">
             {[...targetMaterial.shots]
               .sort((a, b) => {
