@@ -3,7 +3,7 @@ import { Link, useNavigate, useSearchParams } from 'react-router-dom'
 
 import { api } from '@/api/client'
 import { deletePlanBgm, patchPlanBgm } from '@/api/bgm'
-import { patchPlanSettings, buildMainlinePreview } from '@/api/plan'
+import { patchPlanSettings } from '@/api/plan'
 import { createSSE } from '@/api/sse'
 import { commitStep, getStepSnapshot } from '@/api/steps'
 import { deleteVoice, regenerateNarrations, synthesizeAll, synthesizeOne } from '@/api/voice'
@@ -31,7 +31,7 @@ import { SystemLibraryPicker } from '@/components/compose/SystemLibraryPicker'
 import { TransitionStylePicker } from '@/components/compose/TransitionStylePicker'
 import { VersionMenu } from '@/components/compose/VersionMenu'
 import { PageShell } from '@/components/layout/PageShell'
-import { BurnedMainlinePlayer, type BurnedMainlinePlayerHandle } from '@/components/preview/BurnedMainlinePlayer'
+import { PlanPlayer, type PlanPlayerHandle } from '@/components/preview/PlanPlayer'
 import { cn } from '@/lib/utils'
 import { useEditStore } from '@/stores/edit'
 import { usePlanStore } from '@/stores/plan'
@@ -321,10 +321,6 @@ export default function ComposePage() {
   //     → 不复位，避免无关的 plan rebuild 把用户从 step3 弹回 step2（这是 PR-K 修复点）。
   //   - 其他情况（如 step1/2 中的 plan rebuild）→ 复位为锁定，老 step3 解锁状态不要串到新 plan。
   const [step3Unlocked, setStep3Unlocked] = useState(false)
-  // stage-83 (2026-06-12)：step3 预览底图 mp4 URL（buildMainlinePreview 返回）。
-  // null = 未就绪 / 失败 / plan 切换 → BurnedMainlinePlayer 内 <Video> 不渲染，
-  // 只有上层 Remotion 叠加（包装/字幕/口播/BGM）正常工作。
-  const [mainlineUrl, setMainlineUrl] = useState<string | null>(null)
 
   const lastStep3PlanIdRef = useRef<string | null>(null)
   // 通过 ref 读取当前 activeStep，避免把 activeStep 加入 useEffect 依赖
@@ -334,7 +330,6 @@ export default function ComposePage() {
     if (!plan) {
       if (lastStep3PlanIdRef.current !== null) {
         setStep3Unlocked(false)
-        setMainlineUrl(null)
         lastStep3PlanIdRef.current = null
       }
       return
@@ -346,7 +341,6 @@ export default function ComposePage() {
         lastStep3PlanIdRef.current = plan.plan_id
       } else {
         setStep3Unlocked(false)
-        setMainlineUrl(null)
         lastStep3PlanIdRef.current = plan.plan_id
       }
     }
@@ -425,7 +419,7 @@ export default function ComposePage() {
   useEffect(() => () => sseRef.current?.close(), [])
 
   // 实时预览：Remotion Player 与 FourTrackBoard 共享一条播放头
-  const playerRef = useRef<BurnedMainlinePlayerHandle>(null)
+  const playerRef = useRef<PlanPlayerHandle>(null)
   const [playheadSeconds, setPlayheadSeconds] = useState(0)
   const seekPlayer = useCallback((seconds: number) => {
     playerRef.current?.seek(seconds)
@@ -1228,19 +1222,8 @@ export default function ComposePage() {
         }
       }
 
-      // 3) stage-83：把主轨底图 mp4 准备好，给 step3 的 BurnedMainlinePlayer 当底图。
-      //    失败不阻断（包装/字幕/口播叠加层仍可正常预览），仅黄条提示重试。
-      try {
-        const meta = await buildMainlinePreview(plan.plan_id)
-        setMainlineUrl(meta.url)
-      } catch (err) {
-        setMainlineUrl(null)
-        setError(
-          err instanceof Error
-            ? `预览底图生成失败：${err.message}（可在第 3 步顶部黄条点重试）`
-            : '预览底图生成失败',
-        )
-      }
+      // stage-84：回到 Remotion PlanComposition 后，预览不再需要后端 mp4 底图，
+      // PlanPlayer 内部直接渲染主轨 + 包装/字幕/BGM/口播。
     } catch (err) {
       setError(err instanceof Error ? err.message : '进入 step3 准备失败')
     } finally {
@@ -1856,8 +1839,9 @@ export default function ComposePage() {
               分镜卡上点击换源逐个挑选。第一次进 step2 弹一次说明，之后用 localStorage 静音。 */}
           <Step2PlaceholderHint />
           {/* stage-83 (2026-06-12)：step2 删左侧 sticky 预览列。用户原话「step2不要预览了」。
-              预览统一到 step3——进入 step3 时后端把主轨合成 mp4 给 BurnedMainlinePlayer 当底图。
-              这里 FourTrackBoard 占满宽度，分镜卡 + 工作台是 step2 的主战场。 */}
+              stage-84 (2026-06-13)：step3 回到 Remotion PlanComposition 实时渲染（含包装/字幕/BGM/口播），
+              不再用后端 mp4 底图。step2 这里继续无预览——FourTrackBoard 占满宽度，分镜卡 + 工作台
+              是 step2 的主战场。 */}
           <div className="space-y-1.5">
             <div className="flex items-center justify-between">
               <h2 className="text-sm font-semibold">样例视频轨道 ↔ 新内容轨</h2>
@@ -2238,33 +2222,6 @@ export default function ComposePage() {
                 ← 返回第 2 步
               </button>
             </div>
-            {/* stage-83：底图未就绪时提示重试。包装/字幕/口播叠加层照常工作，仅视频底图黑屏 */}
-            {!mainlineUrl && !trackBusy && (
-              <div className="mb-2 flex flex-wrap items-center gap-2 rounded-md border border-amber-500/50 bg-amber-50/60 px-3 py-1.5 text-[11px] text-amber-900 dark:bg-amber-950/30 dark:text-amber-100">
-                <span>
-                  ⚠️ 预览底图未就绪 —— 包装/字幕/口播/BGM 仍可正常预览，但视频底图是黑屏。
-                </span>
-                <button
-                  type="button"
-                  className="ml-auto rounded bg-primary px-2 py-0.5 text-[10px] text-primary-foreground hover:opacity-90"
-                  onClick={async () => {
-                    if (!plan) return
-                    setTrackBusy(true)
-                    try {
-                      const meta = await buildMainlinePreview(plan.plan_id)
-                      setMainlineUrl(meta.url)
-                      setError(null)
-                    } catch (err) {
-                      setError(err instanceof Error ? err.message : '重试失败')
-                    } finally {
-                      setTrackBusy(false)
-                    }
-                  }}
-                >
-                  重试生成底图
-                </button>
-              </div>
-            )}
             <EmotionCurveCard
               plan={plan}
               playheadSeconds={playheadSeconds}
@@ -2292,13 +2249,13 @@ export default function ComposePage() {
             <div className="mb-3 grid items-start gap-3 md:grid-cols-[minmax(0,280px)_1fr]">
               <div className="rounded-lg border border-border bg-card p-2 md:sticky md:top-4 md:self-start">
                 <div className="mb-1.5 flex items-center justify-between px-1 text-[11px] text-muted-foreground">
-                  <span className="font-medium">实时预览（mp4 底图 + Remotion 叠加）</span>
+                  <span className="font-medium">实时预览</span>
                   <span className="font-mono">{playheadSeconds.toFixed(1)}s / {plan.duration_seconds.toFixed(1)}s</span>
                 </div>
-                <BurnedMainlinePlayer
+                <PlanPlayer
                   ref={playerRef}
                   plan={plan}
-                  mainlineUrl={mainlineUrl}
+                  materials={sortedMaterials}
                   onTimeUpdate={setPlayheadSeconds}
                 />
               </div>
