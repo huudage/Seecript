@@ -2950,7 +2950,7 @@ function UploadDropzone({
  * 片段卡上的 ✏ 是改主题、▾ 是展开、外圈点击是选中片段。bump key v1→v2 让老用户
  * 重新见到这版更完整的说明。
  */
-const STEP2_PLACEHOLDER_HINT_KEY = 'seecript.step2.placeholder.dismissed.v2'
+const STEP2_PLACEHOLDER_HINT_KEY = 'seecript.step2.placeholder.dismissed.v3'
 
 function Step2PlaceholderHint() {
   const [dismissed, setDismissed] = useState<boolean>(() => {
@@ -2989,6 +2989,18 @@ function Step2PlaceholderHint() {
         </ul>
         <p className="text-amber-900/70 dark:text-amber-100/70">
           手动裁剪视频时，所选区间会直接覆盖该分镜的时长，后续分镜自动顺移、整轨总长跟着伸缩。
+        </p>
+        {/* stage-81 (2026-06-12) 黄底再补一行：把切片右上角分数 = 适配度的含义讲清楚——
+            用户原话：「黄底解释片段的打分说明也没添加」 */}
+        <p className="text-amber-900/85 dark:text-amber-100/85">
+          <b>切片右上角分数 = 适配度</b>：本分镜的内容/时长与该切片画面/字幕/时长的契合度，
+          越高越搭。颜色档：
+          <span className="mx-0.5 rounded bg-emerald-500/20 px-1 font-medium text-emerald-700 dark:text-emerald-300">绿 ≥ 30</span>
+          推荐 ·
+          <span className="mx-0.5 rounded bg-amber-500/25 px-1 font-medium text-amber-800 dark:text-amber-200">黄 10–29</span>
+          勉强 ·
+          <span className="mx-0.5 rounded bg-slate-400/25 px-1 font-medium text-slate-700 dark:text-slate-300">灰 &lt; 10</span>
+          基本不搭。换源时切片已按分数倒序排好，靠前的更值得选。
         </p>
       </div>
       <button
