@@ -29,7 +29,7 @@
  * mainlineUrl=null 时（底图未就绪 / 失败 / 切换 plan 重置）：<Video> 不渲染，只留黑底 + 上层叠加。
  * 用户能正常预览包装/字幕/口播/BGM 调整，只是看不到视频底图。Compose.tsx 顶部黄条提示重试。
  */
-import { forwardRef, useEffect, useImperativeHandle, useRef } from 'react'
+import { Component, forwardRef, useEffect, useImperativeHandle, useMemo, useRef, type ErrorInfo, type ReactNode } from 'react'
 
 import { Player, type PlayerRef } from '@remotion/player'
 import { AbsoluteFill, Audio, Sequence, Video } from 'remotion'
@@ -37,6 +37,62 @@ import { AbsoluteFill, Audio, Sequence, Video } from 'remotion'
 import type { Plan } from '@/types/schemas'
 
 import { BgmAudio, PackagingLayer, fallbackTitle, secsToFrames } from './_overlays'
+
+/**
+ * Remotion `<Video src>` 静态检查要求绝对 URL；后端返的 `/preview/<...>.mp4` 是相对路径，
+ * 直接传进 Composition 会让 Player 渲染 throw → 整个 step3 grid 子树消失（预览空白 +
+ * 隔壁 FourTrackBoard 也跟着没）。把相对路径拼到 window.location.origin 上即可。
+ */
+function toAbsoluteUrl(u: string | null): string | null {
+  if (!u) return null
+  if (/^https?:\/\//i.test(u)) return u
+  if (typeof window === 'undefined') return u
+  try {
+    return new URL(u, window.location.origin).href
+  } catch {
+    return u
+  }
+}
+
+/**
+ * 兜底 ErrorBoundary：Player / Remotion 内部任何渲染异常都不应该把 step3 的 FourTrackBoard 一起
+ * 拖下水（用户原话：「step3的视频预览也显示不出来，其他轨道也不见了」）。崩了就显示黑底 + 提示，
+ * 包装/字幕/口播叠加也跟着没，但隔壁轨道不受影响。
+ */
+class PlayerErrorBoundary extends Component<{ children: ReactNode }, { failed: boolean; message: string | null }> {
+  state = { failed: false, message: null as string | null }
+  static getDerivedStateFromError(err: unknown) {
+    return { failed: true, message: err instanceof Error ? err.message : String(err) }
+  }
+  componentDidCatch(err: unknown, info: ErrorInfo) {
+    console.error('[BurnedMainlinePlayer] render error', err, info)
+  }
+  render() {
+    if (this.state.failed) {
+      return (
+        <div
+          style={{
+            width: '100%',
+            aspectRatio: '9/16',
+            maxHeight: 520,
+            backgroundColor: '#111',
+            borderRadius: 6,
+            color: '#aaa',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            padding: 12,
+            textAlign: 'center',
+            fontSize: 12,
+          }}
+        >
+          预览渲染失败（不影响下方轨道操作）：{this.state.message}
+        </div>
+      )
+    }
+    return this.props.children
+  }
+}
 
 export interface BurnedMainlinePlayerHandle {
   seek: (seconds: number) => void
@@ -89,30 +145,33 @@ export const BurnedMainlinePlayer = forwardRef<BurnedMainlinePlayerHandle, Props
     }, [onTimeUpdate])
 
     const total = Math.max(1, secsToFrames(plan.duration_seconds, FPS))
-    const { w, h } = canvasFromAspect(plan.settings.aspect_ratio ?? '9:16')
+    const { w, h } = canvasFromAspect(plan.settings?.aspect_ratio ?? '9:16')
+    const absoluteUrl = useMemo(() => toAbsoluteUrl(mainlineUrl), [mainlineUrl])
 
     return (
-      <Player
-        ref={playerRef}
-        component={BurnedComposition}
-        inputProps={{ plan, mainlineUrl }}
-        durationInFrames={total}
-        compositionWidth={w}
-        compositionHeight={h}
-        fps={FPS}
-        controls
-        clickToPlay
-        loop={false}
-        style={{
-          width: '100%',
-          maxHeight: 520,
-          aspectRatio: `${w}/${h}`,
-          backgroundColor: '#000',
-          borderRadius: 6,
-          overflow: 'hidden',
-        }}
-        acknowledgeRemotionLicense
-      />
+      <PlayerErrorBoundary>
+        <Player
+          ref={playerRef}
+          component={BurnedComposition}
+          inputProps={{ plan, mainlineUrl: absoluteUrl }}
+          durationInFrames={total}
+          compositionWidth={w}
+          compositionHeight={h}
+          fps={FPS}
+          controls
+          clickToPlay
+          loop={false}
+          style={{
+            width: '100%',
+            maxHeight: 520,
+            aspectRatio: `${w}/${h}`,
+            backgroundColor: '#000',
+            borderRadius: 6,
+            overflow: 'hidden',
+          }}
+          acknowledgeRemotionLicense
+        />
+      </PlayerErrorBoundary>
     )
   },
 )

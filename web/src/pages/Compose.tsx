@@ -3022,16 +3022,17 @@ function Step2PlaceholderHint() {
           手动裁剪视频时，所选区间会直接覆盖该分镜的时长，后续分镜自动顺移、整轨总长跟着伸缩。
         </p>
         {/* stage-81 (2026-06-12) 黄底再补一行：把切片右上角分数 = 适配度的含义讲清楚——
-            用户原话：「黄底解释片段的打分说明也没添加」 */}
+            用户原话：「黄底解释片段的打分说明也没添加」
+            stage-83 修：阈值/颜色按 FourTrackBoard 实际渲染（70/40 三档：绿/黄/红），
+            原文档抄成了换源弹窗的另一套打分（30/10，绿/黄/灰），与分镜卡红底不对应。 */}
         <p className="text-amber-900/85 dark:text-amber-100/85">
-          <b>切片右上角分数 = 适配度</b>：本分镜的内容/时长与该切片画面/字幕/时长的契合度，
-          越高越搭。颜色档：
-          <span className="mx-0.5 rounded bg-emerald-500/20 px-1 font-medium text-emerald-700 dark:text-emerald-300">绿 ≥ 30</span>
+          <b>分镜卡右上角分数 = 素材适配度</b>：本分镜与所选素材切片在画面/语义上的契合度（0–100）。颜色档：
+          <span className="mx-0.5 rounded bg-emerald-500/25 px-1 font-medium text-emerald-700 dark:text-emerald-300">绿 ≥ 70</span>
           推荐 ·
-          <span className="mx-0.5 rounded bg-amber-500/25 px-1 font-medium text-amber-800 dark:text-amber-200">黄 10–29</span>
+          <span className="mx-0.5 rounded bg-amber-500/25 px-1 font-medium text-amber-800 dark:text-amber-200">黄 40–69</span>
           勉强 ·
-          <span className="mx-0.5 rounded bg-slate-400/25 px-1 font-medium text-slate-700 dark:text-slate-300">灰 &lt; 10</span>
-          基本不搭。换源时切片已按分数倒序排好，靠前的更值得选。
+          <span className="mx-0.5 rounded bg-rose-500/25 px-1 font-medium text-rose-700 dark:text-rose-300">红 &lt; 40</span>
+          不搭，建议换源。换源弹窗里另有一套切片打分（绿 ≥ 30 / 黄 10–29 / 灰 &lt; 10），已按分数倒序排好。
         </p>
       </div>
       <button
