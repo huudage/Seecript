@@ -2352,7 +2352,7 @@ export default function ComposePage() {
                 onToggleVoiceover={handleToggleVoiceover}
                 onChangeTtsVoice={handleChangeTtsVoice}
                 busy={trackBusy}
-                phase={pendingGapsCount === 0 ? 'full' : 'content-only'}
+                phase="full"
                 playheadSeconds={playheadSeconds}
                 onSeek={seekPlayer}
                 onResizePackagingItem={handleResizePackagingItem}
