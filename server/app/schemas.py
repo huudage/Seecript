@@ -1455,23 +1455,6 @@ class Scene(BaseModel):
         description="与上一段衔接方式；sc-0 永远忽略此字段（无上一段）。"
                     "None 或 style=hard_cut 时走 concat demuxer 直拼；其他 style 走 xfade 滤镜。",
     )
-    fit_score: Optional[float] = Field(
-        default=None,
-        ge=0.0, le=1.0,
-        description=(
-            "stage-59：素材-段落 适配度评分（0-1）。仅 source=user_material 时有意义；"
-            "其它来源（aigc/text_card/sample）这里恒为 None。"
-            "由 services.materials.fit.compute_material_fit 综合 material 标签 / "
-            "recommended_section / 时长 / highlight 与 section.theme/content_description 算出。"
-            "前端在 Scene 卡上显示『适配 NN%』徽章，让用户决定是否换素材。"
-        ),
-    )
-    fit_reason: Optional[str] = Field(
-        default=None,
-        max_length=80,
-        description="stage-59：fit_score 的一句话原因（≤80 字），如『段位推荐 + 主体匹配』。",
-    )
-
     @model_validator(mode="before")
     @classmethod
     def _migrate_legacy_section(cls, data: Any) -> Any:
@@ -1672,17 +1655,25 @@ MigrationPreference = Literal["mirror", "amp_emotion", "amp_pace"]
 TTSVoice = Literal[
     "zh_female_qingxin",
     "zh_male_jieshuo",
-    "zh_female_meili",
-    "zh_male_qingshuang",
-    "zh_female_xinling",
+    "zh_female_wenrou",
+    "zh_male_xueyi",
+    "zh_female_xiaoyu",
 ]
-"""ARK 火山方舟 TTS 音色（中文）。
+"""ARK 火山方舟 TTS 音色（中文）。须与 services/tts/client.py::_VOICE_ALIAS 的 key 集合一致。
 - zh_female_qingxin     清新女声（默认）
 - zh_male_jieshuo       磁性解说男声
-- zh_female_meili       甜美治愈女声
-- zh_male_qingshuang    清爽阳光男声
-- zh_female_xinling     心灵叙事女声
+- zh_female_wenrou      温柔女声
+- zh_male_xueyi         学奕男声（阳光青年）
+- zh_female_xiaoyu      小渔女声
 """
+
+# 旧音色名 → 现役音色（按性别 + 调性就近映射）。
+# 旧名在 _VOICE_ALIAS 里已无对应，硬切 Literal 会让已落盘的旧 plan 加载即 422，故做迁移。
+_LEGACY_TTS_VOICE_MAP = {
+    "zh_female_meili": "zh_female_wenrou",
+    "zh_male_qingshuang": "zh_male_xueyi",
+    "zh_female_xinling": "zh_female_qingxin",
+}
 
 
 PackagingPreset = Literal["minimalist", "energetic", "info_feed", "dialogue", "custom"]
@@ -1951,6 +1942,17 @@ class ComposeSettings(BaseModel):
         description="frame.md 设计系统 token（色板/字体/动效密度），全片包装统一。"
                     "preset=custom 时按字段值；非 custom 时由 packaging_agent 按预设展开缺省字段。",
     )
+
+    @model_validator(mode="before")
+    @classmethod
+    def _migrate_legacy_tts_voice(cls, data: Any) -> Any:
+        """旧 plan 落盘的 meili/qingshuang/xinling 已退役，就近迁到现役音色，避免加载 422。"""
+        if not isinstance(data, dict):
+            return data
+        v = data.get("tts_voice")
+        if v in _LEGACY_TTS_VOICE_MAP:
+            data["tts_voice"] = _LEGACY_TTS_VOICE_MAP[v]
+        return data
 
 
 class Plan(BaseModel):

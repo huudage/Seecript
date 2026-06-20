@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 
-import { patchShotFields, swapSceneSource } from '@/api/plan'
+import { getMaterialShotFitScores, patchShotFields, swapSceneSource } from '@/api/plan'
+import type { ShotFitScoreItem } from '@/api/plan'
 import { SECTION_LABEL } from '@/lib/sections'
 import type {
   AdaptedSection,
@@ -80,6 +81,10 @@ export function ShotEditDialog({
   const [swapSubText, setSwapSubText] = useState('')
   const [swapping, setSwapping] = useState(false)
   const [swapErr, setSwapErr] = useState<string | null>(null)
+  // 切片适配度：选中素材后拉每镜对本 scene 的分数（复用换源弹窗同一接口/同一评分），
+  // 给"挑自动识别的镜头"下拉做预览——让用户知道本镜适合放素材里的哪一段。
+  const [shotScores, setShotScores] = useState<Record<number, ShotFitScoreItem>>({})
+  const [scoresLoading, setScoresLoading] = useState(false)
 
   useEffect(() => {
     if (!open) return
@@ -106,7 +111,35 @@ export function ShotEditDialog({
     setSwapMainText('')
     setSwapSubText('')
     setSwapErr(null)
+    setShotScores({})
   }, [open, shot, scene, materials])
+
+  // 选中素材后拉每镜的切片适配度评分（仅 user_material 模式）；与换源弹窗 getMaterialShotFitScores 同源同尺。
+  useEffect(() => {
+    if (!open || !scene) return
+    if (swapSource !== 'user_material' || !swapMaterialId) {
+      setShotScores({})
+      return
+    }
+    let cancelled = false
+    setScoresLoading(true)
+    void getMaterialShotFitScores(plan.plan_id, scene.scene_id, swapMaterialId)
+      .then((resp) => {
+        if (cancelled) return
+        const map: Record<number, ShotFitScoreItem> = {}
+        for (const s of resp.scores) map[s.shot_index] = s
+        setShotScores(map)
+      })
+      .catch(() => {
+        if (!cancelled) setShotScores({})
+      })
+      .finally(() => {
+        if (!cancelled) setScoresLoading(false)
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [open, plan.plan_id, scene, swapSource, swapMaterialId])
 
   useEffect(() => {
     if (!open) return
@@ -451,6 +484,11 @@ export function ShotEditDialog({
                         <span className="text-xs font-semibold text-emerald-700">
                           ② 或挑自动识别的镜头（缺省取首镜，按本镜时长 {scene.duration.toFixed(1)}s 切入出点）
                         </span>
+                        <span className="block text-[11px] text-emerald-700/70">
+                          {scoresLoading
+                            ? '正在评估各镜头与本段的适配度…'
+                            : '已按适配度排序 · ≥30 推荐 / 10–29 一般 / <10 不太搭'}
+                        </span>
                         <select
                           value={swapMaterialShotIdx === null ? '' : String(swapMaterialShotIdx)}
                           disabled={busy}
@@ -463,13 +501,60 @@ export function ShotEditDialog({
                           className="w-full rounded border border-border bg-background px-2 py-1.5 text-sm disabled:opacity-60"
                         >
                           <option value="">（默认：首镜）</option>
-                          {materialShots.map((sh) => (
-                            <option key={sh.index} value={sh.index}>
-                              第 {sh.index + 1} 镜 · {sh.start.toFixed(1)}-{sh.end.toFixed(1)}s
-                              {sh.caption ? ` · ${sh.caption.slice(0, 24)}` : ''}
-                            </option>
-                          ))}
+                          {[...materialShots]
+                            .sort(
+                              (a, b) =>
+                                (shotScores[b.index]?.score ?? -1) -
+                                  (shotScores[a.index]?.score ?? -1) ||
+                                a.index - b.index,
+                            )
+                            .map((sh) => {
+                              const fit = shotScores[sh.index]
+                              return (
+                                <option key={sh.index} value={sh.index}>
+                                  第 {sh.index + 1} 镜 · {sh.start.toFixed(1)}-{sh.end.toFixed(1)}s
+                                  {fit
+                                    ? ` · 适配 ${fit.score_pct}`
+                                    : scoresLoading
+                                      ? ' · 适配…'
+                                      : ''}
+                                  {sh.caption ? ` · ${sh.caption.slice(0, 24)}` : ''}
+                                </option>
+                              )
+                            })}
                         </select>
+                        {(() => {
+                          const idx =
+                            swapMaterialShotIdx === null
+                              ? materialShots[0]?.index
+                              : swapMaterialShotIdx
+                          const fit = idx === undefined ? undefined : shotScores[idx]
+                          if (!fit) return null
+                          const tone =
+                            fit.quality === 'good'
+                              ? 'bg-emerald-500/95'
+                              : fit.quality === 'weak'
+                                ? 'bg-amber-500/95'
+                                : 'bg-zinc-600/85'
+                          const label =
+                            fit.quality === 'good'
+                              ? '推荐'
+                              : fit.quality === 'weak'
+                                ? '一般'
+                                : '不太搭'
+                          return (
+                            <div className="flex items-center gap-1.5 pt-0.5">
+                              <span className="text-[11px] text-emerald-700/80">
+                                {swapMaterialShotIdx === null ? '首镜适配度' : '所选镜头适配度'}
+                              </span>
+                              <span
+                                className={`rounded px-1.5 py-0.5 text-[11px] font-semibold text-white ${tone}`}
+                              >
+                                {fit.score_pct} · {label}
+                              </span>
+                            </div>
+                          )
+                        })()}
                         <div className="flex items-center justify-end pt-1">
                           <button
                             onClick={applyAutoShot}

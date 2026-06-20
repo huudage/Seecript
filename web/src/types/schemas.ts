@@ -718,11 +718,6 @@ export interface Scene {
   user_edited?: boolean
   /** 与上一段衔接方式；sc-0 永远忽略此字段。None / hard_cut 走 concat demuxer，其他走 xfade。 */
   transition_in?: SceneTransition | null
-  /** stage-59：素材-段落 适配度评分（0-1）。仅 source=user_material 时有值；
-   *  其它来源恒为 null。前端在 Scene 卡上显示『适配 NN%』徽章。 */
-  fit_score?: number | null
-  /** stage-59：fit_score 的一句话原因（≤80 字）。 */
-  fit_reason?: string | null
 }
 
 export interface SceneTransition {
@@ -815,8 +810,8 @@ export interface BGMAnalysis {
 }
 
 export interface BGMConfig {
-  /** BGM 资产 ID（asset library 中的 id）。 */
-  asset_id?: string | null
+  /** BGM 资产 ID（asset library 中的 id）。镜像后端 BGMConfig.bgm_asset_id。 */
+  bgm_asset_id?: string | null
   track_url?: string | null
   volume: number
   fade_in: number

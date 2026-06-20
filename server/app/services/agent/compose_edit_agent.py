@@ -5,7 +5,7 @@
 - 本模块是 Compose 态的"改稿"
 
 作用域（stage-53，强分流 + 宏指令）：
-- step2 (拆解-改编态)：**只**改内容轨（段文案 / 段时长 / 删段 / 重排 / 分镜级 4 件套）+ 素材重排（rerank/copy）+ 编排级 Compose 设置（platform/ratio/duration/migration_preference）
+- step2 (拆解-改编态)：**只**改内容轨（段文案 / 段时长 / 删段 / 重排 / 分镜级 4 件套）+ 字卡重出（copy）+ 编排级 Compose 设置（platform/ratio/duration/migration_preference）
 - step3 (包装-渲染态)：**只**改包装/字幕/BGM/转场/封面 + 渲染级 Compose 设置（subtitle/voiceover/tts_voice/frame_design/packaging_preset）+ aigc_image 重生
 - 跨 step 的指令 → D 态：不调任何 tool，明确返回"请去 stepX 改"的引导文案
 - 内容轨的 AI 生成结果（aigc_image / aigc_t2v）→ D 态：引导用户走 AIGC 面板手动改提示词
@@ -55,6 +55,8 @@ _QA_RULES = (
     "   - **step2 用户想改包装/字幕/BGM/转场/封面/字卡视觉/标题条** → 回『这类包装类编辑在 step3 进行，请切到 step3 后再说一遍』。\n"
     "   - **step2 用户想改 AI 生图/AI 视频本身** → 回『AI 生图 / AI 视频不通过对话改，请到 AIGC 面板手动改提示词后再点重新生成』。\n"
     "   - **step3 用户想改内容轨**（段文案 / 段时长 / 删段 / 重排顺序 / 分镜画面 / 分镜口播 / 分镜主体 / 分镜时长） → 回『内容轨编辑在 step2 进行，请切到 step2 后再说一遍』。\n"
+    "E) **无关拦截**（调用 decline_unrelated，不要其它 tool_calls、不要正文）：用户输入跟『编辑这条视频』毫无关系——闲聊、问天气/时间、问你是谁、让你写诗/翻译/做算术、纯表情/乱码等 → 调 decline_unrelated。\n"
+    "   注意：问本项目（结构/段落/时长/素材建议/包装/调性/本 step 能改什么）属 B 讲解，**不是**无关，不要误拦。\n"
     "讲解能覆盖：项目主题/目标、段落结构（每段角色/主题/时长/描述）、结构空缺（没有 scene 或时长占比异常的段）、"
     "素材选择建议（基于段角色 + 全局调性 / 平台 / 关键词推断要找什么样素材）、"
     "BGM / 包装 / 调性 / 比例当前是什么、本 step 能改什么、为什么改不了。\n"
@@ -64,7 +66,7 @@ _QA_RULES = (
 )
 
 _SYSTEM_STEP2 = (
-    "你是 Compose 拆解-改编态的对话编辑小助手。当前作用域 step2，**只改内容轨**（段落 / 分镜 / 素材重排）+ 编排级 Compose 设置。\n"
+    "你是 Compose 拆解-改编态的对话编辑小助手。当前作用域 step2，**只改内容轨**（段落 / 分镜 / 字卡重出）+ 编排级 Compose 设置。\n"
     "**包装 / 字幕 / BGM / 转场 / 封面 / 字卡视觉 / 标题条 / 贴纸**这些在 step3 改——用户问这些请走 D 态引导，**不要 tool_calls**。\n"
     "**AI 生图 / AI 视频本身**（aigc_image / aigc_t2v）不通过对话改，请走 AIGC 面板手动改提示词——也是 D 态引导。\n"
     "可调用编辑工具：\n"
@@ -79,9 +81,9 @@ _SYSTEM_STEP2 = (
     "update_shot_duration（改某分镜的时长 1-12 秒，自动缩放段总时长与对应 scene）、"
     "delete_shot（**删除**某段下第 N 个分镜——用户说『删除/去掉/砍掉/不要 第 N 段第 M 镜』时调用此工具，**不要**用 update_shot_duration 把它压成 1 秒来糊弄；段内只剩这 1 镜会自动 cascade 成整段删除）、"
     "regenerate_narrations_all（按 hint 整体重写所有段落口播）。\n"
-    "—— 素材重排 / 字卡重出（仅 rerank 与 copy；aigc_image 在 step2 禁用）——\n"
-    "regenerate_fill（重新生成某段 fill，action ∈ rerank/copy）、"
-    "regenerate_all_fills（批量重生成所有段，action ∈ rerank/copy）。\n"
+    "—— 字卡重出（仅 copy；aigc_image 在 step2 禁用）——\n"
+    "regenerate_fill（重新生成某段 fill，action = copy）、"
+    "regenerate_all_fills（批量重生成所有段，action = copy）。\n"
     "—— 编排级设置（与 step3 共用同一 tool，但 step2 只接受这些 key）——\n"
     "update_compose_setting（target_platform/aspect_ratio/target_duration_seconds/migration_preference）。\n"
     "—— 宏指令（形容词类指令统一走它） ——\n"
@@ -102,7 +104,8 @@ _SYSTEM_STEP2 = (
     "用户若**直接**说 sec-0/sec-1 也照旧支持识别。**禁止**自己造 sec-id（例如不能凭空说 sec-5 但实际只有 4 段）。\n"
     "**分镜级编辑**：用户说『第 1 段第 2 镜画面改成…』『开头段第 1 镜口播改成…』『高潮段第 3 镜短一点』时，"
     "先按上面规则定段，再用 update_shot_visual / update_shot_subject / update_shot_narration / update_shot_duration；shot_order 从 0 起（用户说『第 1 镜』即 shot_order=0）。\n"
-    "若用户说『重新挑素材』『重新生成字卡』『把 N 段重排』『所有段重排素材』『所有段重出字卡』→ regenerate_fill 或 regenerate_all_fills（action=rerank 或 copy）。\n\n"
+    "若用户说『重新生成字卡』『所有段重出字卡』→ regenerate_fill 或 regenerate_all_fills（action=copy）。\n"
+    "**若用户说『重新挑素材 / 换真实素材 / 重排素材 / 用我自己的素材』** → D 态引导：『真实素材的替换请在「单镜编辑」里用「换源」完成，对话端只能重出字卡(copy)』，**不要 tool_calls**。\n\n"
     + _QA_RULES
 )
 
@@ -118,15 +121,16 @@ _SYSTEM_STEP3 = (
     "update_bgm_offset（BGM 起点对齐到视频第几秒，可负）、"
     "update_bgm_volume（BGM 音量 0-1.5）、"
     "update_compose_setting（渲染级 key：subtitle_enabled/voiceover_enabled/tts_voice/frame_design_preset/packaging_preset；编排级 key 仍接受兼容）、"
-    "regenerate_fill（重新生成某段 fill，action ∈ rerank/copy/aigc_image）、"
-    "regenerate_all_fills（批量重生成所有段，action ∈ rerank/copy/aigc_image）。\n"
+    "regenerate_fill（重新生成某段 fill，action ∈ copy/aigc_image）、"
+    "regenerate_all_fills（批量重生成所有段，action ∈ copy/aigc_image）。\n"
     "—— 宏指令（形容词类指令统一走它） ——\n"
     "apply_macro_adjustment：用户说形容词如『更快/紧凑/节奏感』→ macro=amp_pace（step3 下只动转场+BGM）；"
     "『更抓人/更有感染力』→ macro=amp_emotion（step3 下只动 BGM 音量+字幕开关+迁移倾向）。"
     "档位 intensity 凭语气词判（稍微/明显/大幅 → light/medium/strong）。scope 默认 'all'。\n"
     "**段落识别**：用户**只用『第 N 段』/『开头段』/『高潮段』/『最后一段』这类人话**——按列表顺序定位 section_id；"
     "**对外**也只回『第 N 段』，不要在回答里写 sec-0/sec-1 这种内部 id。\n"
-    "用户若说『重新生成 AI 视频』→ D 态引导：『AI 视频请到 AIGC 面板手动改提示词后重生成。』\n\n"
+    "用户若说『重新生成 AI 视频』→ D 态引导：『AI 视频请到 AIGC 面板手动改提示词后重生成。』\n"
+    "用户若说『重新挑素材 / 换真实素材 / 重排素材 / 用我自己的素材』→ D 态引导：『真实素材的替换请在「单镜编辑」里用「换源」完成，对话端只能重出字卡(copy)或 AI 静图(aigc_image)。』\n\n"
     + _QA_RULES
 )
 
@@ -418,8 +422,8 @@ _TOOL_REGENERATE_ALL_FILLS = {
     "function": {
         "name": "regenerate_all_fills",
         "description": (
-            "批量重生成所有段落的 fill（仅 rerank/copy/aigc_image；aigc 视频禁止）。"
-            "用户说『所有段重新生图』『全部重出字卡』『所有段都重排素材』时调用。"
+            "批量重生成所有段落的 fill（仅 copy/aigc_image；aigc 视频禁止）。"
+            "用户说『所有段重新生图』『全部重出字卡』时调用。"
             "底层对每段调一次 fill_gap（asyncio.gather 并发），单段失败不阻塞其他段。"
         ),
         "parameters": {
@@ -427,7 +431,7 @@ _TOOL_REGENERATE_ALL_FILLS = {
             "properties": {
                 "action": {
                     "type": "string",
-                    "enum": ["rerank", "copy", "aigc_image"],
+                    "enum": ["copy", "aigc_image"],
                 },
                 "hint": {
                     "type": "string",
@@ -446,7 +450,7 @@ _TOOL_REGENERATE_ALL_FILLS_NO_AIGC = {
     "function": {
         "name": "regenerate_all_fills",
         "description": (
-            "批量重生成所有段落的 fill。step2 仅支持 rerank/copy 两种；"
+            "批量重生成所有段落的 fill。step2 仅支持 copy（重出字卡）；"
             "AI 生图 / AI 视频请走 AIGC 面板。"
         ),
         "parameters": {
@@ -454,7 +458,7 @@ _TOOL_REGENERATE_ALL_FILLS_NO_AIGC = {
             "properties": {
                 "action": {
                     "type": "string",
-                    "enum": ["rerank", "copy"],
+                    "enum": ["copy"],
                 },
                 "hint": {
                     "type": "string",
@@ -548,7 +552,7 @@ _TOOL_REGENERATE_FILL = {
     "function": {
         "name": "regenerate_fill",
         "description": (
-            "重新生成某段（section）已有的缺口补全（fill）。仅支持 rerank/copy/aigc_image 三种；"
+            "重新生成某段（section）已有的缺口补全（fill）。仅支持 copy/aigc_image 两种；"
             "aigc 视频生成成本高、耗时长，不允许通过对话重生成（用户应在 AIGC 面板手动改提示词后再点重新生成）。"
             "hint 是用户给本次重生成的额外指引（可空），会作为 prompt_hint 透传给 fill_gap。"
         ),
@@ -558,8 +562,8 @@ _TOOL_REGENERATE_FILL = {
                 "section_id": {"type": "string", "description": "AdaptedSection.section_id，如 sec-0"},
                 "action": {
                     "type": "string",
-                    "enum": ["rerank", "copy", "aigc_image"],
-                    "description": "重生成的 fill 动作。rerank=结构重排；copy=字卡 LLM 文案；aigc_image=Seedream 静图。",
+                    "enum": ["copy", "aigc_image"],
+                    "description": "重生成的 fill 动作。copy=字卡 LLM 文案；aigc_image=Seedream 静图。",
                 },
                 "hint": {
                     "type": "string",
@@ -579,7 +583,7 @@ _TOOL_REGENERATE_FILL_NO_AIGC = {
     "function": {
         "name": "regenerate_fill",
         "description": (
-            "重新生成某段（section）已有的缺口补全（fill）。step2 仅支持 rerank/copy 两种；"
+            "重新生成某段（section）已有的缺口补全（fill）。step2 仅支持 copy（重出字卡）；"
             "AI 生图（aigc_image）与 AI 视频（aigc_t2v）请走 AIGC 面板手动改 prompt 再点重生。"
             "hint 是用户给本次重生成的额外指引（可空），会作为 prompt_hint 透传给 fill_gap。"
         ),
@@ -589,8 +593,8 @@ _TOOL_REGENERATE_FILL_NO_AIGC = {
                 "section_id": {"type": "string", "description": "AdaptedSection.section_id，如 sec-0"},
                 "action": {
                     "type": "string",
-                    "enum": ["rerank", "copy"],
-                    "description": "重生成的 fill 动作。rerank=结构重排；copy=字卡 LLM 文案。",
+                    "enum": ["copy"],
+                    "description": "重生成的 fill 动作。copy=字卡 LLM 文案。",
                 },
                 "hint": {
                     "type": "string",
@@ -644,6 +648,22 @@ _TOOL_APPLY_MACRO = {
 }
 
 
+# level=unrelated：用户输入与『编辑当前这条视频』完全无关时调用，不产生任何编辑
+_TOOL_DECLINE_UNRELATED = {
+    "type": "function",
+    "function": {
+        "name": "decline_unrelated",
+        "description": (
+            "当用户输入与『编辑当前这条视频』完全无关时调用——"
+            "例如闲聊、问天气/时间、问你是谁、要你写诗/翻译/算数、纯表情或乱码等。"
+            "**只要识别为无关就调用本工具，不要尝试回答这些问题、也不要调用任何编辑工具。**"
+            "判断本项目相关问题（结构/段落/时长/素材/包装/调性等讲解类）**不算**无关——那类走讲解（B）。"
+        ),
+        "parameters": {"type": "object", "properties": {}},
+    },
+}
+
+
 # 宏指令系数表：{(scope, direction, level): {field: factor}}
 # pace amplify = 缩短时长（节奏更快）；pace attenuate = 延长时长（节奏更慢）
 # emotion amplify = 转场强度↑ + BGM↑；emotion attenuate = 反之
@@ -678,11 +698,13 @@ _TOOLS_STEP2: list[dict] = [
     _TOOL_REGENERATE_NARRATIONS_ALL,
     # 编排级 Compose 设置
     _TOOL_UPDATE_COMPOSE_SETTING,
-    # 素材重排 / 字卡重出（禁 aigc_image，AI 生图走 AIGC 面板）
+    # 字卡重出（禁 aigc_image，AI 生图走 AIGC 面板；段级 rerank 挑素材已下架）
     _TOOL_REGENERATE_FILL_NO_AIGC,
     _TOOL_REGENERATE_ALL_FILLS_NO_AIGC,
     # 宏指令（节奏/情绪 × 三档）
     _TOOL_APPLY_MACRO,
+    # 无关输入拦截（不产生编辑，落 E 态引导）
+    _TOOL_DECLINE_UNRELATED,
 ]
 
 _TOOLS_STEP3: list[dict] = [
@@ -703,6 +725,8 @@ _TOOLS_STEP3: list[dict] = [
     _TOOL_REGENERATE_ALL_FILLS,
     # 宏指令
     _TOOL_APPLY_MACRO,
+    # 无关输入拦截（不产生编辑，落 E 态引导）
+    _TOOL_DECLINE_UNRELATED,
 ]
 
 
@@ -1579,7 +1603,7 @@ async def _mut_regenerate_fill(plan: Plan, args: dict) -> ComposeEditDiff | None
         aigc_image：scene.source='aigc_image'，scene.aigc_image_url=新 URL；
                     多图（path B）会扩展成 N 个等长子 scene 替换原 scene
         copy      ：scene.source='text_card'，scene.text_card_spec=新规格，narration=主+副拼接
-        rerank    ：scene.source='user_material'，scene.source_ref=新 material_id（暂不存全量 material 校验）
+    （段级 rerank「挑素材」已下架：真实素材替换走单镜编辑「换源」，对话端不再支持 action=rerank）
     """
     sid = (args.get("section_id") or "").strip()
     action = (args.get("action") or "").strip()
@@ -1607,7 +1631,7 @@ async def _mut_regenerate_fill(plan: Plan, args: dict) -> ComposeEditDiff | None
     from .gap_agent import fill_gap  # 延迟导入避免循环
     params: dict[str, Any] = {}
     if hint:
-        # 三个 action 都把 hint 当 prompt_hint：copy 走文案补充，aigc_image 走画面要求，rerank 暂时无视
+        # copy 走文案补充，aigc_image 走画面要求，都把 hint 当 prompt_hint
         params["prompt_hint"] = hint
         if action == "aigc_image":
             params["prompt"] = hint  # aigc_image 用 prompt 字段
@@ -1703,22 +1727,6 @@ async def _mut_regenerate_fill(plan: Plan, args: dict) -> ComposeEditDiff | None
             aigc_video_urls=[],
             aigc_image_url=None,
             text_card_spec=spec,
-        ))
-    elif action == "rerank":
-        new_segment.append(Scene(
-            scene_id=prefix,
-            section=sec_role,
-            source="user_material",
-            source_ref=new_fill.new_material_id or first_old.source_ref,
-            start=first_old.start,
-            duration=old_total_dur,
-            in_point=0.0,
-            out_point=old_total_dur,
-            narration=first_old.narration,
-            voiceover_url=first_old.voiceover_url,
-            aigc_video_urls=[],
-            aigc_image_url=None,
-            text_card_spec=None,
         ))
     else:
         return None  # _REGEN_ALLOWED_ACTIONS 已限定，理论上不会到这里
@@ -1851,7 +1859,7 @@ async def _mut_regenerate_narrations_all(plan: Plan, args: dict) -> ComposeEditD
 async def _mut_regenerate_all_fills(plan: Plan, args: dict) -> ComposeEditDiff | None:
     """批量按 action 重生成所有段落的 fill；asyncio.gather 并发。
 
-    仅支持 rerank / copy / aigc_image。aigc 视频禁止（成本高）。
+    仅支持 copy / aigc_image。aigc 视频禁止（成本高）；段级 rerank 已下架。
     单段失败不阻塞，最后 summary 列出 N 成功 / M 失败。
     """
     action = (args.get("action") or "").strip()
@@ -1859,7 +1867,7 @@ async def _mut_regenerate_all_fills(plan: Plan, args: dict) -> ComposeEditDiff |
     if action not in _REGEN_ALLOWED_ACTIONS:
         return ComposeEditDiff(
             op="regenerate_all_fills", target_id=None, before=None, after=None,
-            summary=f"不支持的 action={action}（仅 rerank/copy/aigc_image）",
+            summary=f"不支持的 action={action}（仅 copy/aigc_image）",
         )
     if not plan.adapted_sections:
         return ComposeEditDiff(
@@ -1907,7 +1915,7 @@ _ASYNC_MUTATORS["regenerate_all_fills"] = _mut_regenerate_all_fills
 
 
 # step → 允许 mutator 集合（外部越界检测用）
-# stage-53：step2 = **只**内容轨 + Compose 设置 + 素材重排/字卡重出（禁包装/字幕/BGM/转场）
+# stage-53：step2 = **只**内容轨 + Compose 设置 + 字卡重出（禁包装/字幕/BGM/转场）
 #          step3 = **只**包装/字幕/BGM/转场/封面 + Compose 设置 + 字卡/静图重出（禁内容轨）
 #          越界 op 触发 D 态："请去 stepX 改"，不调任何 tool
 _STEP_ALLOWED_OPS: dict[ComposeEditStep, set[str]] = {
@@ -1925,7 +1933,7 @@ _STEP_ALLOWED_OPS: dict[ComposeEditStep, set[str]] = {
         "regenerate_narrations_all",
         # 编排级 Compose 设置
         "update_compose_setting",
-        # 素材重排 / 字卡重出（禁 aigc_image / aigc_t2v —— mutator 内部 action 校验）
+        # 字卡重出（禁 aigc_image / aigc_t2v —— mutator 内部 action 校验；段级 rerank 已下架）
         "regenerate_fill",
         "regenerate_all_fills",
         # 宏指令
@@ -1979,8 +1987,9 @@ _PACKAGING_OPS = {
 # 异步 mutator 集合：调外部 LLM / Seedream / fill_gap 链路；run_compose_edit 单独 await。
 _ASYNC_OPS = {"regenerate_fill", "regenerate_all_fills", "regenerate_narrations_all"}
 
-# regenerate_fill 允许的 fill action（aigc 视频成本高、耗时长，禁止从对话端重生成）
-_REGEN_ALLOWED_ACTIONS = {"rerank", "copy", "aigc_image"}
+# regenerate_fill 允许的 fill action（aigc 视频成本高、耗时长，禁止从对话端重生成；
+# 段级 rerank「挑素材」已下架——真实素材替换走单镜编辑「换源」，对话端只剩 copy/aigc_image）
+_REGEN_ALLOWED_ACTIONS = {"copy", "aigc_image"}
 
 
 # ---- 主入口 -------------------------------------------------------------------
@@ -2267,6 +2276,7 @@ async def run_compose_edit(
 
     tool_calls = result.get("tool_calls") or []
     llm_text = (result.get("content") or "").strip()
+    declined = any((tc.get("name") or "") == "decline_unrelated" for tc in tool_calls)
     allowed_names = _STEP_ALLOWED_OPS[step]
     cleaned: list[dict[str, Any]] = []
     out_of_scope_hits: list[str] = []
@@ -2276,7 +2286,7 @@ async def run_compose_edit(
             cleaned.append({"name": name, "arguments": tc.get("arguments") or {}})
         elif name in _MUTATORS:
             out_of_scope_hits.append(name)
-    if not cleaned:
+    if not cleaned and not declined:
         cleaned = _mock_intent(plan, instruction, step)
 
     diffs: list[ComposeEditDiff] = []
@@ -2333,12 +2343,19 @@ async def run_compose_edit(
                 "step2 不通过对话改内容轨上的 AI 生成结果（生图 / 生视频）；"
                 "请到 AIGC 面板手动改提示词后再点重新生成。"
             )
+        elif declined:
+            # E 态：用户输入与编辑本项目无关 → 引导回与编辑相关的输入，不照常闲聊
+            note = (
+                "我是这条视频的编辑助手，只能帮你改这条片子——"
+                "比如改某段文案 / 时长、删段或重排、重出字卡画面、调 BGM / 字幕 / 转场，"
+                "也能回答关于本片结构、素材、调性的问题。换个跟编辑相关的说法告诉我吧。"
+            )
         elif llm_text and not _looks_like_excuse(llm_text):
             # LLM 把指令理解成了讲解 / 问答 —— 把它说的话原样回给用户
             note = llm_text[:600]
         elif not cleaned:
             examples = {
-                "step2": "如『把第 1 段改成 5 秒』『删除第 2 段』『把段落顺序改成 第 1 段、第 3 段、第 2 段』『所有段重新挑素材』『再快点』『加强节奏感』；也可以问『当前结构什么样？』『第 1 段时长够撑得起卖点吗？』",
+                "step2": "如『把第 1 段改成 5 秒』『删除第 2 段』『把段落顺序改成 第 1 段、第 3 段、第 2 段』『所有段重出字卡』『再快点』『加强节奏感』；也可以问『当前结构什么样？』『第 1 段时长够撑得起卖点吗？』",
                 "step3": "如『BGM 推迟 2 秒』『画面改方版』『把第 3 段字卡文字改成…』『第 2 段转场改 zoom 0.5 秒』『情绪再强一些』；也可以问『当前迁移倾向是什么？』『现在的字卡密度合适吗？』",
             }[step]
             note = f"我没识别出可执行的编辑动作，请试更具体的指令——{examples}。"

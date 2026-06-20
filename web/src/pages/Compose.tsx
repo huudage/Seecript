@@ -16,12 +16,10 @@ import { DraggableCommandFab } from '@/components/compose/DraggableCommandFab'
 import { EmotionCurveCard } from '@/components/compose/EmotionCurveCard'
 import { FillAigcPanel } from '@/components/compose/FillAigcPanel'
 import { FillCopyPanel } from '@/components/compose/FillCopyPanel'
-import { FillRerankPanel } from '@/components/compose/FillRerankPanel'
 import { FourTrackBoard } from '@/components/compose/FourTrackBoard'
 import { MaterialGrid } from '@/components/compose/MaterialGrid'
 import { PackagingItemEditDialog } from '@/components/compose/PackagingItemEditDialog'
 import { ReferencePicker } from '@/components/compose/ReferencePicker'
-import { RerankStrategyPicker } from '@/components/compose/RerankStrategyPicker'
 import { SceneEditPanel } from '@/components/compose/SceneEditPanel'
 import { SectionEditDialog } from '@/components/compose/SectionEditDialog'
 import { ShotEditDialog } from '@/components/compose/ShotEditDialog'
@@ -57,7 +55,6 @@ import type {
 } from '@/types/schemas'
 
 const ACTION_TABS: { value: FillAction; label: string; hint: string }[] = [
-  { value: 'rerank', label: '挑素材', hint: '从已上传素材里挑一个最匹配的填进本段画面' },
   { value: 'copy', label: '字卡画面', hint: 'AI 设计一张个性化字卡（字体/版式/颜色/动画）作为本段画面' },
   { value: 'aigc', label: 'AI 视频', hint: 'AI 视频生成，出 5-8 秒短片作为本段画面' },
   { value: 'aigc_image', label: 'AI 生图再渲染', hint: 'AI 生图后用动画引擎重渲染，成本/等待远低于视频；多主体自动拆分成多镜头故事板' },
@@ -199,7 +196,7 @@ export default function ComposePage() {
     () => new Map(),
   )
   const activeAction: FillAction =
-    (selectedSectionId && actionBySection.get(selectedSectionId)) || 'rerank'
+    (selectedSectionId && actionBySection.get(selectedSectionId)) || 'copy'
   const setActiveAction = useCallback(
     (next: FillAction) => {
       if (!selectedSectionId) return
@@ -219,7 +216,6 @@ export default function ComposePage() {
   // 加 plan_suffix 重写，旧 key 命中不到新 gaps 列表会导致 panel 卸载 → 进行中
   // 的 AI 出图状态全废。section_id 跨 rebuild 稳定（`sec-${order}` 不变）。
   //
-  // rerank 不进 keepalive——它没有用户输入，重渲染廉价。
   const [visitedFillKeys, setVisitedFillKeys] = useState<ReadonlySet<string>>(() => new Set())
   // 每条 section 独立的 busy 锁：切到别的段不会还显示上一段的 loading 态。
   // 选用 Set<section_id> 而非 gap_id（gap_id 不稳）；用户在 A 段等 AI 出图（3 min+）
@@ -522,23 +518,7 @@ export default function ComposePage() {
     },
     [gaps, selectedSectionId, selectedGapId],
   )
-  // selectedFill 也按 section_id 优先：silent rebuild 后端会重写 gap_id，
-  // 但 fill 对象保留的是 fill 时的旧 gap_id；通过 section_id 反查才能稳定锚定。
-  const selectedFill = useMemo(
-    () => {
-      const secId = selectedGap?.section_id ?? selectedSectionId
-      if (secId) {
-        const bySec = fills.find((f) => f.section_id === secId)
-        if (bySec) return bySec
-      }
-      return fills.find((f) => f.gap_id === selectedGapId) ?? null
-    },
-    [fills, selectedGap, selectedSectionId, selectedGapId],
-  )
   const filledGapIds = useMemo(() => new Set(fills.map((f) => f.gap_id)), [fills])
-  // 当前选中那条 gap 的 busy 状态——按 section_id 查（gap_id 在 silent rebuild 后会变）。
-  // 仅用于左侧补全面板的 disabled / loading 标记。
-  const gapBusy = selectedGap?.section_id ? busySectionIds.has(selectedGap.section_id) : false
   const anyGapBusy = busySectionIds.size > 0
 
   // selectedSectionId 变化或 gaps 重建后，把 selectedGapId 同步到当前 section 对应的真 gap_id——
@@ -554,7 +534,6 @@ export default function ComposePage() {
   // 用 selectedGap 直接 derive section_id（在它定义后才能跑，所以 useEffect 放这里）。
   useEffect(() => {
     if (!selectedGap?.section_id) return
-    if (activeAction === 'rerank') return
     const key = `${selectedGap.section_id}::${activeAction}`
     setVisitedFillKeys((prev) => {
       if (prev.has(key)) return prev
@@ -924,7 +903,7 @@ export default function ComposePage() {
           const detected = await api.post<Gap[]>('/gap/detect', detectReq)
           if (myEpoch !== analyzeEpochRef.current) return null
           // 把已采纳的 fill 叠加到 gap 状态上：后端 detect 只看 materials，不知道
-          // 用户刚采纳的 copy/aigc/rerank。这里在前端做合并，让红色 ❌ 立刻变 ✅。
+          // 用户刚采纳的 copy/aigc。这里在前端做合并，让红色 ❌ 立刻变 ✅。
           //
           // Bug 修复：后端每次 detect 会用新 plan_id 后缀重写 gap_id（plan-scoped 唯一性需要），
           // 老 fill 的 gap_id 与新 detect 的 gap_id 永远对不上，merge 用 gap_id 必失败 → 看似"应用失败"。
@@ -947,7 +926,7 @@ export default function ComposePage() {
                   ? 'AI 视频'
                   : f.action === 'aigc_image'
                     ? 'AI 生图再渲染'
-                    : '已挑素材'
+                    : '已补画面'
             return {
               ...g,
               status: 'ok',
@@ -1009,46 +988,6 @@ export default function ComposePage() {
   }, [runAnalyze])
 
   /* ----------------------------- 补全动作 ----------------------------- */
-
-  const runFill = useCallback(
-    async (gap: Gap, action: FillAction, params: Record<string, unknown> = {}) => {
-      const sectionId = gap.section_id ?? gap.gap_id  // 老 gap 没 section_id 兜底
-      markBusy(sectionId, true)
-      setError(null)
-      try {
-        const body: GapFillRequest = { gap_id: gap.gap_id, action, params }
-        const result = await api.post<FillResult>('/gap/fill', body)
-        upsertFill(result)
-        // stage-58：AIGC 产物会被后端 _record_aigc_to_library 写进素材库，立刻拉一次
-        // /material 让左侧素材库出现新条目。runFill 当前只被 rerank 用，rerank 不
-        // 增加素材；但保留这个保险——未来若 runFill 被复用为通用入口仍能正确刷新。
-        if (result.status === 'ok' && (result.action === 'aigc' || result.action === 'aigc_image')) {
-          void refreshMaterials()
-        }
-        // 关键：从 store 拿最新 fills 而非 closure 中的 stale 快照。
-        // 并行补全场景（A、B 两段同时点 fill）下，closure 里的 fills 只包含本次发起
-        // 时的状态，B 提交时已不含 A 的结果——`[...fills.filter, B] 把 A 抹掉了`。
-        // 改用 getState 在 await 后取最新 snapshot（已含 upsertFill 写入的 A、B）。
-        const latest = usePlanStore.getState().fills
-        const nextFills = [...latest.filter((f) => f.gap_id !== gap.gap_id), result]
-        // silent=true：本次重建不触发全局 analyzing 锁，其它 section 工作台保持可操作
-        // （每段 busySectionIds 单独锁就够了，真正的并发补全在这里实现）。
-        await runAnalyze(nextFills, { silent: true })
-        return result
-      } catch (err) {
-        setError(err instanceof Error ? err.message : '补全失败')
-        return null
-      } finally {
-        markBusy(sectionId, false)
-      }
-    },
-    [markBusy, refreshMaterials, runAnalyze, upsertFill],
-  )
-
-  const handleRerankApply = useCallback(async () => {
-    if (!selectedGap) return
-    await runFill(selectedGap, 'rerank')
-  }, [runFill, selectedGap])
 
   // copy fill 已迁移到 FillCopyPanel 内部状态机（T5），不再在 Compose 这一层触发或采纳。
 
@@ -1922,11 +1861,11 @@ export default function ComposePage() {
               keepalive 多实例 display:none 切换，跨段后台跑。
               stage-38：keepalive 池**总是**渲染（不再被外层 `selectedGap ?` 包住），
               即使当前没选段或处于 silent rebuild 中间态，已访问过的 panel 也不会卸载，
-              Seedance polling / spec / prompt 状态稳定保留。tabs / rerank / 空状态提示
+              Seedance polling / spec / prompt 状态稳定保留。tabs / 空状态提示
               则按 selectedGap 走条件分支。 */}
           <div className="mt-3 space-y-2 border-t border-border pt-3">
             <p className="rounded-md border border-primary/30 bg-primary/5 px-2 py-1.5 text-[11px] leading-relaxed text-foreground">
-              💡 这里只关心<strong>画面 + 字幕</strong>——四种方式都是给本段生成画面（挑素材 / 字卡画面 / AI 视频 / AI 生图再渲染）；字幕轨开关默认关闭，开启后 AI 自动按段落生成可编辑字幕。口播留到第 3 步再切换音色合成。
+              💡 这里只关心<strong>画面 + 字幕</strong>——三种方式都是给本段生成画面（字卡画面 / AI 视频 / AI 生图再渲染）；字幕轨开关默认关闭，开启后 AI 自动按段落生成可编辑字幕。口播留到第 3 步再切换音色合成。
             </p>
             {selectedGap && (
               <>
@@ -1947,47 +1886,6 @@ export default function ComposePage() {
                     </button>
                   ))}
                 </div>
-
-                {activeAction === 'rerank' && (
-                  <>
-                    {!selectedFill && (
-                      <RerankStrategyPicker
-                        gapBusy={gapBusy}
-                        materials={sortedMaterials}
-                        targetSection={selectedGap.section}
-                        onPickManual={(materialId) =>
-                          void runFill(selectedGap, 'rerank', {
-                            strategy: 'manual',
-                            target_material_id: materialId,
-                          })
-                        }
-                      />
-                    )}
-                    {selectedFill && selectedFill.action === 'rerank' && (
-                      <>
-                        <RerankStrategyPicker
-                          gapBusy={gapBusy}
-                          materials={sortedMaterials}
-                          targetSection={selectedGap.section}
-                          currentMaterialId={selectedFill.new_material_id ?? null}
-                          onPickManual={(materialId) =>
-                            void runFill(selectedGap, 'rerank', {
-                              strategy: 'manual',
-                              target_material_id: materialId,
-                            })
-                          }
-                        />
-                        <FillRerankPanel
-                          plan={plan}
-                          fill={selectedFill}
-                          materials={sortedMaterials}
-                          onApply={handleRerankApply}
-                          loading={gapBusy}
-                        />
-                      </>
-                    )}
-                  </>
-                )}
               </>
             )}
 
@@ -2000,7 +1898,7 @@ export default function ComposePage() {
                 stage-38：lastSeenGapBySectionRef 兜底——`gaps.find` 临时未命中也仍能渲染。 */}
             {visitedFillKeys.size === 0 && !selectedGap && !selectedSectionId && (
               <p className="rounded-md border border-dashed border-border bg-background/30 px-3 py-2 text-[11px] text-muted-foreground">
-                点上方内容轨任意一段——这里出现「挑素材 / 字卡画面 / AI 视频 / AI 生图再渲染」四个画面补全选项。
+                点上方内容轨任意一段——这里出现「字卡画面 / AI 视频 / AI 生图再渲染」三个画面补全选项。
               </p>
             )}
             {selectedSectionId && !selectedGap && (
@@ -2962,7 +2860,7 @@ function Step2PlaceholderHint() {
           <li>
             <b>选片段做补全</b>：点片段卡本体（除按钮以外的区域）→ 下方
             <span className="mx-0.5 rounded bg-amber-200/60 px-1 font-mono dark:bg-amber-700/40">补全工作台</span>
-            出现「挑素材 / 字卡画面 / AI 生图 / AI 视频」四种入口，针对整段做一次补全。
+            出现「字卡画面 / AI 生图 / AI 视频」三种入口，针对整段做一次补全。
           </li>
           <li>
             <b>编辑片段属性</b>：片段卡右上 <span className="rounded bg-white/80 px-1 font-mono text-foreground">✏</span>
