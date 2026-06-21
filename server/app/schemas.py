@@ -2504,8 +2504,8 @@ ComposeEditStep = Literal["step2", "step3"]
 class ComposeEditDiff(BaseModel):
     """⌘K 编辑产出的单条 diff，前端预览用。"""
 
-    op: str = Field(..., description="操作名，如 update_narration / delete_section / update_compose_setting")
-    target_id: Optional[str] = Field(default=None, description="目标 id（section_id / scene_id / item_id），全局设置为空")
+    op: str = Field(..., description="操作名，如 update_section_narration / delete_section / update_scene_transition")
+    target_id: Optional[str] = Field(default=None, description="目标 id（section_id / scene_id / item_id），整轨级操作为空")
     before: Any = Field(default=None, description="改前值（JSON-able）")
     after: Any = Field(default=None, description="改后值")
     summary: str = Field(..., max_length=120, description="一句话人话描述")

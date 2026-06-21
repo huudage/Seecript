@@ -5,8 +5,9 @@
 - 本模块是 Compose 态的"改稿"
 
 作用域（stage-53，强分流 + 宏指令）：
-- step2 (拆解-改编态)：**只**改内容轨（段文案 / 段时长 / 删段 / 重排 / 分镜级 4 件套）+ 字卡重出（copy）+ 编排级 Compose 设置（platform/ratio/duration/migration_preference）
-- step3 (包装-渲染态)：**只**改包装/字幕/BGM/转场/封面 + 渲染级 Compose 设置（subtitle/voiceover/tts_voice/frame_design/packaging_preset）+ aigc_image 重生
+- step2 (拆解-改编态)：**只**改内容轨（段文案 / 段时长 / 删段 / 重排 / 分镜级 4 件套）+ 字卡重出（copy）+ 整轨级口播重写
+- step3 (包装-渲染态)：**只**改包装/字幕/BGM/转场/封面 + 字卡视觉/包装文字时间 + aigc_image 重生
+- 全局设置（平台/比例/目标时长/迁移倾向/字幕开关/配音音色/画面风格/包装预设）**不在对话里改** → 引导用户去 Compose 设置面板
 - 跨 step 的指令 → D 态：不调任何 tool，明确返回"请去 stepX 改"的引导文案
 - 内容轨的 AI 生成结果（aigc_image / aigc_t2v）→ D 态：引导用户走 AIGC 面板手动改提示词
 - 宏指令 `apply_macro_adjustment` (amp_pace / amp_emotion × light/medium/strong) 在两 step 都开放，按 step 自动应用对应字段子集
@@ -84,8 +85,6 @@ _SYSTEM_STEP2 = (
     "—— 字卡重出（仅 copy；aigc_image 在 step2 禁用）——\n"
     "regenerate_fill（重新生成某段 fill，action = copy）、"
     "regenerate_all_fills（批量重生成所有段，action = copy）。\n"
-    "—— 编排级设置（与 step3 共用同一 tool，但 step2 只接受这些 key）——\n"
-    "update_compose_setting（target_platform/aspect_ratio/target_duration_seconds/migration_preference）。\n"
     "—— 宏指令（形容词类指令统一走它） ——\n"
     "apply_macro_adjustment：用户说形容词如『更快/紧凑/节奏感/慢一些』→ macro=amp_pace（**step2 只允许 scope=pace**，"
     "因为 step2 不动 BGM / 转场）。"
@@ -105,7 +104,8 @@ _SYSTEM_STEP2 = (
     "**分镜级编辑**：用户说『第 1 段第 2 镜画面改成…』『开头段第 1 镜口播改成…』『高潮段第 3 镜短一点』时，"
     "先按上面规则定段，再用 update_shot_visual / update_shot_subject / update_shot_narration / update_shot_duration；shot_order 从 0 起（用户说『第 1 镜』即 shot_order=0）。\n"
     "若用户说『重新生成字卡』『所有段重出字卡』→ regenerate_fill 或 regenerate_all_fills（action=copy）。\n"
-    "**若用户说『重新挑素材 / 换真实素材 / 重排素材 / 用我自己的素材』** → D 态引导：『真实素材的替换请在「单镜编辑」里用「换源」完成，对话端只能重出字卡(copy)』，**不要 tool_calls**。\n\n"
+    "**若用户说『重新挑素材 / 换真实素材 / 重排素材 / 用我自己的素材』** → D 态引导：『真实素材的替换请在「单镜编辑」里用「换源」完成，对话端只能重出字卡(copy)』，**不要 tool_calls**。\n"
+    "**若用户想改全局设置**（平台 / 画幅比例 / 目标时长 / 迁移倾向 / 字幕开关 / 配音音色 / 画面风格预设 / 包装预设）→ D 态引导：『这些全局设置不在对话里改，请到 Compose 设置面板调整』，**不要 tool_calls**。\n\n"
     + _QA_RULES
 )
 
@@ -120,17 +120,17 @@ _SYSTEM_STEP3 = (
     "regenerate_narrations_all（按 hint 批量重写所有段落口播；保留段落结构，仅改语言风格）、"
     "update_bgm_offset（BGM 起点对齐到视频第几秒，可负）、"
     "update_bgm_volume（BGM 音量 0-1.5）、"
-    "update_compose_setting（渲染级 key：subtitle_enabled/voiceover_enabled/tts_voice/frame_design_preset/packaging_preset；编排级 key 仍接受兼容）、"
     "regenerate_fill（重新生成某段 fill，action ∈ copy/aigc_image）、"
     "regenerate_all_fills（批量重生成所有段，action ∈ copy/aigc_image）。\n"
     "—— 宏指令（形容词类指令统一走它） ——\n"
     "apply_macro_adjustment：用户说形容词如『更快/紧凑/节奏感』→ macro=amp_pace（step3 下只动转场+BGM）；"
-    "『更抓人/更有感染力』→ macro=amp_emotion（step3 下只动 BGM 音量+字幕开关+迁移倾向）。"
+    "『更抓人/更有感染力』→ macro=amp_emotion（step3 下只动 BGM 音量 + 转场强度）。"
     "档位 intensity 凭语气词判（稍微/明显/大幅 → light/medium/strong）。scope 默认 'all'。\n"
     "**段落识别**：用户**只用『第 N 段』/『开头段』/『高潮段』/『最后一段』这类人话**——按列表顺序定位 section_id；"
     "**对外**也只回『第 N 段』，不要在回答里写 sec-0/sec-1 这种内部 id。\n"
     "用户若说『重新生成 AI 视频』→ D 态引导：『AI 视频请到 AIGC 面板手动改提示词后重生成。』\n"
-    "用户若说『重新挑素材 / 换真实素材 / 重排素材 / 用我自己的素材』→ D 态引导：『真实素材的替换请在「单镜编辑」里用「换源」完成，对话端只能重出字卡(copy)或 AI 静图(aigc_image)。』\n\n"
+    "用户若说『重新挑素材 / 换真实素材 / 重排素材 / 用我自己的素材』→ D 态引导：『真实素材的替换请在「单镜编辑」里用「换源」完成，对话端只能重出字卡(copy)或 AI 静图(aigc_image)。』\n"
+    "**若用户想改全局设置**（平台 / 画幅比例 / 目标时长 / 迁移倾向 / 字幕开关 / 配音音色 / 画面风格预设 / 包装预设）→ D 态引导：『这些全局设置不在对话里改，请到 Compose 设置面板调整』，**不要 tool_calls**。\n\n"
     + _QA_RULES
 )
 
@@ -262,70 +262,6 @@ _TOOL_UPDATE_BGM_VOLUME = {
         },
     },
 }
-
-_TOOL_UPDATE_COMPOSE_SETTING = {
-    "type": "function",
-    "function": {
-        "name": "update_compose_setting",
-        "description": (
-            "改 ComposeSettings 的常用字段；只填要改的字段，其他保持。"
-            "tone/keywords/cta 在新版本 UI 已不再暴露——这些字段仍可设但不建议主动改，"
-            "整体口播风格请用 regenerate_narrations_all。"
-        ),
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "tone": {
-                    "type": "string",
-                    "enum": ["tight_hype", "calm_narrative", "casual_daily", "professional_cool"],
-                },
-                "target_platform": {
-                    "type": "string",
-                    "enum": ["douyin", "wechat", "xiaohongshu", "bilibili"],
-                },
-                "aspect_ratio": {"type": "string", "enum": ["9:16", "16:9", "1:1"]},
-                "cta": {"type": "string"},
-                "keywords": {"type": "array", "items": {"type": "string"}},
-                "target_duration_seconds": {"type": "number"},
-                "migration_preference": {
-                    "type": "string",
-                    "enum": ["mirror", "amp_emotion", "amp_pace"],
-                    "description": "结构迁移倾向：mirror=平淡复刻 / amp_emotion=情绪增强 / amp_pace=节奏紧凑",
-                },
-                "subtitle_enabled": {
-                    "type": "boolean",
-                    "description": "是否生成 / 烧入字幕（独立于 TTS）",
-                },
-                "voiceover_enabled": {
-                    "type": "boolean",
-                    "description": "是否做 TTS 口播合成",
-                },
-                "tts_voice": {
-                    "type": "string",
-                    "enum": [
-                        "zh_female_qingxin",
-                        "zh_male_jieshuo",
-                        "zh_female_meili",
-                        "zh_male_qingshuang",
-                        "zh_female_xinling",
-                    ],
-                    "description": "ARK TTS 音色（仅 voiceover_enabled=true 生效）",
-                },
-                "frame_design_preset": {
-                    "type": "string",
-                    "enum": ["custom", "social-energy", "lifestyle-soft", "clean-pro", "poster-bold", "cinematic"],
-                    "description": "整体视频风格预设：social-energy=高能社交 / lifestyle-soft=治愈生活 / clean-pro=商务科普 / poster-bold=海报大字 / cinematic=电影胶片 / custom=自由配色",
-                },
-                "packaging_preset": {
-                    "type": "string",
-                    "enum": ["minimalist", "energetic", "info_feed", "dialogue", "custom"],
-                    "description": "包装风格预设（决定字幕/转场/封面）",
-                },
-            },
-        },
-    },
-}
-
 
 _TOOL_UPDATE_SCENE_TRANSITION = {
     "type": "function",
@@ -608,8 +544,8 @@ _TOOL_REGENERATE_FILL_NO_AIGC = {
 
 
 # stage-53：宏指令——把"更抓人/更紧凑/更稳"这类形容词请求落到 2×3 的预设档位
-# scope=pace（节奏）  → 改 段落 duration（缩 / 扩）+ 字幕节奏
-# scope=emotion（情绪）→ 改 packaging 转场强度 + BGM 音量 + 段间动效（仅 step3）
+# scope=pace（节奏）  → 等比缩放 段 / 镜 / scene 时长（直接改内容轨）
+# scope=emotion（情绪）→ 改 BGM 音量 + 转场时长（仅 step3，直接改包装轨）
 # level=light/medium/strong：每档对应一组系数
 _TOOL_APPLY_MACRO = {
     "type": "function",
@@ -617,8 +553,8 @@ _TOOL_APPLY_MACRO = {
         "name": "apply_macro_adjustment",
         "description": (
             "应用宏指令调整。把『更抓人/更紧凑/更稳』这类形容词指令映射到预设系数：\n"
-            "- scope=pace：调整段落总节奏（duration × 系数），影响所有段落\n"
-            "- scope=emotion：调整情绪强度（仅 step3：转场强度 + BGM 音量）\n"
+            "- scope=pace：等比缩放 段 / 镜 / scene 时长（× 系数），影响所有段落\n"
+            "- scope=emotion：调整情绪强度（仅 step3：BGM 音量 + 转场时长）\n"
             "- level=light/medium/strong：渐进力度\n"
             "用户使用形容词（『再快点』『更稳一些』『加强节奏感』）时优先用这个 tool；"
             "用户给的是具体改动（『把第二段改 5 秒』）时不要用，直接调对应单点 tool。"
@@ -696,8 +632,6 @@ _TOOLS_STEP2: list[dict] = [
     _TOOL_DELETE_SHOT,
     # 整轨级辅助
     _TOOL_REGENERATE_NARRATIONS_ALL,
-    # 编排级 Compose 设置
-    _TOOL_UPDATE_COMPOSE_SETTING,
     # 字卡重出（禁 aigc_image，AI 生图走 AIGC 面板；段级 rerank 挑素材已下架）
     _TOOL_REGENERATE_FILL_NO_AIGC,
     _TOOL_REGENERATE_ALL_FILLS_NO_AIGC,
@@ -718,8 +652,6 @@ _TOOLS_STEP3: list[dict] = [
     # BGM
     _TOOL_UPDATE_BGM_OFFSET,
     _TOOL_UPDATE_BGM_VOLUME,
-    # 渲染级 Compose 设置
-    _TOOL_UPDATE_COMPOSE_SETTING,
     # 字卡 / 静图重出（不含 aigc_t2v——内容轨能力，归 step2/AIGC 面板）
     _TOOL_REGENERATE_FILL,
     _TOOL_REGENERATE_ALL_FILLS,
@@ -739,20 +671,6 @@ _STEP_SYSTEM: dict[ComposeEditStep, str] = {
     "step2": _SYSTEM_STEP2,
     "step3": _SYSTEM_STEP3,
 }
-
-
-_VALID_TONES = {"tight_hype", "calm_narrative", "casual_daily", "professional_cool"}
-_VALID_PLATFORMS = {"douyin", "wechat", "xiaohongshu", "bilibili"}
-_VALID_RATIOS = {"9:16", "16:9", "1:1"}
-_VALID_MIGRATION_PREFS = {"mirror", "amp_emotion", "amp_pace"}
-_VALID_TTS_VOICES = {
-    "zh_female_qingxin",
-    "zh_male_jieshuo",
-    "zh_female_meili",
-    "zh_male_qingshuang",
-    "zh_female_xinling",
-}
-_VALID_PACKAGING_PRESETS = {"minimalist", "energetic", "info_feed", "dialogue", "custom"}
 
 
 # ---- timeline 重建 -----------------------------------------------------------
@@ -1291,67 +1209,6 @@ def _mut_update_bgm_volume(plan: Plan, args: dict) -> ComposeEditDiff | None:
     )
 
 
-def _mut_update_compose_setting(plan: Plan, args: dict) -> ComposeEditDiff | None:
-    cs = plan.settings
-    if cs is None:
-        return None
-    before = cs.model_dump()
-    changes: list[str] = []
-    if "tone" in args and args["tone"] in _VALID_TONES:
-        cs.tone = args["tone"]
-        changes.append(f"tone={cs.tone}")
-    if "target_platform" in args and args["target_platform"] in _VALID_PLATFORMS:
-        cs.target_platform = args["target_platform"]
-        changes.append(f"platform={cs.target_platform}")
-    if "aspect_ratio" in args and args["aspect_ratio"] in _VALID_RATIOS:
-        cs.aspect_ratio = args["aspect_ratio"]
-        changes.append(f"ratio={cs.aspect_ratio}")
-    if "cta" in args and isinstance(args["cta"], str):
-        cs.cta = args["cta"][:20]
-        changes.append("cta")
-    if "keywords" in args and isinstance(args["keywords"], list):
-        kws = [str(k)[:20] for k in args["keywords"] if str(k).strip()][:5]
-        cs.keywords = kws
-        changes.append(f"keywords({len(kws)})")
-    if "target_duration_seconds" in args:
-        try:
-            d = float(args["target_duration_seconds"])
-            cs.target_duration_seconds = max(10.0, min(120.0, d))
-            changes.append(f"duration={cs.target_duration_seconds:.0f}s")
-        except (TypeError, ValueError):
-            pass
-    if "migration_preference" in args and args["migration_preference"] in _VALID_MIGRATION_PREFS:
-        cs.migration_preference = args["migration_preference"]
-        changes.append(f"migration={cs.migration_preference}")
-    if "subtitle_enabled" in args and isinstance(args["subtitle_enabled"], bool):
-        cs.subtitle_enabled = args["subtitle_enabled"]
-        changes.append(f"subtitle={'on' if cs.subtitle_enabled else 'off'}")
-    if "voiceover_enabled" in args and isinstance(args["voiceover_enabled"], bool):
-        cs.voiceover_enabled = args["voiceover_enabled"]
-        changes.append(f"voiceover={'on' if cs.voiceover_enabled else 'off'}")
-    if "tts_voice" in args and args["tts_voice"] in _VALID_TTS_VOICES:
-        cs.tts_voice = args["tts_voice"]
-        changes.append(f"tts={cs.tts_voice}")
-    if "frame_design_preset" in args and isinstance(args["frame_design_preset"], str):
-        try:
-            cs.frame_design.preset = args["frame_design_preset"]  # type: ignore[assignment]
-            changes.append(f"frame={cs.frame_design.preset}")
-        except Exception:  # noqa: BLE001
-            pass
-    if "packaging_preset" in args and args["packaging_preset"] in _VALID_PACKAGING_PRESETS:
-        cs.packaging_prefs.preset = args["packaging_preset"]
-        changes.append(f"packaging={cs.packaging_prefs.preset}")
-    if not changes:
-        return None
-    return ComposeEditDiff(
-        op="update_compose_setting",
-        target_id=None,
-        before=before,
-        after=cs.model_dump(),
-        summary="Compose 设置改写：" + " / ".join(changes),
-    )
-
-
 _VALID_TRANSITION_STYLES = {"hard_cut", "dissolve", "slide", "zoom", "whip", "wipe"}
 
 
@@ -1588,7 +1445,6 @@ _MUTATORS: dict[str, Callable[[Plan, dict], ComposeEditDiff | None]] = {
     "update_scene_transition": _mut_update_scene_transition,
     "update_bgm_offset": _mut_update_bgm_offset,
     "update_bgm_volume": _mut_update_bgm_volume,
-    "update_compose_setting": _mut_update_compose_setting,
     "apply_macro_adjustment": _mut_apply_macro,
 }
 
@@ -1931,8 +1787,6 @@ _STEP_ALLOWED_OPS: dict[ComposeEditStep, set[str]] = {
         "update_shot_duration",
         # 内容轨整轨级
         "regenerate_narrations_all",
-        # 编排级 Compose 设置
-        "update_compose_setting",
         # 字卡重出（禁 aigc_image / aigc_t2v —— mutator 内部 action 校验；段级 rerank 已下架）
         "regenerate_fill",
         "regenerate_all_fills",
@@ -1950,8 +1804,6 @@ _STEP_ALLOWED_OPS: dict[ComposeEditStep, set[str]] = {
         # BGM
         "update_bgm_offset",
         "update_bgm_volume",
-        # 渲染级 Compose 设置
-        "update_compose_setting",
         # 字卡 / 静图重出
         "regenerate_fill",
         "regenerate_all_fills",
@@ -2173,18 +2025,6 @@ def _mock_intent(plan: Plan, instruction: str, step: ComposeEditStep) -> list[di
             m = re.search(r"([+-]?\d+(?:\.\d+)?)\s*秒?", txt)
             if m:
                 return [{"name": "update_bgm_offset", "arguments": {"video_anchor_seconds": float(m.group(1))}}]
-        # 调性
-        for tone_kw, tone in [
-            ("紧凑", "tight_hype"), ("高燃", "tight_hype"),
-            ("沉稳", "calm_narrative"), ("叙事", "calm_narrative"),
-            ("日常", "casual_daily"), ("专业", "professional_cool"),
-        ]:
-            if tone_kw in txt:
-                return [{"name": "update_compose_setting", "arguments": {"tone": tone}}]
-        # 比例
-        for ratio_kw, ratio in [("竖屏", "9:16"), ("9:16", "9:16"), ("横屏", "16:9"), ("16:9", "16:9"), ("方版", "1:1"), ("1:1", "1:1")]:
-            if ratio_kw in txt:
-                return [{"name": "update_compose_setting", "arguments": {"aspect_ratio": ratio}}]
 
     if step == "step2":
         # stage-24 分镜级编辑兜底：『sec-1 第 2 镜短一点』『开头段第 1 镜画面改成 ...』『高潮段的第 3 镜口播改成 ...』

@@ -2876,18 +2876,18 @@ function Step2PlaceholderHint() {
         <p className="text-amber-900/70 dark:text-amber-100/70">
           手动裁剪视频时，所选区间会直接覆盖该分镜的时长，后续分镜自动顺移、整轨总长跟着伸缩。
         </p>
-        {/* stage-81 (2026-06-12) 黄底再补一行：把切片右上角分数 = 适配度的含义讲清楚——
-            用户原话：「黄底解释片段的打分说明也没添加」
-            stage-83 修：阈值/颜色按 FourTrackBoard 实际渲染（70/40 三档：绿/黄/红），
-            原文档抄成了换源弹窗的另一套打分（30/10，绿/黄/灰），与分镜卡红底不对应。 */}
+        {/* stage-81 (2026-06-12) 黄底说明：把分镜卡匹配状态 / 匹配分的含义讲清楚。
+            stage-86 修：段级 fit_score（绿≥70/黄40-69/红<40）已删，分镜卡现用 match_quality
+            徽章（同一套 _score_pair，绿≥0.30/黄≥0.10），右上角不再是 0-100 分数。
+            原文案残留旧 70/40 阈值 + "换源弹窗另有一套" 的双套描述，收敛为真实在用的一套。 */}
         <p className="text-amber-900/85 dark:text-amber-100/85">
-          <b>分镜卡右上角分数 = 素材适配度</b>：本分镜与所选素材切片在画面/语义上的契合度（0–100）。颜色档：
-          <span className="mx-0.5 rounded bg-emerald-500/25 px-1 font-medium text-emerald-700 dark:text-emerald-300">绿 ≥ 70</span>
-          推荐 ·
-          <span className="mx-0.5 rounded bg-amber-500/25 px-1 font-medium text-amber-800 dark:text-amber-200">黄 40–69</span>
-          勉强 ·
-          <span className="mx-0.5 rounded bg-rose-500/25 px-1 font-medium text-rose-700 dark:text-rose-300">红 &lt; 40</span>
-          不搭，建议换源。换源弹窗里另有一套切片打分（绿 ≥ 30 / 黄 10–29 / 灰 &lt; 10），已按分数倒序排好。
+          <b>分镜卡左上角徽章 = 素材匹配状态</b>：本镜与所选切片在画面/语义上的契合度。
+          <span className="mx-0.5 rounded bg-emerald-500/25 px-1 font-medium text-emerald-700 dark:text-emerald-300">✓ 准 ≥ 30%</span>
+          可用 ·
+          <span className="mx-0.5 rounded bg-amber-500/25 px-1 font-medium text-amber-800 dark:text-amber-200">弱 10–29%</span>
+          勉强、建议换源 ·
+          <span className="mx-0.5 rounded bg-zinc-500/25 px-1 font-medium text-zinc-700 dark:text-zinc-300">待补 / — &lt; 10%</span>
+          没匹配上、需补素材。把鼠标移到分镜卡上可看到具体「匹配分」（0–100%，越高越贴合）。换源弹窗里的候选切片按<b>同一把尺</b>（匹配分）倒序排好。
         </p>
       </div>
       <button
