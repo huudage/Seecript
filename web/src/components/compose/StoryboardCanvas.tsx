@@ -1,4 +1,4 @@
-import { useMemo } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import {
   Background,
   Handle,
@@ -11,6 +11,7 @@ import {
 } from '@xyflow/react'
 import '@xyflow/react/dist/style.css'
 
+import { CopilotDial, type DialAction } from '@/components/compose/CopilotDial'
 import { getSectionMeta } from '@/lib/sections'
 import { TRANSITION_LABEL } from '@/lib/transitions'
 import { cn } from '@/lib/utils'
@@ -22,6 +23,7 @@ import type {
   Plan,
   Scene,
   TextCardSpec,
+  TransitionStyle,
 } from '@/types/schemas'
 
 /**
@@ -31,9 +33,11 @@ import type {
  * 连线 = 叙事顺序 + 转场载体；底部常驻成片总览条补偿「无时间线」的时序感。
  *
  * D1 范围：节点/连线/总览条渲染 + 选段联动（点击块同步 selectedSectionId，
- * 驱动下方补全工作台）。拖拽重排 / 换槽素材 / 块内层三轴（D2 U1）与
- * 功能盘（D3 U2）后续落——届时节点位置改由叙事链序推导，拖拽走
- * plan_store.replace 新 plan_id 入撤销栈（F13 契约）。
+ * 驱动下方补全工作台）。拖拽重排 / 换槽素材 / 块内层三轴（D2 U1）后续落——
+ * 届时节点位置改由叙事链序推导，拖拽走 plan_store.replace 新 plan_id 入撤销栈（F13 契约）。
+ *
+ * D3 前置的盘交互（F6 修订版）：中键唤出锚定功能盘，右键撤销上一步（配瞬时
+ * 反馈贴纸）。盘内动作是白名单可视化——只列已接线的回调，没接的不出现。
  */
 
 /* ===================== role 四族色带 ===================== */
@@ -142,6 +146,7 @@ function SectionBlockNode({ data }: NodeProps<Node<SectionBlockNodeData>>) {
           return (
             <div
               key={slot.scene.scene_id}
+              data-scene-id={slot.scene.scene_id}
               className={cn(
                 'flex items-center gap-1.5 overflow-hidden rounded border bg-background/60',
                 slot.selected
@@ -227,6 +232,13 @@ interface Props {
   selectedSceneId?: string | null
   /** 点段落块 / 总览条分段 → 通知父级选段（与 FourTrackBoard onSelectScene 同一联动口径）。 */
   onSelectSection?: (section: AdaptedSection, firstScene: Scene, gap: Gap | null) => void
+  /** 功能盘动作（PRD-v2 F6/Epic-5）：全部可选——没接线的回调不进盘（白名单可视化）。 */
+  onEditSection?: (section: AdaptedSection, firstScene: Scene) => void
+  onEditShot?: (scene: Scene, section: AdaptedSection) => void
+  onEditTransition?: (sceneId: string, currentStyle: TransitionStyle | null) => void
+  onRecommendPackaging?: (sceneId: string) => void
+  /** 右键撤销（F6 修订）：返回是否真的撤销了，驱动画布内瞬时反馈贴纸。 */
+  onUndo?: () => boolean
   className?: string
 }
 
@@ -241,6 +253,12 @@ type Block = {
   filled: boolean
 }
 
+type DialAnchorState =
+  | { kind: 'section'; section: AdaptedSection; firstScene: Scene }
+  | { kind: 'scene'; scene: Scene; section: AdaptedSection }
+  | { kind: 'edge'; sceneId: string; currentStyle: TransitionStyle | null }
+  | { kind: 'pane' }
+
 export function StoryboardCanvas({
   plan,
   gaps,
@@ -250,6 +268,11 @@ export function StoryboardCanvas({
   selectedSectionId = null,
   selectedSceneId = null,
   onSelectSection,
+  onEditSection,
+  onEditShot,
+  onEditTransition,
+  onRecommendPackaging,
+  onUndo,
   className,
 }: Props) {
   const materialById = useMemo(() => {
@@ -379,6 +402,138 @@ export function StoryboardCanvas({
     onSelectSection?.(b.section, b.firstScene, b.gap)
   }
 
+  /* ===================== 功能盘 + 右键撤销（F6 修订） ===================== */
+
+  // 盘锚点持有旧 plan 的 section/scene 引用，plan 一变（弹窗应用 / silent rebuild / 撤销）
+  // 就作废——用「开盘时的 planId」做渲染守卫收掉，不用 effect setState（避免级联渲染）
+  const [dial, setDial] = useState<{
+    x: number
+    y: number
+    anchor: DialAnchorState
+    planId: string
+  } | null>(null)
+  const [undoToast, setUndoToast] = useState<{ text: string; x: number; y: number } | null>(null)
+  const toastTimer = useRef<number | null>(null)
+
+  useEffect(
+    () => () => {
+      if (toastTimer.current !== null) window.clearTimeout(toastTimer.current)
+    },
+    [],
+  )
+
+  const showUndoToast = (text: string, x: number, y: number) => {
+    if (toastTimer.current !== null) window.clearTimeout(toastTimer.current)
+    setUndoToast({ text, x, y })
+    toastTimer.current = window.setTimeout(() => setUndoToast(null), 1600)
+  }
+
+  // 命中测试（冒泡顺序）：分镜槽 chip > 段落块节点 > 连线 > 空白画布
+  const hitTestAnchor = (target: Element): DialAnchorState => {
+    const sceneEl = target.closest('[data-scene-id]')
+    if (sceneEl) {
+      const sceneId = sceneEl.getAttribute('data-scene-id')
+      const block = blocks.find((b) => b.scenes.some((s) => s.scene_id === sceneId))
+      const scene = block?.scenes.find((s) => s.scene_id === sceneId)
+      if (block && scene) return { kind: 'scene', scene, section: block.section }
+    }
+    const nodeEl = target.closest('.react-flow__node')
+    if (nodeEl) {
+      const block = blocks.find((b) => b.section.section_id === nodeEl.getAttribute('data-id'))
+      if (block) return { kind: 'section', section: block.section, firstScene: block.firstScene }
+    }
+    const edgeEl = target.closest('[data-testid^="rf__edge"]')
+    if (edgeEl) {
+      const edgeId = (edgeEl.getAttribute('data-testid') ?? '').replace('rf__edge-', '')
+      const edge = edges.find((ed) => ed.id === edgeId)
+      const next = edge ? blocks.find((b) => b.section.section_id === edge.target) : undefined
+      if (next) {
+        return {
+          kind: 'edge',
+          sceneId: next.firstScene.scene_id,
+          currentStyle: next.firstScene.transition_in?.style ?? null,
+        }
+      }
+    }
+    return { kind: 'pane' }
+  }
+
+  const dialActions = useMemo<DialAction[]>(() => {
+    if (!dial) return []
+    const a = dial.anchor
+    const actions: DialAction[] = []
+    if (a.kind === 'section') {
+      if (onEditSection)
+        actions.push({
+          id: 'edit-section',
+          label: '编辑段',
+          group: 'structure',
+          run: () => onEditSection(a.section, a.firstScene),
+        })
+      if (onRecommendPackaging)
+        actions.push({
+          id: 'ai-packaging',
+          label: 'AI 包装',
+          group: 'ai',
+          run: () => onRecommendPackaging(a.firstScene.scene_id),
+        })
+    } else if (a.kind === 'scene') {
+      if (onEditShot)
+        actions.push({
+          id: 'edit-shot',
+          label: '编辑本镜',
+          group: 'structure',
+          run: () => onEditShot(a.scene, a.section),
+        })
+    } else if (a.kind === 'edge') {
+      if (onEditTransition)
+        actions.push({
+          id: 'transition',
+          label: '转场',
+          group: 'structure',
+          run: () => onEditTransition(a.sceneId, a.currentStyle),
+        })
+    }
+    return actions
+  }, [dial, onEditSection, onEditShot, onEditTransition, onRecommendPackaging])
+
+  const dialAnchorLabel = (a: DialAnchorState): string => {
+    switch (a.kind) {
+      case 'section':
+        return `段 · ${a.section.theme || getSectionMeta(a.section.role).label}`
+      case 'scene':
+        return `镜 #${a.scene.shot_order + 1}`
+      case 'edge':
+        return '连线'
+      case 'pane':
+        return '画布'
+    }
+  }
+
+  // capture 阶段拦中键：preventDefault 掐掉浏览器自动滚动，再决定开盘/收盘
+  const handleCanvasMouseDown = (e: React.MouseEvent<HTMLDivElement>) => {
+    if (e.button === 1) {
+      e.preventDefault()
+      if ((e.target as Element).closest('[data-copilot-dial]')) {
+        setDial(null)
+        return
+      }
+      const anchor = hitTestAnchor(e.target as Element)
+      setDial({ x: e.clientX, y: e.clientY, anchor, planId: plan.plan_id })
+      return
+    }
+    if (e.button === 0 && dial && !(e.target as Element).closest('[data-copilot-dial]')) {
+      setDial(null)
+    }
+  }
+
+  const handleContextMenu = (e: React.MouseEvent<HTMLDivElement>) => {
+    e.preventDefault()
+    setDial(null)
+    const undone = onUndo?.() ?? false
+    showUndoToast(undone ? '已撤销 ↶' : '没有可撤销的操作', e.clientX, e.clientY)
+  }
+
   if (blocks.length === 0) {
     return (
       <div
@@ -393,7 +548,11 @@ export function StoryboardCanvas({
   }
 
   return (
-    <div className={cn('flex flex-col gap-2', className)}>
+    <div
+      className={cn('flex flex-col gap-2', className)}
+      onMouseDownCapture={handleCanvasMouseDown}
+      onContextMenu={handleContextMenu}
+    >
       {/* 画布区：节点 = 段落块，连线 = 叙事顺序 + 转场；D1 只读骨架，拖拽交互 D2 落 */}
       <div className="h-[420px] w-full overflow-hidden rounded-lg border border-border bg-slate-50">
         <ReactFlowProvider>
@@ -451,7 +610,34 @@ export function StoryboardCanvas({
         <div className="flex shrink-0 items-center rounded-md border border-border bg-card px-2 font-mono text-[10px] text-muted-foreground">
           全片 {total.toFixed(1)}s · {blocks.length} 段
         </div>
+        <div className="hidden shrink-0 items-center rounded-md border border-border bg-card px-2 text-[10px] text-muted-foreground sm:flex">
+          中键 功能盘 · 右键 撤销
+        </div>
       </div>
+
+      {dial && dial.planId === plan.plan_id && (
+        <CopilotDial
+          x={dial.x}
+          y={dial.y}
+          anchorLabel={dialAnchorLabel(dial.anchor)}
+          actions={dialActions}
+          hint={
+            dial.anchor.kind === 'pane'
+              ? '空白处暂无盘内能力——添加视频块 / 字卡 / AIGC 图 / 补拍清单 随 D2/D5 接入'
+              : undefined
+          }
+          onClose={() => setDial(null)}
+        />
+      )}
+
+      {undoToast && (
+        <div
+          className="pointer-events-none fixed z-50 -translate-x-1/2 -translate-y-full rounded-md bg-zinc-900/90 px-2 py-1 text-[11px] font-medium text-white shadow-md"
+          style={{ left: undoToast.x, top: undoToast.y - 8 }}
+        >
+          {undoToast.text}
+        </div>
+      )}
     </div>
   )
 }

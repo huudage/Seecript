@@ -1835,6 +1835,21 @@ export default function ComposePage() {
                   setSelectedSectionId(section.section_id)
                   seekPlayer(firstScene.start)
                 }}
+                onUndo={() => {
+                  if (!canUndo) return false
+                  handleUndo()
+                  return true
+                }}
+                onEditSection={(section, firstScene) =>
+                  setEditingSection({ section, firstScene })
+                }
+                onEditShot={(scene, section) => setEditingShot({ scene, section })}
+                onEditTransition={(sceneId, currentStyle) =>
+                  setEditingTransition({ sceneId, currentStyle })
+                }
+                onRecommendPackaging={(sceneId) => {
+                  void handleRecommendPackagingForScene(sceneId, 'title_bar')
+                }}
               />
             ) : (
             <FourTrackBoard
