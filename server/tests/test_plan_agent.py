@@ -83,26 +83,20 @@ def _mini_manifest(n_sections: int = 4) -> SampleManifest:
 
 
 @pytest.mark.asyncio
-async def test_adapt_structure_satisfies_hard_constraints():
-    """mock 路由命中 `adapted_sections` 指纹后，返回的结构必须满足全部硬约束。"""
+async def test_adapt_structure_follows_video_blocks():
+    """内容轨按样例视频块 1:1 排，不分配开场/高潮角色，时长用块自己的长度。"""
     manifest = _mini_manifest(4)
     adapted = await adapt_structure(
         [manifest],
         brief="新视频要讲的是城市夜跑装备的轻量化升级",
         video_goal="30 秒内说清产品差异化卖点，面向初次接触的用户",
     )
-    assert 3 <= len(adapted) <= 7, f"段数越界：{len(adapted)}"
-
-    roles = [s.role for s in adapted]
-    for r in roles:
-        assert r in _ALLOWED_ROLES, f"非法 role={r}"
-
-    assert roles[0] == "opening", f"首段必须 opening，实际 {roles[0]}"
-    assert roles[-1] == "closing", f"末段必须 closing，实际 {roles[-1]}"
-    assert sum(1 for r in roles if r == "climax") <= 1, "climax 至多 1 段"
-    # 中间段不允许 opening/closing
-    for r in roles[1:-1]:
-        assert r not in ("opening", "closing"), f"中间段不应出现 {r}"
+    assert len(adapted) == 4
+    for sec, src in zip(adapted, manifest.sections):
+        assert sec.role == "block"
+        assert sec.theme.startswith("视频块")
+        assert "开场钩子" not in sec.theme
+        assert sec.duration_seconds == pytest.approx(src.end - src.start)
 
 
 @pytest.mark.asyncio
@@ -148,9 +142,8 @@ async def test_adapt_structure_fallback_when_manifest_empty():
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("target_total", [15.0, 30.0, 60.0, 90.0])
-async def test_adapt_structure_durations_track_target_total(target_total):
-    """每段 duration_seconds 必须落在 schema 允许的 [2, 30] 区间；
-    总和必须贴近 settings.target_duration_seconds（±25% 兜底，含 mock + clamp 噪声）。"""
+async def test_adapt_structure_durations_ignore_target_total(target_total):
+    """目标总时长不再把视频块压进固定区间。每块时长等于样例块自己的长度。"""
     from app.schemas import ComposeSettings
     manifest = _mini_manifest(4)
     adapted = await adapt_structure(
@@ -160,38 +153,30 @@ async def test_adapt_structure_durations_track_target_total(target_total):
         settings=ComposeSettings(target_duration_seconds=target_total),
     )
     assert adapted, "adapt_structure 应该返回至少一段"
-    durations = [sec.duration_seconds for sec in adapted]
-    for d in durations:
-        assert 2.0 <= d <= 30.0, f"段时长越界：{d}"
-    total = sum(durations)
-    # 允许 25% 偏差：clamp + 残差均摊后仍可能有少量误差，但不应跑飞
-    assert abs(total - target_total) / target_total <= 0.25, (
-        f"总时长偏离过大：want≈{target_total} got={total:.1f}"
-    )
+    for sec, src in zip(adapted, manifest.sections):
+        assert sec.duration_seconds == pytest.approx(src.end - src.start)
 
 
 @pytest.mark.asyncio
 async def test_adapt_structure_respects_settings_defaults():
-    """不传 settings 时按 ComposeSettings 默认值（target_total=30s）跑通。"""
+    """不传 settings 时仍然按视频块时长排，而不是默认 30 秒均分。"""
     manifest = _mini_manifest(4)
     adapted = await adapt_structure([manifest], brief="b", video_goal="g")
     assert adapted, "默认 settings 也应该返回结构"
     total = sum(s.duration_seconds for s in adapted)
-    # 默认 30s，允许 25% 偏差
-    assert 22.0 <= total <= 38.0, f"默认 30s 偏差过大：{total:.1f}"
+    assert total == pytest.approx(sum(s.end - s.start for s in manifest.sections))
 
 
-def test_fallback_adaptation_scales_to_target_total():
-    """LLM 失败兜底也要按 target_total 缩放每段时长，而不是死写 4/6/7/4。"""
+def test_fallback_adaptation_keeps_block_durations():
+    """LLM 失败时按样例视频块时长落地，不缩放到目标总时长，也不标开场钩子。"""
     from app.services.agent.plan_agent import _fallback_adaptation
     manifest = _mini_manifest(4)
     adapted = _fallback_adaptation(manifest.sections, target_total=60.0)
     assert len(adapted) == 4
-    total = sum(s.duration_seconds for s in adapted)
-    # role 默认权重 4+6+7+4=21 → 缩放后接近 60；clamp 后允许 ±30%
-    assert 42.0 <= total <= 78.0, f"fallback 缩放后偏离过大：{total:.1f}"
-    for sec in adapted:
-        assert 2.0 <= sec.duration_seconds <= 30.0
+    for sec, src in zip(adapted, manifest.sections):
+        assert sec.role == "block"
+        assert sec.duration_seconds == pytest.approx(src.end - src.start)
+        assert "开场钩子" not in sec.theme
 
 
 # ---------------- stage-34：subject_anchors 提取 + 注入 ----------------

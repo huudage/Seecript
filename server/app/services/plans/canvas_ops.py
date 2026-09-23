@@ -23,9 +23,8 @@ _SC_RE = re.compile(r"sc-(\d+)")
 _REAL_SOURCES = {"user_material", "sample"}
 # 拥有这些时间锚定轴的块不可切分——切分会破坏内层与块时间轴的对齐
 _SPLIT_AXIS_KINDS = {"subtitle", "title_bar"}
-# AdaptedSection.duration_seconds 的 pydantic 硬约束 ge=2.0——切出的两段各须达标
-_MIN_SECTION_SECONDS = 2.0
-_MIN_SHOT_SECONDS = 0.5
+# 切点必须落在镜内部，避免切出 0 秒。不再要求半段至少 2 秒。
+_MIN_SHOT_SECONDS = 0.05
 
 
 def _scene_section_id(sc: Scene, order_to_sid: dict[int, str]) -> Optional[str]:
@@ -116,7 +115,7 @@ def _relay_timeline(
     plan.packaging_track = new_pkg
 
     if plan.settings is not None and total > 0:
-        plan.settings.target_duration_seconds = max(10.0, min(300.0, total))
+        plan.settings.target_duration_seconds = total
     plan.duration_seconds = total
     return {
         "scenes_moved": moved,
@@ -166,7 +165,7 @@ def split_scene(plan: Plan, scene_id: str, split_at: float) -> dict:
     split_at 是切点距本镜起点的秒数。边界规则（PRD Q3 拍板）：
     - 只有实拍源（user_material / sample）可切
     - 块内含字幕 / 标题条 / 口播音轨时不可切——须先摘除内层
-    - 切点距镜两端 ≥ 0.5s；切出的两段各自总时长 ≥ 2s（duration_seconds 硬约束）
+    - 切点落在镜内部即可，不限制切出两段的最短时长
 
     raises ValueError：任何边界规则不满足时（路由层翻译成 422）。
     """
@@ -205,10 +204,6 @@ def split_scene(plan: Plan, scene_id: str, split_at: float) -> dict:
     second_dur = round(
         (scene.duration - split_at) + sum(s.duration for s in block_scenes[pos + 1:]), 3
     )
-    if first_dur < _MIN_SECTION_SECONDS or second_dur < _MIN_SECTION_SECONDS:
-        raise ValueError(
-            f"切分后两段各需 ≥ {_MIN_SECTION_SECONDS:.0f}s（当前 {first_dur:.1f} / {second_dur:.1f}s）"
-        )
 
     # 镜一分为二：前半保留原 scene_id（老正则兜底继续命中），后半拿新 id 并显式挂 parent
     new_scene_id = _unique_id(f"{scene_id}-b", {s.scene_id for s in plan.main_track})
@@ -279,8 +274,8 @@ def append_section(plan: Plan, sec: AdaptedSection, scene: Scene) -> dict:
     """
     _materialize_parent_ids(plan)
 
-    if sec.duration_seconds < _MIN_SECTION_SECONDS:
-        raise ValueError(f"新段落块需 ≥ {_MIN_SECTION_SECONDS:.0f}s（当前 {sec.duration_seconds:.1f}s）")
+    if sec.duration_seconds <= 0:
+        raise ValueError("新段落块时长须大于 0")
     if any(s.section_id == sec.section_id for s in plan.adapted_sections):
         raise ValueError(f"section_id 已存在：{sec.section_id}")
     if any(s.scene_id == scene.scene_id for s in plan.main_track):

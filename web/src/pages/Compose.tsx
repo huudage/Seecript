@@ -153,7 +153,7 @@ export default function ComposePage() {
   const [helpOpen, setHelpOpen] = useState(false)
   const [structureOpen, setStructureOpen] = useState(false)
   const [fillDockOpen, setFillDockOpen] = useState(false)
-  const [timelineHeight, setTimelineHeight] = useState(240)
+  const [tracksOpen, setTracksOpen] = useState(true)
   // A 位（refs[0]）primary manifest fallback：sessionStore.manifest 只在 Decompose 页才会 set。
   // 用户从 ReferencePicker 直接进 Compose 时 manifest=null，导致 StructureCompareSection 看不见。
   // 这里按 selectedReferences[0] 反查 /sample/{id}/manifest，作为 sessionStore.manifest 的兜底。
@@ -1680,6 +1680,96 @@ export default function ComposePage() {
       {/* ============ Row 2：画布工作台 = 结构画布（主）+ 可折叠tab（时间轴/功能介绍）+ 补缺口 + 素材库（底） ============ */}
       {activeStep === 2 && plan && (
         <>
+        <section className="mt-4 rounded-lg border border-border bg-card">
+          <button
+            type="button"
+            onClick={() => setTracksOpen((open) => !open)}
+            className="flex h-8 w-full items-center justify-between px-3 text-left text-[11px] text-muted-foreground hover:bg-secondary/40"
+            aria-expanded={tracksOpen}
+          >
+            <span className="font-medium text-foreground">轨道</span>
+            <span>{tracksOpen ? '▾ 收起' : '▸ 展开'}</span>
+          </button>
+          {tracksOpen && (
+          <div className="border-t border-border p-3">
+              <FourTrackBoard
+                plan={plan}
+                gaps={gaps}
+                filledGapIds={filledGapIds}
+                selectedGapId={selectedGapId}
+                selectedSceneId={effectiveSelectedSceneId}
+                selectedPackagingItemId={selectedPackagingItemId}
+                materials={sortedMaterials}
+                fills={fills}
+                referenceManifests={[effectiveManifest, secondaryManifest].filter(
+                  (m): m is SampleManifest => !!m,
+                )}
+                onSelectScene={(scene, gap) => {
+                  setSelectedSceneId(scene.scene_id)
+                  setSelectedPackagingItemId(null)
+                  // stage-36：用 section_id（跨 silent rebuild 稳定）作为选段主键。
+                  // selectedGapId 由 sync useEffect 自动跟随，避免与 silent rebuild 抢写。
+                  // stage-40：用 scene.parent_section_id 作为主键源——填好的段（如字卡画面
+                  // 或已采纳的素材）没 gap，gap?.section_id 会是 undefined→null，再被 L597
+                  // 的自动 fallback 误推到「第一个 miss/warn 段」，导致用户感觉点这段、
+                  // 工作台显示别的段。
+                  setSelectedSectionId(
+                    scene.parent_section_id ?? gap?.section_id ?? null,
+                  )
+                  seekPlayer(scene.start)
+                }}
+                onSelectVoice={(scene) => {
+                  setSelectedSceneId(scene.scene_id)
+                  setSelectedPackagingItemId(null)
+                  setEditingSubtitleScene(scene)
+                  seekPlayer(scene.start)
+                }}
+                onEditSubtitle={(scene) => {
+                  setEditingSubtitleScene(scene)
+                  seekPlayer(scene.start)
+                }}
+                onSelectPackaging={(item) => {
+                  setSelectedPackagingItemId(item.item_id)
+                  setSelectedSceneId(null)
+                  seekPlayer(item.start)
+                }}
+                onSynthesizeScene={handleSynthesizeScene}
+                onSynthesizeAll={handleSynthesizeAll}
+                onClearVoice={handleClearVoice}
+                onDeletePackagingItem={handleDeletePackagingItem}
+                onRecommendPackagingForScene={handleRecommendPackagingForScene}
+                onPickBgm={() => setBgmPickerOpen(true)}
+                onBgmAnchorChange={handleBgmAnchorChange}
+                onClearBgm={handleClearBgm}
+                onBgmVolumeChange={handleBgmVolumeChange}
+                onToggleSubtitle={handleToggleSubtitle}
+                onToggleVoiceover={handleToggleVoiceover}
+                onChangeTtsVoice={handleChangeTtsVoice}
+                busy={trackBusy}
+                phase="full"
+                contentTrackMode="sections"
+                playheadSeconds={playheadSeconds}
+                onSeek={seekPlayer}
+                onResizePackagingItem={handleResizePackagingItem}
+                onEditPackagingItem={(item) => {
+                  setEditingPackagingItem(item)
+                  setSelectedPackagingItemId(item.item_id)
+                  seekPlayer(item.start)
+                }}
+                onEditTransition={(sceneId, currentStyle) =>
+                  setEditingTransition({ sceneId, currentStyle })
+                }
+                onEditSection={(section, firstScene) =>
+                  setEditingSection({ section, firstScene })
+                }
+                onEditShot={(scene, section) =>
+                  setEditingShot({ scene, section })
+                }
+              />
+          </div>
+          )}
+        </section>
+
         <section className="mt-4 space-y-3 rounded-lg border border-border bg-card p-4">
           {/* 实时预览常驻在画布右侧：点块即播，时间轴拖动停在对应帧。 */}
           {plan.subject_anchors && plan.subject_anchors.length > 0 && (
@@ -2039,107 +2129,7 @@ export default function ComposePage() {
             </div>
         </section>
 
-        <section className="mt-4 rounded-lg border border-border bg-card">
-          <div
-            role="separator"
-            aria-orientation="horizontal"
-            title="拖动调整时间轴高度"
-            className="flex h-7 cursor-row-resize select-none items-center justify-center border-b border-border text-[10px] text-muted-foreground"
-            onPointerDown={(e) => {
-              e.preventDefault()
-              const startY = e.clientY
-              const startH = timelineHeight
-              const move = (ev: PointerEvent) => {
-                const next = Math.min(560, Math.max(160, startH + (ev.clientY - startY)))
-                setTimelineHeight(next)
-              }
-              const up = () => {
-                window.removeEventListener('pointermove', move)
-                window.removeEventListener('pointerup', up)
-              }
-              window.addEventListener('pointermove', move)
-              window.addEventListener('pointerup', up)
-            }}
-          >
-            时间轴 · 轨道 · 拖上沿调整高度
-          </div>
-          <div className="overflow-auto p-3" style={{ height: timelineHeight }}>
-              <FourTrackBoard
-                plan={plan}
-                gaps={gaps}
-                filledGapIds={filledGapIds}
-                selectedGapId={selectedGapId}
-                selectedSceneId={effectiveSelectedSceneId}
-                selectedPackagingItemId={selectedPackagingItemId}
-                materials={sortedMaterials}
-                fills={fills}
-                referenceManifests={[effectiveManifest, secondaryManifest].filter(
-                  (m): m is SampleManifest => !!m,
-                )}
-                onSelectScene={(scene, gap) => {
-                  setSelectedSceneId(scene.scene_id)
-                  setSelectedPackagingItemId(null)
-                  // stage-36：用 section_id（跨 silent rebuild 稳定）作为选段主键。
-                  // selectedGapId 由 sync useEffect 自动跟随，避免与 silent rebuild 抢写。
-                  // stage-40：用 scene.parent_section_id 作为主键源——填好的段（如字卡画面
-                  // 或已采纳的素材）没 gap，gap?.section_id 会是 undefined→null，再被 L597
-                  // 的自动 fallback 误推到「第一个 miss/warn 段」，导致用户感觉点这段、
-                  // 工作台显示别的段。
-                  setSelectedSectionId(
-                    scene.parent_section_id ?? gap?.section_id ?? null,
-                  )
-                  seekPlayer(scene.start)
-                }}
-                onSelectVoice={(scene) => {
-                  setSelectedSceneId(scene.scene_id)
-                  setSelectedPackagingItemId(null)
-                  setEditingSubtitleScene(scene)
-                  seekPlayer(scene.start)
-                }}
-                onEditSubtitle={(scene) => {
-                  setEditingSubtitleScene(scene)
-                  seekPlayer(scene.start)
-                }}
-                onSelectPackaging={(item) => {
-                  setSelectedPackagingItemId(item.item_id)
-                  setSelectedSceneId(null)
-                  seekPlayer(item.start)
-                }}
-                onSynthesizeScene={handleSynthesizeScene}
-                onSynthesizeAll={handleSynthesizeAll}
-                onClearVoice={handleClearVoice}
-                onDeletePackagingItem={handleDeletePackagingItem}
-                onRecommendPackagingForScene={handleRecommendPackagingForScene}
-                onPickBgm={() => setBgmPickerOpen(true)}
-                onBgmAnchorChange={handleBgmAnchorChange}
-                onClearBgm={handleClearBgm}
-                onBgmVolumeChange={handleBgmVolumeChange}
-                onToggleSubtitle={handleToggleSubtitle}
-                onToggleVoiceover={handleToggleVoiceover}
-                onChangeTtsVoice={handleChangeTtsVoice}
-                busy={trackBusy}
-                phase="full"
-                contentTrackMode="sections"
-                playheadSeconds={playheadSeconds}
-                onSeek={seekPlayer}
-                onResizePackagingItem={handleResizePackagingItem}
-                onEditPackagingItem={(item) => {
-                  setEditingPackagingItem(item)
-                  setSelectedPackagingItemId(item.item_id)
-                  seekPlayer(item.start)
-                }}
-                onEditTransition={(sceneId, currentStyle) =>
-                  setEditingTransition({ sceneId, currentStyle })
-                }
-                onEditSection={(section, firstScene) =>
-                  setEditingSection({ section, firstScene })
-                }
-                onEditShot={(scene, section) =>
-                  setEditingShot({ scene, section })
-                }
-              />
-          </div>
-        </section>
+
 
         <section className="mt-4 space-y-3 rounded-lg border border-border bg-card p-4">
 

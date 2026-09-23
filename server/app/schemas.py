@@ -1042,7 +1042,7 @@ class TextCardSpec(BaseModel):
     accent_color: str = Field(default="#22D3EE", pattern=r"^#[0-9A-Fa-f]{6}$", description="副标 / 装饰色 hex")
     animation: TextCardAnimation = Field(default="fade_in")
     emoji_decor: list[str] = Field(default_factory=list, max_length=3, description="装饰 emoji，最多 3 个")
-    duration_seconds: float = Field(default=4.0, ge=1.5, le=15.0, description="字卡时长")
+    duration_seconds: float = Field(default=4.0, gt=0, description="字卡时长，跟所属视频块走")
     font_size_pct: float = Field(default=1.0, ge=0.6, le=1.6, description="字号缩放系数（1.0=默认；范围 60%-160%）")
 
 
@@ -1249,9 +1249,8 @@ class ShotPlan(BaseModel):
     )
     duration_seconds: float = Field(
         default=2.5,
-        ge=1.0,
-        le=15.0,
-        description="本镜目标时长，所有 shot 之和应等于 AdaptedSection.duration_seconds",
+        gt=0,
+        description="本镜时长。跟着视频块走，不再卡 1–15 秒。",
     )
     source_hint: Optional[Literal["sample", "user_material", "aigc_t2v", "aigc_image", "text_card"]] = Field(
         default=None,
@@ -1338,9 +1337,8 @@ class AdaptedSection(BaseModel):
     order: int = Field(..., description="段落顺序（从 0 开始）")
     duration_seconds: float = Field(
         default=4.0,
-        ge=2.0,
-        le=30.0,
-        description="LLM 决定的本段目标时长（秒），驱动 Scene.duration 与 AIGC 链式分段。",
+        gt=0,
+        description="本视频块时长（秒）。不按叙事角色卡上下限，也不再压到 30 秒。",
     )
     adaptation_note: str = Field(
         default="",
@@ -1870,9 +1868,8 @@ class ComposeSettings(BaseModel):
 
     target_duration_seconds: float = Field(
         default=30.0,
-        ge=10.0,
-        le=120.0,
-        description="目标总时长（秒），驱动每段 duration_seconds 分配。",
+        gt=0,
+        description="目标总时长（秒）。只作生成参考，不限制各视频块的实际长度。",
     )
     target_platform: TargetPlatform = Field(
         default="douyin",

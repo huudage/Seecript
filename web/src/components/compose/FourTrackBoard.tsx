@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
 import { cn } from '@/lib/utils'
-import { getSectionMeta } from '@/lib/sections'
+import { getSectionMeta, videoBlockTitle } from '@/lib/sections'
 import { TRANSITION_LABEL, TRANSITION_TONE } from '@/lib/transitions'
 import { BgmAnalysisCard } from './BgmAnalysisCard'
 import type {
@@ -767,11 +767,8 @@ export function FourTrackBoard({
               >
                 {/* 段头条：✏ 编辑段 + ▾ 折叠回去；占 14px 高，下面才是分镜小块 */}
                 <div className="absolute inset-x-0 top-0 z-[1] flex h-3.5 items-center gap-1 rounded-t bg-black/55 px-1">
-                  <span className="rounded bg-white/15 px-1 font-mono text-[8px] text-white">
-                    {getSectionMeta(section.role).short}
-                  </span>
                   <span className="truncate text-[9px] font-semibold text-white/90">
-                    {section.theme || getSectionMeta(section.role).label}
+                    {videoBlockTitle(section)}
                   </span>
                   <button
                     type="button"
@@ -826,7 +823,7 @@ export function FourTrackBoard({
                         }}
                         className={cn(
                           'absolute inset-y-0 overflow-hidden rounded border text-left text-[9px] text-white shadow-sm transition-all',
-                          getSectionMeta(section.role).bg,
+                          'bg-zinc-700/80',
                           isSelectedShot
                             ? 'z-10 border-white ring-2 ring-white/80 brightness-110'
                             : 'border-white/30 hover:brightness-110',
@@ -902,14 +899,14 @@ export function FourTrackBoard({
                 // stage-29 fix: 父层改 overflow-visible，让 ✏/▾ 按钮能溢出窄段不被裁；
                 // 缩略图/背景的裁剪丢给下面 absolute inset-0 的 overflow-hidden 层处理。
                 'absolute top-1 bottom-1 overflow-visible rounded-md border-2 text-left text-[10px] text-white shadow-sm transition-all',
-                getSectionMeta(section.role).bg,
+                'bg-zinc-700/80',
                 sectionBorderById.get(section.section_id) ?? 'border-border',
                 selected
                   ? 'z-10 scale-[1.02] ring-4 ring-white ring-offset-2 ring-offset-card shadow-lg brightness-110'
                   : 'hover:brightness-110',
               )}
               style={{ left: `${left}%`, width: `${width}%` }}
-              title={`${getSectionMeta(section.role).label} · ${section.theme}\n${section.content_description}\n（含 ${scenesInSec.length} 镜，✏ 编辑段、▾ 展开分镜逐镜编辑）`}
+              title={`${videoBlockTitle(section)} · ${(end - start).toFixed(1)}s\n${section.content_description}\n（含 ${scenesInSec.length} 镜，✏ 编辑段、▾ 展开分镜逐镜编辑）`}
             >
               <div className="absolute inset-0 overflow-hidden rounded-md">
                 <SceneThumb scene={firstScene} thumbnailUrl={thumbUrl} textCardSpec={textCardSpec} />
@@ -945,7 +942,7 @@ export function FourTrackBoard({
                     都能露出 ▾ 给用户点。pr-7 给徽章腾出右侧 28px 别压住按钮。 */}
                 <div className="flex items-center justify-between gap-1 pr-7">
                   <span className="shrink-0 rounded bg-black/40 px-1 font-mono text-[9px] text-white">
-                    {getSectionMeta(section.role).short}
+                    {(end - start).toFixed(1)}s
                   </span>
                   <div className="flex min-w-0 flex-1 items-center justify-end gap-1 overflow-hidden">
                     {scenesInSec.length > 1 && (
@@ -973,7 +970,7 @@ export function FourTrackBoard({
                   </div>
                 </div>
                 <div className="truncate rounded bg-black/40 px-1 text-[10px] font-semibold leading-tight text-white">
-                  {section.theme || getSectionMeta(section.role).label}
+                  {videoBlockTitle(section)}
                 </div>
               </div>
               {/* stage-29 fix: 按钮组绝对定位到右上角，挂在父层 overflow-visible 之上；
@@ -1073,7 +1070,7 @@ export function FourTrackBoard({
               onClick={() => onSelectScene(scene, gap, section)}
               className={cn(
                 'absolute top-1 bottom-1 overflow-hidden rounded-md border-2 text-left text-[10px] text-white shadow-sm transition-all',
-                getSectionMeta(scene.section).bg,
+                'bg-zinc-700/80',
                 section ? sectionBorderById.get(section.section_id) ?? 'border-border' : 'border-border',
                 selected
                   ? 'z-10 scale-[1.02] ring-4 ring-white ring-offset-2 ring-offset-card shadow-lg brightness-110'
@@ -1082,8 +1079,8 @@ export function FourTrackBoard({
               style={{ left: `${left}%`, width: `${width}%` }}
               title={
                 section
-                  ? `${getSectionMeta(scene.section).label} · ${section.theme}\n${section.content_description}`
-                  : `${getSectionMeta(scene.section).label} · ${scene.duration.toFixed(1)}s`
+                  ? `${videoBlockTitle(section)} · ${scene.duration.toFixed(1)}s\n${section.content_description}`
+                  : `视频块 · ${scene.duration.toFixed(1)}s`
               }
             >
               {/* 缩略图层：填满整段，文字 / 状态徽章浮在上层 */}
@@ -1107,7 +1104,7 @@ export function FourTrackBoard({
               <div className="relative z-[1] flex h-full flex-col justify-between p-1">
                 <div className="flex items-center justify-between gap-1">
                   <span className="rounded bg-black/40 px-1 font-mono text-[9px] text-white">
-                    {getSectionMeta(scene.section).short}
+                    {scene.duration.toFixed(1)}s
                   </span>
                   <div className="flex items-center gap-1">
                     {/* stage-24 分镜数徽章：当本段被拆为多个分镜时显示 N 镜 */}
@@ -1136,7 +1133,7 @@ export function FourTrackBoard({
                   </div>
                 </div>
                 <div className="truncate rounded bg-black/40 px-1 text-[10px] font-semibold leading-tight text-white">
-                  {section?.theme || getSectionMeta(scene.section).label}
+                  {videoBlockTitle(section, order ?? 0)}
                 </div>
               </div>
             </button>

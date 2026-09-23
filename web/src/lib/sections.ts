@@ -87,6 +87,19 @@ function dynamicMeta(prefix: 'step' | 'item' | 'daily', n: number): SectionMeta 
   return { label, short, bg: NEUTRAL_BG, hex: NEUTRAL_HEX }
 }
 
+const ROLE_TITLES = new Set([
+  '开场钩子', '主体铺陈', '卖点高潮', '行动引导', '开场', '高潮', '收尾',
+  '钩子', '引入', '总结', '起势', '顶点', '余韵', '标题卡', '落版',
+])
+
+/** 视频块标题。角色名（开场钩子等）不当标题，改成「视频块 N」。 */
+export function videoBlockTitle(section: { theme?: string | null; order: number } | null | undefined, orderFallback = 0): string {
+  const theme = section?.theme?.trim() ?? ''
+  const order = section?.order ?? orderFallback
+  if (theme && !ROLE_TITLES.has(theme)) return theme
+  return `视频块 ${order}`
+}
+
 /** 按 role 取展示元数据；step_N / item_N / daily_N 走动态 fallback。 */
 export function getSectionMeta(role: string, _pattern?: StructuralPattern): SectionMeta {
   if (!role) return { label: '段落', short: 'Sec', bg: NEUTRAL_BG, hex: NEUTRAL_HEX }

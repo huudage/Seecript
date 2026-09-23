@@ -79,7 +79,7 @@ _SYSTEM_STEP2 = (
     "update_shot_visual（改某段下第 N 个分镜的画面描述）、"
     "update_shot_subject（改某段下第 N 个分镜的主体词 ≤40 字）、"
     "update_shot_narration（改某分镜的口播/字幕，同步主轨 scene）、"
-    "update_shot_duration（改某分镜的时长 1-12 秒，自动缩放段总时长与对应 scene）、"
+    "update_shot_duration（改某分镜的时长，自动缩放段总时长与对应 scene）、"
     "delete_shot（**删除**某段下第 N 个分镜——用户说『删除/去掉/砍掉/不要 第 N 段第 M 镜』时调用此工具，**不要**用 update_shot_duration 把它压成 1 秒来糊弄；段内只剩这 1 镜会自动 cascade 成整段删除）、"
     "regenerate_narrations_all（按 hint 整体重写所有段落口播）。\n"
     "—— 字卡重出（仅 copy；aigc_image 在 step2 禁用）——\n"
@@ -91,7 +91,7 @@ _SYSTEM_STEP2 = (
     "档位 intensity 凭语气词判：『稍微/有点』→ light；『明显/适中』→ medium；『大幅/强烈/很』→ strong。"
     "scope 默认 'all'；用户指了某段 → 传 section_id。"
     "**若用户说『更抓人/更有感染力/情绪强一点』** → D 态引导：『情绪类宏调整在 step3（动转场+BGM 音量），请切到 step3 后再说一遍』，**不要 tool_calls**。\n"
-    "用户表达模糊时按惯例：『稍短=×0.85 / 更短=×0.7 / 更长=×1.25 / 长很多=×1.5』，时长统一钳制 [2, 30] 秒。\n"
+    "用户表达模糊时按惯例：『稍短=×0.85 / 更短=×0.7 / 更长=×1.25 / 长很多=×1.5』，时长不设上下限。\n"
     "**段落识别（很重要）**：用户**不会**说 section_id（『sec-0 / sec-1』），他们会说自然语言。请**严格**按下表把自然语言映射到上文【段落结构】里列出的 section_id：\n"
     "  · 『第 1 段 / 第一段 / 头一段 / 开头 / 开头段 / 开场 / 开场段 / 片头』 → 列表里**第 1 个段**的 section_id（通常 role=opening）。\n"
     "  · 『第 2 段 / 第二段 / 中间段』 → 列表里第 2 个段的 section_id。\n"
@@ -157,7 +157,7 @@ _TOOL_UPDATE_DURATION = {
     "type": "function",
     "function": {
         "name": "update_section_duration",
-        "description": "改某段目标时长（秒）；自动钳制 [2, 30]。",
+        "description": "改某段目标时长（秒）；只要求大于 0。",
         "parameters": {
             "type": "object",
             "properties": {
@@ -445,7 +445,7 @@ _TOOL_UPDATE_SHOT_DURATION = {
     "type": "function",
     "function": {
         "name": "update_shot_duration",
-        "description": "改某段下第 shot_order 个分镜的时长（秒，钳制 [1, 12]）；自动按比例缩放 section.duration_seconds 与对应 scene.duration。",
+        "description": "改某段下第 shot_order 个分镜的时长（秒，大于 0）；同步 section.duration_seconds 与对应 scene.duration。",
         "parameters": {
             "type": "object",
             "properties": {
@@ -730,7 +730,7 @@ def _rebuild_timeline(plan: Plan) -> dict:
     plan.packaging_track = new_pkg
 
     if plan.settings is not None and total > 0:
-        plan.settings.target_duration_seconds = max(10.0, min(300.0, total))
+        plan.settings.target_duration_seconds = total
 
     # 一处收束：任何走 _rebuild_timeline 的 mutation（NL 编辑、删段、重排、手动裁剪等）
     # 都会让 plan.duration_seconds 跟随 main_track 总和伸缩。FourTrackBoard 用此值算
@@ -817,13 +817,13 @@ def _mut_update_duration(plan: Plan, args: dict) -> ComposeEditDiff | None:
     if sec is None:
         return None
     before = sec.duration_seconds
-    sec.duration_seconds = max(2.0, min(30.0, new_dur))
+    sec.duration_seconds = new_dur if new_dur > 0 else sec.duration_seconds
     role = sec.role
     matched_scenes = [sc for sc in plan.main_track if sc.section == role]
     if matched_scenes and before > 0:
         ratio = sec.duration_seconds / before
         for sc in matched_scenes:
-            sc.duration = max(0.5, sc.duration * ratio)
+            sc.duration = max(0.1, sc.duration * ratio)
             _sync_user_material_window(sc)
     info = _rebuild_timeline(plan)
     base = f"段 {sid} 时长 {before:.1f}s → {sec.duration_seconds:.1f}s（总时长 {info['total']:.1f}s）"
@@ -988,18 +988,18 @@ def _mut_update_shot_duration(plan: Plan, args: dict) -> ComposeEditDiff | None:
             before=None, after=None,
             summary=f"段 {sid} 没有第 {shot_order+1} 镜（共 {len(sec.shots or [])} 镜）",
         )
-    new_dur = max(1.0, min(12.0, new_dur))
+    new_dur = new_dur if new_dur > 0 else 0.1
     before = shot.duration_seconds
     if abs(new_dur - before) < 0.05:
         return None
     delta = new_dur - before
     shot.duration_seconds = new_dur
     sec_before = sec.duration_seconds
-    sec.duration_seconds = max(2.0, min(120.0, sec_before + delta))
+    sec.duration_seconds = max(0.1, sec_before + delta)
     scene_synced = False
     sc = _matching_scene(plan, sec, shot_order)
     if sc is not None:
-        sc.duration = max(0.5, sc.duration + delta)
+        sc.duration = max(0.1, sc.duration + delta)
         _sync_user_material_window(sc)
         scene_synced = True
     info = _rebuild_timeline(plan)
@@ -1066,7 +1066,7 @@ def _mut_delete_shot(plan: Plan, args: dict) -> ComposeEditDiff | None:
     for i, sh in enumerate(remaining):
         sh.order = i
     sec.shots = remaining
-    sec.duration_seconds = max(1.0, round(sum(sh.duration_seconds for sh in remaining), 3))
+    sec.duration_seconds = max(0.1, round(sum(sh.duration_seconds for sh in remaining), 3))
 
     # 2) main_track 联动：删 parent_section_id+shot_order 匹配的 scene；
     #    同段后续 scene 的 shot_order -1 以保持 0..N-1 连续。
@@ -1383,11 +1383,11 @@ def _mut_apply_macro(plan: Plan, args: dict) -> ComposeEditDiff | None:
             return None
         before_total = plan.duration_seconds
         for sec in plan.adapted_sections:
-            sec.duration_seconds = max(2.0, min(120.0, sec.duration_seconds * factor))
+            sec.duration_seconds = max(0.1, sec.duration_seconds * factor)
             for sh in sec.shots or []:
-                sh.duration_seconds = max(0.5, min(12.0, sh.duration_seconds * factor))
+                sh.duration_seconds = max(0.1, sh.duration_seconds * factor)
         for sc in plan.main_track:
-            sc.duration = max(0.5, sc.duration * factor)
+            sc.duration = max(0.1, sc.duration * factor)
             _sync_user_material_window(sc)
         info = _rebuild_timeline(plan)
         base = (

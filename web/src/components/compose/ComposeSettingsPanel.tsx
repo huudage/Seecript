@@ -47,7 +47,7 @@ export function ComposeSettingsPanel({
 
   const handleDur = (e: ChangeEvent<HTMLInputElement>) => {
     const n = Number(e.target.value)
-    if (Number.isFinite(n)) onChange({ target_duration_seconds: Math.max(10, Math.min(120, n)) })
+    if (Number.isFinite(n) && n > 0) onChange({ target_duration_seconds: n })
   }
 
   const handleCta = (e: ChangeEvent<HTMLInputElement>) =>
@@ -80,17 +80,17 @@ export function ComposeSettingsPanel({
             <div className="mt-1 flex items-center gap-2">
               <input
                 type="range"
-                min={10}
-                max={120}
-                step={5}
+                min={1}
+                max={Math.max(120, value.target_duration_seconds)}
+                step={1}
                 value={value.target_duration_seconds}
                 onChange={handleDur}
                 className="flex-1"
               />
               <input
                 type="number"
-                min={10}
-                max={120}
+                min={0.1}
+                step={0.1}
                 value={value.target_duration_seconds}
                 onChange={handleDur}
                 className="w-16 rounded-md border border-border bg-background/60 px-2 py-1 text-right font-mono text-xs"

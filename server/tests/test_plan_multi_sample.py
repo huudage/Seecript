@@ -248,5 +248,5 @@ def test_http_plan_build_with_two_samples_returns_combined_plan(client):
     assert r.status_code == 200, r.text
     plan = r.json()
     assert plan["sample_ids"] == ["sample-marketing-01", "sample-vlog-01"]
-    # 3-7 段约束仍要满足
-    assert 3 <= len(plan["adapted_sections"]) <= 7
+    assert len(plan["adapted_sections"]) >= 1
+    assert all(sec["role"] == "block" for sec in plan["adapted_sections"])

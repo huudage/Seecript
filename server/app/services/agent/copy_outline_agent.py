@@ -455,7 +455,7 @@ def _safe_duration(value: object, fallback: float) -> float:
         v = float(value)
     except (TypeError, ValueError):
         v = fallback
-    return max(1.5, min(15.0, v))
+    return v if v > 0 else fallback
 
 
 def _fallback_outline(
@@ -494,7 +494,7 @@ def _fallback_outline(
         accent_color=derived["accent_color"],
         animation=derived["animation"],  # type: ignore[arg-type]
         emoji_decor=[],
-        duration_seconds=max(1.5, min(15.0, duration)),
+        duration_seconds=duration if duration > 0 else 4.0,
     )
     return CopyOutline(
         main_text=main_text,

@@ -63,15 +63,12 @@ def _build_plan(client) -> dict:
     assert plan["settings"]["cta"] == "点击主页预约"
     assert plan["settings"]["keywords"] == ["差异化", "新品"]
     adapted = plan["adapted_sections"]
-    assert isinstance(adapted, list) and len(adapted) >= 3
-    assert adapted[0]["role"] == "opening" and adapted[-1]["role"] == "closing"
+    assert isinstance(adapted, list) and len(adapted) >= 1
     for sec in adapted:
         assert sec["section_id"] and sec["content_description"], sec
-        # 每段都要有 duration_seconds（驱动 Scene.duration + AIGC 链式分段）
-        assert 2.0 <= sec["duration_seconds"] <= 30.0, sec
-    # 各段时长之和应贴近目标总时长（45s，允许 ±25%）
-    total = sum(s["duration_seconds"] for s in adapted)
-    assert abs(total - 45) / 45 <= 0.25, f"adapted 总时长 {total} 偏离目标 45s 过大"
+        assert sec["role"] == "block"
+        assert sec["duration_seconds"] > 0
+        assert "开场钩子" not in (sec.get("theme") or "")
     return plan
 
 

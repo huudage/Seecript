@@ -547,7 +547,7 @@ function relayTimeline(plan: Plan): void {
     return true
   })
   plan.duration_seconds = total
-  plan.settings.target_duration_seconds = Math.max(10, Math.min(300, total))
+  if (total > 0) plan.settings.target_duration_seconds = total
 }
 
 function doReorder(plan: Plan, sectionIds: string[]): OpResult {

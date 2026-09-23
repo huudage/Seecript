@@ -59,13 +59,10 @@ _ADAPT_SYSTEM = (
     "若给了 2 个参考样例，请将它们作为对等的灵感来源，不必偏向某一份；可借用任一份的"
     "节奏、卡点与段落创意，但不要把两份段落简单拼接（最终段数仍受硬约束）。\n\n"
     "允许：增加段落、删除冗余段落、合并相邻段落、调整顺序。\n\n"
-    "硬约束（按本次结构模式 pattern 决定）：\n"
-    "1. 第一段 role 必须属于 pattern 的开场类\n"
-    "2. 最后一段 role 必须属于 pattern 的收尾类\n"
-    "3. 整支视频最多 1 段峰值类（无峰值类的模式则不出现）\n"
-    "4. 中间段都不能是开场/收尾类\n"
-    "5. 段数：listicle 模式 2-8 段，其他 3-7 段\n"
-    "6. 所有段 duration_seconds 之和必须接近『目标总时长』（±20% 以内）\n\n"
+    "内容轨按视频块自由排，不要分配叙事角色：\n"
+    "1. role 固定写 block。不要用 opening/hook/climax 这类结构角色，theme 也不要写「开场钩子」「卖点高潮」\n"
+    "2. 段数跟着原样例视频块走，一块对一块，不要为了凑 3-7 段去合并或删块\n"
+    "3. duration_seconds 用该视频块自己的时长，不要按开场 3-5 秒、高潮 5-10 秒去卡，也不要为了贴近目标总时长去压缩或拉长\n\n"
     "每段返回字段：\n"
     "- role: 必须在合法 role 列表内；step_N/item_N 形式的从 1 开始按顺序编号\n"
     "- theme: 中文短标签（≤8 字），紧贴创作者主题，不照抄样例\n"
@@ -89,7 +86,7 @@ _ADAPT_SYSTEM = (
     "- adaptation_note: 改编理由（≤60 字）—— 说明本段相比样例做了什么调整（保留/合并/重排/新增），"
     "以及为什么这样做更贴合创作者需求；可空字符串\n"
     "- tempo: 节奏标签（slow/medium/fast/peak/deceleration 之一，可为 null）\n"
-    "- duration_seconds: 本段时长（浮点秒）。开场/收尾 3-5s，峰值 5-10s，主体 4-8s；所有段之和贴近目标总时长\n"
+    "- duration_seconds: 本视频块时长（浮点秒），沿用对应视频块的长度，不设角色区间\n"
     "- source_section_indices: 改编自原样例池哪些段落下标（合并后的 flat 下标）；纯新增段为 []\n"
     "- shots: **stage-24** 把本段按上面分镜数量约束拆成 1-3（最多 5）个分镜对象的数组。"
     "每个分镜对象字段：subject（≤8 字主体，如『主播』『青铜器』『展厅全景』）、"
@@ -101,8 +98,7 @@ _ADAPT_SYSTEM = (
     "visual（≤80 字画面描述：主体+动作+构图+镜头语言；同样要用具象表达，subject 出现的词要原样保留）、"
     "narration（≤80 字本镜口播或字幕，纯画面镜头可空。**严禁为了凑时长复述同一个意思**——"
     "宁可短不许水；step3 阶段会按段长再做一次精确重写，所以这里给个简短初版即可）、"
-    "duration_seconds（本镜时长，所有 shot 之和应等于本段 duration_seconds，"
-    "单镜 1-15s）、"
+    "duration_seconds（本镜时长，按这一镜自己的内容给，不设 1-15 秒上限）、"
     "**targets（stage-25 新增）**：本镜要呈现的目标分布数组（0-4 个，可空）。"
     "每个目标 = {kind: person/object/scene/text/graphic/other, name: ≤12 字短名, "
     "role: primary/secondary/background（可空，主体留 primary）, visual_hint: ≤40 字视觉特征（可空）}。"
@@ -349,8 +345,9 @@ async def adapt_structure(
         summary = (sec.summary or "").strip()[:60]
         shots = ",".join(str(idx) for idx in sec.shot_indices) or "-"
         tag = f"(样例{chr(ord('A') + mi)}) " if multi else ""
+        block_dur = max(0.0, float(sec.end or 0) - float(sec.start or 0))
         sample_lines.append(
-            f"[{global_idx}] {tag}role={sec.role} | theme={theme} | shots={shots} | summary={summary}"
+            f"[{global_idx}] {tag}theme={theme} | duration={block_dur:.1f}s | shots={shots} | summary={summary}"
         )
 
     # stage-25：样例 Shot.targets 频次摘要——只给 LLM 看『结构成分』（多少个 graphic/object/text 镜头），
@@ -415,9 +412,7 @@ async def adapt_structure(
            f"必须按本次 brief 的目标域重新设计——比如样例的『紫色莫比乌斯环』在文物展主题下"
            f"应替换为『镇馆文物的环绕展示』之类的同节奏图形，而不是搬同一个图形/同一个颜色。）\n\n"
            if target_summary_text else "")
-        + f"请基于以上信息改编段落结构（"
-        f"{'2-8' if pattern == 'listicle' else '3-7'} 段，遵守硬约束，"
-        f"所有段时长之和贴近 {target_total:.0f}s）。"
+        + "请按上面的视频块逐块改编：一块对一块，role 写 block，时长用每块自己的 duration，不要套开场/高潮角色，也不要改时长去凑目标总时长。"
     )
 
     # stage-23：迁移倾向 + 原片亮点/改进 注入到 user prompt 顶部，让 LLM 在改编时
@@ -496,17 +491,25 @@ def _parse_raw_items(raw: list, pattern: str = "dramatic") -> list[dict]:
     out: list[dict] = []
     if not isinstance(raw, list):
         return out
-    allowed = set(allowed_roles_for(pattern))
     valid_tempos: set[str] = {"slow", "medium", "fast", "peak", "deceleration"}
     for item in raw:
         if not isinstance(item, dict):
             continue
-        role = str(item.get("role", "")).strip()
-        # 容错：step1 → step_1、item02 → item_2
+        role = str(item.get("role", "")).strip() or "block"
+        # 容错：step1 → step_1、item02 → item_2。内容轨不再按角色白名单丢块。
         role = _re.sub(r"^(step|item)\s*0*(\d+)$", r"\1_\2", role)
-        if role not in allowed:
-            continue
+        if role in {"opening", "hook", "intro", "establish", "title_card", "intro_scene",
+                    "closing", "closer", "recap", "resolve", "payoff", "wrap_up",
+                    "climax", "peak", "development", "flow", "info_block"} or _re.match(
+            r"^(step|item|daily)_\d+$", role
+        ):
+            role = "block"
         theme = str(item.get("theme", "") or "").strip()[:20]
+        if theme in {
+            "开场钩子", "主体铺陈", "卖点高潮", "行动引导", "开场", "高潮", "收尾",
+            "钩子", "引入", "总结", "起势", "顶点", "余韵", "标题卡", "落版",
+        }:
+            theme = ""
         content = str(item.get("content_description", "") or "").strip()[:300]
         if not content:
             continue
@@ -521,21 +524,18 @@ def _parse_raw_items(raw: list, pattern: str = "dramatic") -> list[dict]:
                     src_idx.append(int(x))
                 except (TypeError, ValueError):
                     continue
-        default_dur = _default_duration_for(role, pattern)
         try:
-            dur = float(item.get("duration_seconds") or default_dur)
+            dur = float(item.get("duration_seconds") or 0)
         except (TypeError, ValueError):
-            dur = default_dur
-        dur = max(_MIN_SEC, min(_MAX_SEC, dur))
+            dur = 0.0
+        if dur <= 0:
+            dur = 4.0
 
-        # stage-24：解析 shots[]（LLM 没给时下游 plan.py 会兜底 1 镜）
-        # E-PR 收敛：开场/收尾段最多 2 镜，主体段最多 5 镜
-        is_edge = role_is_opening(role, pattern) or role_is_closing(role, pattern)
-        shot_cap = 2 if is_edge else 5
+        # 分镜数量和单镜时长都跟着视频块走，不再按开场/主体卡镜数或 15 秒。
         shots_raw = item.get("shots") or []
         shots_clean: list[dict] = []
         if isinstance(shots_raw, list):
-            for sh in shots_raw[:shot_cap]:
+            for sh in shots_raw:
                 if not isinstance(sh, dict):
                     continue
                 visual = str(sh.get("visual", "") or "").strip()[:200]
@@ -549,7 +549,6 @@ def _parse_raw_items(raw: list, pattern: str = "dramatic") -> list[dict]:
                     sh_dur = 0.0
                 if sh_dur <= 0:
                     sh_dur = 2.5
-                sh_dur = max(1.0, min(15.0, sh_dur))
                 # stage-43：camera_technique 透传到下游 _normalize_shot_durations
                 camera_raw = sh.get("camera_technique") or ""
                 camera_clean = str(camera_raw).strip()[:80] if isinstance(camera_raw, str) else ""
@@ -584,7 +583,7 @@ def _parse_raw_items(raw: list, pattern: str = "dramatic") -> list[dict]:
                     # 折叠：累加 duration，保留首个非空 narration
                     last = merged[-1]
                     last["duration_seconds"] = round(
-                        min(15.0, float(last["duration_seconds"]) + float(sh["duration_seconds"])),
+                        float(last["duration_seconds"]) + float(sh["duration_seconds"]),
                         2,
                     )
                     if not (last.get("narration") or "").strip() and (sh.get("narration") or "").strip():
@@ -614,159 +613,37 @@ def _parse_raw_items(raw: list, pattern: str = "dramatic") -> list[dict]:
 
 
 def _normalize_durations(items: list[dict], target_total: float) -> list[dict]:
-    """把每段 duration_seconds 归一化到 target_total 附近（±20% 内不动，超出按比例缩放再 clamp）。
-
-    步骤：
-    1. 每项已在 _parse_raw_items 中 clamp 到 [_MIN_SEC, _MAX_SEC]
-    2. 计算总和；若与目标偏离 ≤20%，直接返回
-    3. 否则按 target_total/current_total 比例缩放，再 clamp
-    4. 如果 clamp 后偏差仍大，把残差均摊到非边界段（避免某段卡死在 clamp 后总和飘掉）
-    """
-    if not items or target_total <= 0:
-        return items
-    current = sum(float(it.get("duration_seconds") or 0.0) for it in items)
-    if current <= 0:
-        # 没有任何有效时长，按 role 默认值兜底
-        for it in items:
-            it["duration_seconds"] = _DEFAULT_DURATION.get(it.get("role"), 5.0)
-        current = sum(it["duration_seconds"] for it in items)
-    if current <= 0:
-        return items
-    deviation = abs(current - target_total) / target_total
-    if deviation <= 0.2:
-        return items
-    scale = target_total / current
+    """保留每个视频块自己的时长。target_total 只是创作设置，不再用来缩放或卡上下限。"""
+    del target_total
     for it in items:
-        scaled = float(it["duration_seconds"]) * scale
-        it["duration_seconds"] = max(_MIN_SEC, min(_MAX_SEC, scaled))
-    # 残差均摊：clamp 后总和可能仍偏，按未触顶/触底的项均分一次
-    new_total = sum(it["duration_seconds"] for it in items)
-    delta = target_total - new_total
-    if abs(delta) > 0.1:
-        adjustable = [
-            it for it in items
-            if _MIN_SEC < it["duration_seconds"] < _MAX_SEC
-        ]
-        if adjustable:
-            share = delta / len(adjustable)
-            for it in adjustable:
-                it["duration_seconds"] = max(
-                    _MIN_SEC, min(_MAX_SEC, it["duration_seconds"] + share)
-                )
-    # 保留 1 位小数减少噪声
-    for it in items:
-        it["duration_seconds"] = round(float(it["duration_seconds"]), 1)
+        try:
+            dur = float(it.get("duration_seconds") or 0)
+        except (TypeError, ValueError):
+            dur = 0.0
+        if dur <= 0:
+            dur = 4.0
+        it["duration_seconds"] = round(dur, 2)
     return items
 
 
 def _enforce_hard_constraints(items: list[dict], n_src: int, pattern: str = "dramatic") -> list[dict]:
-    """强约束修正：首=opening 类、末=closing 类、中间不出现首尾类、≤1 峰值类、长度按 pattern。
-
-    各 pattern 段数：listicle 2-8，其他 3-7。
-    无 peak 类的模式（stepwise/listicle/info_dense）：中间段若是 peak 类被降级到 main 类。
-    """
-    if not items:
-        return items
-
-    n = len(items)
-
-    def _opening_role() -> tuple[str, str]:
-        slot = STRUCTURAL_PATTERNS.get(pattern, STRUCTURAL_PATTERNS["dramatic"])["opening"][0]
-        if slot.endswith("_*"):
-            slot = slot[:-2] + "_1"
-        return slot, _default_theme(slot, pattern)
-
-    def _closing_role() -> tuple[str, str]:
-        slot = STRUCTURAL_PATTERNS.get(pattern, STRUCTURAL_PATTERNS["dramatic"])["closing"][0]
-        if slot.endswith("_*"):
-            slot = slot[:-2] + "_1"
-        return slot, _default_theme(slot, pattern)
-
-    def _main_role(idx: int = 1) -> str:
-        slot = STRUCTURAL_PATTERNS.get(pattern, STRUCTURAL_PATTERNS["dramatic"])["main"][0]
-        if slot.endswith("_*"):
-            return slot[:-2] + f"_{idx}"
-        return slot
-
-    # 首段强制开场类
-    if not role_is_opening(items[0].get("role", ""), pattern):
-        new_role, new_theme = _opening_role()
-        items[0]["role"] = new_role
-        if not items[0].get("theme"):
-            items[0]["theme"] = new_theme
-
-    # 末段强制收尾类（n≥2）
-    if n >= 2:
-        if not role_is_closing(items[-1].get("role", ""), pattern):
-            new_role, new_theme = _closing_role()
-            items[-1]["role"] = new_role
-            if not items[-1].get("theme"):
-                items[-1]["theme"] = new_theme
-
-    # 中间段：禁开场/收尾类；至多 1 个峰值；无 peak 模式则峰值降为 main
-    pattern_def = STRUCTURAL_PATTERNS.get(pattern, STRUCTURAL_PATTERNS["dramatic"])
-    has_peak_class = bool(pattern_def["peak"])
-    peak_seen = 0
-    main_counter = 1
-    for i in range(1, n - 1):
-        role = items[i].get("role", "")
-        if role_is_opening(role, pattern) or role_is_closing(role, pattern):
-            items[i]["role"] = _main_role(main_counter)
-            main_counter += 1
-        elif role_is_peak(role, pattern):
-            if not has_peak_class:
-                items[i]["role"] = _main_role(main_counter)
-                main_counter += 1
-            else:
-                peak_seen += 1
-                if peak_seen > 1:
-                    items[i]["role"] = _main_role(main_counter)
-                    main_counter += 1
-
-    # 长度修正：listicle 2-8，其他 3-7
-    min_seg = 2 if pattern == "listicle" else 3
-    max_seg = 8 if pattern == "listicle" else 7
-    if n < min_seg:
-        return []
-    if n > max_seg:
-        kept: list[dict] = [items[0]]
-        peak_item = next((it for it in items[1:-1] if role_is_peak(it.get("role", ""), pattern)), None)
-        mains = [it for it in items[1:-1] if role_is_main(it.get("role", ""), pattern)]
-        budget = max_seg - 2 - (1 if peak_item else 0)
-        kept.extend(mains[:budget])
-        if peak_item:
-            kept.append(peak_item)
-        kept.append(items[-1])
-        items = kept
-
+    """内容轨不再改写成开场/高潮/收尾，也不按 3-7 段删块。"""
+    del n_src, pattern
     return items
 
 
 def _normalize_shot_durations(shots_raw: list[dict], section_total: float) -> list[ShotPlan]:
-    """把每个 ShotPlan 的 duration_seconds 归一到 section 总时长。
-
-    1. 总和与 section 总时长偏差 ≤ 10% 直接用
-    2. 否则按比例缩放，clamp 到 [1.0, 15.0]
-    3. 残差均摊到非边界镜
-    返回 list[ShotPlan]；shots_raw 为空时返回 []。
-    """
+    """保留每个分镜自己的时长。缺时长时才用视频块时长均分，不压到 15 秒。"""
     if not shots_raw:
         return []
     n = len(shots_raw)
-    cur = sum(float(s.get("duration_seconds") or 0) for s in shots_raw) or 1.0
-    if cur > 0:
-        ratio = section_total / cur
-        for s in shots_raw:
-            d = float(s.get("duration_seconds") or 2.5) * ratio
-            s["duration_seconds"] = max(1.0, min(15.0, d))
-    new_total = sum(float(s["duration_seconds"]) for s in shots_raw)
-    delta = section_total - new_total
-    if abs(delta) > 0.1:
-        adjustable = [s for s in shots_raw if 1.0 < s["duration_seconds"] < 15.0]
-        if adjustable:
-            share = delta / len(adjustable)
-            for s in adjustable:
-                s["duration_seconds"] = max(1.0, min(15.0, s["duration_seconds"] + share))
+    share = section_total / n if section_total > 0 else 2.5
+    for s in shots_raw:
+        try:
+            d = float(s.get("duration_seconds") or 0)
+        except (TypeError, ValueError):
+            d = 0.0
+        s["duration_seconds"] = d if d > 0 else share
 
     out: list[ShotPlan] = []
     for order, s in enumerate(shots_raw):
@@ -820,7 +697,7 @@ def _auto_shots_for_section(section_total: float, content_description: str, role
         subject="",
         visual=(content_description or f"本段（{role}）画面")[:200],
         narration="",
-        duration_seconds=round(max(1.0, min(15.0, section_total)), 2),
+        duration_seconds=round(section_total if section_total > 0 else 2.5, 2),
     )]
 
 
@@ -885,8 +762,8 @@ def _enforce_subject_anchors(
         sec = sections[sec_idx]
         shots = list(sec.shots or [])
         if not shots:
-            # 空 shots：补一个新 shot（duration 取 section 总时长的 60% 但 ≤ 8s ≥ 1s）
-            base_dur = max(1.0, min(8.0, float(sec.duration_seconds or 4.0) * 0.6))
+            # 空 shots：补一个新 shot，时长跟这段自己的长度走，不卡上下限。
+            base_dur = max(0.1, float(sec.duration_seconds or 4.0) * 0.6)
             new_shot = ShotPlan(
                 order=0,
                 subject=anchor,
@@ -979,7 +856,7 @@ def _materialize(
         out.append(AdaptedSection(
             section_id=f"sec-{order}",
             role=role,
-            theme=it.get("theme", "") or _default_theme(role, pattern),
+            theme=(it.get("theme") or "").strip() or f"视频块 {order}",
             content_description=it["content_description"],
             shots=shots_list,
             adaptation_note=it.get("adaptation_note", "") or "",
@@ -996,28 +873,23 @@ def _materialize(
 
 
 def _fallback_adaptation(sample_sections, target_total: float = 30.0, pattern: str = "dramatic") -> list[AdaptedSection]:
-    """LLM 失败/为空时的兜底：1:1 拷贝样例段落，content_description 填占位，按 role 默认时长再缩放到目标总时长。"""
+    """LLM 失败时按样例视频块 1:1 落地。时长用块自己的起止，不按角色缩放，也不标开场钩子。"""
+    del target_total, pattern
     out: list[AdaptedSection] = []
-    n = len(sample_sections)
-    if n == 0:
+    if not sample_sections:
         return out
-    raw_durs = [_default_duration_for(sec.role, pattern) for sec in sample_sections]
-    total = sum(raw_durs) or 1.0
-    scale = target_total / total if target_total > 0 else 1.0
-    durs = [
-        round(max(_MIN_SEC, min(_MAX_SEC, d * scale)), 1) for d in raw_durs
-    ]
     for order, sec in enumerate(sample_sections):
-        sec_dur = durs[order]
+        sec_dur = float(getattr(sec, "end", 0) or 0) - float(getattr(sec, "start", 0) or 0)
+        if sec_dur <= 0:
+            sec_dur = 4.0
+        sec_dur = round(sec_dur, 2)
+        theme = (getattr(sec, "theme", "") or "").strip() or f"视频块 {order}"
         out.append(AdaptedSection(
             section_id=f"sec-{order}",
-            role=sec.role,
-            theme=sec.theme or _default_theme(sec.role, pattern),
-            content_description=(
-                f"[fallback] 沿用样例 {sec.role} 段结构，"
-                f"建议按本段镜头节奏组织画面与口播。"
-            ),
-            shots=_auto_shots_for_section(sec_dur, "", sec.role),
+            role="block",
+            theme=theme,
+            content_description="沿用这一视频块的长度组织画面。",
+            shots=_auto_shots_for_section(sec_dur, "", "block"),
             adaptation_note="",
             tempo=None,
             source_section_indices=[order],

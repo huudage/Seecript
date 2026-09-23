@@ -77,33 +77,16 @@ def _build_manifest(pattern: str, n_sections: int = 5) -> SampleManifest:
 @pytest.mark.asyncio
 @pytest.mark.parametrize("pattern", ["dramatic", "stepwise", "listicle", "atmospheric", "info_dense"])
 async def test_adapt_structure_respects_pattern(pattern):
-    """对每个 pattern：adapt_structure 输出首=开场类、末=收尾类、峰值类 ≤1、段数在允许范围。"""
+    """内容轨不按 pattern 分配开场/收尾。段数和时长跟着样例视频块。"""
     manifest = _build_manifest(pattern, n_sections=5)
     sections = await adapt_structure(
         [manifest],
         brief=f"{pattern} 改编测试",
         video_goal=f"测试 {pattern} 模式",
     )
-    assert sections, f"{pattern} 模式没产出任何段"
-
-    n = len(sections)
-    if pattern == "listicle":
-        assert 2 <= n <= 8, f"{pattern} 段数 {n} 超 [2,8]"
-    else:
-        assert 3 <= n <= 7, f"{pattern} 段数 {n} 超 [3,7]"
-
-    assert role_is_opening(sections[0].role, pattern), (
-        f"{pattern} 首段 role={sections[0].role} 不属于开场类"
-    )
-    assert role_is_closing(sections[-1].role, pattern), (
-        f"{pattern} 末段 role={sections[-1].role} 不属于收尾类"
-    )
-
-    peak_count = sum(1 for s in sections if role_is_peak(s.role, pattern))
-    assert peak_count <= 1, f"{pattern} 峰值类段数 {peak_count} 超 1"
-
-    # 中间段不应出现开场/收尾类
-    for i in range(1, n - 1):
-        r = sections[i].role
-        assert not role_is_opening(r, pattern), f"{pattern} 中间段出现开场类 role={r}"
-        assert not role_is_closing(r, pattern), f"{pattern} 中间段出现收尾类 role={r}"
+    assert len(sections) == 5, f"{pattern} 应保留 5 个视频块，实际 {len(sections)}"
+    for sec, src in zip(sections, manifest.sections):
+        assert sec.role == "block"
+        assert sec.duration_seconds == pytest.approx(src.end - src.start)
+        assert not role_is_opening(sec.role, pattern)
+        assert not role_is_closing(sec.role, pattern)

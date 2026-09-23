@@ -171,7 +171,8 @@ def _build_text_card_spec_from_params(
         duration = float(raw_dur)
     except (TypeError, ValueError):
         duration = float(section_duration or 4.0)
-    duration = max(1.5, min(15.0, duration))
+    if duration <= 0:
+        duration = float(section_duration or 4.0)
 
     return TextCardSpec(
         main_text=main_text[:24],

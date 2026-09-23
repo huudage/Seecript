@@ -747,93 +747,30 @@ def _build_mock_shot_roles_json(user_text: str) -> str:
 
 
 def _build_mock_adapted_sections_json(user_text: str) -> str:
-    """动态生成 adapted_sections mock：从 user payload 解析 '原样例共 N 段' 拿到 N，
-    解析 structural_pattern，按位置分配 role + adaptation_note + tempo，每段一句占位 content_description。
-    """
+    """按用户提示里的视频块逐块生成，不分配开场/高潮角色，时长用块自己的 duration。"""
     import re
     import json
-    m = re.search(r"原样例共\s*(\d+)\s*段", user_text)
-    n_src = int(m.group(1)) if m else 4
-
-    pat = "dramatic"
-    mp = re.search(r"本次结构模式[：:\s]*([a-z_]+)", user_text)
-    if not mp:
-        mp = re.search(r"structural[_\s]?pattern[：:\s]*([a-z_]+)", user_text, re.IGNORECASE)
-    if mp and mp.group(1).lower() in ("dramatic", "stepwise", "listicle", "atmospheric", "info_dense"):
-        pat = mp.group(1).lower()
-
-    seg_min, seg_max = (2, 8) if pat == "listicle" else (3, 7)
-    n = max(seg_min, min(seg_max, n_src))
-
-    m_dur = re.search(r"目标总时长[：:]\s*(\d+(?:\.\d+)?)\s*s", user_text)
-    target_total = float(m_dur.group(1)) if m_dur else 30.0
-
-    has_peak = pat in ("dramatic", "atmospheric")
-    peak_idx = int(n * 0.6) if has_peak and n >= 4 else None
-    if peak_idx is not None and (peak_idx <= 0 or peak_idx >= n - 1):
-        peak_idx = None
-
-    roles_seq: list[tuple[str, str]] = []
-    main_counter = 0
-    for i in range(n):
-        if i == 0:
-            roles_seq.append({
-                "dramatic":    ("opening",    "开场钩子"),
-                "stepwise":    ("intro",      "引入"),
-                "listicle":    ("hook",       "钩子"),
-                "atmospheric": ("establish",  "起势"),
-                "info_dense":  ("title_card", "标题卡"),
-            }[pat])
-        elif i == n - 1:
-            roles_seq.append({
-                "dramatic":    ("closing", "行动引导"),
-                "stepwise":    ("recap",   "总结"),
-                "listicle":    ("closer",  "收尾"),
-                "atmospheric": ("resolve", "余韵"),
-                "info_dense":  ("payoff",  "落版"),
-            }[pat])
-        elif i == peak_idx:
-            roles_seq.append(("climax", "卖点高潮") if pat == "dramatic" else ("peak", "顶点"))
-        else:
-            main_counter += 1
-            if pat == "dramatic":
-                roles_seq.append(("development", f"主体铺陈{main_counter}"))
-            elif pat == "stepwise":
-                roles_seq.append((f"step_{main_counter}", f"步骤 {main_counter}"))
-            elif pat == "listicle":
-                roles_seq.append((f"item_{main_counter}", f"第 {main_counter} 项"))
-            elif pat == "atmospheric":
-                roles_seq.append(("flow", f"流转{main_counter}"))
-            else:
-                roles_seq.append(("info_block", f"信息块{main_counter}"))
-
-    role_weight: dict[str, float] = {}
-    for role, _ in roles_seq:
-        if role in ("opening", "intro", "hook", "establish", "title_card",
-                    "closing", "recap", "closer", "resolve", "payoff"):
-            role_weight[role] = 4.0
-        elif role in ("climax", "peak"):
-            role_weight[role] = 7.0
-        else:
-            role_weight[role] = 6.0
-
-    weight_sum = sum(role_weight[r] for r, _ in roles_seq) or 1.0
-    scale = target_total / weight_sum
+    blocks = re.findall(r"\[(\d+)\].*?duration=([\d.]+)s", user_text)
+    if blocks:
+        indexed = [(int(i), float(d)) for i, d in blocks]
+    else:
+        m = re.search(r"原样例共\s*(\d+)\s*段", user_text)
+        n_src = int(m.group(1)) if m else 4
+        indexed = [(i, 4.0) for i in range(n_src)]
 
     secs: list[dict] = []
-    for i, (role, theme) in enumerate(roles_seq):
-        dur = round(max(2.0, min(30.0, role_weight[role] * scale)), 1)
+    for i, (src_idx, dur) in enumerate(indexed):
+        if dur <= 0:
+            dur = 4.0
+        theme = f"视频块 {i}"
         secs.append({
-            "role": role,
+            "role": "block",
             "theme": theme,
-            "content_description": (
-                f"[mock] {theme}：紧扣用户主题给一句口播，搭配一组主体画面，"
-                f"承接上下段叙事节奏。"
-            ),
-            "adaptation_note": "[mock] 沿用样例骨架，按目标时长重排节奏",
-            "tempo": "fast" if role in ("climax", "peak", "hook", "title_card") else "medium",
-            "source_section_indices": [min(i, max(0, n_src - 1))],
-            "duration_seconds": dur,
+            "content_description": f"[mock] {theme}：按这一块自己的时长组织画面。",
+            "adaptation_note": "",
+            "tempo": "medium",
+            "source_section_indices": [src_idx],
+            "duration_seconds": round(dur, 2),
         })
     return json.dumps({"adapted_sections": secs}, ensure_ascii=False)
 
@@ -1025,7 +962,7 @@ def _build_mock_copy_outline_json(user_text: str) -> str:
             "accent_color": "#38BDF8",
             "animation": "zoom_pop",
             "emoji_decor": ["✨"],
-            "duration_seconds": max(1.5, min(15.0, duration)),
+            "duration_seconds": duration if duration > 0 else 4.0,
         },
         "tone_lean": "[mock] 与全局调性一致，节奏微紧",
     }

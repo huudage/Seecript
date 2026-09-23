@@ -16,6 +16,7 @@ import '@xyflow/react/dist/style.css'
 import { CopilotDial, type DialAction } from '@/components/compose/CopilotDial'
 import { CANVAS_MATERIAL_MIME, hasCanvasMaterialPayload } from '@/lib/dnd'
 import { isUnfilledScene } from '@/lib/renderChecklist'
+import { videoBlockTitle as blockTitle } from '@/lib/sections'
 import { TRANSITION_LABEL } from '@/lib/transitions'
 import { cn } from '@/lib/utils'
 import type {
@@ -46,11 +47,7 @@ import type {
  * 视频块不标注样例结构名——结构迁移只在工具条里作参考。
  */
 
-/** 块上显示用户主题；没有主题时按顺序叫「视频块 N」，不用样例结构角色名。 */
-function blockTitle(section: { theme?: string | null; order: number }): string {
-  const theme = section.theme?.trim()
-  return theme || `视频块 ${section.order}`
-}
+/** 块上显示用户主题；角色名和空主题都叫「视频块 N」。 */
 
 /* ===================== 拖拽重排 / 切分常量 ===================== */
 

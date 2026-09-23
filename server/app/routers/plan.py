@@ -627,9 +627,7 @@ async def build_plan(req: PlanBuildRequest) -> Plan:
             else:
                 N = n_imgs
                 shot_durs = [target_duration / N] * N
-            sum_dur = sum(shot_durs) or target_duration
-            # 归一化到段总时长（plan_agent 已做但兜底）
-            shot_durs = [d * target_duration / sum_dur for d in shot_durs]
+            # 分镜时长就是视频块的分配，不再压回段目标或 15 秒上限。
 
             # 选材策略：
             # - aigc_image：循环 aigc_image_urls，images 不够时复用最后一张
@@ -680,11 +678,11 @@ async def build_plan(req: PlanBuildRequest) -> Plan:
                         spec = base_spec.model_copy(update={
                             "main_text": main_t or base_spec.main_text,
                             "sub_text": sub_t or base_spec.sub_text,
-                            "duration_seconds": round(max(1.5, min(15.0, shot_dur)), 2),
+                            "duration_seconds": round(max(0.1, shot_dur), 2),
                         })
                     else:
                         from ..schemas import TextCardSpec  # 延迟避免循环
-                        spec = TextCardSpec(main_text=main_t, sub_text=sub_t, duration_seconds=round(max(1.5, min(15.0, shot_dur)), 2))
+                        spec = TextCardSpec(main_text=main_t, sub_text=sub_t, duration_seconds=round(max(0.1, shot_dur), 2))
                     main_track.append(Scene(
                         scene_id=sub_id,
                         section=sec.role,  # type: ignore[arg-type]
@@ -717,7 +715,7 @@ async def build_plan(req: PlanBuildRequest) -> Plan:
                     spec = TextCardSpec(
                         main_text=main_t or "待选素材",
                         sub_text=sub_t,
-                        duration_seconds=round(max(1.5, min(15.0, shot_dur)), 2),
+                        duration_seconds=round(max(0.1, shot_dur), 2),
                     )
                     main_track.append(Scene(
                         scene_id=sub_id,
@@ -789,7 +787,7 @@ async def build_plan(req: PlanBuildRequest) -> Plan:
             placeholder_spec = TextCardSpec(
                 main_text=main_t or "待选素材",
                 sub_text=sub_t,
-                duration_seconds=round(max(1.5, min(15.0, target_duration)), 2),
+                duration_seconds=round(max(0.1, target_duration), 2),
             )
             # 单 Scene 路径下文不区分 source，统一用占位变量族构造 Scene
             source = "text_card"  # type: ignore[assignment]
@@ -1143,7 +1141,7 @@ class PlanSettingsPatch(BaseModel):
     tone: Optional[ToneStyle] = None
     cta: Optional[str] = Field(default=None, max_length=20)
     keywords: Optional[list[str]] = Field(default=None, max_length=5)
-    target_duration_seconds: Optional[float] = Field(default=None, ge=10.0, le=120.0)
+    target_duration_seconds: Optional[float] = Field(default=None, gt=0)
 
 
 @router.patch("/plan/{plan_id}/settings", response_model=Plan)
@@ -1532,7 +1530,7 @@ class SceneSplitRequest(BaseModel):
     """POST /plan/{plan_id}/scene/{scene_id}/split：实拍块时间轴切分（PRD-v2 F4/US-3.5）。
 
     split_at 为切点距本镜起点的秒数。边界规则：实拍源才可切；含字幕/标题条/口播音轨的
-    块不可切（先摘除内层）；切出的两段各 ≥ 2s。
+    块不可切（先摘除内层）；切点必须落在本镜内部，两段长短不设下限。
     """
     split_at: float = Field(..., gt=0, description="切点距本镜起点的秒数")
 
@@ -1672,7 +1670,7 @@ class SceneShotBriefResponse(BaseModel):
     plan_id: str
     scene_id: str
     what_to_shoot: str = Field(..., description="拍什么：主体 + 动作 + 构图")
-    duration_seconds: float = Field(..., ge=2.0, le=15.0)
+    duration_seconds: float = Field(..., gt=0)
     emotion: str = Field(..., description="镜头情绪")
     reference: str = Field(..., description="参考哪段 / 什么感觉")
     tips: list[str] = Field(default_factory=list, description="2-4 条实操提示")
@@ -1716,11 +1714,11 @@ class SectionsAppendRequest(BaseModel):
     main_text: Optional[str] = Field(default=None, max_length=24)
     sub_text: Optional[str] = Field(default=None, max_length=40)
     duration_seconds: Optional[float] = Field(
-        default=None, ge=2.0, le=15.0,
-        description="目标块时长；user_material 路跟随素材窗口，其余路缺省 3.5s（t2v ≥5s）",
+        default=None, gt=0,
+        description="目标块时长；缺省按来源给一个初值，不设上下限",
     )
     role: Optional[SectionRole] = Field(
-        default=None, description="新段落角色；缺省 development（追加到末尾后可拖拽重排）",
+        default=None, description="保留字段。内容轨不再分配叙事角色，缺省 block。",
     )
 
 
@@ -1731,7 +1729,7 @@ async def append_plan_section(plan_id: str, body: SectionsAppendRequest) -> Plan
     if plan is None:
         raise HTTPException(status_code=404, detail=f"plan_id 不存在：{plan_id}")
 
-    role: SectionRole = body.role or "development"
+    role: SectionRole = body.role or "block"
     base_subject = (
         (body.main_text or "").strip()
         or (body.prompt_hint or "").strip()
@@ -1761,7 +1759,7 @@ async def append_plan_section(plan_id: str, body: SectionsAppendRequest) -> Plan
         order=0,
         subject=base_subject,
         visual=base_subject,
-        duration_seconds=max(1.0, min(15.0, target_dur)),
+        duration_seconds=max(0.1, target_dur),
     )
     skeleton_sec = AdaptedSection(
         section_id=new_sec_id,
@@ -1770,7 +1768,7 @@ async def append_plan_section(plan_id: str, body: SectionsAppendRequest) -> Plan
         content_description=f"画布手动添加：{base_subject}",
         shots=[shot_plan],
         order=0,
-        duration_seconds=max(2.0, min(30.0, target_dur)),
+        duration_seconds=max(0.1, target_dur),
     )
 
     # 空白实拍槽：不带 material_id 时不物化素材，落一个待拖入的空槽。
@@ -1807,15 +1805,10 @@ async def append_plan_section(plan_id: str, body: SectionsAppendRequest) -> Plan
     )
     new_scene = await _materialize_scene_source(plan, skeleton_scene, skeleton_sec, shot_plan, swap_body)
 
-    if new_scene.duration < 2.0:
-        raise HTTPException(
-            status_code=422,
-            detail=f"新段落块需 ≥ 2s（所选切片仅 {new_scene.duration:.1f}s）",
-        )
     final_sec = skeleton_sec.model_copy(update={
-        "duration_seconds": round(new_scene.duration, 3),
+        "duration_seconds": round(max(0.1, new_scene.duration), 3),
         "shots": [shot_plan.model_copy(update={
-            "duration_seconds": max(1.0, min(15.0, new_scene.duration)),
+            "duration_seconds": max(0.1, new_scene.duration),
         })],
     })
 
@@ -2111,7 +2104,7 @@ async def _materialize_scene_source(
         spec = TextCardSpec(
             main_text=main_t or "（待补全）",
             sub_text=sub_t,
-            duration_seconds=round(max(1.5, min(15.0, shot_dur)), 2),
+            duration_seconds=round(max(0.1, shot_dur), 2),
         )
         new_scene = scene.model_copy(update={
             "source": "text_card",

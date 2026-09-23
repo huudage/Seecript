@@ -4,7 +4,7 @@
 1. POST /plan/{id}/sections/reorder —— parent_section_id 分组重排（含 v2 同 role 段、
    老 plan sc-N 正则兜底物化）、时间轴重铺、字幕清理、排列校验 422
 2. POST /plan/{id}/scene/{scene_id}/split —— 实拍块切分（镜一分为二 + 段拆两段）、
-   US-3.5 边界规则（非实拍源 / 含字幕 / 含口播 / 切点贴边 / 半段 < 2s 均拒）
+   US-3.5 边界规则（非实拍源 / 含字幕 / 含口播 / 切点落在镜外均拒；短半段允许）
 """
 from __future__ import annotations
 
@@ -353,17 +353,17 @@ def test_split_rejects_block_with_voiceover(client):
     assert "口播" in resp.json()["detail"]
 
 
-def test_split_rejects_edge_and_short_half(client):
+def test_split_allows_short_half_and_rejects_outside(client):
     plan = _put(_make_split_plan(f"plan-canvas-split-6-{int(time.time() * 1000)}"))
-    # 贴边
-    resp = client.post(f"/api/plan/{plan.plan_id}/scene/sc-0/split", json={"split_at": 0.2})
-    assert resp.status_code == 422
-    resp = client.post(f"/api/plan/{plan.plan_id}/scene/sc-0/split", json={"split_at": 9.9})
-    assert resp.status_code == 422
-    # 半段 < 2s
-    resp = client.post(f"/api/plan/{plan.plan_id}/scene/sc-0/split", json={"split_at": 1.2})
-    assert resp.status_code == 422
-    assert "2s" in resp.json()["detail"]
+    short = client.post(f"/api/plan/{plan.plan_id}/scene/sc-0/split", json={"split_at": 1.2})
+    assert short.status_code == 200, short.text
+    outside = _put(_make_split_plan(f"plan-canvas-split-6b-{int(time.time() * 1000)}"))
+    for split_at in (0.0, 10.0):
+        resp = client.post(
+            f"/api/plan/{outside.plan_id}/scene/sc-0/split",
+            json={"split_at": split_at},
+        )
+        assert resp.status_code == 422, (split_at, resp.text)
 
 
 def test_split_unknown_plan_or_scene_404(client):

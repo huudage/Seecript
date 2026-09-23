@@ -240,7 +240,7 @@ async def shot_brief(
             dur = scene.duration
         return {
             "what_to_shoot": str(data["what_to_shoot"])[:120],
-            "duration_seconds": round(max(2.0, min(15.0, dur)), 2),
+            "duration_seconds": round(dur if dur > 0 else scene.duration, 2),
             "emotion": str(data.get("emotion") or "")[:12],
             "reference": str(data.get("reference") or "")[:40],
             "tips": [str(t)[:30] for t in (data.get("tips") or [])][:4],
@@ -257,7 +257,7 @@ async def shot_brief(
     }
     return {
         "what_to_shoot": (visual or subject or "按段落内容补拍一段画面")[:120],
-        "duration_seconds": round(max(2.0, min(15.0, scene.duration)), 2),
+        "duration_seconds": round(scene.duration if scene.duration > 0 else 4.0, 2),
         "emotion": _ROLE_EMOTION.get(role, "自然"),
         "reference": (section.theme if section else "") or "同段落其它镜头的调性",
         "tips": tips_by_role.get(role, ["横平竖直，主体居中"]),
