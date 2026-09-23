@@ -45,7 +45,7 @@ from ..services.agent.plan_agent import adapt_structure, extract_subject_anchors
 from ..services.assets import asset_store
 from ..services.library import manifest_store
 from ..services.materials import gap_store, material_store
-from ..services.plans import plan_snapshot_store, plan_store
+from ..services.plans import canvas_ops, plan_snapshot_store, plan_store
 from ..services.projects import project_store
 from ..services.video.bgm_analysis import analyze_bgm_with_llm
 
@@ -1517,6 +1517,62 @@ async def patch_scene_transition(plan_id: str, scene_id: str, body: SceneTransit
     log.info(
         "[plan] scene transition patched plan=%s scene=%s style=%s dur=%.2f",
         plan_id, scene_id, body.style, (new_transition.duration if new_transition else 0.0),
+    )
+    return plan
+
+
+class SectionsReorderRequest(BaseModel):
+    """POST /plan/{plan_id}/sections/reorder：画布段落块拖拽重排（PRD-v2 F4/US-3.2）。
+
+    section_ids 必须是当前全部段落 id 的一个排列，顺序即新的叙事链序。
+    即时生效不跑 LLM；前端 editStore 撤销栈兜底（F13）。
+    """
+    section_ids: list[str] = Field(..., min_length=1)
+
+
+@router.post("/plan/{plan_id}/sections/reorder", response_model=Plan)
+async def reorder_plan_sections(plan_id: str, body: SectionsReorderRequest) -> Plan:
+    """段落块拖拽重排：按 parent_section_id 分组重铺主轨（role 分组在 v2 同 role 段上会错位）。"""
+    plan = plan_store.get(plan_id)
+    if plan is None:
+        raise HTTPException(status_code=404, detail=f"plan_id 不存在：{plan_id}")
+    try:
+        info = canvas_ops.reorder_sections(plan, body.section_ids)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    if info.get("reordered"):
+        plan_store.put(plan)
+        log.info(
+            "[plan] sections reordered plan=%s order=%s moved=%s subtitles_cleared=%s",
+            plan_id, body.section_ids, info.get("scenes_moved"), info.get("subtitles_cleared"),
+        )
+    return plan
+
+
+class SceneSplitRequest(BaseModel):
+    """POST /plan/{plan_id}/scene/{scene_id}/split：实拍块时间轴切分（PRD-v2 F4/US-3.5）。
+
+    split_at 为切点距本镜起点的秒数。边界规则：实拍源才可切；含字幕/标题条/口播音轨的
+    块不可切（先摘除内层）；切出的两段各 ≥ 2s。
+    """
+    split_at: float = Field(..., gt=0, description="切点距本镜起点的秒数")
+
+
+@router.post("/plan/{plan_id}/scene/{scene_id}/split", response_model=Plan)
+async def split_plan_scene(plan_id: str, scene_id: str, body: SceneSplitRequest) -> Plan:
+    """实拍块切分：镜一分为二（前半留原 id，后半起新 id）+ 段拆两段，连线自动串联。"""
+    plan = plan_store.get(plan_id)
+    if plan is None:
+        raise HTTPException(status_code=404, detail=f"plan_id 不存在：{plan_id}")
+    try:
+        info = canvas_ops.split_scene(plan, scene_id, body.split_at)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    plan_store.put(plan)
+    log.info(
+        "[plan] scene split plan=%s scene=%s at=%.2fs -> %s + %s (%s / %s)",
+        plan_id, scene_id, body.split_at,
+        info["scene_a"], info["scene_b"], info["section_a"], info["section_b"],
     )
     return plan
 

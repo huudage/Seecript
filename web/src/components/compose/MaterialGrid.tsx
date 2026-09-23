@@ -23,10 +23,13 @@ export function MaterialGrid({
   materials,
   onReorder,
   onRemove,
+  enableCanvasDrag = false,
 }: {
   materials: Material[]
   onReorder: (orderedIds: string[]) => void
   onRemove: (id: string) => void
+  /** 整卡可 HTML5 拖到结构画布槽位换源（step2 画布视图用）。 */
+  enableCanvasDrag?: boolean
 }) {
   // 8px 阈值——避免误触把点击当拖拽
   const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 8 } }))
@@ -62,7 +65,12 @@ export function MaterialGrid({
       >
         <div className="grid grid-cols-1 gap-2 sm:grid-cols-2 lg:grid-cols-3">
           {materials.map((m) => (
-            <SortableItem key={m.material_id} material={m} onRemove={onRemove} />
+            <SortableItem
+              key={m.material_id}
+              material={m}
+              onRemove={onRemove}
+              enableCanvasDrag={enableCanvasDrag}
+            />
           ))}
         </div>
       </SortableContext>
@@ -70,7 +78,15 @@ export function MaterialGrid({
   )
 }
 
-function SortableItem({ material, onRemove }: { material: Material; onRemove: (id: string) => void }) {
+function SortableItem({
+  material,
+  onRemove,
+  enableCanvasDrag,
+}: {
+  material: Material
+  onRemove: (id: string) => void
+  enableCanvasDrag: boolean
+}) {
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({
     id: material.material_id,
   })
@@ -88,6 +104,7 @@ function SortableItem({ material, onRemove }: { material: Material; onRemove: (i
         material={material}
         dragHandleProps={{ ...attributes, ...listeners }}
         onRemove={onRemove}
+        enableCanvasDrag={enableCanvasDrag}
       />
     </div>
   )

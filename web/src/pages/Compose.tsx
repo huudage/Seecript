@@ -3,17 +3,16 @@ import { Link, useNavigate, useSearchParams } from 'react-router-dom'
 
 import { api } from '@/api/client'
 import { deletePlanBgm, patchPlanBgm } from '@/api/bgm'
-import { patchPlanSettings } from '@/api/plan'
+import { patchPlanSettings, reorderSections, splitScene, swapSceneSource } from '@/api/plan'
 import { createSSE } from '@/api/sse'
 import { commitStep, getStepSnapshot } from '@/api/steps'
-import { deleteVoice, regenerateNarrations, synthesizeAll, synthesizeOne } from '@/api/voice'
+import { deleteVoice, synthesizeAll, synthesizeOne } from '@/api/voice'
 import { BgmPickerDialog } from '@/components/compose/BgmPickerDialog'
 import { BriefInput } from '@/components/compose/BriefInput'
 import { ClarifyPanel } from '@/components/compose/ClarifyPanel'
 import { ComposeCommandBar } from '@/components/compose/ComposeCommandBar'
 import { ComposeSettingsPanel } from '@/components/compose/ComposeSettingsPanel'
 import { DraggableCommandFab } from '@/components/compose/DraggableCommandFab'
-import { EmotionCurveCard } from '@/components/compose/EmotionCurveCard'
 import { FillAigcPanel } from '@/components/compose/FillAigcPanel'
 import { FillCopyPanel } from '@/components/compose/FillCopyPanel'
 import { FourTrackBoard } from '@/components/compose/FourTrackBoard'
@@ -136,13 +135,31 @@ export default function ComposePage() {
   // UI state
   const [uploading, setUploading] = useState(false)
   const [analyzing, setAnalyzing] = useState(false)
-  // v2 D1：step2 工作台视图——四轨（v1）↔ 结构画布（PRD-v2 §5.2-F3）。选择持久化。
-  const [step2BoardView, setStep2BoardView] = useState<'tracks' | 'canvas'>(() =>
-    localStorage.getItem('seecript:step2-board-view') === 'canvas' ? 'canvas' : 'tracks',
-  )
-  useEffect(() => {
-    localStorage.setItem('seecript:step2-board-view', step2BoardView)
-  }, [step2BoardView])
+  // v2（PRD F3 修订 · 2026-09-23 用户拍板）：step2/step3 合并后画布是唯一主视图——
+  // 预览改为「点段落块弹窗」，功能介绍 / 时间轴收进画布底部做可折叠 tab。
+  // 首次进 step2 自动展开一次「功能介绍」（沿用 stage-76 的 localStorage 静音键）。
+  type CanvasTab = 'none' | 'timeline' | 'guide'
+  const [canvasTab, setCanvasTab] = useState<CanvasTab>(() => {
+    try {
+      return localStorage.getItem(STEP2_PLACEHOLDER_HINT_KEY) === '1' ? 'none' : 'guide'
+    } catch {
+      return 'guide'
+    }
+  })
+  const toggleCanvasTab = useCallback((t: Exclude<CanvasTab, 'none'>) => {
+    setCanvasTab((cur) => {
+      const next = cur === t ? 'none' : t
+      // 功能介绍看过了（收起或切走）就静音，下次进 step2 不再自动展开
+      if (cur === 'guide' && next !== 'guide') {
+        try {
+          localStorage.setItem(STEP2_PLACEHOLDER_HINT_KEY, '1')
+        } catch {
+          /* localStorage 不可用时仅本次会话内生效 */
+        }
+      }
+      return next
+    })
+  }, [])
   // A 位（refs[0]）primary manifest fallback：sessionStore.manifest 只在 Decompose 页才会 set。
   // 用户从 ReferencePicker 直接进 Compose 时 manifest=null，导致 StructureCompareSection 看不见。
   // 这里按 selectedReferences[0] 反查 /sample/{id}/manifest，作为 sessionStore.manifest 的兜底。
@@ -298,80 +315,22 @@ export default function ComposePage() {
   // 内容/字幕/口播 与 包装 互斥：选其一时另一个置 null，避免编辑面板上下文混淆。
   const [selectedSceneId, setSelectedSceneId] = useState<string | null>(null)
   const [selectedPackagingItemId, setSelectedPackagingItemId] = useState<string | null>(null)
-  // 内容轨「确认」gate：未确认时不出 Player、不展开其它三轨。
-  // 用户流：plan 出来 → 手动 / NL 编辑 → 补齐所有缺口 → 点「确认内容轨」 →
-  //   这一刻才解锁 Remotion Player 实时预览 + 口播 / 包装 / BGM 三轨。
-  // 切到新 plan_id 时自动重置，避免老确认状态串到新计划。
-  const [contentConfirmed, setContentConfirmed] = useState(false)
-  const lastConfirmedPlanIdRef = useRef<string | null>(null)
-  useEffect(() => {
-    if (!plan) {
-      if (lastConfirmedPlanIdRef.current !== null) {
-        setContentConfirmed(false)
-        lastConfirmedPlanIdRef.current = null
-      }
-      return
-    }
-    if (plan.plan_id !== lastConfirmedPlanIdRef.current) {
-      setContentConfirmed(false)
-      lastConfirmedPlanIdRef.current = plan.plan_id
-    }
-  }, [plan])
-
-  // 步骤 3 解锁 gate：plan 生成完了只解锁 step 2；用户在 step 2 点「进入第 3 步」才置 true。
-  // plan_id 变更复位规则：
-  //   - plan 整体被清掉（用户回 step1 重选样例 / 重置）→ 复位为锁定
-  //   - plan_id 变了但用户当前正在 step3（批量补缺、step3 中上传素材等触发 /plan/build 重生）
-  //     → 不复位，避免无关的 plan rebuild 把用户从 step3 弹回 step2（这是 PR-K 修复点）。
-  //   - 其他情况（如 step1/2 中的 plan rebuild）→ 复位为锁定，老 step3 解锁状态不要串到新 plan。
-  const [step3Unlocked, setStep3Unlocked] = useState(false)
-
-  const lastStep3PlanIdRef = useRef<string | null>(null)
-  // 通过 ref 读取当前 activeStep，避免把 activeStep 加入 useEffect 依赖
-  // 而引发 plan_id 没变也跑这段重置逻辑的副作用
-  const activeStepRef = useRef<1 | 2 | 3>(1)
-  useEffect(() => {
-    if (!plan) {
-      if (lastStep3PlanIdRef.current !== null) {
-        setStep3Unlocked(false)
-        lastStep3PlanIdRef.current = null
-      }
-      return
-    }
-    if (plan.plan_id !== lastStep3PlanIdRef.current) {
-      // 用户当前正在 step3 → 这次 plan rebuild 是 step3 内的增量行为（一键补缺 / 上传素材 /
-      // 单段重生 narration 等），保持解锁；只更新 plan_id 跟踪，不复位 step3Unlocked。
-      if (activeStepRef.current === 3 && step3Unlocked) {
-        lastStep3PlanIdRef.current = plan.plan_id
-      } else {
-        setStep3Unlocked(false)
-        lastStep3PlanIdRef.current = plan.plan_id
-      }
-    }
-  }, [plan, step3Unlocked])
 
   // step 1 生成完成后的「✓ 内容轨已生成」全屏确认弹窗：
   // analyzing=true 期间显示 spinner；analyzing 结束 + planJustGenerated=true 显示预览 + 双按钮。
   // 用户点「进入第 2 步」/「重新澄清」其一才关闭并继续后续动作。
   const [planJustGenerated, setPlanJustGenerated] = useState(false)
 
-  // 三步工作流（视频工坊拆分）：
+  // 两步工作流（v2：原 step2 内容轨 / step3 多轨出片已合并为单一画布工作台）：
   //   1 = 选参考样例 + 主题 + 设置
-  //   2 = 内容轨生成与修改（随时上传素材重排结构）
-  //   3 = 多轨（口播 / 包装 / BGM / 渲染）
-  // 用 ?step=N URL 参数持久化；contentConfirmed 在步骤 3 自动视为 true。
-  type WorkshopStep = 1 | 2 | 3
+  //   2 = 画布工作台（结构画布 · 素材缺口 · 包装口播 BGM · 一键出片）
+  // 用 ?step=N URL 参数持久化；老链接 ?step=3 归一到 2。
   const stepFromUrl = ((): WorkshopStep => {
     const v = searchParams.get('step')
-    if (v === '2') return 2
-    if (v === '3') return 3
+    if (v === '2' || v === '3') return 2
     return 1
   })()
   const [activeStep, setActiveStepState] = useState<WorkshopStep>(stepFromUrl)
-  // 持续把 activeStep 同步到 ref，给上面 plan_id 复位逻辑读取（不依赖 useEffect 依赖列表）
-  useEffect(() => {
-    activeStepRef.current = activeStep
-  }, [activeStep])
   const setActiveStep = useCallback(
     (next: WorkshopStep) => {
       setActiveStepState(next)
@@ -383,33 +342,16 @@ export default function ComposePage() {
         },
         { replace: true },
       )
-      if (next === 3) setContentConfirmed(true)
     },
     [setSearchParams],
   )
-  // 进步骤 3 默认认为内容轨已确认（解锁 Player + 多轨完整体）
-  useEffect(() => {
-    if (activeStep === 3 && plan && !contentConfirmed) setContentConfirmed(true)
-  }, [activeStep, plan, contentConfirmed])
 
-  // URL 持久化的 ?step=2/3 在 plan/解锁 gate 不满足时必须降级，避免老 URL 串到新会话：
-  //   - 选参考前 selectedSampleId=null（顶层 guard 拦截，渲染 ReferencePicker）；
-  //     一旦点第一个参考解除 guard，若 URL 残留 step=3 会直接显示第 3 步——这就是 bug 现象。
-  //   - 没 plan → 强制回 step 1；有 plan 但 step3Unlocked=false → step 3 降到 step 2。
+  // URL 持久化的 ?step=2 在没 plan 时必须降级回 1，避免老 URL 串到新会话直接显示工作台空态。
   useEffect(() => {
     if (!plan && activeStep !== 1) {
       setActiveStep(1)
-      return
     }
-    if (activeStep === 3 && !step3Unlocked) {
-      setActiveStep(2)
-      return
-    }
-    // stage-82 (2026-06-12)：取消「step3 内若残留 needs_fill / fill-empty 占位就弹回 step2」的强制门
-    // 用户原话：「把step3的进入限制取消，改为提示用户仍有缺口，但不强制必须补全才能进入第三步」
-    // 现在改为：进入门控（按钮 + handleEnterStep3 的 confirm）允许带缺口进 step3；
-    // 进了之后不再因为 unfilled scene 把用户弹回 step2，否则用户原地一直被踢回去。
-  }, [plan, activeStep, step3Unlocked, setActiveStep])
+  }, [plan, activeStep, setActiveStep])
 
   /* --------------------- 渲染流水线（内联 · 无独立页面）--------------------- */
   // 设计：用户点「生成视频」之后，先补缺口 + 生成包装 + commit compose，再自动 POST /render/submit
@@ -428,6 +370,24 @@ export default function ComposePage() {
   const seekPlayer = useCallback((seconds: number) => {
     playerRef.current?.seek(seconds)
   }, [])
+  // v2：预览弹窗（PRD F3 修订）——点画布段落块 / 总览条分段唤起。Player 常驻挂载
+  // （关闭仅 visibility 隐藏），时间轴 onSeek / 各处 seekPlayer 在弹窗关着时依然生效。
+  const [previewOpen, setPreviewOpen] = useState(false)
+  const openPreview = useCallback(
+    (at?: number) => {
+      setPreviewOpen(true)
+      if (at != null) seekPlayer(at)
+    },
+    [seekPlayer],
+  )
+  useEffect(() => {
+    if (!previewOpen) return
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setPreviewOpen(false)
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [previewOpen])
 
   // 跨 plan 切换时重置撤销栈；同 plan_id 的 in-place 改动由各 handler 显式 pushEdit
   const lastPushedPlanIdRef = useRef<string | null>(null)
@@ -1029,29 +989,8 @@ export default function ComposePage() {
     }).length
   }, [gaps, fills, plan])
 
-  // stage-26 PR-N.6：内容轨『还未补齐』的 Scene 数。两类都算：
-  //   - 后端 PR-N.2 标记 needs_fill=true（匹配 weak/missing 物化时落下的兜底）
-  //   - PR-L.3 兜底字卡（source_ref 以 text-card-fill-empty 开头）—— 这是真实的
-  //     『某段 fill 跑空了，临时塞了文字卡占位』的场景，没补齐前内容轨残缺
-  // 用于：
-  //   a) 「进入第 3 步」按钮 disabled — 内容轨没补完不许进
-  //   b) WorkshopStepNav step3 tab disabled — 顶部 tab 也跟着锁
-  // 不再用 pendingGapsCount 单独门控 step3（那是 gap 模型层面的"待补"，乐观更新会瞬间归零）；
-  // 真正能反映轨道更新进度的是 plan.main_track 实际状态。
-  const mainTrackUnfilledCount = useMemo(() => {
-    // stage-61: 用户原话『step2 的补齐缺口检查以分镜为单位』+『手动调整过的分镜无论如何视作已补齐』
-    // → 按 Scene 数计（不再按段聚合），且把 user_edited=true 的 Scene 排除。
-    if (!plan) return 0
-    let count = 0
-    for (const sc of plan.main_track) {
-      if (sc.user_edited === true) continue
-      const isUnfilled =
-        sc.needs_fill === true ||
-        (sc.source_ref ?? '').startsWith('text-card-fill-empty')
-      if (isUnfilled) count++
-    }
-    return count
-  }, [plan])
+  // stage-26 PR-N.6：内容轨『还未补齐』的 Scene 数已不再门控任何入口（v2 取消 step3 边界），
+  // 待补数量统一用上面的 pendingGapsCount 展示，渲染前由文案自动补全兜底。
 
   /* --------------------- 四轨：口播 / 包装 / BGM 动作 --------------------- */
 
@@ -1122,67 +1061,9 @@ export default function ComposePage() {
   )
 
   /**
-   * 进入 step3 时的一次性筹备：先重写口播 → 若开了配音则一键 TTS 全片 →
-   * 全部跑完才 setStep3Unlocked(true) + setActiveStep(3) + 释放 trackBusy。
-   *
-   * stage-63 起：包装项一律由用户手动「✨ 添加组件」单加，不再做自动批量包装/转场推荐。
-   * 用户原话：『step3的一键生成包装轨和重新生成包装轨的功能取消吧，乱七八糟的』『只支持添加组件生成』。
+   * v2（PRD U3②）：原「进入第 3 步」自动链（重写口播 → 一键 TTS）随 step2/step3 合并移除。
+   * 口播改为工作台内人触发（四轨口播轨的逐段/一键合成；盘内「配口播」动作随 D3 接入）。
    */
-  const handleEnterStep3 = useCallback(async () => {
-    if (!plan) return
-    // stage-82 (2026-06-12)：带缺口进入 step3 前弹一次 confirm 提示，但不阻断。
-    // 用户原话：「改为提示用户仍有缺口，但不强制必须补全才能进入第三步」
-    const unfilled = plan.main_track.filter(
-      (sc) =>
-        sc.user_edited !== true &&
-        (sc.needs_fill === true ||
-          (sc.source_ref ?? '').startsWith('text-card-fill-empty')),
-    ).length
-    if (unfilled > 0) {
-      const ok = window.confirm(
-        `内容轨还有 ${unfilled} 镜未补完（占位字卡 / 待补素材）。\n` +
-          `继续进入第 3 步可以照常做口播 / 包装 / BGM 与渲染，但占位画面会出现在最终视频里——通常用户会回 step2 把它补成真实素材。\n\n` +
-          `是否仍要继续？`,
-      )
-      if (!ok) return
-    }
-    setTrackBusy(true)
-    setError(null)
-    let landedOk = false
-    try {
-      // 1) 重写口播（关键路径：失败就不进 step3）
-      const ren = await regenerateNarrations(plan.plan_id)
-      setPlanAndPush(ren.plan)
-      landedOk = true
-
-      // 2) 若开了配音且有更新口播，自动一键 TTS 全片（失败只 setError 不阻塞）
-      if (ren.plan.settings.voiceover_enabled && ren.updated_scene_ids.length > 0) {
-        try {
-          const tts = await synthesizeAll(plan.plan_id)
-          if (tts.failures.length > 0) {
-            setError(`部分段落配音失败（${tts.failures.length} 段）；可在口播轨手动重试`)
-          }
-          // 把 TTS 写入的 voiceover_url 拉回前端
-          await refetchPlan(plan.plan_id)
-        } catch (err) {
-          setError(err instanceof Error ? `配音失败：${err.message}` : '配音失败')
-        }
-      }
-
-      // stage-84：回到 Remotion PlanComposition 后，预览不再需要后端 mp4 底图，
-      // PlanPlayer 内部直接渲染主轨 + 包装/字幕/BGM/口播。
-    } catch (err) {
-      setError(err instanceof Error ? err.message : '进入 step3 准备失败')
-    } finally {
-      // 所有筹备跑完（成功/失败都算）→ 才切换并释放 busy，
-      // 用户落到 step3 的瞬间口播条、字幕都已就绪。
-      if (landedOk) {
-        setStep3Unlocked(true)
-        setActiveStep(3)
-      }
-      setTrackBusy(false)
-    }
-  }, [plan, refetchPlan, setPlanAndPush])
 
   const handleBgmAnchorChange = useCallback(
     async (newAnchor: number) => {
@@ -1298,6 +1179,53 @@ export default function ComposePage() {
         setError(err instanceof Error ? err.message : '智能添加包装组件失败')
       } finally {
         setTrackBusy(false)
+      }
+    },
+    [plan, setPlanAndPush],
+  )
+
+  // v2 画布结构操作（F4/F13）：即时生效 + 撤销栈兜底，失败走统一 error 条。
+  const handleCanvasReorderSections = useCallback(
+    async (sectionIds: string[]) => {
+      if (!plan) return
+      setError(null)
+      try {
+        const next = await reorderSections(plan.plan_id, sectionIds)
+        setPlanAndPush(next)
+      } catch (err) {
+        setError(err instanceof Error ? err.message : '段落重排失败')
+      }
+    },
+    [plan, setPlanAndPush],
+  )
+
+  const handleCanvasSplitScene = useCallback(
+    async (sceneId: string, splitAt: number) => {
+      if (!plan) return
+      setError(null)
+      try {
+        const next = await splitScene(plan.plan_id, sceneId, splitAt)
+        setPlanAndPush(next)
+      } catch (err) {
+        setError(err instanceof Error ? err.message : '切分失败')
+      }
+    },
+    [plan, setPlanAndPush],
+  )
+
+  const handleCanvasSwapMaterial = useCallback(
+    async (sceneId: string, materialId: string) => {
+      if (!plan) return
+      setError(null)
+      try {
+        // 复用 step2 换源端点：user_material + material_id，后端自动挑最佳镜头切片
+        const next = await swapSceneSource(plan.plan_id, sceneId, {
+          source: 'user_material',
+          material_id: materialId,
+        })
+        setPlanAndPush(next)
+      } catch (err) {
+        setError(err instanceof Error ? err.message : '换源失败')
       }
     },
     [plan, setPlanAndPush],
@@ -1503,10 +1431,15 @@ export default function ComposePage() {
 
   /* ------------------------------ 渲染 ------------------------------ */
 
+  // 预览弹窗按画幅算最大宽度（9:16 竖版按 72vh 高度反推，避免弹窗高过视口）
+  const [aspectW, aspectH] = (plan?.settings?.aspect_ratio ?? '9:16')
+    .split(':')
+    .map(Number)
+
   return (
     <PageShell
       title="视频工坊"
-      subtitle="第 1 步选参考 + 写主题 → 第 2 步生成内容轨 → 第 3 步出片。"
+      subtitle="第 1 步选参考 + 写主题 → 第 2 步画布工作台完成结构与出片。"
     >
       <div className="flex items-start justify-between gap-3">
         <WorkshopStepNav
@@ -1514,9 +1447,6 @@ export default function ComposePage() {
           hasReferences={selectedReferences.length > 0}
           briefFilled={brief.trim().length > 0}
           hasPlan={!!plan}
-          step3Unlocked={step3Unlocked}
-          pendingGapsCount={pendingGapsCount}
-          mainTrackUnfilledCount={mainTrackUnfilledCount}
           onChange={setActiveStep}
         />
         {plan && (
@@ -1542,7 +1472,7 @@ export default function ComposePage() {
       )}
 
       {/* 结构迁移示意：step 2 起常驻——内容轨生成后，每一步都让用户能扫一眼"新方案 vs 样例" */}
-      {(activeStep === 2 || activeStep === 3) && effectiveManifest && plan && (
+      {activeStep === 2 && effectiveManifest && plan && (
         <div className="mb-3">
           <StructureCompareSection
             manifest={effectiveManifest}
@@ -1763,7 +1693,7 @@ export default function ComposePage() {
                   }}
                   className="flex-1 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground transition-colors hover:opacity-90"
                 >
-                  进入第 2 步 → 编辑内容轨 / 补缺口
+                  进入第 2 步 → 画布工作台 · 补缺口 · 出片
                 </button>
                 <button
                   type="button"
@@ -1778,49 +1708,36 @@ export default function ComposePage() {
         </div>
       )}
 
-      {/* ============ Row 2：步骤 2 = 样例 ↔ 新内容轨（顶部）+ 适配概要 + 补缺口 + 段落编辑 + 素材库（底） ============ */}
+      {/* ============ Row 2：画布工作台 = 结构画布（主）+ 可折叠tab（时间轴/功能介绍）+ 补缺口 + 素材库（底） ============ */}
       {activeStep === 2 && plan && (
         <section className="mt-4 space-y-3 rounded-lg border border-border bg-card p-4">
-          {/* stage-76（2026-06-12）：用户原话「step2 一开始不要直接填入素材了，都让用户自己去选择」。
-              内容轨现在只产 plan 规划占位（text_card + needs_fill），真实素材 / 已切片画面需在
-              分镜卡上点击换源逐个挑选。第一次进 step2 弹一次说明，之后用 localStorage 静音。 */}
-          <Step2PlaceholderHint />
-          {/* stage-83 (2026-06-12)：step2 删左侧 sticky 预览列。用户原话「step2不要预览了」。
-              stage-84 (2026-06-13)：step3 回到 Remotion PlanComposition 实时渲染（含包装/字幕/BGM/口播），
-              不再用后端 mp4 底图。step2 这里继续无预览——FourTrackBoard 占满宽度，分镜卡 + 工作台
-              是 step2 的主战场。 */}
-          <div className="space-y-1.5">
-            <div className="flex items-center justify-between">
-              <h2 className="text-sm font-semibold">
-                {step2BoardView === 'canvas' ? '结构画布 · 段落块 × 叙事连线' : '样例视频轨道 ↔ 新内容轨'}
-              </h2>
-              <div className="flex items-center gap-2">
-                <span className="text-[10px] text-muted-foreground">{videoType}</span>
-                <div className="flex overflow-hidden rounded-md border border-border text-[11px]">
-                  {(
-                    [
-                      { value: 'tracks', label: '四轨' },
-                      { value: 'canvas', label: '画布' },
-                    ] as const
-                  ).map((v) => (
-                    <button
-                      key={v.value}
-                      type="button"
-                      onClick={() => setStep2BoardView(v.value)}
-                      className={cn(
-                        'px-2.5 py-1 transition-colors',
-                        step2BoardView === v.value
-                          ? 'bg-primary/10 font-medium text-primary'
-                          : 'bg-background text-muted-foreground hover:bg-secondary',
-                      )}
-                    >
-                      {v.label}
-                    </button>
-                  ))}
-                </div>
-              </div>
+          {/* v2（2026-09-23 用户拍板）：预览不做常驻列——点段落块弹窗；功能介绍/时间轴收进画布
+              下方做可折叠 tab。第一次进 step2 自动展开一次「功能介绍」（localStorage 静音）。 */}
+          {plan.subject_anchors && plan.subject_anchors.length > 0 && (
+            <div className="flex flex-wrap items-center gap-1.5 rounded-md border border-emerald-500/40 bg-emerald-50/60 px-2 py-1.5 text-[11px] dark:bg-emerald-950/30">
+              <span className="font-medium text-emerald-900 dark:text-emerald-200">
+                🎯 锁定可拍物体
+              </span>
+              <span className="text-emerald-700/80 dark:text-emerald-300/80">
+                （澄清阶段已确认，每个物体在视频里至少出现 1 次）
+              </span>
+              {plan.subject_anchors.map((a) => (
+                <span
+                  key={a}
+                  className="inline-flex items-center rounded-full border border-emerald-600/50 bg-white px-2 py-0.5 text-[10px] font-medium text-emerald-800 dark:bg-emerald-950 dark:text-emerald-200"
+                >
+                  {a}
+                </span>
+              ))}
             </div>
-            {step2BoardView === 'canvas' ? (
+          )}
+            <div className="space-y-1.5">
+            <div className="flex items-center justify-between">
+              <h2 className="text-sm font-semibold">结构画布 · 段落块 × 叙事连线</h2>
+              <span className="text-[10px] text-muted-foreground">
+                {videoType} · 点段落块 → 预览弹窗
+              </span>
+            </div>
               <StoryboardCanvas
                 plan={plan}
                 gaps={gaps}
@@ -1833,7 +1750,8 @@ export default function ComposePage() {
                   setSelectedSceneId(firstScene.scene_id)
                   setSelectedPackagingItemId(null)
                   setSelectedSectionId(section.section_id)
-                  seekPlayer(firstScene.start)
+                  // v2：点段落块 → 预览弹窗（PRD F3 修订），从该段首镜开始
+                  openPreview(firstScene.start)
                 }}
                 onUndo={() => {
                   if (!canUndo) return false
@@ -1850,9 +1768,47 @@ export default function ComposePage() {
                 onRecommendPackaging={(sceneId) => {
                   void handleRecommendPackagingForScene(sceneId, 'title_bar')
                 }}
+                onReorderSections={(sectionIds) => {
+                  void handleCanvasReorderSections(sectionIds)
+                }}
+                onSplitScene={(sceneId, splitAt) => {
+                  void handleCanvasSplitScene(sceneId, splitAt)
+                }}
+                onAxisEdit={(scene, section) => setEditingShot({ scene, section })}
+                onSwapMaterial={(sceneId, materialId) => {
+                  void handleCanvasSwapMaterial(sceneId, materialId)
+                }}
               />
-            ) : (
-            <FourTrackBoard
+
+            {/* v2：画布底部可折叠 tab——时间轴（四轨细节）/ 功能介绍。单选展开，再点收起。 */}
+            <div className="flex items-center gap-1.5">
+              {(
+                [
+                  { id: 'timeline', label: '⏱ 时间轴' },
+                  { id: 'guide', label: '💡 功能介绍' },
+                ] as const
+              ).map((t) => (
+                <button
+                  key={t.id}
+                  type="button"
+                  onClick={() => toggleCanvasTab(t.id)}
+                  className={cn(
+                    'flex items-center gap-1 rounded-md border px-2.5 py-1 text-[11px] font-medium transition-colors',
+                    canvasTab === t.id
+                      ? 'border-primary/50 bg-primary/10 text-primary'
+                      : 'border-border bg-background text-muted-foreground hover:bg-secondary',
+                  )}
+                >
+                  {t.label}
+                  <span className="text-[9px]">{canvasTab === t.id ? '▾' : '▸'}</span>
+                </button>
+              ))}
+              <span className="ml-auto font-mono text-[10px] text-muted-foreground">
+                预览 {playheadSeconds.toFixed(1)}s / {plan.duration_seconds.toFixed(1)}s
+              </span>
+            </div>
+            {canvasTab === 'timeline' && (
+              <FourTrackBoard
                 plan={plan}
                 gaps={gaps}
                 filledGapIds={filledGapIds}
@@ -1881,6 +1837,11 @@ export default function ComposePage() {
                 onSelectVoice={(scene) => {
                   setSelectedSceneId(scene.scene_id)
                   setSelectedPackagingItemId(null)
+                  setEditingSubtitleScene(scene)
+                  seekPlayer(scene.start)
+                }}
+                onEditSubtitle={(scene) => {
+                  setEditingSubtitleScene(scene)
                   seekPlayer(scene.start)
                 }}
                 onSelectPackaging={(item) => {
@@ -1901,7 +1862,7 @@ export default function ComposePage() {
                 onToggleVoiceover={handleToggleVoiceover}
                 onChangeTtsVoice={handleChangeTtsVoice}
                 busy={trackBusy}
-                phase="content-only"
+                phase="full"
                 contentTrackMode="sections"
                 playheadSeconds={playheadSeconds}
                 onSeek={seekPlayer}
@@ -1909,6 +1870,7 @@ export default function ComposePage() {
                 onEditPackagingItem={(item) => {
                   setEditingPackagingItem(item)
                   setSelectedPackagingItemId(item.item_id)
+                  seekPlayer(item.start)
                 }}
                 onEditTransition={(sceneId, currentStyle) =>
                   setEditingTransition({ sceneId, currentStyle })
@@ -1921,18 +1883,18 @@ export default function ComposePage() {
                 }
               />
             )}
+            {canvasTab === 'guide' && <CanvasGuideCard />}
+            </div>
 
-          {/* stage-36：缺口补全工作台移到右列 FourTrackBoard 正下方。
-              这样左侧实时预览 sticky 不滚走，用户切段后视线在 [选段 → 工作台 → 预览]
-              一条短弧上，不用全宽来回滚——也避免了"切几次就找不到当前段在跑什么"。
-              keepalive 多实例 display:none 切换，跨段后台跑。
+          {/* 缺口补全工作台紧贴画布/时间轴下方：切段后视线在 [选段 → 工作台 → 预览弹窗]
+              一条短弧上。keepalive 多实例 display:none 切换，跨段后台跑。
               stage-38：keepalive 池**总是**渲染（不再被外层 `selectedGap ?` 包住），
               即使当前没选段或处于 silent rebuild 中间态，已访问过的 panel 也不会卸载，
               Seedance polling / spec / prompt 状态稳定保留。tabs / 空状态提示
               则按 selectedGap 走条件分支。 */}
           <div className="mt-3 space-y-2 border-t border-border pt-3">
             <p className="rounded-md border border-primary/30 bg-primary/5 px-2 py-1.5 text-[11px] leading-relaxed text-foreground">
-              💡 这里只关心<strong>画面 + 字幕</strong>——三种方式都是给本段生成画面（字卡画面 / AI 视频 / AI 生图再渲染）；字幕轨开关默认关闭，开启后 AI 自动按段落生成可编辑字幕。口播留到第 3 步再切换音色合成。
+              💡 这里只关心<strong>画面 + 字幕</strong>——三种方式都是给本段生成画面（字卡画面 / AI 视频 / AI 生图再渲染）；字幕轨开关默认关闭，开启后 AI 自动按段落生成可编辑字幕。口播在「时间轴」tab 的口播轨合成。
             </p>
             {selectedGap && (
               <>
@@ -1965,15 +1927,15 @@ export default function ComposePage() {
                 stage-38：lastSeenGapBySectionRef 兜底——`gaps.find` 临时未命中也仍能渲染。 */}
             {visitedFillKeys.size === 0 && !selectedGap && !selectedSectionId && (
               <p className="rounded-md border border-dashed border-border bg-background/30 px-3 py-2 text-[11px] text-muted-foreground">
-                点上方内容轨任意一段——这里出现「字卡画面 / AI 视频 / AI 生图再渲染」三个画面补全选项。
+                点画布段落块或「时间轴」里的段落——这里出现「字卡画面 / AI 视频 / AI 生图再渲染」三个画面补全选项。
               </p>
             )}
             {selectedSectionId && !selectedGap && (
               <p className="rounded-md border border-dashed border-emerald-500/30 bg-emerald-500/5 px-3 py-2 text-[11px] leading-relaxed text-foreground">
-                ✅ <strong>本段已填好</strong>——内容轨这一段没有空缺，不需要再用工作台补画面。
+                ✅ <strong>本段已填好</strong>——本段没有空缺，不需要再用工作台补画面。
                 <br />
                 <span className="text-muted-foreground">
-                  想替换本段画面？点上方内容轨该段的小镜（▾ 展开）打开「单镜编辑」弹窗，
+                  想替换本段画面？点「时间轴」该段的小镜（▾ 展开）打开「单镜编辑」弹窗，
                   里面可改 subject/visual/narration，或<strong>换源</strong>到用户素材 / AI 单图 / AI 视频 / 字卡。
                 </span>
               </p>
@@ -2054,7 +2016,6 @@ export default function ComposePage() {
               )
             })}
           </div>
-          </div>
 
           {/* 素材库（提升到中段，提升上传感受）：上传 / 拖拽排序 / 删除 → 自动重排并刷新缺口 */}
           <div className="space-y-2 border-t border-border pt-3">
@@ -2074,6 +2035,7 @@ export default function ComposePage() {
             {sortedMaterials.length > 0 && (
               <MaterialGrid
                 materials={sortedMaterials}
+                enableCanvasDrag
                 onReorder={(orderedIds) => {
                   reorderMaterials(orderedIds)
                   if (runAnalyzeRef.current) void runAnalyzeRef.current(fills)
@@ -2133,34 +2095,8 @@ export default function ComposePage() {
 
           </div>
 
-          {/* 步骤 2 → 步骤 3 转换按钮（与步骤 1 → 步骤 2 同形式：主按钮 + 可选辅按钮） */}
-          <div className="mt-3 flex flex-col gap-2 border-t border-border pt-3 sm:flex-row">
-            <button
-              type="button"
-              onClick={() => {
-                void handleEnterStep3()
-              }}
-              disabled={trackBusy || analyzing}
-              className={cn(
-                'flex-1 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground transition-colors',
-                (trackBusy || analyzing) &&
-                  'cursor-not-allowed opacity-60',
-                (pendingGapsCount > 0 || mainTrackUnfilledCount > 0) &&
-                  !trackBusy && !analyzing &&
-                  'bg-amber-600 hover:bg-amber-700',
-              )}
-            >
-              {analyzing
-                ? '内容轨重排中…'
-                : trackBusy
-                  ? '准备中…（重写口播 / 配音 / 转场推荐）'
-                  : mainTrackUnfilledCount > 0
-                    ? `⚠ 还有 ${mainTrackUnfilledCount} 镜未补完 · 仍进入第 3 步`
-                    : pendingGapsCount > 0
-                      ? `⚠ 还有 ${pendingGapsCount} 段缺口未补 · 仍进入第 3 步`
-                      : '进入第 3 步 → 解锁口播 / 包装 / BGM 与实时预览'}
-            </button>
-            {/* stage-82：缺口/未补镜不再阻断进入第 3 步，按钮改为黄色「仍进入」并 confirm 提示；返回按钮始终展示 */}
+          {/* v2（step2/step3 合并）：原「进入第 3 步」转换行删除——口播/包装/BGM 就在工作台内编辑。 */}
+          <div className="mt-3 flex justify-start border-t border-border pt-3">
             <button
               type="button"
               onClick={() => setActiveStep(1)}
@@ -2172,130 +2108,9 @@ export default function ComposePage() {
         </section>
       )}
 
-      {/* ============ Row 3：四轨工作台 —— 步骤 3 专属（全部三轨 + 实时预览）============ */}
-      {activeStep === 3 && (
-      <section className="mt-4">
-        {plan ? (
-          <>
-            <div className="mb-2 flex items-center gap-2 rounded-md border border-border bg-background/40 px-3 py-1.5 text-[11px] text-muted-foreground">
-              <span>第 3 步 · 实时预览与三轨已展开。包装方案入口已移到下方"包装轨"右上角。</span>
-              <button
-                type="button"
-                onClick={() => setActiveStep(2)}
-                className="ml-auto rounded-md border border-border bg-background px-2 py-0.5 text-[10px] hover:bg-secondary"
-              >
-                ← 返回第 2 步
-              </button>
-            </div>
-            <EmotionCurveCard
-              plan={plan}
-              playheadSeconds={playheadSeconds}
-              onPlanUpdate={setPlanAndPush}
-              className="mb-2"
-            />
-            {plan.subject_anchors && plan.subject_anchors.length > 0 ? (
-              <div className="mb-2 flex flex-wrap items-center gap-1.5 rounded-md border border-emerald-500/40 bg-emerald-50/60 px-2 py-1.5 text-[11px] dark:bg-emerald-950/30">
-                <span className="font-medium text-emerald-900 dark:text-emerald-200">
-                  🎯 锁定可拍物体
-                </span>
-                <span className="text-emerald-700/80 dark:text-emerald-300/80">
-                  （澄清阶段已确认，每个物体在视频里至少出现 1 次）
-                </span>
-                {plan.subject_anchors.map((a) => (
-                  <span
-                    key={a}
-                    className="inline-flex items-center rounded-full border border-emerald-600/50 bg-white px-2 py-0.5 text-[10px] font-medium text-emerald-800 dark:bg-emerald-950 dark:text-emerald-200"
-                  >
-                    {a}
-                  </span>
-                ))}
-              </div>
-            ) : null}
-            <div className="mb-3 grid items-start gap-3 md:grid-cols-[minmax(0,280px)_1fr]">
-              <div className="rounded-lg border border-border bg-card p-2 md:sticky md:top-4 md:self-start">
-                <div className="mb-1.5 flex items-center justify-between px-1 text-[11px] text-muted-foreground">
-                  <span className="font-medium">实时预览</span>
-                  <span className="font-mono">{playheadSeconds.toFixed(1)}s / {plan.duration_seconds.toFixed(1)}s</span>
-                </div>
-                <PlanPlayer
-                  ref={playerRef}
-                  plan={plan}
-                  materials={sortedMaterials}
-                  onTimeUpdate={setPlayheadSeconds}
-                />
-              </div>
-              <FourTrackBoard
-                plan={plan}
-                gaps={gaps}
-                filledGapIds={filledGapIds}
-                selectedGapId={selectedGapId}
-                selectedSceneId={effectiveSelectedSceneId}
-                selectedPackagingItemId={selectedPackagingItemId}
-                materials={sortedMaterials}
-                fills={fills}
-                referenceManifests={[effectiveManifest, secondaryManifest].filter(
-                  (m): m is SampleManifest => !!m,
-                )}
-                onSelectScene={(scene, gap) => {
-                  setSelectedSceneId(scene.scene_id)
-                  setSelectedPackagingItemId(null)
-                  // stage-36：用 section_id 作为选段主键，selectedGapId 由 sync useEffect 跟随。
-                  // stage-40：parent_section_id 优先——填好的段没 gap，避免落到 null 被 fallback 推走。
-                  setSelectedSectionId(
-                    scene.parent_section_id ?? gap?.section_id ?? null,
-                  )
-                  seekPlayer(scene.start)
-                }}
-                onSelectVoice={(scene) => {
-                  setSelectedSceneId(scene.scene_id)
-                  setSelectedPackagingItemId(null)
-                  setEditingSubtitleScene(scene)
-                  seekPlayer(scene.start)
-                }}
-                onEditSubtitle={(scene) => {
-                  setEditingSubtitleScene(scene)
-                  seekPlayer(scene.start)
-                }}
-                onSelectPackaging={(item) => {
-                  setSelectedPackagingItemId(item.item_id)
-                  setSelectedSceneId(null)
-                  seekPlayer(item.start)
-                }}
-                onSynthesizeScene={handleSynthesizeScene}
-                onSynthesizeAll={handleSynthesizeAll}
-                onClearVoice={handleClearVoice}
-                onDeletePackagingItem={handleDeletePackagingItem}
-                onRecommendPackagingForScene={handleRecommendPackagingForScene}
-                onPickBgm={() => setBgmPickerOpen(true)}
-                onBgmAnchorChange={handleBgmAnchorChange}
-                onClearBgm={handleClearBgm}
-                onBgmVolumeChange={handleBgmVolumeChange}
-                onToggleSubtitle={handleToggleSubtitle}
-                onToggleVoiceover={handleToggleVoiceover}
-                onChangeTtsVoice={handleChangeTtsVoice}
-                busy={trackBusy}
-                phase="full"
-                playheadSeconds={playheadSeconds}
-                onSeek={seekPlayer}
-                onResizePackagingItem={handleResizePackagingItem}
-                onEditPackagingItem={(item) => {
-                  setEditingPackagingItem(item)
-                  setSelectedPackagingItemId(item.item_id)
-                  seekPlayer(item.start)
-                }}
-                onEditTransition={(sceneId, currentStyle) =>
-                  setEditingTransition({ sceneId, currentStyle })
-                }
-              />
-            </div>
-          </>
-        ) : (
-          <div className="rounded-md border border-dashed border-border bg-background/30 p-6 text-center text-xs text-muted-foreground">
-            还没生成 plan。回到第 1 步填写主题，点「生成内容轨」开始。
-          </div>
-        )}
-      </section>
-      )}
+      {/* ============ Row 3（已移除）：原步骤 3 四轨工作台。
+          v2（PRD F3 / step2/step3 合并）：预览与三轨编辑已并入 Row 2 画布工作台——
+          PlanPlayer sticky 常驻 + 四轨细节视图 phase=full；情绪曲线卡随 PRD cut #7 删除。 ============ */}
 
       {/* ============ Row 4：（已移除）原本的「分镜预览」与 FourTrackBoard 主轨展示重复，
           统一由 FourTrackBoard 内容轨承载，结构对照改用顶部常驻的 StructureMapPanel。 ============ */}
@@ -2303,8 +2118,8 @@ export default function ComposePage() {
       {/* ============ Row 5：（已移除）原本的全局 NLEditPanel 已下沉到 SceneEditPanel 内、跟随段落选择。
           渲染流程里 Row 9 那块 NLEditPanel（lockedTracks=['main']）保留，用于成片后改包装 / 口播。 ============ */}
 
-      {/* ============ Row 6：一键生成视频（步骤 3 专属）============ */}
-      {activeStep === 3 && plan && (
+      {/* ============ Row 6：一键生成视频（工作台内常驻，v2 无步骤边界）============ */}
+      {activeStep === 2 && plan && (
         <section className="mt-6 space-y-3 rounded-lg border border-border bg-card p-4">
           <div className="flex flex-wrap items-center gap-3">
             <h2 className="text-sm font-semibold">生成视频</h2>
@@ -2332,17 +2147,10 @@ export default function ComposePage() {
                 finalizing !== 'filling-gaps' &&
                 (renderDone ? '重新生成视频' : '一键生成视频')}
             </button>
-            <button
-              onClick={() => setActiveStep(2)}
-              disabled={finalizing === 'filling-gaps'}
-              className="rounded-md border border-border bg-card px-3 py-2 text-xs font-medium hover:bg-secondary disabled:opacity-60"
-            >
-              ← 返回第 2 步调整内容
-            </button>
             {!isRendering && finalizing === 'idle' && !renderDone && (
               <span className="text-[11px] text-muted-foreground">
                 {pendingGapsCount > 0
-                  ? `还有 ${pendingGapsCount} 段缺口未补，请回到第 2 步逐段补齐再渲染`
+                  ? `还有 ${pendingGapsCount} 段缺口未补，渲染时会先用文案自动补全`
                   : '所有缺口已补，将直接渲染成片'}
               </span>
             )}
@@ -2362,8 +2170,8 @@ export default function ComposePage() {
         </section>
       )}
 
-      {/* ============ Row 7：撤销 / 重做（步骤 2 / 3）——保存版本已统一到顶部 VersionMenu ============ */}
-      {(activeStep === 2 || activeStep === 3) && plan && (
+      {/* ============ Row 7：撤销 / 重做（工作台）——保存版本已统一到顶部 VersionMenu ============ */}
+      {activeStep === 2 && plan && (
         <section className="mt-4 flex flex-col items-end gap-2">
           <div className="flex items-center gap-2">
             <span className="text-xs text-muted-foreground">
@@ -2413,6 +2221,52 @@ export default function ComposePage() {
           planId={plan.plan_id}
           onPlanUpdated={setPlanAndPush}
         />
+      )}
+
+      {/* v2 实时预览弹窗（PRD F3 修订）：点画布段落块 / 总览条分段唤起。
+          Player 常驻挂载——关闭只切 visibility，playerRef 永远有效，
+          时间轴 onSeek / 各处 seekPlayer 在弹窗关着时依然生效。 */}
+      {plan && activeStep === 2 && (
+        <div
+          role="dialog"
+          aria-modal="true"
+          aria-label="实时预览"
+          className={cn(
+            'fixed inset-0 z-50 items-center justify-center bg-black/55 p-4 backdrop-blur-sm',
+            previewOpen ? 'flex' : 'invisible pointer-events-none',
+          )}
+          onClick={() => setPreviewOpen(false)}
+        >
+          <div
+            className="flex flex-col gap-2 rounded-lg border border-border bg-card p-3 shadow-2xl"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-center justify-between px-1 text-[11px] text-muted-foreground">
+              <span className="font-medium">实时预览 · Esc 或点空白处关闭</span>
+              <span className="font-mono">
+                {playheadSeconds.toFixed(1)}s / {plan.duration_seconds.toFixed(1)}s
+              </span>
+              <button
+                type="button"
+                onClick={() => setPreviewOpen(false)}
+                className="rounded border border-border bg-background px-1.5 py-0.5 text-[11px] hover:bg-secondary"
+              >
+                ✕
+              </button>
+            </div>
+            <div
+              className="overflow-hidden rounded-md border border-border"
+              style={{ width: `min(92vw, calc(72vh * ${aspectW} / ${aspectH}))` }}
+            >
+              <PlanPlayer
+                ref={playerRef}
+                plan={plan}
+                materials={sortedMaterials}
+                onTimeUpdate={setPlayheadSeconds}
+              />
+            </div>
+          </div>
+        </div>
       )}
 
       {/* 字幕浮窗（R3）：step3 字幕轨某段被点击 → 手动改 narration */}
@@ -2480,20 +2334,20 @@ export default function ComposePage() {
         />
       )}
 
-      {/* ⌘K 自然语言编辑（R6）：step2/step3 各自的可编辑范围由后端决定 */}
-      {plan && (activeStep === 2 || activeStep === 3) && (
+      {/* ⌘K 自然语言编辑（R6）：工作台内常驻；scope 统一（step2/step3 边界取消）留 D3 接线 */}
+      {plan && activeStep === 2 && (
         <ComposeCommandBar
           open={commandBarOpen}
           onClose={() => setCommandBarOpen(false)}
           planId={plan.plan_id}
-          step={activeStep === 2 ? 'step2' : 'step3'}
+          step="step2"
           projectId={currentProjectId ?? ''}
           onApplied={setPlanAndPush}
         />
       )}
 
       {/* ⌘K 浮动入口（R6 可发现性）：step2/step3 可见，可拖动并把位置写 localStorage。 */}
-      {plan && (activeStep === 2 || activeStep === 3) && !commandBarOpen && (
+      {plan && activeStep === 2 && !commandBarOpen && (
         <DraggableCommandFab onClick={() => setCommandBarOpen(true)} />
       )}
 
@@ -2539,7 +2393,7 @@ export default function ComposePage() {
 
 /* ---------- 子组件 ---------- */
 
-type WorkshopStep = 1 | 2 | 3
+type WorkshopStep = 1 | 2
 
 function StructureCompareSection({
   manifest,
@@ -2603,21 +2457,15 @@ function WorkshopStepNav({
   hasReferences,
   briefFilled,
   hasPlan,
-  step3Unlocked,
-  pendingGapsCount,
-  mainTrackUnfilledCount,
   onChange,
 }: {
   activeStep: WorkshopStep
   hasReferences: boolean
   briefFilled: boolean
   hasPlan: boolean
-  step3Unlocked: boolean
-  pendingGapsCount: number
-  /** stage-26 PR-N.6：plan.main_track 里还有几段 needs_fill / fill-empty 占位。>0 时禁止进 step3。 */
-  mainTrackUnfilledCount: number
   onChange: (step: WorkshopStep) => void
 }) {
+  // v2（step2/step3 合并）：两步导航——第 2 步即完整画布工作台（结构/素材/包装/口播/出片）。
   const step2Reason = !hasReferences
     ? '请先在第 1 步选择参考样例'
     : !briefFilled
@@ -2625,18 +2473,6 @@ function WorkshopStepNav({
       : !hasPlan
         ? '先点「生成内容轨」生成 plan'
         : ''
-  const step3Reason = !hasPlan
-    ? '先在第 2 步生成内容轨'
-    : mainTrackUnfilledCount > 0
-      ? `内容轨还有 ${mainTrackUnfilledCount} 镜未补完，请先在第 2 步补齐再进入第 3 步`
-      : !step3Unlocked
-        ? '请在第 2 步底部点「进入第 3 步」解锁'
-        : pendingGapsCount > 0
-          ? `还有 ${pendingGapsCount} 个缺口未补，可继续进入第 3 步自动补全`
-          : ''
-
-  const step3Disabled =
-    !hasPlan || !step3Unlocked || mainTrackUnfilledCount > 0
 
   const steps: { id: WorkshopStep; title: string; sub: string; disabled: boolean; tip: string }[] = [
     {
@@ -2648,22 +2484,15 @@ function WorkshopStepNav({
     },
     {
       id: 2,
-      title: '2 · 生成内容轨',
-      sub: '改编结构、补缺口、随时上传素材重排',
+      title: '2 · 画布工作台',
+      sub: '段落画布 · 素材缺口 · 包装口播 · 一键出片',
       disabled: !hasReferences || !briefFilled || !hasPlan,
       tip: step2Reason,
-    },
-    {
-      id: 3,
-      title: '3 · 多轨 + 出片',
-      sub: '包装轨 + 口播配音 + 一键生成视频',
-      disabled: step3Disabled,
-      tip: step3Reason,
     },
   ]
 
   return (
-    <nav className="mb-4 grid grid-cols-3 gap-2">
+    <nav className="mb-4 grid grid-cols-2 gap-2">
       {steps.map((s) => {
         const active = s.id === activeStep
         const clickable = !s.disabled || active
@@ -2888,89 +2717,50 @@ function UploadDropzone({
 // 资产库为空时 ReferencePicker 直接引导去素材库,不再有"选了样例又没拆解"的中间态。
 
 /**
- * stage-76（2026-06-12）说明卡：
- * 用户原话「step2 一开始不要直接填入素材了，都让用户自己去选择」+
- * 「我现在只让你对真实素材做切片，不要做其他处理」。
- * 第一次进 step2 弹出，用户点"知道了"后写 localStorage，之后不再出现。
- */
-/**
- * stage-76 提示：换 user_material 自动匹配后用户希望「占位 + 手动挑切片」流程。
- * 「我现在只让你对真实素材做切片，不要做其他处理」。
- * 第一次进 step2 弹出，用户点"知道了"后写 localStorage，之后不再出现。
- *
- * stage-29 (2026-06-12) 重写：在原"占位需手挑"基础上，把【片段 vs 分镜】的层级关系、
- * 如何展开分镜、如何对片段做补全 vs 对分镜做编辑全部讲清楚——避免用户分不清
- * 片段卡上的 ✏ 是改主题、▾ 是展开、外圈点击是选中片段。bump key v1→v2 让老用户
- * 重新见到这版更完整的说明。
+ * v2 画布功能介绍卡（2026-09-23 重写）：原 stage-76「占位需手挑」说明随 step2/step3 合并
+ * 改版——预览弹窗 + 可折叠 tab + 画布结构操作是新交互主轴。内容由「功能介绍」tab 承载，
+ * 首访自动展开一次（localStorage 静音逻辑在 canvasTab state 里，见 toggleCanvasTab）。
  */
 const STEP2_PLACEHOLDER_HINT_KEY = 'seecript.step2.placeholder.dismissed.v3'
 
-function Step2PlaceholderHint() {
-  const [dismissed, setDismissed] = useState<boolean>(() => {
-    try {
-      return localStorage.getItem(STEP2_PLACEHOLDER_HINT_KEY) === '1'
-    } catch {
-      return false
-    }
-  })
-  if (dismissed) return null
+function CanvasGuideCard() {
   return (
     <div className="flex items-start gap-3 rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-xs text-amber-900 dark:border-amber-700 dark:bg-amber-900/30 dark:text-amber-100">
       <span className="select-none text-base leading-none">💡</span>
-      <div className="flex-1 leading-relaxed space-y-1.5">
-        <p className="font-medium">片段（Section） vs 分镜（Shot）——两层结构怎么动</p>
-        <p className="text-amber-900/85 dark:text-amber-100/85">
-          内容轨上的每个色块是一个 <b>片段</b>（开场 / 痛点 / 解决方案…），片段内可能含 1 或多个 <b>分镜</b>。
-          当前所有「真实素材类」分镜还是占位卡——按下面的方式手动落地：
-        </p>
-        <ul className="list-disc pl-4 space-y-0.5 text-amber-900/85 dark:text-amber-100/85">
+      <div className="flex-1 space-y-1.5 leading-relaxed">
+        <p className="font-medium">画布怎么用——段落块 · 预览 · 时间轴</p>
+        <ul className="list-disc space-y-0.5 pl-4 text-amber-900/85 dark:text-amber-100/85">
           <li>
-            <b>选片段做补全</b>：点片段卡本体（除按钮以外的区域）→ 下方
+            <b>点段落块</b>（或下方总览条分段）→ 弹出<b>实时预览</b>，从该段开始播放；块选中后底边出现
+            <span className="mx-0.5 rounded bg-amber-200/60 px-1 font-mono dark:bg-amber-700/40">✂ 切分游标</span>
+            （实拍块一分为二）。Esc / 点空白处关弹窗。
+          </li>
+          <li>
+            <b>拖动段落块</b> 横向重排叙事顺序；<b>点连线</b> 改转场；<b>中键</b> 唤出功能盘，<b>右键</b> 撤销上一步。
+          </li>
+          <li>
+            <b>「时间轴」tab</b> → 四轨细节视图：包装轨（标题条 / 贴纸 / 字幕开关）、口播轨（TTS 合成 / 音色）、
+            BGM。内容轨按段聚合：✏ 改段属性、▾ 展开分镜，点分镜小块进「单镜编辑」弹窗（换源 / 手动裁剪切片）。
+          </li>
+          <li>
+            <b>选段做补全</b>：点段落块选中段 → 下方
             <span className="mx-0.5 rounded bg-amber-200/60 px-1 font-mono dark:bg-amber-700/40">补全工作台</span>
-            出现「字卡画面 / AI 生图 / AI 视频」三种入口，针对整段做一次补全。
+            出现「字卡画面 / AI 生图 / AI 视频」三种入口，针对整段补画面。
           </li>
           <li>
-            <b>编辑片段属性</b>：片段卡右上 <span className="rounded bg-white/80 px-1 font-mono text-foreground">✏</span>
-            ——改段主题 / 描述 / 时长。
-          </li>
-          <li>
-            <b>展开看分镜</b>：片段卡右上 <span className="rounded bg-white/80 px-1 font-mono text-foreground">▾</span>
-            ——把片段拆成 N 个分镜小块。再点其中任一分镜小块 → 进
-            <span className="mx-0.5 rounded bg-amber-200/60 px-1 dark:bg-amber-700/40">单镜编辑弹窗</span>
-            （改 主体/画面/口播/时长 + 单镜换源 + 手动裁剪视频切片）。
+            <b>素材库卡片拖到块内分镜槽</b> → 直接换源；槽左上角徽章 = 匹配状态：
+            <span className="mx-0.5 rounded bg-emerald-500/25 px-1 font-medium text-emerald-700 dark:text-emerald-300">✓ 准 ≥ 30%</span>
+            可用 ·
+            <span className="mx-0.5 rounded bg-amber-500/25 px-1 font-medium text-amber-800 dark:text-amber-200">弱 10–29%</span>
+            建议换源 ·
+            <span className="mx-0.5 rounded bg-zinc-500/25 px-1 font-medium text-zinc-700 dark:text-zinc-300">待补 &lt; 10%</span>
+            需补素材。
           </li>
         </ul>
         <p className="text-amber-900/70 dark:text-amber-100/70">
           手动裁剪视频时，所选区间会直接覆盖该分镜的时长，后续分镜自动顺移、整轨总长跟着伸缩。
         </p>
-        {/* stage-81 (2026-06-12) 黄底说明：把分镜卡匹配状态 / 匹配分的含义讲清楚。
-            stage-86 修：段级 fit_score（绿≥70/黄40-69/红<40）已删，分镜卡现用 match_quality
-            徽章（同一套 _score_pair，绿≥0.30/黄≥0.10），右上角不再是 0-100 分数。
-            原文案残留旧 70/40 阈值 + "换源弹窗另有一套" 的双套描述，收敛为真实在用的一套。 */}
-        <p className="text-amber-900/85 dark:text-amber-100/85">
-          <b>分镜卡左上角徽章 = 素材匹配状态</b>：本镜与所选切片在画面/语义上的契合度。
-          <span className="mx-0.5 rounded bg-emerald-500/25 px-1 font-medium text-emerald-700 dark:text-emerald-300">✓ 准 ≥ 30%</span>
-          可用 ·
-          <span className="mx-0.5 rounded bg-amber-500/25 px-1 font-medium text-amber-800 dark:text-amber-200">弱 10–29%</span>
-          勉强、建议换源 ·
-          <span className="mx-0.5 rounded bg-zinc-500/25 px-1 font-medium text-zinc-700 dark:text-zinc-300">待补 / — &lt; 10%</span>
-          没匹配上、需补素材。把鼠标移到分镜卡上可看到具体「匹配分」（0–100%，越高越贴合）。换源弹窗里的候选切片按<b>同一把尺</b>（匹配分）倒序排好。
-        </p>
       </div>
-      <button
-        type="button"
-        onClick={() => {
-          try {
-            localStorage.setItem(STEP2_PLACEHOLDER_HINT_KEY, '1')
-          } catch {
-            /* localStorage 不可用时仍允许本次会话内关闭 */
-          }
-          setDismissed(true)
-        }}
-        className="shrink-0 rounded border border-amber-400/60 bg-white/60 px-2 py-0.5 text-[11px] font-medium hover:bg-white dark:border-amber-500/40 dark:bg-amber-950/40 dark:hover:bg-amber-950/60"
-      >
-        知道了
-      </button>
     </div>
   )
 }

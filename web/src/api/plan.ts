@@ -114,6 +114,22 @@ export async function recomputeEmotion(planId: PlanId): Promise<Plan> {
 }
 
 /**
+ * v2 画布（F4/US-3.2）：段落块拖拽重排。sectionIds 必须是当前全部段落 id 的重排列，
+ * 后端按 parent_section_id 分组重铺主轨（清字幕 / 裁超界包装），不跑 LLM。
+ */
+export async function reorderSections(planId: PlanId, sectionIds: string[]): Promise<Plan> {
+  return await api.post<Plan>(`/plan/${planId}/sections/reorder`, { section_ids: sectionIds })
+}
+
+/**
+ * v2 画布（F4/US-3.5）：实拍块切分。splitAt 为切点距本镜起点的秒数；
+ * 后端镜一分为二 + 段拆两段。含字幕/标题条/口播音轨的块会被 422 拒（先摘除内层）。
+ */
+export async function splitScene(planId: PlanId, sceneId: string, splitAt: number): Promise<Plan> {
+  return await api.post<Plan>(`/plan/${planId}/scene/${sceneId}/split`, { split_at: splitAt })
+}
+
+/**
  * stage-77 (2026-06-12)：换源弹窗显示「切片适配度」。
  *
  * 给当前 scene × 指定 material 的每个 MaterialShot 打分（0-1），后端用

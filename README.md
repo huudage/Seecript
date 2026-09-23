@@ -2,9 +2,83 @@
 
 > 视频拆解与重组平台：样例视频拆解 → 结构抽取 → 素材缺口补全 → 视频重组 → 自然语言编辑。
 
-公网 demo：<https://seecript.zlhu.asia>
+公网 demo（v1 全链路）：<https://seecript.zlhu.asia>
 
-## 核心能力
+Seecript 卡在「**爆款结构 + 用户素材**」这个中间抽象上：上游不与 AI 生成竞争（Sora / 可灵），下游不与剪辑竞争（剪映 / Premiere），做的是把一条爆款视频拆成可复用的结构骨架，再把用户自己的素材对齐到骨架上，重组出结构对齐但内容原创的新视频。
+
+「样例库 → 样例拆解 → 缺口识别与补全 → 视频重组 → 自然语言改片」这条链两版不变；变的是**交互范式与 AI 边界**。
+
+## 两版形态：v1 → v2
+
+| | v1 · 已上线（main / 公网 demo） | v2 · 重设计（`feat/v2-canvas` 开发中） |
+|---|---|---|
+| 交互 | 四轨时间线工作台 + 26 个 compose 组件，⌘K 对话框主导改片 | **结构画布**：段落块 × 素材槽 × 连线，拖拽直接操纵；⌘K 降级为兜底入口 |
+| AI 边界 | 3 处「一键全自动」，AI 产物未经确认直接进 Plan | AI 出初稿 / 出建议 → **人确认或拖改后生效**；功能盘 = tool 白名单的可视化 |
+| 渲染 | Remotion 子进程包装轨 + Seedance T2V 主链路 | ffmpeg 原生 filter + WebAV 浏览器端实时预览与轻量导出 |
+| 外围 | 知识库 / 步骤状态机 / AB 对照 / TTS / BGM 燃点分析 | 裁剪 12 项；**补拍清单**替代 T2V 主链路 |
+
+两版 PRD：[docs/PRD.md](docs/PRD.md)（v1.0）· [docs/PRD-v2.md](docs/PRD-v2.md)（v2.0 定稿，2026-09-23）。
+
+## 为什么这么迭代 · 设计思考
+
+v1 把链路跑通了，但跑通之后暴露的不是功能缺失，而是三个**形态**问题：
+
+1. **直接操纵缺失**。换一个素材要走「选中 → 4-tab 弹窗 → 确认」四步，或者把意图翻译成一句话喂给对话框——用户在「自己本来就会做的事」上也被迫过 AI，AI 从辅助变成了必经入口。
+2. **AI 主导时刻过多**。生成内容轨、自动重写口播、出片前自动补缺，三处 AI 产物未经确认直接进 Plan，被渲染机器链直接消费——AI 错了，用户只能在成片里发现，对「成片为什么变成这样」失去解释权。
+3. **技术栈过重**。Remotion 是 Node 子进程（OOM 风险），自闭环要求下是渲染链上最重的一环；T2V 单次 30–90s 卡在用户主链路；demo 演示链路长、故障面大。
+
+三个问题对应三条设计原则，构成 v2 全部功能取舍的裁决框架。
+
+### 一 · AI 做 copilot，不做主导入口
+
+剪辑是高度个性化的创作场景，AI 的价值是降低门槛、给出建议，而不是替用户拍板。判断的尺子是一条 badcase 成本公式：
+
+> **badcase 成本 = 错误的消费者 × 级联深度**
+
+AI 输出给人消费（报告 / 贴纸 / diff / 初稿），人当场可校验，成本可控；AI 输出给机器消费（自动进 Plan → 渲染），错误级联放大到成片。v2 由此立下总账：**所有 AI 产物的第一消费者是人，机器链只消费人确认后的东西**。
+
+收编不是砍掉 AI，是改产物的消费方式：
+
+| v1 一键全自动 | v2 收编后 |
+|---|---|
+| step1「生成内容轨」 | clarify 多轮聊天先确认结构 → 画布半透明初稿 +「AI 初稿」贴纸 → 拖改 →「定稿」 |
+| step2→3 自动重写口播 + TTS | 功能盘内「配口播」动作：人触发、diff 确认后应用 |
+| 出片前自动补缺 | 渲染确认清单：缺口 / 空槽 / 未定稿块逐项人工处理，0 未确认项才提交 |
+
+### 二 · 能拖拽的地方，就不要对话框
+
+v1 的四轨时间线是「轨道-参数」心智：素材落位没有直接操纵（拖拽只做网格排序，推荐落位只是卡片色条），改片只能钻弹窗或写对话。v2 用**结构画布**替代——把「爆款结构」这个抽象显性化为可拖拽的空间结构：
+
+- **段落块**是叙事段落的容器（不是流程函数）：素材槽、字幕、标题条、口播稿同居一卡（块内层三轴），双击直改；
+- **连线**既是叙事顺序，也是转场载体（6 风格白名单选择器，原生控件非 AI）；
+- **BGM** 挂画布背景层；**成片总览条**常驻底部，按链序显示各块时长占比——补偿「无时间线」损失的时序感；
+- **PlanPlayer** 点块即播该块，「播放整片」进入 WebAV 整体实时预览。
+
+交互契约是「**即时生效 + 撤销兜底**」：任何画布操作直接落 `plan_store`（新 plan_id 入撤销栈），⌘Z 一步回滚。确认门只留给 AI 动作——人是权威源，人的操作不需要向自己确认。
+
+AI 入口收敛为**功能盘**：中键任何对象，盘跟随鼠标弹出该对象锚定的动作（AI 8 + 结构 3）。盘 = 后端 tool 白名单的可视化——盘上有什么就是允许做什么，无隐藏能力、不摆灰置项；右键让位给撤销（高频动作独占键位）；⌘K 对话保留为键盘党的兜底。AI 的边界看得见，就越不了界；同时每个 AI 动作都有画布直接操纵等价物——AI 能配口播，人也能双击块内层直接改字；AI 能裁剪，人也能拖入出点。
+
+### 三 · 功能裁剪三问
+
+功能的去留不凭感觉，每个都过三问：**① 真实需求与竞品 ② 技术重量与 demo 难度 ③ badcase 必要性**。三问全过才留，一问不过就砍或降级：
+
+| 裁剪 / 降级 | 三问落点 |
+|---|---|
+| Remotion 渲染线整体移除 | 自闭环硬约束下它是技术最重一环（Node 子进程 / OOM）；ffmpeg 原生 filter（xfade / ASS / drawtext / overlay / zoompan）全覆盖；预览交给 WebAV 浏览器端管线 |
+| T2V 出主链路 | 缺口的真实需求是「这段有画面」——用户自己拍是质量最高、成本最低的路，AI 替拍是最后手段；T2V 30–90s 卡链路，生成 badcase 由渲染直接消费。改为**补拍清单**（shot brief：拍什么 / 多长 / 什么情绪 / 参考哪段）+ 盘内「AI 合成视频」显式单点 |
+| 12 项外围裁剪 | 知识库 / 步骤状态机 / AB 对照 / TTS / BGM 燃点分析 / 情绪曲线交互图 / 自动落位 fill-all……逐项三问不过（撤销栈底座保留） |
+
+对 badcase 高发的环节（上传理解 / 素材裁剪），解法同样是**改消费方式**而不是砍能力：理解结果落成可摘除的贴纸，裁剪建议落成 diff，人确认后才生效。
+
+### 不变的部分同样重要
+
+用户问题、目标人群、「爆款结构 + 用户素材」差异化锚点、拆解 6 步流水线与确认门、三层兜底工程范式（Prompt / Router / Schema）——全部继承 v1。这次迭代不是推倒重来：真正验证过的资产是「拆解链路 + 结构数据」，要重写的是长在外围的交互外壳。
+
+### 市场验证
+
+画布 / 无时间线不是拍脑袋：Synthesia 场景卡家族验证「段落卡片 + 卡内分层」对小白创作者成立；Descript 验证按叙事段落（而非时间码）组织实拍素材的心智；2026 年节点画布交互已被大众化（Higgsfield / Runway），范式教育成本由先行者支付。「**节点画布 × 段落叙事 × 实拍素材重组**」在市场上无先例——这是差异化锚点，不是跟随。
+
+## v1 · 核心能力（已上线）
 
 | # | 模块 | 说明 |
 |---|---|---|
@@ -17,13 +91,41 @@
 | 7 | 自然语言编辑 | LLM tool calling 改 Plan JSON：双入口（Render 态三轨分流 + Compose 态 ⌘K 对话），每次生成新 plan_id 入撤销栈 |
 | 8 | 情绪曲线 | LLM 多信号打分（角色 + BGM + 节奏 + 整片调性）→ 段落 anchor + peaks/valleys → 规则插值 60 点平滑曲线 |
 
+## v2 · 变更明细与进度
+
+### U1–U7 变更总览
+
+| | v1 | v2 |
+|---|---|---|
+| U1 结构画布 | 四轨时间线工作台 | 全画布：段落块（块内层三轴）× 素材槽 × 连线（转场）；BGM 挂背景层；总览条补偿时序感 |
+| U2 功能盘 | ⌘K 对话主入口 | 中键鼠标跟随盘（AI 8 + 结构 3 动作，白名单可视化）+ 右键撤销；⌘K 降级兜底 |
+| U3 AI 收编 | 3 处一键全自动 | 聊天确认结构 → 可拖改初稿；配口播走 diff；出片前渲染确认清单 |
+| U4 AIGC 策略 | T2V 主链路 + Seedream 补图 | T2V 出主链路（盘内显式单点）；新增补拍清单；Seedream 收窄为封面 / 底图 / 静态特写 |
+| U5 渲染减重 | Remotion 子进程 + 首尾帧串接 | ffmpeg 原生成片（xfade / ASS / drawtext / overlay / zoompan）+ WebAV 整体实时预览与浏览器端导出 |
+| U6 外围裁剪 | 知识库 / 步骤状态机 / AB 对照 / TTS 等 | 12 项移除（撤销栈底座保留） |
+| U7 输入收窄 | ≤3 分钟上传 | ≤60s + 三类型白名单；拆解产物定位为「给人看的结构报告 + 确认门」 |
+
+### 开发里程碑（`feat/v2-canvas`）
+
+| # | 里程碑 | 内容 | 状态 |
+|---|---|---|---|
+| D1 | 脚手架 | PRD-v2 入库 + React Flow 接入 + 画布骨架（四轨/画布切换 · 段落块×连线 · 总览条 · 选段联动） | ✅ `fe36178` |
+| — | 盘交互前置 | CopilotDial 径向盘 v0：中键唤盘 + 右键撤销 + 锚定命中测试 | ✅ `9617dc0` |
+| D2 | 画布核心 | 拖拽重排 · 换槽素材 · 块内层三轴（mini 时间条）· 连线转场选择器 · 块切分 | 下一项 |
+| D3 | 功能盘 | AI 8 + 结构 3 动作全量接入（白名单驱动） | 待开始 |
+| D4 | AI 收编 | clarify 确认结构 + 初稿模式 + 配口播 diff + 渲染确认清单 | 待开始 |
+| D5 | 缺口 / 补拍 | 三态可视化 + 四路补全（rerank / 字卡 / AIGC 图 / 补拍清单） | 待开始 |
+| D6 | 渲染线 | ffmpeg 原生成片 + WebAV 整体预览导出，移除 Remotion | 待开始 |
+| D7 | 裁剪收窄 | 外围 12 项移除 + 上传收窄 + 回归 | 待开始 |
+
 ## 仓库结构
 
 ```
 seecript/
 ├── web/                                 React 19 + Vite + TS + Tailwind v4 + Zustand
 │   └── src/{pages,components,stores,api,types}
-├── remotion/                            包装轨独立 Node 项目（透明 WebM）+ AnimatedImage
+│       └── components/compose/          v2 新增：StoryboardCanvas（结构画布）· CopilotDial（功能盘），feat/v2-canvas
+├── remotion/                            包装轨独立 Node 项目（v1；v2 D6 移除）+ AnimatedImage
 ├── server/
 │   ├── app/{main,config,schemas}.py     FastAPI 入口 + Pydantic Settings + 全模块契约
 │   ├── app/routers/                     library · decompose · material · gap · plan · render · edit · asset · packaging · clarify · knowledge · project · step · voice · asr
@@ -36,26 +138,30 @@ seecript/
 │   │   └── materials · assets · library · plans · projects · jobs · prompts · profile · tts
 │   ├── samples/                         内置样例（video.mp4 + 预解析 manifest）
 │   └── var/                             运行期产物（outputs / uploads / projects / aigc_*）
-├── docs/                                ARCHITECTURE · AI-DESIGN · PRD · DEMO · CATALOG_FRAME
+├── docs/                                ARCHITECTURE · AI-DESIGN · PRD · PRD-v2 · DEMO · CATALOG_FRAME
 └── run.{ps1,sh} / stop.{ps1,sh}         本地启动 / 停止
 ```
 
 ## 技术栈
 
-| 层 | 选型 |
-|---|---|
-| 后端 | FastAPI + Pydantic v2 + Python 3.10+ |
-| 前端 | React 19 + Vite + TypeScript + Tailwind v4 + Zustand |
-| 视频包装 | Remotion |
-| LLM | Doubao Seed-2.0-lite（多模态，OpenAI 兼容） |
-| ASR | 豆包 bigasr_auc_turbo + librosa VAD 门控 |
-| T2V | doubao-seedance-2-0-fast-260128 |
-| T2I | doubao-seedream |
-| 镜头分割 | PySceneDetect |
-| 音频分析 | librosa（RMS energy + onset + tempo） |
-| 视频处理 | FFmpeg subprocess |
+| 层 | 选型 | v2 变化 |
+|---|---|---|
+| 后端 | FastAPI + Pydantic v2 + Python 3.10+ | 不变 |
+| 前端 | React 19 + Vite + TypeScript + Tailwind v4 + Zustand | 交互层重写（画布） |
+| 结构画布 | — | 新增 React Flow（@xyflow/react） |
+| 预览 / 导出 | — | 新增 WebAV（整体实时预览 + 浏览器端轻量导出） |
+| 视频包装 | Remotion | v2 移除 → ffmpeg 原生 filter（xfade / ASS / drawtext / overlay / zoompan） |
+| LLM | Doubao Seed-2.0-lite（多模态，OpenAI 兼容） | 不变 |
+| ASR | 豆包 bigasr_auc_turbo + librosa VAD 门控 | 不变 |
+| T2V | doubao-seedance-2-0-fast-260128 | 出主链路：盘内「AI 合成视频」显式单点 |
+| T2I | doubao-seedream | 定位收窄：封面 / 底图 / 静态特写 |
+| 镜头分割 | PySceneDetect | 不变 |
+| 音频分析 | librosa（RMS energy + onset + tempo） | BGM 燃点分析裁剪，拆解侧维持 |
+| 视频处理 | FFmpeg subprocess | filter graph 扩展 |
 
 ## 本地部署
+
+> 以下为 v1（main）口径；v2 开发在 `feat/v2-canvas` 分支。
 
 ### 0 · 系统要求
 
@@ -152,8 +258,9 @@ cd web && npx tsc -p tsconfig.app.json --noEmit && npx vite build
 
 ## 进一步阅读
 
+- [docs/PRD.md](docs/PRD.md) — v1 产品需求文档（十节结构，基于代码现状撰写）
+- [docs/PRD-v2.md](docs/PRD-v2.md) — v2 重设计 PRD：结构画布 / 功能盘 / AI 收编 / 渲染减重，含 U1–U7 变更总览与决策记录
 - [AGENTS.md](AGENTS.md) — 给代码 agent 的项目简报（硬约束 / 目录 / 部署）
 - [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) — 整体架构 / 数据流 / 工具协议 / 安全边界
 - [docs/AI-DESIGN.md](docs/AI-DESIGN.md) — AI 干预点详解 + 三层兜底
-- [docs/PRD.md](docs/PRD.md) — 产品需求文档
 - [docs/DEMO.md](docs/DEMO.md) — 5 分钟演示走查

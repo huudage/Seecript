@@ -1,5 +1,6 @@
 import type { Material } from '@/types/schemas'
 import { SECTION_BG, SECTION_SHORT } from '@/lib/sections'
+import { CANVAS_MATERIAL_MIME } from '@/lib/dnd'
 import { cn } from '@/lib/utils'
 
 /**
@@ -7,15 +8,19 @@ import { cn } from '@/lib/utils'
  * - 视频走 `<video poster>`，图片走 `<img>`，音频用占位图标
  * - dragHandleProps 由 MaterialGrid 透传（@dnd-kit useSortable 提供 listeners/attributes）
  * - onRemove 触发 store.removeMaterial
+ * - enableCanvasDrag：整卡可 HTML5 拖到结构画布槽位换源（与 ⋮⋮ 手柄的 dnd-kit 排序并存——
+ *   手柄上 cancel 掉 HTML5 dragstart，两套拖拽互不抢）
  */
 export function MaterialCard({
   material,
   dragHandleProps,
   onRemove,
+  enableCanvasDrag = false,
 }: {
   material: Material
   dragHandleProps?: Record<string, unknown>
   onRemove?: (id: string) => void
+  enableCanvasDrag?: boolean
 }) {
   const thumb = material.thumbnail_url
   const fileUrl = material.file_url ?? thumb ?? ''
@@ -28,7 +33,19 @@ export function MaterialCard({
     if (fileUrl) window.open(fileUrl, '_blank', 'noopener,noreferrer')
   }
   return (
-    <div className="group relative flex flex-col overflow-hidden rounded-md border border-border bg-background/60 transition-shadow hover:shadow-md">
+    <div
+      draggable={enableCanvasDrag}
+      onDragStart={
+        enableCanvasDrag
+          ? (e) => {
+              e.dataTransfer.setData(CANVAS_MATERIAL_MIME, material.material_id)
+              e.dataTransfer.effectAllowed = 'copy'
+            }
+          : undefined
+      }
+      title={enableCanvasDrag ? '整卡拖到画布槽位可换源；⋮⋮ 手柄拖拽排序' : undefined}
+      className="group relative flex flex-col overflow-hidden rounded-md border border-border bg-background/60 transition-shadow hover:shadow-md"
+    >
       <div
         className={cn(
           'relative h-24 w-full bg-muted',
@@ -53,11 +70,12 @@ export function MaterialCard({
           </div>
         )}
 
-        {/* drag handle 浮在左上 */}
+        {/* drag handle 浮在左上（dnd-kit 排序手柄；cancel 掉 HTML5 dragstart 防两套拖拽抢事件） */}
         <button
           {...(dragHandleProps ?? {})}
           aria-label="拖拽排序"
           onClick={(e) => e.stopPropagation()}
+          onDragStart={(e) => e.preventDefault()}
           className="absolute left-1 top-1 rounded bg-black/40 px-1.5 py-0.5 text-xs text-white opacity-0 transition-opacity group-hover:opacity-100 cursor-grab active:cursor-grabbing"
         >
           ⋮⋮
