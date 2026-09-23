@@ -124,13 +124,6 @@ export interface SectionBlockNodeData {
 
 /* ===================== 段落块节点 ===================== */
 
-const SLOT_BADGE: Record<SlotChipData['badge'], { text: string; cls: string }> = {
-  reviewed: { text: '已审', cls: 'bg-sky-500/95' },
-  fill: { text: '待补', cls: 'bg-rose-500/95' },
-  matched: { text: '✓', cls: 'bg-emerald-500/95' },
-  none: { text: '—', cls: 'bg-zinc-500/85' },
-}
-
 /* ---- 块底边切分游标（US-3.5） ---- */
 
 function SplitScrubber({
@@ -237,7 +230,7 @@ function SplitScrubber({
 }
 
 function SectionBlockNode({ data }: NodeProps<Node<SectionBlockNodeData>>) {
-  const { section, scenes, start, end, slots, gapStatus, filled, selected, draft } = data
+  const { section, scenes, start, end, slots, selected, draft } = data
   const title = blockTitle(section)
   const duration = end - start
   const [dropHover, setDropHover] = useState<string | null>(null)
@@ -271,7 +264,6 @@ function SectionBlockNode({ data }: NodeProps<Node<SectionBlockNodeData>>) {
       {/* 素材槽：每镜一槽（缩略图 + 匹配徽章 + 主体） */}
       <div className="flex flex-col gap-1 px-2 py-1.5">
         {slots.map((slot) => {
-          const badge = SLOT_BADGE[slot.badge]
           const hover = dropHover === slot.scene.scene_id
           return (
             <div
@@ -327,9 +319,6 @@ function SectionBlockNode({ data }: NodeProps<Node<SectionBlockNodeData>>) {
               </div>
               <div className="min-w-0 flex-1 py-0.5 pr-1">
                 <div className="flex items-center gap-1">
-                  <span className={cn('rounded px-1 text-[8px] font-bold leading-tight text-white', badge.cls)}>
-                    {badge.text}
-                  </span>
                   <span className="truncate text-[10px] font-medium">
                     #{slot.scene.shot_order + 1} {slot.scene.shot_subject || slot.scene.scene_id}
                   </span>
@@ -399,20 +388,10 @@ function SectionBlockNode({ data }: NodeProps<Node<SectionBlockNodeData>>) {
         })}
       </div>
 
-      {/* 块底：镜数 + 缺口态 */}
       <div className="flex items-center justify-between border-t border-border/70 bg-background/40 px-2 py-1 text-[9px] text-muted-foreground">
         <span>
           {scenes.length} 镜 · {start.toFixed(1)}s → {end.toFixed(1)}s
         </span>
-        {filled ? (
-          <span className="rounded bg-emerald-500/15 px-1 py-px font-medium text-emerald-600">已补</span>
-        ) : gapStatus === 'miss' ? (
-          <span className="rounded bg-rose-500/15 px-1 py-px font-medium text-rose-600">缺画面</span>
-        ) : gapStatus === 'warn' ? (
-          <span className="rounded bg-amber-500/15 px-1 py-px font-medium text-amber-600">待修补</span>
-        ) : (
-          <span className="rounded bg-emerald-500/10 px-1 py-px font-medium text-emerald-600">OK</span>
-        )}
       </div>
 
       {/* 选中块 → 底边切分游标（US-3.5）；不可切时给出原因 */}
@@ -459,8 +438,18 @@ interface Props {
   onAiInsight?: (scene: Scene) => void
   /** 实拍块「AI 裁剪」：diff 后由父级确认才换入出点。 */
   onAiTrim?: (scene: Scene) => void
-  /** 空槽补全：字卡 / AIGC 图 / AI 合成视频，父级打开对应工作台。 */
+  /** 生成：字卡 / 图片 / 视频。悬停展开表单，不叫缺口。 */
   onFillSlot?: (section: AdaptedSection, scene: Scene, action: 'copy' | 'aigc_image' | 'aigc') => void
+  /** 悬停到某个「生成」方向时通知父级把表单放到光标旁。 */
+  onFillHover?: (
+    section: AdaptedSection,
+    scene: Scene,
+    action: 'copy' | 'aigc_image' | 'aigc',
+    anchor: { x: number; y: number },
+  ) => void
+  onFillHoverEnd?: () => void
+  /** 自然语言改片：打开多轮对话。自进化蒸馏仍走这条对话，不另起一套。 */
+  onNaturalEdit?: () => void
   /** 空槽「补拍清单」：给人看，不写 plan。 */
   onShotBrief?: (scene: Scene, section: AdaptedSection) => void
   /** 画布空白「添加视频块」。 */
@@ -516,6 +505,9 @@ export function StoryboardCanvas({
   onAiInsight,
   onAiTrim,
   onFillSlot,
+  onFillHover,
+  onFillHoverEnd,
+  onNaturalEdit,
   onShotBrief,
   onAppendBlock,
   insights,
@@ -786,7 +778,34 @@ export function StoryboardCanvas({
     if (!dial) return []
     const a = dial.anchor
     const actions: DialAction[] = []
+    const pushGenerate = (section: AdaptedSection, scene: Scene) => {
+      if (!onFillSlot) return
+      const items = [
+        { id: 'fill-copy', action: 'copy' as const, title: '字卡', angle: Math.PI },
+        { id: 'fill-image', action: 'aigc_image' as const, title: '图片', angle: 0 },
+        { id: 'fill-t2v', action: 'aigc' as const, title: '视频', angle: Math.PI / 2 },
+      ]
+      for (const item of items) {
+        actions.push({
+          id: item.id,
+          label: '生成',
+          group: 'ai',
+          hover: true,
+          hoverTitle: item.title,
+          angle: item.angle,
+          run: () => onFillSlot(section, scene, item.action),
+        })
+      }
+    }
     if (a.kind === 'section') {
+      if (onNaturalEdit)
+        actions.push({
+          id: 'nl-edit',
+          label: '自然语言改片',
+          group: 'ai',
+          run: () => onNaturalEdit(),
+        })
+      pushGenerate(a.section, a.firstScene)
       if (onEditSection)
         actions.push({
           id: 'edit-section',
@@ -837,26 +856,14 @@ export function StoryboardCanvas({
           group: 'ai',
           run: () => onAiTrim(a.scene),
         })
-      if (empty && onFillSlot) {
+      if (onNaturalEdit)
         actions.push({
-          id: 'fill-copy',
-          label: '生成字卡',
+          id: 'nl-edit',
+          label: '自然语言改片',
           group: 'ai',
-          run: () => onFillSlot(a.section, a.scene, 'copy'),
+          run: () => onNaturalEdit(),
         })
-        actions.push({
-          id: 'fill-image',
-          label: 'AIGC 补图',
-          group: 'ai',
-          run: () => onFillSlot(a.section, a.scene, 'aigc_image'),
-        })
-        actions.push({
-          id: 'fill-t2v',
-          label: 'AI 合成视频',
-          group: 'ai',
-          run: () => onFillSlot(a.section, a.scene, 'aigc'),
-        })
-      }
+      if (onFillSlot) pushGenerate(a.section, a.scene)
       if (empty && onShotBrief)
         actions.push({
           id: 'shot-brief',
@@ -872,6 +879,13 @@ export function StoryboardCanvas({
           run: () => onEditShot(a.scene, a.section),
         })
     } else if (a.kind === 'pane') {
+      if (onNaturalEdit)
+        actions.push({
+          id: 'nl-edit',
+          label: '自然语言改片',
+          group: 'ai',
+          run: () => onNaturalEdit(),
+        })
       if (onAppendBlock)
         actions.push({
           id: 'append-block',
@@ -899,6 +913,7 @@ export function StoryboardCanvas({
     onEditShot,
     onEditTransition,
     onFillSlot,
+    onNaturalEdit,
     onLocalEdit,
     onRecommendPackaging,
     onShotBrief,
@@ -953,7 +968,7 @@ export function StoryboardCanvas({
       onContextMenu={handleContextMenu}
     >
       {/* 画布区：节点 = 段落块，连线 = 叙事顺序 + 转场；拖块重排 / 选中切分 / 点连线调转场 */}
-      <div className="h-[420px] w-full overflow-hidden rounded-lg border border-border bg-slate-50">
+      <div className="h-[calc(100vh-11rem)] min-h-[640px] w-full overflow-hidden rounded-lg border border-border bg-slate-50">
         <ReactFlowProvider>
           <ReactFlow
             key={plan.plan_id}
@@ -1030,6 +1045,29 @@ export function StoryboardCanvas({
                 : '空白处暂无盘内能力 · 右键点视频块 / 分镜槽 / 连线可唤出对应动作'
               : undefined
           }
+          onHoverAction={(actionId) => {
+            if (!actionId) {
+              onFillHoverEnd?.()
+              return
+            }
+            const fillById = {
+              'fill-copy': 'copy',
+              'fill-image': 'aigc_image',
+              'fill-t2v': 'aigc',
+            } as const
+            const action = fillById[actionId as keyof typeof fillById]
+            if (!action) return
+            const anchor = dial.anchor
+            const section = anchor.kind === 'section' || anchor.kind === 'scene' ? anchor.section : null
+            const scene =
+              anchor.kind === 'section' ? anchor.firstScene : anchor.kind === 'scene' ? anchor.scene : null
+            if (!section || !scene) return
+            const angle = action === 'copy' ? Math.PI : action === 'aigc_image' ? 0 : Math.PI / 2
+            onFillHover?.(section, scene, action, {
+              x: dial.x + Math.cos(angle) * 210,
+              y: dial.y + Math.sin(angle) * 150,
+            })
+          }}
           onClose={() => setDial(null)}
         />
       )}

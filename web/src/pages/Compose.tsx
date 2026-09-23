@@ -70,9 +70,9 @@ import type {
 } from '@/types/schemas'
 
 const ACTION_TABS: { value: FillAction; label: string; hint: string }[] = [
-  { value: 'copy', label: '字卡画面', hint: 'AI 设计一张个性化字卡（字体/版式/颜色/动画）作为本段画面' },
-  { value: 'aigc', label: 'AI 视频', hint: 'AI 视频生成，出 5-8 秒短片作为本段画面' },
-  { value: 'aigc_image', label: 'AI 生图再渲染', hint: 'AI 生图后用动画引擎重渲染，成本/等待远低于视频；多主体自动拆分成多镜头故事板' },
+  { value: 'copy', label: '字卡', hint: '生成一张字卡作为这段画面' },
+  { value: 'aigc', label: '视频', hint: '生成一段视频作为这段画面' },
+  { value: 'aigc_image', label: '图片', hint: '生成一张图，再做成这段画面' },
 ]
 
 const RENDER_STEP_LABELS: Record<string, string> = {
@@ -153,6 +153,8 @@ export default function ComposePage() {
   const [helpOpen, setHelpOpen] = useState(false)
   const [structureOpen, setStructureOpen] = useState(false)
   const [fillDockOpen, setFillDockOpen] = useState(false)
+  const [genAnchor, setGenAnchor] = useState<{ x: number; y: number } | null>(null)
+  const genHideTimer = useRef<number | null>(null)
   const [tracksOpen, setTracksOpen] = useState(true)
   // A 位（refs[0]）primary manifest fallback：sessionStore.manifest 只在 Decompose 页才会 set。
   // 用户从 ReferencePicker 直接进 Compose 时 manifest=null，导致 StructureCompareSection 看不见。
@@ -951,38 +953,7 @@ export default function ComposePage() {
 
   // copy fill 已迁移到 FillCopyPanel 内部状态机（T5），不再在 Compose 这一层触发或采纳。
 
-  // stage-70：gap 待补数必须以 scene 级状态为最终依据。
-  // 用户报障：『所有镜都换源审过了（"已审"），但仍显示 N 段缺口待补、无法进 step3』
-  // 根因：旧版本只看 gap.status / fills 数组。后端 /gap/detect 重新分析时不知道用户在
-  //       SwapSourceDialog 里做过手动换源（这条路径不写 fill 记录，只翻 scene.user_edited
-  //       和 plan.main_track），于是 gap 状态停留在 miss/warn，pendingGapsCount 永远 >0。
-  // 新语义：一个 gap "pending" 只有当它所在 section 还有镜既不是 user_edited，又是 needs_fill
-  //         / text-card-fill-empty 占位时才算。这与 mainTrackUnfilledCount 的 scene 级口径
-  //         保持一致，避免两个数字打架。
-  const pendingGapsCount = useMemo(() => {
-    if (!plan) return 0
-    const sectionHasUnfilled = new Map<string, boolean>()
-    for (const sc of plan.main_track) {
-      const sid = sc.parent_section_id
-      if (!sid) continue
-      if (!sectionHasUnfilled.has(sid)) sectionHasUnfilled.set(sid, false)
-      if (sc.user_edited === true) continue
-      const unfilled =
-        sc.needs_fill === true ||
-        (sc.source_ref ?? '').startsWith('text-card-fill-empty')
-      if (unfilled) sectionHasUnfilled.set(sid, true)
-    }
-    return gaps.filter((g) => {
-      if (g.status === 'ok') return false
-      if (fills.some((f) => f.gap_id === g.gap_id && f.status === 'ok')) return false
-      // 老 plan / 老 gap 没有 section_id → 退回旧语义防止漏门控
-      if (!g.section_id) return true
-      return sectionHasUnfilled.get(g.section_id) === true
-    }).length
-  }, [gaps, fills, plan])
-
-  // stage-26 PR-N.6：内容轨『还未补齐』的 Scene 数已不再门控任何入口（v2 取消 step3 边界），
-  // 待补数量统一用上面的 pendingGapsCount 展示，渲染前由文案自动补全兜底。
+  // 画布不再展示缺口计数。空槽不挡出片，生成从功能盘悬停进入。
 
   /* --------------------- 四轨：口播 / 包装 / BGM 动作 --------------------- */
 
@@ -1432,6 +1403,7 @@ export default function ComposePage() {
 
   return (
     <PageShell
+      className={activeStep === 2 ? 'max-w-none px-4 py-4' : undefined}
       title="视频工坊"
       subtitle="第 1 步选参考 + 写主题 → 第 2 步画布工作台完成结构与出片。"
     >
@@ -1596,7 +1568,7 @@ export default function ComposePage() {
               <div className="h-12 w-12 animate-spin rounded-full border-2 border-primary/30 border-t-primary" />
               <div className="text-base font-semibold text-foreground">正在生成内容轨…</div>
               <div className="text-xs leading-relaxed text-muted-foreground">
-                结构改编 + 段落识别 + 缺口分析需要 5–15s 左右。
+                正在按你的主题和参考视频排出视频块，大约 5–15 秒。
               </div>
             </div>
           ) : plan ? (
@@ -1605,7 +1577,7 @@ export default function ComposePage() {
                 <div>
                   <h3 className="text-base font-semibold text-foreground">✓ 内容轨已生成</h3>
                   <p className="text-xs text-muted-foreground">
-                    {plan.adapted_sections.length} 段 · {plan.main_track.length} 镜头 · 共 {plan.duration_seconds.toFixed(1)}s · 缺口 {gaps.length}
+                    {plan.adapted_sections.length} 段 · {plan.main_track.length} 镜头 · 共 {plan.duration_seconds.toFixed(1)}s
                   </p>
                 </div>
                 <span className="text-[10px] text-muted-foreground">{videoType}</span>
@@ -1662,7 +1634,7 @@ export default function ComposePage() {
                   }}
                   className="flex-1 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground transition-colors hover:opacity-90"
                 >
-                  进入第 2 步 → 画布工作台 · 补缺口 · 出片
+                  进入第 2 步 → 画布工作台 · 出片
                 </button>
                 <button
                   type="button"
@@ -1908,6 +1880,29 @@ export default function ComposePage() {
                 onAiTrim={(scene) =>
                   setTrimTarget({ sceneId: scene.scene_id, materialId: scene.source_ref })
                 }
+                onNaturalEdit={() => setCommandBarOpen(true)}
+                onFillHover={(section, _scene, action, anchor) => {
+                  if (genHideTimer.current != null) window.clearTimeout(genHideTimer.current)
+                  setSelectedSectionId(section.section_id)
+                  setGenAnchor(anchor)
+                  setFillDockOpen(true)
+                  setActionBySection((prev) => {
+                    const map = new Map(prev)
+                    map.set(section.section_id, action)
+                    return map
+                  })
+                  setVisitedFillKeys((prev) => {
+                    const key = `${section.section_id}::${action}`
+                    if (prev.has(key)) return prev
+                    const next = new Set(prev)
+                    next.add(key)
+                    return next
+                  })
+                }}
+                onFillHoverEnd={() => {
+                  if (genHideTimer.current != null) window.clearTimeout(genHideTimer.current)
+                  genHideTimer.current = window.setTimeout(() => setFillDockOpen(false), 400)
+                }}
                 onFillSlot={(section, _scene, action) => {
                   setSelectedSectionId(section.section_id)
                   setFillDockOpen(true)
@@ -1965,29 +1960,24 @@ export default function ComposePage() {
             )}
           {visitedFillKeys.size > 0 && (
           <div
-            className="rounded-md border border-border bg-background/40"
+            className="fixed z-[60] w-[380px] max-h-[70vh] overflow-auto rounded-lg border border-border bg-card p-3 shadow-xl"
             style={{
-              display:
-                selectedSectionId && actionBySection.has(selectedSectionId) ? 'block' : 'none',
+              left: Math.max(8, Math.min(genAnchor?.x ?? 24, window.innerWidth - 400)),
+              top: Math.max(8, Math.min(genAnchor?.y ?? 80, window.innerHeight - 160)),
+              display: fillDockOpen ? 'block' : 'none',
+            }}
+            onMouseEnter={() => {
+              if (genHideTimer.current != null) window.clearTimeout(genHideTimer.current)
+            }}
+            onMouseLeave={() => {
+              if (genHideTimer.current != null) window.clearTimeout(genHideTimer.current)
+              genHideTimer.current = window.setTimeout(() => setFillDockOpen(false), 400)
             }}
           >
-            <button
-              type="button"
-              onClick={() => setFillDockOpen((v) => !v)}
-              className="flex w-full items-center justify-between px-2 py-1.5 text-left text-[11px] font-medium"
-            >
-              <span>
-                补全 ·{' '}
-                {(() => {
-                  const sec = plan.adapted_sections.find((s) => s.section_id === selectedSectionId)
-                  const name = sec?.theme?.trim() || (sec ? `视频块 ${sec.order}` : '当前块')
-                  const act = ACTION_TABS.find((t) => t.value === activeAction)?.label ?? '补全'
-                  return `${name} · ${act}`
-                })()}
-              </span>
-              <span>{fillDockOpen ? '▾ 收起' : '▸ 展开'}</span>
-            </button>
-            <div className="space-y-2 border-t border-border p-2" style={{ display: fillDockOpen ? 'block' : 'none' }}>
+            <div className="mb-2 text-[11px] font-semibold">
+              生成 · {ACTION_TABS.find((tab) => tab.value === activeAction)?.label ?? '生成'}
+            </div>
+            <div className="space-y-2">
             {selectedGap && (
               <>
                 <div className="flex flex-wrap items-center gap-1 text-xs">
@@ -2139,7 +2129,7 @@ export default function ComposePage() {
               <h2 className="text-sm font-semibold">
                 素材库（{sortedMaterials.length}）
                 <span className="ml-2 text-[10px] font-normal text-muted-foreground">
-                  上传或拖拽排序会自动重排并刷新缺口
+                  拖到画布上的分镜槽即可换源
                 </span>
               </h2>
               {/* "+ 从素材库选取" / "+ 追加素材" 已移除——外部素材一律走下方拖拽区，避免歧义 */}
@@ -2165,32 +2155,7 @@ export default function ComposePage() {
             )}
           </div>
 
-          <div className="flex items-center justify-between gap-2 border-t border-border pt-3">
-            <h2 className="text-sm font-semibold">
-              适配结构（{plan.adapted_sections.length} 段 / 缺口 {gaps.length}
-              {pendingGapsCount > 0 && (
-                <span
-                  className="ml-2 text-amber-500"
-                  title="待补按镜级状态算：该段还有镜没被人工换源（badge 显示「已审」）也没被工作台采纳；换源或采纳后此数字自动归零。"
-                >
-                  待补 {pendingGapsCount}
-                </span>
-              )}
-              ）
-            </h2>
-            <div className="flex items-center gap-2">
-              {fills.length > 0 && (
-                <span
-                  className="text-[10px] text-muted-foreground"
-                  title="工作台采纳记录：通过下方「补全工作台」点过「采纳」的 fill 数量。手动换源（SwapSourceDialog）不进这里——那走镜级 user_edited 标记。"
-                >
-                  工作台采纳 {fills.length}
-                </span>
-              )}
-            </div>
-          </div>
-
-          {/* 两栏：左 段落编辑（补全的依据） / 右 缺口补全 tabs。
+          {/* 段落编辑已收进功能盘。这里只留选中包装项的编辑。
               v34：把右侧补全工作台从两栏抽出，挪到了 FourTrackBoard 正下方
               （一行宽，方便用户切段后直接看到所有四种补全方式）。
               stage-37：段落 / 单镜编辑迁到弹窗（点段块 ✏ 或展开后点小镜），
@@ -2564,7 +2529,7 @@ function WorkshopStepNav({
     {
       id: 2,
       title: '2 · 画布工作台',
-      sub: '段落画布 · 素材缺口 · 包装口播 · 一键出片',
+      sub: '结构画布 · 生成 · 一键出片',
       disabled: !hasReferences || !briefFilled || !hasPlan,
       tip: step2Reason,
     },
@@ -2823,19 +2788,14 @@ function CanvasGuideCard() {
             <b>拖动段落块</b> 横向重排；<b>点连线</b> 改转场；<b>右键</b> 唤出功能盘。撤销在工具条，Ctrl+Z 同样可用。
           </li>
           <li>
-            画布下面是独立<b>时间轴</b>：视频块、字幕、口播、音乐。拖时间轴上沿可以拉高。
+            轨道在画布顶部，可以收起。
           </li>
           <li>
-            <b>空槽右键</b>选字卡 / 生图 / 合成视频后，表单在画布底边展开。结构迁移对照只作参考，不要求补满每一段。
+            <b>右键</b>功能盘里，三个方向都是<b>生成</b>（字卡 / 图片 / 视频），悬停展开表单。
+            <b>自然语言改片</b>也在盘里，右下角的对话按钮仍在，导出后的自进化蒸馏不变。
           </li>
           <li>
-            <b>素材库卡片拖到块内分镜槽</b> → 直接换源；槽左上角徽章 = 匹配状态：
-            <span className="mx-0.5 rounded bg-emerald-500/25 px-1 font-medium text-emerald-700 dark:text-emerald-300">✓ 准 ≥ 30%</span>
-            可用 ·
-            <span className="mx-0.5 rounded bg-amber-500/25 px-1 font-medium text-amber-800 dark:text-amber-200">弱 10–29%</span>
-            建议换源 ·
-            <span className="mx-0.5 rounded bg-zinc-500/25 px-1 font-medium text-zinc-700 dark:text-zinc-300">待补 &lt; 10%</span>
-            需补素材。
+            <b>素材库卡片拖到块内分镜槽</b> → 直接换源。
           </li>
         </ul>
         <p className="text-amber-900/70 dark:text-amber-100/70">
