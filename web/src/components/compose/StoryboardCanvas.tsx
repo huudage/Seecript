@@ -951,7 +951,7 @@ export function StoryboardCanvas({
           actions={dialActions}
           hint={
             dial.anchor.kind === 'pane'
-              ? '空白处暂无盘内能力——添加视频块 / 字卡 / AIGC 图 / 补拍清单 随 D5 接入'
+              ? '空白处暂无盘内能力 · 中键点段落块 / 分镜槽 / 连线可唤出对应动作'
               : undefined
           }
           onClose={() => setDial(null)}

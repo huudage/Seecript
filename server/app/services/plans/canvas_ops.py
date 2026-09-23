@@ -267,3 +267,38 @@ def split_scene(plan: Plan, scene_id: str, split_at: float) -> dict:
         "first_duration": first_dur,
         "second_duration": second_dur,
     }
+
+
+def append_section(plan: Plan, sec: AdaptedSection, scene: Scene) -> dict:
+    """画布空白处添加视频块（F6 结构动作 / US-4）：新段追加到叙事链末尾。
+
+    sec.shots 与 scene 的素材内容（含 Seedream / Seedance / TextCardSpec 物化结果）
+    由路由层准备好传入；本函数只做结构落位——即时生效（F13），不跑 LLM。
+    段内首镜 shot_order=0 并挂 parent_section_id；_relay_timeline 统一重铺 start
+    并钳全片时长。
+    """
+    _materialize_parent_ids(plan)
+
+    if sec.duration_seconds < _MIN_SECTION_SECONDS:
+        raise ValueError(f"新段落块需 ≥ {_MIN_SECTION_SECONDS:.0f}s（当前 {sec.duration_seconds:.1f}s）")
+    if any(s.section_id == sec.section_id for s in plan.adapted_sections):
+        raise ValueError(f"section_id 已存在：{sec.section_id}")
+    if any(s.scene_id == scene.scene_id for s in plan.main_track):
+        raise ValueError(f"scene_id 已存在：{scene.scene_id}")
+
+    sec.order = max((s.order for s in plan.adapted_sections), default=-1) + 1
+    scene.parent_section_id = sec.section_id
+    scene.shot_order = 0
+    scene.start = 0.0  # 占位，relay 统一重铺
+
+    plan.adapted_sections.append(sec)
+    plan.main_track.append(scene)
+
+    groups, orphans = group_scenes_by_section(plan)
+    info = _relay_timeline(plan, [(s, groups.get(s.section_id, [])) for s in plan.adapted_sections], orphans)
+    return {
+        "section_id": sec.section_id,
+        "scene_id": scene.scene_id,
+        "order": sec.order,
+        "total": info["total"],
+    }

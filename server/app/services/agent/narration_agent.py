@@ -54,15 +54,27 @@ _NARRATION_SYSTEM = (
 )
 
 
-async def regenerate_narrations(plan: Plan) -> dict[str, str]:
+async def regenerate_narrations(
+    plan: Plan, section_ids: Optional[list[str]] = None
+) -> dict[str, str]:
     """根据 plan.adapted_sections + plan.main_track + 全片 brief 重新生成每段口播。
 
+    section_ids 非 None 时只重写这些段（v2 盘内「配口播」作用域限段）；
+    分组口径与画布一致（parent_section_id 优先，sc-N 正则兜底）。
     返回 `{scene_id: narration}`；调用方负责把它写回 scene.narration 并触发 TTS。
     LLM 失败时返回 `{}`（调用方应保留旧 narration）。
     """
     scenes = plan.main_track or []
     if not scenes:
         return {}
+
+    if section_ids is not None:
+        from ..plans.canvas_ops import group_scenes_by_section
+
+        groups, _orphans = group_scenes_by_section(plan)
+        scenes = [sc for sid in section_ids for sc in groups.get(sid, [])]
+        if not scenes:
+            return {}
 
     settings = plan.settings
     brief = (plan.brief or "").strip()
@@ -103,6 +115,11 @@ async def regenerate_narrations(plan: Plan) -> dict[str, str]:
         user_lines.extend(section_lines)
     user_lines.append("【分镜清单（每条都要给一句 narration）】")
     user_lines.extend(scene_table)
+    if section_ids is not None:
+        user_lines.append(
+            f"注意：本次只重写列出的 {len(scenes)} 个分镜（作用域段落 {', '.join(section_ids)}），"
+            "其余段落的口播不在范围内。"
+        )
     user_lines.append(
         "请输出 JSON：{\"narrations\":[{\"scene_id\":..., \"text\":...}]}\n"
         "严格执行字数上限与禁复述约束；**每个 scene 都必须给一句 ≥ 3 字的 text，不允许返回空**。"

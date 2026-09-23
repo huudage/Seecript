@@ -35,6 +35,8 @@ from ..schemas import (
     SampleManifest,
     Scene,
     SceneTransition,
+    SectionRole,
+    ShotPlan,
     TargetPlatform,
     TextCardSpec,
     ToneStyle,
@@ -1293,45 +1295,90 @@ async def patch_plan_settings(plan_id: str, body: PlanSettingsPatch) -> Plan:
     return plan
 
 
+class RegenerateNarrationsRequest(BaseModel):
+    """POST /plan/{plan_id}/regenerate-narrations 入参（v2 功能盘「配口播」）。
+
+    - section_ids：限定只重写这些段（缺省 = 全部，v1 行为）
+    - apply=False：dry-run，只返回建议不落盘——盘内配口播走 diff 确认门（F10 ②）
+    """
+    section_ids: Optional[list[str]] = Field(default=None, min_length=1)
+    apply: bool = Field(default=True)
+
+
+class NarrationProposal(BaseModel):
+    """单镜口播建议（dry-run 与 apply 都带，供前端 diff）。"""
+    scene_id: str
+    old_narration: Optional[str] = None
+    new_narration: str
+
+
 class RegenerateNarrationsResponse(BaseModel):
     """POST /plan/{plan_id}/regenerate-narrations 返回。"""
     plan: Plan
     updated_scene_ids: list[str]
     skipped_scene_ids: list[str] = Field(default_factory=list)
     note: str = ""
+    applied: bool = True
+    proposals: list[NarrationProposal] = Field(default_factory=list)
 
 
 @router.post("/plan/{plan_id}/regenerate-narrations", response_model=RegenerateNarrationsResponse)
-async def regenerate_plan_narrations(plan_id: str) -> RegenerateNarrationsResponse:
-    """step3 入口调：综合段长+内容直接给出每段口播，禁止复述凑时长。
+async def regenerate_plan_narrations(
+    plan_id: str,
+    body: Optional[RegenerateNarrationsRequest] = None,
+) -> RegenerateNarrationsResponse:
+    """重写口播文案（v2：盘内「配口播」，人触发、diff 确认后应用）。
 
     设计意图：
     - plan_agent 在 step1/step2 给的 narration 是"还没定稿时的估算"——段长会随用户调整而变。
-    - 进 step3 之前段长已稳，需要按"每秒 5 字"的预算重新出一份**严丝合缝**的口播。
     - LLM 失败时不抹掉旧文案（避免回退灾难），仅记 skipped。
+    - apply=False 只出建议不写盘；apply=True 按建议写回并清 voiceover_url、重建字幕。
     - 不在这里调 TTS——前端拿到新 narration 后再触发 /voice/synthesize-all（如果开了 voiceover）。
     """
+    req = body or RegenerateNarrationsRequest()
     plan = plan_store.get(plan_id)
     if plan is None:
         raise HTTPException(status_code=404, detail=f"plan_id 不存在：{plan_id}")
 
+    section_ids: Optional[list[str]] = None
+    if req.section_ids is not None:
+        existing = {s.section_id for s in plan.adapted_sections}
+        unknown = [sid for sid in req.section_ids if sid not in existing]
+        if unknown:
+            raise HTTPException(
+                status_code=422,
+                detail=f"section_ids 不存在：{', '.join(unknown)}",
+            )
+        section_ids = req.section_ids
+
     from ..services.agent.narration_agent import regenerate_narrations
 
-    new_narrations = await regenerate_narrations(plan)
+    new_narrations = await regenerate_narrations(plan, section_ids=section_ids)
     if not new_narrations:
         return RegenerateNarrationsResponse(
             plan=plan,
             updated_scene_ids=[],
             skipped_scene_ids=[s.scene_id for s in plan.main_track],
             note="LLM 暂不可用 / 返回不合法；保留旧 narration",
+            applied=False,
         )
 
+    proposals: list[NarrationProposal] = []
     updated: list[str] = []
     skipped: list[str] = []
     for i, sc in enumerate(plan.main_track):
         new_text = new_narrations.get(sc.scene_id)
         if new_text is None:
             skipped.append(sc.scene_id)
+            continue
+        proposals.append(
+            NarrationProposal(
+                scene_id=sc.scene_id,
+                old_narration=sc.narration,
+                new_narration=new_text,
+            )
+        )
+        if not req.apply:
             continue
         # 同步清空已合成的 voiceover_url：文案变了，旧 wav 已失效，强制重新合成
         plan.main_track[i] = sc.model_copy(update={
@@ -1340,20 +1387,29 @@ async def regenerate_plan_narrations(plan_id: str) -> RegenerateNarrationsRespon
         })
         updated.append(sc.scene_id)
 
-    # 字幕轨同步：批量改完口播后，所有 PackagingItem(subtitle) 必须按新 narration 重建
-    if updated:
+    if req.apply and updated:
+        # 字幕轨同步：批量改完口播后，所有 PackagingItem(subtitle) 必须按新 narration 重建
         _rebuild_subtitle_packaging(plan)
+        plan_store.put(plan)
 
-    plan_store.put(plan)
+    scope_note = (
+        f"（作用域：{', '.join(section_ids)}）" if section_ids else ""
+    )
     log.info(
-        "[plan] regenerate narrations plan=%s updated=%d skipped=%d",
-        plan_id, len(updated), len(skipped),
+        "[plan] regenerate narrations plan=%s apply=%s updated=%d skipped=%d%s",
+        plan_id, req.apply, len(updated), len(skipped), scope_note,
     )
     return RegenerateNarrationsResponse(
         plan=plan,
         updated_scene_ids=updated,
         skipped_scene_ids=skipped,
-        note=f"已重写 {len(updated)} 段口播",
+        note=(
+            f"{'已重写' if req.apply else '建议重写'} {len(proposals)} 句口播{scope_note}"
+            if proposals
+            else "没有可重写的口播（作用域内无分镜）"
+        ),
+        applied=req.apply,
+        proposals=proposals,
     )
 
 
@@ -1573,6 +1629,261 @@ async def split_plan_scene(plan_id: str, scene_id: str, body: SceneSplitRequest)
         "[plan] scene split plan=%s scene=%s at=%.2fs -> %s + %s (%s / %s)",
         plan_id, scene_id, body.split_at,
         info["scene_a"], info["scene_b"], info["section_a"], info["section_b"],
+    )
+    return plan
+
+
+# ---------------------------------------------------------------------------
+# v2 功能盘 AI 动作（PRD-v2 F6 · Epic-5 D3）——AI 出建议给人消费，一律不落 plan
+# ---------------------------------------------------------------------------
+
+def _resolve_scene_context(plan: Plan, scene_id: str) -> tuple[Scene, Optional[AdaptedSection]]:
+    scene = next((s for s in plan.main_track if s.scene_id == scene_id), None)
+    if scene is None:
+        raise HTTPException(status_code=404, detail=f"scene_id 不存在：{scene_id}")
+    section: Optional[AdaptedSection] = None
+    if scene.parent_section_id:
+        section = next(
+            (sec for sec in plan.adapted_sections if sec.section_id == scene.parent_section_id),
+            None,
+        )
+    if section is None:
+        section = next(
+            (sec for sec in plan.adapted_sections if sec.role == scene.section),
+            None,
+        )
+    return scene, section
+
+
+def _resolve_scene_material(plan: Plan, scene: Scene) -> Material:
+    if scene.source != "user_material":
+        raise HTTPException(
+            status_code=422,
+            detail="只有实拍素材块可裁剪（样例镜头用切分调整，字卡/AIGC 无裁剪概念）",
+        )
+    if not plan.project_id:
+        raise HTTPException(status_code=400, detail="plan 缺少 project_id，无法定位用户素材")
+    material = material_store.get(plan.project_id, scene.source_ref)
+    if material is None:
+        raise HTTPException(status_code=404, detail=f"素材不存在：{scene.source_ref}")
+    return material
+
+
+class SceneAiInsightResponse(BaseModel):
+    """POST /plan/{plan_id}/scene/{scene_id}/ai-insight 返回——AI 理解贴纸数据。"""
+    plan_id: str
+    scene_id: str
+    summary: str = Field(..., description="≤40 字摘要：这段素材是什么、可用在哪")
+    tags: list[str] = Field(default_factory=list, description="3-6 个短标签")
+    highlights: list[str] = Field(default_factory=list, description="1-3 条亮点")
+    source: Literal["llm", "rule"] = Field(..., description="llm=模型蒸馏；rule=素材预处理字段兜底")
+
+
+@router.post("/plan/{plan_id}/scene/{scene_id}/ai-insight", response_model=SceneAiInsightResponse)
+async def scene_ai_insight(plan_id: str, scene_id: str) -> SceneAiInsightResponse:
+    """盘内「AI 理解」（F6）：对实拍块出贴纸数据。不写 plan——前端画布本地态，可摘除。"""
+    plan = plan_store.get(plan_id)
+    if plan is None:
+        raise HTTPException(status_code=404, detail=f"plan_id 不存在：{plan_id}")
+    scene, section = _resolve_scene_context(plan, scene_id)
+
+    material: Optional[Material] = None
+    if scene.source == "user_material" and plan.project_id:
+        material = material_store.get(plan.project_id, scene.source_ref)
+
+    from ..services.plans import scene_ai
+
+    data = await scene_ai.scene_insight(plan, scene, section, material)
+    log.info(
+        "[plan] ai-insight plan=%s scene=%s source=%s tags=%d",
+        plan_id, scene_id, data["source"], len(data["tags"]),
+    )
+    return SceneAiInsightResponse(plan_id=plan_id, scene_id=scene_id, **data)
+
+
+class SceneTrimSuggestionResponse(BaseModel):
+    """POST /plan/{plan_id}/scene/{scene_id}/suggest-trim 返回——AI 裁剪建议。"""
+    plan_id: str
+    scene_id: str
+    source_duration: float = Field(..., description="源素材总时长（秒）")
+    current_in: float = Field(..., description="当前入点（素材内秒数）")
+    current_out: float = Field(..., description="当前出点（素材内秒数）")
+    suggested_in: float = Field(..., description="建议入点")
+    suggested_out: float = Field(..., description="建议出点")
+    reason: str = Field(..., description="≤50 字理由")
+    source: Literal["llm", "rule"]
+
+
+@router.post("/plan/{plan_id}/scene/{scene_id}/suggest-trim", response_model=SceneTrimSuggestionResponse)
+async def scene_suggest_trim(plan_id: str, scene_id: str) -> SceneTrimSuggestionResponse:
+    """盘内「AI 裁剪」（F6）：建议更优入出点。diff 由人确认后走 swap-source 手动裁剪应用。"""
+    plan = plan_store.get(plan_id)
+    if plan is None:
+        raise HTTPException(status_code=404, detail=f"plan_id 不存在：{plan_id}")
+    scene, section = _resolve_scene_context(plan, scene_id)
+    material = _resolve_scene_material(plan, scene)
+
+    from ..services.plans import scene_ai
+
+    data = await scene_ai.suggest_trim(plan, scene, section, material)
+    cur_out = scene.out_point if scene.out_point is not None else float(material.duration_seconds or 0.0)
+    log.info(
+        "[plan] suggest-trim plan=%s scene=%s %s→%s (%s)",
+        plan_id, scene_id,
+        f"{scene.in_point:.2f}-{cur_out:.2f}",
+        f"{data['suggested_in']:.2f}-{data['suggested_out']:.2f}",
+        data["source"],
+    )
+    return SceneTrimSuggestionResponse(
+        plan_id=plan_id,
+        scene_id=scene_id,
+        source_duration=float(material.duration_seconds or 0.0),
+        current_in=scene.in_point,
+        current_out=cur_out,
+        **data,
+    )
+
+
+class SceneShotBriefResponse(BaseModel):
+    """POST /plan/{plan_id}/scene/{scene_id}/shot-brief 返回——补拍清单单条规格。"""
+    plan_id: str
+    scene_id: str
+    what_to_shoot: str = Field(..., description="拍什么：主体 + 动作 + 构图")
+    duration_seconds: float = Field(..., ge=2.0, le=15.0)
+    emotion: str = Field(..., description="镜头情绪")
+    reference: str = Field(..., description="参考哪段 / 什么感觉")
+    tips: list[str] = Field(default_factory=list, description="2-4 条实操提示")
+    source: Literal["llm", "rule"]
+
+
+@router.post("/plan/{plan_id}/scene/{scene_id}/shot-brief", response_model=SceneShotBriefResponse)
+async def scene_shot_brief(plan_id: str, scene_id: str) -> SceneShotBriefResponse:
+    """盘内「补拍清单」（F6 / U4）：AI 出拍摄规格而非替拍。不写 plan——给人看的 brief。"""
+    plan = plan_store.get(plan_id)
+    if plan is None:
+        raise HTTPException(status_code=404, detail=f"plan_id 不存在：{plan_id}")
+    scene, section = _resolve_scene_context(plan, scene_id)
+
+    from ..services.plans import scene_ai
+
+    data = await scene_ai.shot_brief(plan, scene, section)
+    log.info(
+        "[plan] shot-brief plan=%s scene=%s source=%s dur=%.1fs",
+        plan_id, scene_id, data["source"], data["duration_seconds"],
+    )
+    return SceneShotBriefResponse(plan_id=plan_id, scene_id=scene_id, **data)
+
+
+# ---------------------------------------------------------------------------
+# v2 功能盘结构动作（F6）：画布空白处添加视频块 = 追加新段落到链序末尾
+# ---------------------------------------------------------------------------
+
+class SectionsAppendRequest(BaseModel):
+    """POST /plan/{plan_id}/sections/append：画布空白处添加视频块（PRD-v2 F6）。
+
+    四路 source 复用 swap-source 的物化；区别是这里新建 AdaptedSection + Scene
+    追加到末尾（空白处无位置语义），而非改已有镜。即时生效（F13），不跑结构 LLM。
+    """
+    source: Literal["user_material", "text_card", "aigc_image", "aigc_t2v"]
+    material_id: Optional[str] = Field(default=None, description="source=user_material 必填")
+    material_shot_index: Optional[int] = Field(default=None, description="指定 MaterialShot.index")
+    material_in_point: Optional[float] = Field(default=None, ge=0)
+    material_out_point: Optional[float] = Field(default=None, gt=0)
+    prompt_hint: Optional[str] = Field(default=None, max_length=200)
+    main_text: Optional[str] = Field(default=None, max_length=24)
+    sub_text: Optional[str] = Field(default=None, max_length=40)
+    duration_seconds: Optional[float] = Field(
+        default=None, ge=2.0, le=15.0,
+        description="目标块时长；user_material 路跟随素材窗口，其余路缺省 3.5s（t2v ≥5s）",
+    )
+    role: Optional[SectionRole] = Field(
+        default=None, description="新段落角色；缺省 development（追加到末尾后可拖拽重排）",
+    )
+
+
+@router.post("/plan/{plan_id}/sections/append", response_model=Plan)
+async def append_plan_section(plan_id: str, body: SectionsAppendRequest) -> Plan:
+    """画布空白处添加视频块：新建段落 + 首镜追加到链序末尾，时间轴重铺。"""
+    plan = plan_store.get(plan_id)
+    if plan is None:
+        raise HTTPException(status_code=404, detail=f"plan_id 不存在：{plan_id}")
+
+    role: SectionRole = body.role or "development"
+    base_subject = (
+        (body.main_text or "").strip()
+        or (body.prompt_hint or "").strip()
+        or (body.material_id or "").strip()
+        or "新段落"
+    )[:40]
+    if body.source == "user_material":
+        target_dur = body.duration_seconds or 4.0
+    elif body.source == "aigc_t2v":
+        target_dur = body.duration_seconds or 5.0
+    else:
+        target_dur = body.duration_seconds or 3.5
+
+    suffix = uuid.uuid4().hex[:6]
+    new_scene_id = f"app-sc-{suffix}"
+    new_sec_id = f"sec-app-{suffix}"
+    skeleton_scene = Scene(
+        scene_id=new_scene_id,
+        section=role,
+        shot_subject=base_subject,
+        source=body.source,  # type: ignore[arg-type]
+        source_ref="pending",
+        start=0.0,
+        duration=target_dur,
+    )
+    shot_plan = ShotPlan(
+        order=0,
+        subject=base_subject,
+        visual=base_subject,
+        duration_seconds=max(1.0, min(15.0, target_dur)),
+    )
+    skeleton_sec = AdaptedSection(
+        section_id=new_sec_id,
+        role=role,
+        theme=base_subject[:20],
+        content_description=f"画布手动添加：{base_subject}",
+        shots=[shot_plan],
+        order=0,
+        duration_seconds=max(2.0, min(30.0, target_dur)),
+    )
+
+    swap_body = SceneSwapSourceRequest(
+        source=body.source,
+        material_id=body.material_id,
+        material_shot_index=body.material_shot_index,
+        material_in_point=body.material_in_point,
+        material_out_point=body.material_out_point,
+        prompt_hint=body.prompt_hint,
+        main_text=body.main_text,
+        sub_text=body.sub_text,
+    )
+    new_scene = await _materialize_scene_source(plan, skeleton_scene, skeleton_sec, shot_plan, swap_body)
+
+    if new_scene.duration < 2.0:
+        raise HTTPException(
+            status_code=422,
+            detail=f"新段落块需 ≥ 2s（所选切片仅 {new_scene.duration:.1f}s）",
+        )
+    final_sec = skeleton_sec.model_copy(update={
+        "duration_seconds": round(new_scene.duration, 3),
+        "shots": [shot_plan.model_copy(update={
+            "duration_seconds": max(1.0, min(15.0, new_scene.duration)),
+        })],
+    })
+
+    try:
+        info = canvas_ops.append_section(plan, final_sec, new_scene)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    _rebuild_subtitle_packaging(plan)
+    plan_store.put(plan)
+    log.info(
+        "[plan] section appended plan=%s sec=%s scene=%s source=%s dur=%.1fs total=%.1fs",
+        plan_id, info["section_id"], info["scene_id"],
+        body.source, new_scene.duration, info["total"],
     )
     return plan
 
@@ -1810,6 +2121,40 @@ async def swap_scene_source(
                 None,
             )
 
+    new_scene = await _materialize_scene_source(plan, scene, section, shot_plan, body)
+
+    plan.main_track[scene_idx] = new_scene
+    # 只有 scene.duration 真改了（手动裁剪路径）才重铺 timeline。其它换源（text_card / aigc /
+    # 自动 shot）保留原 duration，跳过 _rebuild_timeline 避免清空全片字幕。
+    duration_changed = abs(new_scene.duration - scene.duration) > 0.001
+    if duration_changed:
+        from ..services.agent.compose_edit_agent import _rebuild_timeline
+        _rebuild_timeline(plan)
+    # 字幕轨同步：swap 到 text_card 时该段不该再叠字幕；从 text_card 换回视频/AIGC 时
+    # 又要把字幕加回来。统一走 _rebuild_subtitle_packaging（按 narration / text_card_spec
+    # 重新判定每段是否出字幕），避免 source 变了但 subtitle 残留导致字幕错位。
+    _rebuild_subtitle_packaging(plan)
+    plan_store.put(plan)
+    log.info(
+        "[plan] scene source swapped plan=%s scene=%s %s → %s",
+        plan_id, scene_id, scene.source, body.source,
+    )
+    return plan
+
+
+async def _materialize_scene_source(
+    plan: Plan,
+    scene: Scene,
+    section: Optional[AdaptedSection],
+    shot_plan: Optional[ShotPlan],
+    body: SceneSwapSourceRequest,
+) -> Scene:
+    """swap-source / append 共用的四路素材物化：返回换好源的 new_scene（不动 plan）。
+
+    text_card / user_material 立即返回；aigc_image 同步出 Seedream 图 + 动效推荐；
+    aigc_t2v 同步轮询 Seedance（最长 180s）。失败抛 HTTPException，plan 不变。
+    """
+    scene_id = scene.scene_id
     shot_dur = scene.duration
 
     if body.source == "text_card":
@@ -2008,24 +2353,7 @@ async def swap_scene_source(
         )
     else:
         raise HTTPException(status_code=400, detail=f"不支持的 source 类型：{body.source}")
-
-    plan.main_track[scene_idx] = new_scene
-    # 只有 scene.duration 真改了（手动裁剪路径）才重铺 timeline。其它换源（text_card / aigc /
-    # 自动 shot）保留原 duration，跳过 _rebuild_timeline 避免清空全片字幕。
-    duration_changed = abs(new_scene.duration - scene.duration) > 0.001
-    if duration_changed:
-        from ..services.agent.compose_edit_agent import _rebuild_timeline
-        _rebuild_timeline(plan)
-    # 字幕轨同步：swap 到 text_card 时该段不该再叠字幕；从 text_card 换回视频/AIGC 时
-    # 又要把字幕加回来。统一走 _rebuild_subtitle_packaging（按 narration / text_card_spec
-    # 重新判定每段是否出字幕），避免 source 变了但 subtitle 残留导致字幕错位。
-    _rebuild_subtitle_packaging(plan)
-    plan_store.put(plan)
-    log.info(
-        "[plan] scene source swapped plan=%s scene=%s %s → %s",
-        plan_id, scene_id, scene.source, body.source,
-    )
-    return plan
+    return new_scene
 
 
 # ---------------------------------------------------------------------------
