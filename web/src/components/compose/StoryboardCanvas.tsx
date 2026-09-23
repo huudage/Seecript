@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useMemo, useRef, useState } from 'react'
 import {
   Background,
   Handle,
@@ -16,7 +16,6 @@ import '@xyflow/react/dist/style.css'
 import { CopilotDial, type DialAction } from '@/components/compose/CopilotDial'
 import { CANVAS_MATERIAL_MIME, hasCanvasMaterialPayload } from '@/lib/dnd'
 import { isUnfilledScene } from '@/lib/renderChecklist'
-import { getSectionMeta } from '@/lib/sections'
 import { TRANSITION_LABEL } from '@/lib/transitions'
 import { cn } from '@/lib/utils'
 import type {
@@ -43,45 +42,14 @@ import type {
  * - 块内层三轴状态点 v0（字幕/标题条/口播；口播/字幕点击进单镜编辑）
  * 所有结构操作即时生效，前端 editStore 撤销栈兜底（F13 契约）。
  *
- * D3 前置的盘交互（F6 修订版）：中键唤出锚定功能盘，右键撤销上一步（配瞬时
- * 反馈贴纸）。盘内动作是白名单可视化——只列已接线的回调，没接的不出现。
+ * 功能盘：右键唤出锚定动作。盘内只列已接线的回调，没接的不出现。
+ * 视频块不标注样例结构名——结构迁移只在工具条里作参考。
  */
 
-/* ===================== role 四族色带 ===================== */
-// PRD-v2 F3：块头 role 色带按「开场/发展/高潮/收尾」四族语义着色。
-// v1 曾把段色全废成中性（lib/sections.ts），但 v2 画布以 PRD 为权威恢复语义色；
-// 9 种 SectionKind 收敛到四族，动态主体角色（step_N/item_N/daily_N）归发展。
-type RoleFamily = 'opening' | 'development' | 'climax' | 'closing'
-
-const ROLE_FAMILY: Record<string, RoleFamily> = {
-  opening: 'opening',
-  intro: 'opening',
-  hook: 'opening',
-  establish: 'opening',
-  title_card: 'opening',
-  intro_scene: 'opening',
-  development: 'development',
-  flow: 'development',
-  info_block: 'development',
-  climax: 'climax',
-  peak: 'climax',
-  payoff: 'climax',
-  closing: 'closing',
-  recap: 'closing',
-  closer: 'closing',
-  resolve: 'closing',
-  wrap_up: 'closing',
-}
-
-const FAMILY_META: Record<RoleFamily, { label: string; band: string; text: string; soft: string }> = {
-  opening: { label: '开场', band: 'bg-sky-500', text: 'text-sky-600', soft: 'bg-sky-500/15' },
-  development: { label: '发展', band: 'bg-zinc-500', text: 'text-zinc-600', soft: 'bg-zinc-500/15' },
-  climax: { label: '高潮', band: 'bg-rose-500', text: 'text-rose-600', soft: 'bg-rose-500/15' },
-  closing: { label: '收尾', band: 'bg-emerald-500', text: 'text-emerald-600', soft: 'bg-emerald-500/15' },
-}
-
-function roleFamilyOf(role: string): RoleFamily {
-  return ROLE_FAMILY[role] ?? 'development'
+/** 块上显示用户主题；没有主题时按顺序叫「视频块 N」，不用样例结构角色名。 */
+function blockTitle(section: { theme?: string | null; order: number }): string {
+  const theme = section.theme?.trim()
+  return theme || `视频块 ${section.order}`
 }
 
 /* ===================== 拖拽重排 / 切分常量 ===================== */
@@ -273,8 +241,7 @@ function SplitScrubber({
 
 function SectionBlockNode({ data }: NodeProps<Node<SectionBlockNodeData>>) {
   const { section, scenes, start, end, slots, gapStatus, filled, selected, draft } = data
-  const meta = getSectionMeta(section.role)
-  const family = FAMILY_META[roleFamilyOf(section.role)]
+  const title = blockTitle(section)
   const duration = end - start
   const [dropHover, setDropHover] = useState<string | null>(null)
 
@@ -289,14 +256,10 @@ function SectionBlockNode({ data }: NodeProps<Node<SectionBlockNodeData>>) {
       <Handle type="target" position={Position.Left} className="!h-2 !w-2 !border-0 !bg-zinc-400" />
       <Handle type="source" position={Position.Right} className="!h-2 !w-2 !border-0 !bg-zinc-400" />
 
-      {/* 块头：role 色带 + 段主题 + 时长 */}
-      <div className={cn('h-1.5 w-full', family.band)} />
+      <div className="h-1.5 w-full bg-zinc-400" />
       <div className="flex items-center gap-1.5 px-2 pt-1.5">
-        <span className={cn('rounded px-1 py-px text-[9px] font-semibold', family.soft, family.text)}>
-          {meta.label}
-        </span>
-        <span className="truncate text-xs font-semibold" title={section.content_description}>
-          {section.theme || meta.label}
+        <span className="truncate text-xs font-semibold" title={section.content_description || title}>
+          {title}
         </span>
         {draft && (
           <span className="shrink-0 rounded bg-amber-500/20 px-1 text-[8px] font-semibold text-amber-700">
@@ -516,8 +479,6 @@ interface Props {
   onAxisEdit?: (scene: Scene, section: AdaptedSection) => void
   /** 素材库卡片拖到槽位换源（F4/US-3.2）：父级复用 swap-source 端点。 */
   onSwapMaterial?: (sceneId: string, materialId: string) => void
-  /** 右键撤销（F6 修订）：返回是否真的撤销了，驱动画布内瞬时反馈贴纸。 */
-  onUndo?: () => boolean
   className?: string
 }
 
@@ -566,7 +527,6 @@ export function StoryboardCanvas({
   onSplitScene,
   onAxisEdit,
   onSwapMaterial,
-  onUndo,
   className,
 }: Props) {
   const materialById = useMemo(() => {
@@ -784,7 +744,7 @@ export function StoryboardCanvas({
     })
   }, [nodes, drag])
 
-  /* ===================== 功能盘 + 右键撤销（F6 修订） ===================== */
+  /* ===================== 功能盘：右键唤出 ===================== */
 
   // 盘锚点持有旧 plan 的 section/scene 引用，plan 一变（弹窗应用 / silent rebuild / 撤销）
   // 就作废——用「开盘时的 planId」做渲染守卫收掉，不用 effect setState（避免级联渲染）
@@ -794,21 +754,6 @@ export function StoryboardCanvas({
     anchor: DialAnchorState
     planId: string
   } | null>(null)
-  const [undoToast, setUndoToast] = useState<{ text: string; x: number; y: number } | null>(null)
-  const toastTimer = useRef<number | null>(null)
-
-  useEffect(
-    () => () => {
-      if (toastTimer.current !== null) window.clearTimeout(toastTimer.current)
-    },
-    [],
-  )
-
-  const showUndoToast = (text: string, x: number, y: number) => {
-    if (toastTimer.current !== null) window.clearTimeout(toastTimer.current)
-    setUndoToast({ text, x, y })
-    toastTimer.current = window.setTimeout(() => setUndoToast(null), 1600)
-  }
 
   // 命中测试（冒泡顺序）：分镜槽 chip > 段落块节点 > 连线 > 空白画布
   const hitTestAnchor = (target: Element): DialAnchorState => {
@@ -858,7 +803,7 @@ export function StoryboardCanvas({
           label: '局部改片',
           group: 'ai',
           run: () =>
-            onLocalEdit(a.section.section_id, a.section.theme || getSectionMeta(a.section.role).label),
+            onLocalEdit(a.section.section_id, blockTitle(a.section)),
         })
       if (onRecommendPackaging)
         actions.push({
@@ -875,7 +820,7 @@ export function StoryboardCanvas({
           run: () =>
             onAssignVoiceover(
               a.section.section_id,
-              a.section.theme || getSectionMeta(a.section.role).label,
+              blockTitle(a.section),
             ),
         })
     } else if (a.kind === 'scene') {
@@ -965,7 +910,7 @@ export function StoryboardCanvas({
   const dialAnchorLabel = (a: DialAnchorState): string => {
     switch (a.kind) {
       case 'section':
-        return `段 · ${a.section.theme || getSectionMeta(a.section.role).label}`
+        return blockTitle(a.section)
       case 'scene':
         return `镜 #${a.scene.shot_order + 1}`
       case 'edge':
@@ -975,18 +920,7 @@ export function StoryboardCanvas({
     }
   }
 
-  // capture 阶段拦中键：preventDefault 掐掉浏览器自动滚动，再决定开盘/收盘
   const handleCanvasMouseDown = (e: React.MouseEvent<HTMLDivElement>) => {
-    if (e.button === 1) {
-      e.preventDefault()
-      if ((e.target as Element).closest('[data-copilot-dial]')) {
-        setDial(null)
-        return
-      }
-      const anchor = hitTestAnchor(e.target as Element)
-      setDial({ x: e.clientX, y: e.clientY, anchor, planId: plan.plan_id })
-      return
-    }
     if (e.button === 0 && dial && !(e.target as Element).closest('[data-copilot-dial]')) {
       setDial(null)
     }
@@ -994,9 +928,12 @@ export function StoryboardCanvas({
 
   const handleContextMenu = (e: React.MouseEvent<HTMLDivElement>) => {
     e.preventDefault()
-    setDial(null)
-    const undone = onUndo?.() ?? false
-    showUndoToast(undone ? '已撤销 ↶' : '没有可撤销的操作', e.clientX, e.clientY)
+    if ((e.target as Element).closest('[data-copilot-dial]')) {
+      setDial(null)
+      return
+    }
+    const anchor = hitTestAnchor(e.target as Element)
+    setDial({ x: e.clientX, y: e.clientY, anchor, planId: plan.plan_id })
   }
 
   if (blocks.length === 0) {
@@ -1007,7 +944,7 @@ export function StoryboardCanvas({
           className,
         )}
       >
-        本 plan 无段落结构（老数据未携带 adapted_sections）——展开「时间轴」tab 查看。
+        本 plan 没有段落块。右键空白处可以添加视频块。
       </div>
     )
   }
@@ -1054,7 +991,6 @@ export function StoryboardCanvas({
       <div className="flex items-stretch gap-1.5">
         <div className="flex min-w-0 flex-1 overflow-hidden rounded-md border border-border">
           {blocks.map((b) => {
-            const family = FAMILY_META[roleFamilyOf(b.section.role)]
             const w = total > 0 ? Math.max(4, ((b.end - b.start) / total) * 100) : 100 / blocks.length
             return (
               <button
@@ -1062,16 +998,13 @@ export function StoryboardCanvas({
                 type="button"
                 onClick={() => handleSelect(b)}
                 className={cn(
-                  'flex h-7 min-w-0 items-center gap-1 overflow-hidden px-1.5 text-[9px] font-medium transition-opacity hover:opacity-80',
-                  family.band,
+                  'flex h-7 min-w-0 items-center gap-1 overflow-hidden bg-zinc-600 px-1.5 text-[9px] font-medium transition-opacity hover:opacity-80',
                   b.section.section_id === selectedSectionId ? 'opacity-100 ring-2 ring-inset ring-white/70' : 'opacity-70',
                 )}
                 style={{ width: `${w}%` }}
-                title={`${getSectionMeta(b.section.role).label} · ${b.section.theme || ''} · ${(b.end - b.start).toFixed(1)}s`}
+                title={`${blockTitle(b.section)} · ${(b.end - b.start).toFixed(1)}s`}
               >
-                <span className="truncate text-white">
-                  {b.section.theme || getSectionMeta(b.section.role).label}
-                </span>
+                <span className="truncate text-white">{blockTitle(b.section)}</span>
                 <span className="ml-auto shrink-0 font-mono text-white/85">
                   {(b.end - b.start).toFixed(0)}s
                 </span>
@@ -1083,7 +1016,7 @@ export function StoryboardCanvas({
           全片 {total.toFixed(1)}s · {blocks.length} 段
         </div>
         <div className="hidden shrink-0 items-center rounded-md border border-border bg-card px-2 text-[10px] text-muted-foreground sm:flex">
-          拖块 重排 · 中键 功能盘 · 右键 撤销
+          拖块 重排 · 右键 功能盘
         </div>
       </div>
 
@@ -1096,22 +1029,14 @@ export function StoryboardCanvas({
           hint={
             dial.anchor.kind === 'pane'
               ? onAppendBlock
-                ? '空白处可添加视频块 · 中键点段落块 / 分镜槽 / 连线可唤出对应动作'
-                : '空白处暂无盘内能力 · 中键点段落块 / 分镜槽 / 连线可唤出对应动作'
+                ? '空白处可添加视频块 · 右键点视频块 / 分镜槽 / 连线可唤出对应动作'
+                : '空白处暂无盘内能力 · 右键点视频块 / 分镜槽 / 连线可唤出对应动作'
               : undefined
           }
           onClose={() => setDial(null)}
         />
       )}
 
-      {undoToast && (
-        <div
-          className="pointer-events-none fixed z-50 -translate-x-1/2 -translate-y-full rounded-md bg-zinc-900/90 px-2 py-1 text-[11px] font-medium text-white shadow-md"
-          style={{ left: undoToast.x, top: undoToast.y - 8 }}
-        >
-          {undoToast.text}
-        </div>
-      )}
     </div>
   )
 }

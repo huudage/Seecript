@@ -4,12 +4,12 @@
 输出：`RenderResult`（final.mp4 路径 + 封面路径 + 各阶段耗时统计）
 
 六步进度条（与前端动画相同节奏）：
-  prepare        → 8%
-  ffmpeg_concat  → 28%
-  seedance       → 48%
-  remotion       → 70%
-  overlay        → 88%
-  finalize       → 99%
+  prepare           → 8%
+  ffmpeg_concat     → 28%
+  seedance          → 48%
+  ffmpeg_packaging  → 70%
+  overlay           → 88%
+  finalize          → 99%
 
 每一步都设有 try / fallback：依赖缺失时写 mock 占位文件，让 demo 顺利演到收尾。
 """
@@ -28,10 +28,14 @@ from ...config import get_settings
 from ...schemas import Plan, Scene
 from ..jobs import job_store
 from ..video import ffmpeg as ffmpeg_svc
-from ..video import remotion as remotion_svc
 from ..video.aspect import aspect_for_platform, aspect_for_settings
 
 log = logging.getLogger("seecript.render.pipeline")
+
+
+def packaging_uses_remotion() -> bool:
+    """PRD-v2 F7: packaging and still-image motion render with ffmpeg only."""
+    return False
 
 
 @dataclass
@@ -345,80 +349,9 @@ async def _resolve_aigc_image_scene(
     dur = max(0.5, float(scene.duration or 1.0))
     dst = segments_dir / f"aigc-image-{idx:02d}.mp4"
 
-    # Remotion 动效路径：scene.animation_spec.engine == 'remotion' 时优先尝试
     spec = getattr(scene, "animation_spec", None)
-    if spec is not None and getattr(spec, "engine", "ffmpeg") == "remotion":
-        # 推断 ratio：根据 width/height 反推 9:16/16:9/1:1
-        if width > height:
-            ratio = "16:9"
-        elif width < height:
-            ratio = "9:16"
-        else:
-            ratio = "1:1"
-
-        # 多图（keyframe_morph / storyboard）：从 spec.image_urls 解析所有本地路径
-        multi_urls = list(getattr(spec, "image_urls", []) or [])
-        image_paths: list[Path] = []
-        if multi_urls:
-            for u in multi_urls:
-                u = u.strip()
-                if u.startswith("/aigc-images/"):
-                    candidate = images_dir / u[len("/aigc-images/"):]
-                    if candidate.exists():
-                        image_paths.append(candidate)
-                elif u.startswith("/uploads/"):
-                    candidate = uploads_dir / u[len("/uploads/"):]
-                    if candidate.exists():
-                        image_paths.append(candidate)
-                elif u.startswith("http"):
-                    h = hashlib.sha1(u.encode("utf-8")).hexdigest()[:16]
-                    suffix = ".png"
-                    for ext in (".png", ".jpg", ".jpeg", ".webp"):
-                        if u.lower().split("?", 1)[0].endswith(ext):
-                            suffix = ext if ext != ".jpeg" else ".jpg"
-                            break
-                    dl = _aigc_cache_root() / f"img-{h}{suffix}"
-                    if not dl.exists() or dl.stat().st_size == 0:
-                        try:
-                            async with httpx.AsyncClient(timeout=60.0, follow_redirects=True) as client:
-                                resp = await client.get(u)
-                                resp.raise_for_status()
-                                dl.write_bytes(resp.content)
-                        except Exception as exc:  # noqa: BLE001
-                            log.warning("[render] multi-image 下载失败 %s: %s", u[:60], exc)
-                            continue
-                    image_paths.append(dl)
-        if not image_paths:
-            image_paths = [local_path]
-
-        try:
-            from .remotion_renderer import render_animated_image, remotion_available
-            if remotion_available():
-                out = await render_animated_image(
-                    image_paths=image_paths,
-                    duration_seconds=dur,
-                    output_path=dst,
-                    animation_type=getattr(spec, "animation_type", "ken-burns") or "ken-burns",
-                    ratio=ratio,
-                    intensity=float(getattr(spec, "intensity", 0.3) or 0.3),
-                    motion_direction=getattr(spec, "motion_direction", "in") or "in",
-                    transition=getattr(spec, "transition", "cross-fade") or "cross-fade",
-                    transition_duration=float(getattr(spec, "transition_duration", 0.4) or 0.4),
-                )
-                if out is not None and out.exists() and out.stat().st_size > 0:
-                    return out
-                log.warning(
-                    "[render] aigc_image scene=%d remotion 渲染失败，回落 ffmpeg 静帧",
-                    idx,
-                )
-            else:
-                log.info("[render] aigc_image scene=%d 请求 remotion 但环境未就绪，回落 ffmpeg", idx)
-        except Exception as exc:  # noqa: BLE001
-            log.warning("[render] aigc_image scene=%d remotion 调用异常: %s", idx, exc)
-
     try:
-        # stage-58：ffmpeg fallback 也跑通已有运镜（与 Remotion 6 方向对齐）。
-        # 没有 spec 或 spec 标了 ffmpeg/static → 退回静帧；否则走 zoompan 运镜版本。
+        # 静帧运镜走 ffmpeg zoompan（ken-burns / parallax）。没有 spec 时退回静帧。
         if spec is not None:
             anim_t = (getattr(spec, "animation_type", "") or "").lower()
             motion = (getattr(spec, "motion_direction", "") or "").lower()
@@ -693,48 +626,24 @@ async def run_pipeline(job_id: str, plan: Plan) -> RenderResult:
     extended_path = main_path
     timings["seedance_ms"] = int((time.time() - t0) * 1000)
 
-    # ---- Step 4 · Remotion 包装轨（不可用时跳过，Step 5 走 drawtext fallback）----
+    # ---- Step 4 · ffmpeg 包装（PRD F7：不再调用 Remotion）----
     t0 = time.time()
-    job_store.publish(job_id, "remotion_render", 70.0, {"note": "Remotion 渲染包装轨"})
-    packaging_path = out_dir / "packaging.webm"
-    pkg_props = {
-        "duration_seconds": plan.duration_seconds,
-        "packaging_track": [item.model_dump() for item in plan.packaging_track],
-    }
-    remotion_ok = False
-    if plan.packaging_track and remotion_svc.remotion_available():
-        try:
-            await asyncio.to_thread(remotion_svc.render_packaging_track, pkg_props, packaging_path)
-            remotion_ok = packaging_path.exists() and packaging_path.stat().st_size > 0
-        except (remotion_svc.RemotionError, FileNotFoundError) as exc:
-            log.warning("[%s] remotion render failed, falling back to drawtext: %s", job_id, exc)
-            notes.append(f"remotion fallback: {exc}")
+    job_store.publish(
+        job_id, "ffmpeg_packaging", 70.0, {"note": "ffmpeg 烧录字幕 / 标题 / 封面"},
+    )
+    if plan.packaging_track:
+        notes.append(
+            f"packaging via ffmpeg drawtext (n={len(plan.packaging_track)} items)"
+        )
     else:
-        if plan.packaging_track:
-            notes.append(
-                f"remotion unavailable (n={len(plan.packaging_track)} items); "
-                "走 ffmpeg drawtext fallback"
-            )
-        else:
-            notes.append("empty packaging_track; skip remotion")
-    timings["remotion_ms"] = int((time.time() - t0) * 1000)
+        notes.append("empty packaging_track")
+    timings["packaging_ms"] = int((time.time() - t0) * 1000)
 
-    # ---- Step 5 · 包装合成：remotion overlay 或 drawtext burn ----
+    # ---- Step 5 · 包装合成：ffmpeg drawtext 烧到主轨 ----
     t0 = time.time()
-    job_store.publish(job_id, "ffmpeg_overlay", 88.0, {"note": "FFmpeg overlay / drawtext 合成"})
+    job_store.publish(job_id, "ffmpeg_overlay", 88.0, {"note": "FFmpeg drawtext 合成"})
     overlaid_path = out_dir / "overlaid.mp4"
     extended_ok = extended_path.exists() and extended_path.stat().st_size > 0
-
-    if remotion_ok and extended_ok and ffmpeg_svc.ffmpeg_available():
-        # 真链路：透明 webm overlay
-        try:
-            await asyncio.to_thread(
-                ffmpeg_svc.overlay, extended_path, packaging_path, overlaid_path, position="0:0"
-            )
-        except ffmpeg_svc.FFmpegError as exc:
-            log.warning("[%s] overlay failed, fallback to drawtext: %s", job_id, exc)
-            notes.append(f"overlay fallback: {exc}")
-            remotion_ok = False  # 让后面 drawtext 接住
 
     if not (overlaid_path.exists() and overlaid_path.stat().st_size > 0):
         # 没走成 remotion overlay → 尝试 drawtext fallback 把包装项烧到主轨上

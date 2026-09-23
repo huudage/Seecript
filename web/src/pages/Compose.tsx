@@ -44,7 +44,7 @@ import { SystemLibraryPicker } from '@/components/compose/SystemLibraryPicker'
 import { TransitionStylePicker } from '@/components/compose/TransitionStylePicker'
 import { VersionMenu } from '@/components/compose/VersionMenu'
 import { PageShell } from '@/components/layout/PageShell'
-import { PlanPlayer, type PlanPlayerHandle } from '@/components/preview/PlanPlayer'
+import { WholePiecePlayer, type WholePieceHandle } from '@/components/preview/WholePiecePlayer'
 import { buildRenderChecklist } from '@/lib/renderChecklist'
 import { cn } from '@/lib/utils'
 import { useEditStore } from '@/stores/edit'
@@ -80,6 +80,7 @@ const RENDER_STEP_LABELS: Record<string, string> = {
   ffmpeg_concat: '主轨拼接',
   seedance_extend: '主轨直通',
   remotion_render: '包装渲染',
+  ffmpeg_packaging: '包装烧录',
   ffmpeg_overlay: '叠加输出',
   finalize: '收尾',
 }
@@ -87,7 +88,7 @@ const RENDER_STEP_ORDER = [
   'prepare',
   'ffmpeg_concat',
   'seedance_extend',
-  'remotion_render',
+  'ffmpeg_packaging',
   'ffmpeg_overlay',
   'finalize',
 ] as const
@@ -149,31 +150,10 @@ export default function ComposePage() {
   // UI state
   const [uploading, setUploading] = useState(false)
   const [analyzing, setAnalyzing] = useState(false)
-  // v2（PRD F3 修订 · 2026-09-23 用户拍板）：step2/step3 合并后画布是唯一主视图——
-  // 预览改为「点段落块弹窗」，功能介绍 / 时间轴收进画布底部做可折叠 tab。
-  // 首次进 step2 自动展开一次「功能介绍」（沿用 stage-76 的 localStorage 静音键）。
-  type CanvasTab = 'none' | 'timeline' | 'guide'
-  const [canvasTab, setCanvasTab] = useState<CanvasTab>(() => {
-    try {
-      return localStorage.getItem(STEP2_PLACEHOLDER_HINT_KEY) === '1' ? 'none' : 'guide'
-    } catch {
-      return 'guide'
-    }
-  })
-  const toggleCanvasTab = useCallback((t: Exclude<CanvasTab, 'none'>) => {
-    setCanvasTab((cur) => {
-      const next = cur === t ? 'none' : t
-      // 功能介绍看过了（收起或切走）就静音，下次进 step2 不再自动展开
-      if (cur === 'guide' && next !== 'guide') {
-        try {
-          localStorage.setItem(STEP2_PLACEHOLDER_HINT_KEY, '1')
-        } catch {
-          /* localStorage 不可用时仅本次会话内生效 */
-        }
-      }
-      return next
-    })
-  }, [])
+  const [helpOpen, setHelpOpen] = useState(false)
+  const [structureOpen, setStructureOpen] = useState(false)
+  const [fillDockOpen, setFillDockOpen] = useState(false)
+  const [timelineHeight, setTimelineHeight] = useState(240)
   // A 位（refs[0]）primary manifest fallback：sessionStore.manifest 只在 Decompose 页才会 set。
   // 用户从 ReferencePicker 直接进 Compose 时 manifest=null，导致 StructureCompareSection 看不见。
   // 这里按 selectedReferences[0] 反查 /sample/{id}/manifest，作为 sessionStore.manifest 的兜底。
@@ -245,6 +225,14 @@ export default function ComposePage() {
         map.set(selectedSectionId, next)
         return map
       })
+      const key = `${selectedSectionId}::${next}`
+      setVisitedFillKeys((prev) => {
+        if (prev.has(key)) return prev
+        const nextKeys = new Set(prev)
+        nextKeys.add(key)
+        return nextKeys
+      })
+      setFillDockOpen(true)
     },
     [selectedSectionId],
   )
@@ -392,29 +380,17 @@ export default function ComposePage() {
   useEffect(() => () => sseRef.current?.close(), [])
 
   // 实时预览：Remotion Player 与 FourTrackBoard 共享一条播放头
-  const playerRef = useRef<PlanPlayerHandle>(null)
+  const playerRef = useRef<WholePieceHandle>(null)
   const [playheadSeconds, setPlayheadSeconds] = useState(0)
   const seekPlayer = useCallback((seconds: number) => {
+    playerRef.current?.pause()
     playerRef.current?.seek(seconds)
   }, [])
-  // v2：预览弹窗（PRD F3 修订）——点画布段落块 / 总览条分段唤起。Player 常驻挂载
-  // （关闭仅 visibility 隐藏），时间轴 onSeek / 各处 seekPlayer 在弹窗关着时依然生效。
-  const [previewOpen, setPreviewOpen] = useState(false)
-  const openPreview = useCallback(
-    (at?: number) => {
-      setPreviewOpen(true)
-      if (at != null) seekPlayer(at)
-    },
-    [seekPlayer],
-  )
-  useEffect(() => {
-    if (!previewOpen) return
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') setPreviewOpen(false)
-    }
-    window.addEventListener('keydown', onKey)
-    return () => window.removeEventListener('keydown', onKey)
-  }, [previewOpen])
+  const openPreview = useCallback((at?: number) => {
+    if (at == null) return
+    playerRef.current?.seek(at)
+    playerRef.current?.play()
+  }, [])
 
   // 跨 plan 切换时重置撤销栈；同 plan_id 的 in-place 改动由各 handler 显式 pushEdit
   const lastPushedPlanIdRef = useRef<string | null>(null)
@@ -525,18 +501,6 @@ export default function ComposePage() {
     }
   }, [selectedGap, selectedGapId, setSelectedGapId])
 
-  // 用户切到任何 section × (copy|aigc|aigc_image) → 推进 visitedFillKeys，加入 keepalive 池。
-  // 用 selectedGap 直接 derive section_id（在它定义后才能跑，所以 useEffect 放这里）。
-  useEffect(() => {
-    if (!selectedGap?.section_id) return
-    const key = `${selectedGap.section_id}::${activeAction}`
-    setVisitedFillKeys((prev) => {
-      if (prev.has(key)) return prev
-      const next = new Set(prev)
-      next.add(key)
-      return next
-    })
-  }, [selectedGap?.section_id, activeAction])
 
   // stage-38：每次 gaps 列表更新，把当前每段最新的 Gap 快照刷进 ref。后续 keepalive 渲染
   // 时若 `gaps.find(section_id)` 临时未命中（plan 已 setPlan / gap/detect 未回），就回落
@@ -1382,6 +1346,7 @@ export default function ComposePage() {
             setRenderDone(d.payload)
             setRenderStep('done')
             setRenderPercent(100)
+            downloadRenderedVideo(d.payload)
             // 后端 _do_render 完成时已自动 mark_rendered + 落盘；这里刷项目列表 + commit render 步骤
             if (currentProjectId) {
               void refreshProjects()
@@ -1417,6 +1382,26 @@ export default function ComposePage() {
     const p = redoEdit()
     if (p) setPlan(p)
   }, [redoEdit, setPlan])
+
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (!(e.metaKey || e.ctrlKey) || e.altKey) return
+      const target = e.target as HTMLElement | null
+      if (target && (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable)) {
+        return
+      }
+      const key = e.key.toLowerCase()
+      if (key === 'z' && !e.shiftKey) {
+        e.preventDefault()
+        handleUndo()
+      } else if ((key === 'z' && e.shiftKey) || key === 'y') {
+        e.preventDefault()
+        handleRedo()
+      }
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [handleRedo, handleUndo])
 
   // 命名快照的保存/恢复/删除已统一由 VersionMenu 组件内部维护——
   // 它每次打开都会拉一次最新列表，不需要在 Compose 这边镜像状态。
@@ -1477,19 +1462,6 @@ export default function ComposePage() {
       {activeStep === 1 && (
         <div className="mb-3">
           <ReferencePicker />
-        </div>
-      )}
-
-      {/* 结构迁移示意：step 2 起常驻——内容轨生成后，每一步都让用户能扫一眼"新方案 vs 样例" */}
-      {activeStep === 2 && effectiveManifest && plan && (
-        <div className="mb-3">
-          <StructureCompareSection
-            manifest={effectiveManifest}
-            secondaryManifest={secondaryManifest}
-            plan={plan}
-            gaps={gaps}
-            onZoom={() => setStructureZoomOpen(true)}
-          />
         </div>
       )}
 
@@ -1707,9 +1679,9 @@ export default function ComposePage() {
 
       {/* ============ Row 2：画布工作台 = 结构画布（主）+ 可折叠tab（时间轴/功能介绍）+ 补缺口 + 素材库（底） ============ */}
       {activeStep === 2 && plan && (
+        <>
         <section className="mt-4 space-y-3 rounded-lg border border-border bg-card p-4">
-          {/* v2（2026-09-23 用户拍板）：预览不做常驻列——点段落块弹窗；功能介绍/时间轴收进画布
-              下方做可折叠 tab。第一次进 step2 自动展开一次「功能介绍」（localStorage 静音）。 */}
+          {/* 实时预览常驻在画布右侧：点块即播，时间轴拖动停在对应帧。 */}
           {plan.subject_anchors && plan.subject_anchors.length > 0 && (
             <div className="flex flex-wrap items-center gap-1.5 rounded-md border border-emerald-500/40 bg-emerald-50/60 px-2 py-1.5 text-[11px] dark:bg-emerald-950/30">
               <span className="font-medium text-emerald-900 dark:text-emerald-200">
@@ -1728,10 +1700,66 @@ export default function ComposePage() {
               ))}
             </div>
           )}
-            <div className="space-y-1.5">
-            <div className="flex items-center justify-between gap-2">
-              <h2 className="text-sm font-semibold">结构画布 · 段落块 × 叙事连线</h2>
-              <div className="flex items-center gap-2">
+            <div className="flex flex-col gap-3 xl:flex-row xl:items-start">
+            <div className="min-w-0 flex-1 space-y-1.5">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <h2 className="text-sm font-semibold">结构画布</h2>
+              <div className="flex flex-wrap items-center gap-1.5">
+                <button
+                  type="button"
+                  onClick={handleUndo}
+                  disabled={!canUndo}
+                  title={canUndo ? '撤销上一步' : '没有可撤销的操作'}
+                  className={cn(
+                    'rounded-md border border-border bg-background px-2 py-1 text-[11px] hover:bg-secondary',
+                    !canUndo && 'cursor-not-allowed opacity-40',
+                  )}
+                >
+                  撤销
+                </button>
+                <button
+                  type="button"
+                  onClick={handleRedo}
+                  disabled={!canRedo}
+                  title="重做"
+                  className={cn(
+                    'rounded-md border border-border bg-background px-2 py-1 text-[11px] hover:bg-secondary',
+                    !canRedo && 'cursor-not-allowed opacity-40',
+                  )}
+                >
+                  重做
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setHelpOpen((v) => !v)}
+                  className={cn(
+                    'rounded-md border px-2 py-1 text-[11px]',
+                    helpOpen ? 'border-primary/50 bg-primary/10 text-primary' : 'border-border bg-background hover:bg-secondary',
+                  )}
+                >
+                  功能介绍 {helpOpen ? '▾' : '▸'}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setStructureOpen((v) => !v)}
+                  disabled={!effectiveManifest}
+                  title={effectiveManifest ? '对照样例结构，只作参考' : '还没有样例结构'}
+                  className={cn(
+                    'rounded-md border px-2 py-1 text-[11px]',
+                    structureOpen ? 'border-primary/50 bg-primary/10 text-primary' : 'border-border bg-background hover:bg-secondary',
+                    !effectiveManifest && 'cursor-not-allowed opacity-40',
+                  )}
+                >
+                  结构迁移对比 {structureOpen ? '▾' : '▸'}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => openPreview(0)}
+                  className="rounded-md border border-border bg-background px-2 py-1 text-[11px] hover:bg-secondary"
+                  title="从片头开始播放右侧实时预览"
+                >
+                  播放整片
+                </button>
                 {plan.structure_confirmed === false && (
                   <button
                     type="button"
@@ -1743,10 +1771,6 @@ export default function ComposePage() {
                     {confirmingStructure ? '定稿中…' : '定稿'}
                   </button>
                 )}
-                <span className="text-[10px] text-muted-foreground">
-                  {videoType} · 点段落块 → 预览弹窗
-                  {plan.structure_confirmed === false ? ' · 当前是 AI 初稿' : ''}
-                </span>
               </div>
             </div>
               <StoryboardCanvas
@@ -1761,13 +1785,7 @@ export default function ComposePage() {
                   setSelectedSceneId(firstScene.scene_id)
                   setSelectedPackagingItemId(null)
                   setSelectedSectionId(section.section_id)
-                  // v2：点段落块 → 预览弹窗（PRD F3 修订），从该段首镜开始
                   openPreview(firstScene.start)
-                }}
-                onUndo={() => {
-                  if (!canUndo) return false
-                  handleUndo()
-                  return true
                 }}
                 onEditSection={(section, firstScene) =>
                   setEditingSection({ section, firstScene })
@@ -1802,6 +1820,7 @@ export default function ComposePage() {
                 }
                 onFillSlot={(section, _scene, action) => {
                   setSelectedSectionId(section.section_id)
+                  setFillDockOpen(true)
                   setActionBySection((prev) => {
                     const map = new Map(prev)
                     map.set(section.section_id, action)
@@ -1844,122 +1863,41 @@ export default function ComposePage() {
                 }}
               />
 
-            {/* v2：画布底部可折叠 tab——时间轴（四轨细节）/ 功能介绍。单选展开，再点收起。 */}
-            <div className="flex items-center gap-1.5">
-              {(
-                [
-                  { id: 'timeline', label: '⏱ 时间轴' },
-                  { id: 'guide', label: '💡 功能介绍' },
-                ] as const
-              ).map((t) => (
-                <button
-                  key={t.id}
-                  type="button"
-                  onClick={() => toggleCanvasTab(t.id)}
-                  className={cn(
-                    'flex items-center gap-1 rounded-md border px-2.5 py-1 text-[11px] font-medium transition-colors',
-                    canvasTab === t.id
-                      ? 'border-primary/50 bg-primary/10 text-primary'
-                      : 'border-border bg-background text-muted-foreground hover:bg-secondary',
-                  )}
-                >
-                  {t.label}
-                  <span className="text-[9px]">{canvasTab === t.id ? '▾' : '▸'}</span>
-                </button>
-              ))}
-              <span className="ml-auto font-mono text-[10px] text-muted-foreground">
-                预览 {playheadSeconds.toFixed(1)}s / {plan.duration_seconds.toFixed(1)}s
-              </span>
-            </div>
-            {canvasTab === 'timeline' && (
-              <FourTrackBoard
+            {helpOpen && <CanvasGuideCard />}
+            {structureOpen && effectiveManifest && (
+              <StructureCompareSection
+                manifest={effectiveManifest}
+                secondaryManifest={secondaryManifest}
                 plan={plan}
                 gaps={gaps}
-                filledGapIds={filledGapIds}
-                selectedGapId={selectedGapId}
-                selectedSceneId={effectiveSelectedSceneId}
-                selectedPackagingItemId={selectedPackagingItemId}
-                materials={sortedMaterials}
-                fills={fills}
-                referenceManifests={[effectiveManifest, secondaryManifest].filter(
-                  (m): m is SampleManifest => !!m,
-                )}
-                onSelectScene={(scene, gap) => {
-                  setSelectedSceneId(scene.scene_id)
-                  setSelectedPackagingItemId(null)
-                  // stage-36：用 section_id（跨 silent rebuild 稳定）作为选段主键。
-                  // selectedGapId 由 sync useEffect 自动跟随，避免与 silent rebuild 抢写。
-                  // stage-40：用 scene.parent_section_id 作为主键源——填好的段（如字卡画面
-                  // 或已采纳的素材）没 gap，gap?.section_id 会是 undefined→null，再被 L597
-                  // 的自动 fallback 误推到「第一个 miss/warn 段」，导致用户感觉点这段、
-                  // 工作台显示别的段。
-                  setSelectedSectionId(
-                    scene.parent_section_id ?? gap?.section_id ?? null,
-                  )
-                  seekPlayer(scene.start)
-                }}
-                onSelectVoice={(scene) => {
-                  setSelectedSceneId(scene.scene_id)
-                  setSelectedPackagingItemId(null)
-                  setEditingSubtitleScene(scene)
-                  seekPlayer(scene.start)
-                }}
-                onEditSubtitle={(scene) => {
-                  setEditingSubtitleScene(scene)
-                  seekPlayer(scene.start)
-                }}
-                onSelectPackaging={(item) => {
-                  setSelectedPackagingItemId(item.item_id)
-                  setSelectedSceneId(null)
-                  seekPlayer(item.start)
-                }}
-                onSynthesizeScene={handleSynthesizeScene}
-                onSynthesizeAll={handleSynthesizeAll}
-                onClearVoice={handleClearVoice}
-                onDeletePackagingItem={handleDeletePackagingItem}
-                onRecommendPackagingForScene={handleRecommendPackagingForScene}
-                onPickBgm={() => setBgmPickerOpen(true)}
-                onBgmAnchorChange={handleBgmAnchorChange}
-                onClearBgm={handleClearBgm}
-                onBgmVolumeChange={handleBgmVolumeChange}
-                onToggleSubtitle={handleToggleSubtitle}
-                onToggleVoiceover={handleToggleVoiceover}
-                onChangeTtsVoice={handleChangeTtsVoice}
-                busy={trackBusy}
-                phase="full"
-                contentTrackMode="sections"
-                playheadSeconds={playheadSeconds}
-                onSeek={seekPlayer}
-                onResizePackagingItem={handleResizePackagingItem}
-                onEditPackagingItem={(item) => {
-                  setEditingPackagingItem(item)
-                  setSelectedPackagingItemId(item.item_id)
-                  seekPlayer(item.start)
-                }}
-                onEditTransition={(sceneId, currentStyle) =>
-                  setEditingTransition({ sceneId, currentStyle })
-                }
-                onEditSection={(section, firstScene) =>
-                  setEditingSection({ section, firstScene })
-                }
-                onEditShot={(scene, section) =>
-                  setEditingShot({ scene, section })
-                }
+                onZoom={() => setStructureZoomOpen(true)}
               />
             )}
-            {canvasTab === 'guide' && <CanvasGuideCard />}
-            </div>
-
-          {/* 缺口补全工作台紧贴画布/时间轴下方：切段后视线在 [选段 → 工作台 → 预览弹窗]
-              一条短弧上。keepalive 多实例 display:none 切换，跨段后台跑。
-              stage-38：keepalive 池**总是**渲染（不再被外层 `selectedGap ?` 包住），
-              即使当前没选段或处于 silent rebuild 中间态，已访问过的 panel 也不会卸载，
-              Seedance polling / spec / prompt 状态稳定保留。tabs / 空状态提示
-              则按 selectedGap 走条件分支。 */}
-          <div className="mt-3 space-y-2 border-t border-border pt-3">
-            <p className="rounded-md border border-primary/30 bg-primary/5 px-2 py-1.5 text-[11px] leading-relaxed text-foreground">
-              💡 这里只关心<strong>画面 + 字幕</strong>——三种方式都是给本段生成画面（字卡画面 / AI 视频 / AI 生图再渲染）；字幕轨开关默认关闭，开启后 AI 自动按段落生成可编辑字幕。口播在「时间轴」tab 的口播轨合成。
-            </p>
+          {visitedFillKeys.size > 0 && (
+          <div
+            className="rounded-md border border-border bg-background/40"
+            style={{
+              display:
+                selectedSectionId && actionBySection.has(selectedSectionId) ? 'block' : 'none',
+            }}
+          >
+            <button
+              type="button"
+              onClick={() => setFillDockOpen((v) => !v)}
+              className="flex w-full items-center justify-between px-2 py-1.5 text-left text-[11px] font-medium"
+            >
+              <span>
+                补全 ·{' '}
+                {(() => {
+                  const sec = plan.adapted_sections.find((s) => s.section_id === selectedSectionId)
+                  const name = sec?.theme?.trim() || (sec ? `视频块 ${sec.order}` : '当前块')
+                  const act = ACTION_TABS.find((t) => t.value === activeAction)?.label ?? '补全'
+                  return `${name} · ${act}`
+                })()}
+              </span>
+              <span>{fillDockOpen ? '▾ 收起' : '▸ 展开'}</span>
+            </button>
+            <div className="space-y-2 border-t border-border p-2" style={{ display: fillDockOpen ? 'block' : 'none' }}>
             {selectedGap && (
               <>
                 <div className="flex flex-wrap items-center gap-1 text-xs">
@@ -1989,21 +1927,6 @@ export default function ComposePage() {
                 最新 gaps 拿到最新 gap_id——这样 silent rebuild 重写 gap_id
                 后，panel 不会因为 find 失败而卸载（→ AI 出图 polling 不丢）。
                 stage-38：lastSeenGapBySectionRef 兜底——`gaps.find` 临时未命中也仍能渲染。 */}
-            {visitedFillKeys.size === 0 && !selectedGap && !selectedSectionId && (
-              <p className="rounded-md border border-dashed border-border bg-background/30 px-3 py-2 text-[11px] text-muted-foreground">
-                点画布段落块或「时间轴」里的段落——这里出现「字卡画面 / AI 视频 / AI 生图再渲染」三个画面补全选项。
-              </p>
-            )}
-            {selectedSectionId && !selectedGap && (
-              <p className="rounded-md border border-dashed border-emerald-500/30 bg-emerald-500/5 px-3 py-2 text-[11px] leading-relaxed text-foreground">
-                ✅ <strong>本段已填好</strong>——本段没有空缺，不需要再用工作台补画面。
-                <br />
-                <span className="text-muted-foreground">
-                  想替换本段画面？点「时间轴」该段的小镜（▾ 展开）打开「单镜编辑」弹窗，
-                  里面可改 subject/visual/narration，或<strong>换源</strong>到用户素材 / AI 单图 / AI 视频 / 字卡。
-                </span>
-              </p>
-            )}
             {Array.from(visitedFillKeys).map((key) => {
               const [sectionId, action] = key.split('::') as [string, FillAction]
               const gapForKey =
@@ -2080,6 +2003,145 @@ export default function ComposePage() {
               )
             })}
           </div>
+            </div>
+          )}
+
+            </div>
+            <aside className="w-full shrink-0 space-y-2 xl:sticky xl:top-4 xl:w-[240px]">
+              <div className="flex items-center justify-between text-[11px] text-muted-foreground">
+                <span className="font-medium text-foreground">实时预览</span>
+                <span className="font-mono">
+                  {playheadSeconds.toFixed(1)}s / {plan.duration_seconds.toFixed(1)}s
+                </span>
+              </div>
+              <div className="overflow-hidden rounded-md border border-border">
+                <WholePiecePlayer
+                  ref={playerRef}
+                  plan={plan}
+                  materials={sortedMaterials}
+                  aspectRatio={`${aspectW} / ${aspectH}`}
+                  onTimeUpdate={setPlayheadSeconds}
+                />
+              </div>
+              <button
+                type="button"
+                onClick={() => void handleProceedToRender()}
+                disabled={analyzing || anyGapBusy || isRendering}
+                title="按当前画布导出成片，完成后自动下载。结构还是初稿时会先要求定稿。"
+                className={cn(
+                  'w-full rounded-md bg-primary px-3 py-2 text-xs font-medium text-primary-foreground hover:bg-primary/90',
+                  (analyzing || anyGapBusy || isRendering) && 'cursor-not-allowed opacity-60',
+                )}
+              >
+                {isRendering ? `导出中 · ${renderPercent}%` : '一键导出'}
+              </button>
+            </aside>
+            </div>
+        </section>
+
+        <section className="mt-4 rounded-lg border border-border bg-card">
+          <div
+            role="separator"
+            aria-orientation="horizontal"
+            title="拖动调整时间轴高度"
+            className="flex h-7 cursor-row-resize select-none items-center justify-center border-b border-border text-[10px] text-muted-foreground"
+            onPointerDown={(e) => {
+              e.preventDefault()
+              const startY = e.clientY
+              const startH = timelineHeight
+              const move = (ev: PointerEvent) => {
+                const next = Math.min(560, Math.max(160, startH + (ev.clientY - startY)))
+                setTimelineHeight(next)
+              }
+              const up = () => {
+                window.removeEventListener('pointermove', move)
+                window.removeEventListener('pointerup', up)
+              }
+              window.addEventListener('pointermove', move)
+              window.addEventListener('pointerup', up)
+            }}
+          >
+            时间轴 · 轨道 · 拖上沿调整高度
+          </div>
+          <div className="overflow-auto p-3" style={{ height: timelineHeight }}>
+              <FourTrackBoard
+                plan={plan}
+                gaps={gaps}
+                filledGapIds={filledGapIds}
+                selectedGapId={selectedGapId}
+                selectedSceneId={effectiveSelectedSceneId}
+                selectedPackagingItemId={selectedPackagingItemId}
+                materials={sortedMaterials}
+                fills={fills}
+                referenceManifests={[effectiveManifest, secondaryManifest].filter(
+                  (m): m is SampleManifest => !!m,
+                )}
+                onSelectScene={(scene, gap) => {
+                  setSelectedSceneId(scene.scene_id)
+                  setSelectedPackagingItemId(null)
+                  // stage-36：用 section_id（跨 silent rebuild 稳定）作为选段主键。
+                  // selectedGapId 由 sync useEffect 自动跟随，避免与 silent rebuild 抢写。
+                  // stage-40：用 scene.parent_section_id 作为主键源——填好的段（如字卡画面
+                  // 或已采纳的素材）没 gap，gap?.section_id 会是 undefined→null，再被 L597
+                  // 的自动 fallback 误推到「第一个 miss/warn 段」，导致用户感觉点这段、
+                  // 工作台显示别的段。
+                  setSelectedSectionId(
+                    scene.parent_section_id ?? gap?.section_id ?? null,
+                  )
+                  seekPlayer(scene.start)
+                }}
+                onSelectVoice={(scene) => {
+                  setSelectedSceneId(scene.scene_id)
+                  setSelectedPackagingItemId(null)
+                  setEditingSubtitleScene(scene)
+                  seekPlayer(scene.start)
+                }}
+                onEditSubtitle={(scene) => {
+                  setEditingSubtitleScene(scene)
+                  seekPlayer(scene.start)
+                }}
+                onSelectPackaging={(item) => {
+                  setSelectedPackagingItemId(item.item_id)
+                  setSelectedSceneId(null)
+                  seekPlayer(item.start)
+                }}
+                onSynthesizeScene={handleSynthesizeScene}
+                onSynthesizeAll={handleSynthesizeAll}
+                onClearVoice={handleClearVoice}
+                onDeletePackagingItem={handleDeletePackagingItem}
+                onRecommendPackagingForScene={handleRecommendPackagingForScene}
+                onPickBgm={() => setBgmPickerOpen(true)}
+                onBgmAnchorChange={handleBgmAnchorChange}
+                onClearBgm={handleClearBgm}
+                onBgmVolumeChange={handleBgmVolumeChange}
+                onToggleSubtitle={handleToggleSubtitle}
+                onToggleVoiceover={handleToggleVoiceover}
+                onChangeTtsVoice={handleChangeTtsVoice}
+                busy={trackBusy}
+                phase="full"
+                contentTrackMode="sections"
+                playheadSeconds={playheadSeconds}
+                onSeek={seekPlayer}
+                onResizePackagingItem={handleResizePackagingItem}
+                onEditPackagingItem={(item) => {
+                  setEditingPackagingItem(item)
+                  setSelectedPackagingItemId(item.item_id)
+                  seekPlayer(item.start)
+                }}
+                onEditTransition={(sceneId, currentStyle) =>
+                  setEditingTransition({ sceneId, currentStyle })
+                }
+                onEditSection={(section, firstScene) =>
+                  setEditingSection({ section, firstScene })
+                }
+                onEditShot={(scene, section) =>
+                  setEditingShot({ scene, section })
+                }
+              />
+          </div>
+        </section>
+
+        <section className="mt-4 space-y-3 rounded-lg border border-border bg-card p-4">
 
           {/* 素材库（提升到中段，提升上传感受）：上传 / 拖拽排序 / 删除 → 自动重排并刷新缺口 */}
           <div className="space-y-2 border-t border-border pt-3">
@@ -2170,6 +2232,7 @@ export default function ComposePage() {
             </button>
           </div>
         </section>
+        </>
       )}
 
       {/* ============ Row 3（已移除）：原步骤 3 四轨工作台。
@@ -2190,22 +2253,20 @@ export default function ComposePage() {
             <button
               onClick={() => void handleProceedToRender()}
               disabled={analyzing || anyGapBusy || isRendering}
-              title="先过渲染确认清单：未定稿和空槽处理完才提交"
+              title="结构还是初稿时会先要求定稿。空槽不必补满。"
               className={cn(
                 'rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90',
                 (analyzing || anyGapBusy || isRendering) && 'cursor-not-allowed opacity-60',
               )}
             >
               {isRendering && `渲染中 · ${renderPercent}%`}
-              {!isRendering && (renderDone ? '重新提交渲染' : '提交渲染')}
+              {!isRendering && (renderDone ? '重新导出' : '一键导出')}
             </button>
             {!isRendering && finalizing === 'idle' && !renderDone && (
               <span className="text-[11px] text-muted-foreground">
                 {plan.structure_confirmed === false
                   ? '结构还是 AI 初稿，定稿后才能提交'
-                  : pendingGapsCount > 0
-                    ? `还有 ${pendingGapsCount} 个空槽，提交时会先列出确认清单`
-                    : '确认清单已空，将直接提交渲染'}
+                  : '空槽可以留着，不要求补满参考结构'}
               </span>
             )}
           </div>
@@ -2221,37 +2282,6 @@ export default function ComposePage() {
             <RenderProgress step={renderStep} percent={renderPercent} />
           )}
           {renderDone && <RenderResult done={renderDone} />}
-        </section>
-      )}
-
-      {/* ============ Row 7：撤销 / 重做（工作台）——保存版本已统一到顶部 VersionMenu ============ */}
-      {activeStep === 2 && plan && (
-        <section className="mt-4 flex flex-col items-end gap-2">
-          <div className="flex items-center gap-2">
-            <span className="text-xs text-muted-foreground">
-              步操作 {Math.max(editCursor + 1, 0)}/{editHistory.length}
-            </span>
-            <button
-              onClick={handleUndo}
-              disabled={!canUndo}
-              className={cn(
-                'rounded-md border border-border bg-background px-3 py-1 text-xs hover:bg-secondary',
-                !canUndo && 'cursor-not-allowed opacity-40',
-              )}
-            >
-              ↶ 撤销
-            </button>
-            <button
-              onClick={handleRedo}
-              disabled={!canRedo}
-              className={cn(
-                'rounded-md border border-border bg-background px-3 py-1 text-xs hover:bg-secondary',
-                !canRedo && 'cursor-not-allowed opacity-40',
-              )}
-            >
-              重做 ↷
-            </button>
-          </div>
         </section>
       )}
 
@@ -2275,52 +2305,6 @@ export default function ComposePage() {
           planId={plan.plan_id}
           onPlanUpdated={setPlanAndPush}
         />
-      )}
-
-      {/* v2 实时预览弹窗（PRD F3 修订）：点画布段落块 / 总览条分段唤起。
-          Player 常驻挂载——关闭只切 visibility，playerRef 永远有效，
-          时间轴 onSeek / 各处 seekPlayer 在弹窗关着时依然生效。 */}
-      {plan && activeStep === 2 && (
-        <div
-          role="dialog"
-          aria-modal="true"
-          aria-label="实时预览"
-          className={cn(
-            'fixed inset-0 z-50 items-center justify-center bg-black/55 p-4 backdrop-blur-sm',
-            previewOpen ? 'flex' : 'invisible pointer-events-none',
-          )}
-          onClick={() => setPreviewOpen(false)}
-        >
-          <div
-            className="flex flex-col gap-2 rounded-lg border border-border bg-card p-3 shadow-2xl"
-            onClick={(e) => e.stopPropagation()}
-          >
-            <div className="flex items-center justify-between px-1 text-[11px] text-muted-foreground">
-              <span className="font-medium">实时预览 · Esc 或点空白处关闭</span>
-              <span className="font-mono">
-                {playheadSeconds.toFixed(1)}s / {plan.duration_seconds.toFixed(1)}s
-              </span>
-              <button
-                type="button"
-                onClick={() => setPreviewOpen(false)}
-                className="rounded border border-border bg-background px-1.5 py-0.5 text-[11px] hover:bg-secondary"
-              >
-                ✕
-              </button>
-            </div>
-            <div
-              className="overflow-hidden rounded-md border border-border"
-              style={{ width: `min(92vw, calc(72vh * ${aspectW} / ${aspectH}))` }}
-            >
-              <PlanPlayer
-                ref={playerRef}
-                plan={plan}
-                materials={sortedMaterials}
-                onTimeUpdate={setPlayheadSeconds}
-              />
-            </div>
-          </div>
-        </div>
       )}
 
       {/* 字幕浮窗（R3）：step3 字幕轨某段被点击 → 手动改 narration */}
@@ -2672,6 +2656,17 @@ function RenderProgress({ step, percent }: { step: string; percent: number }) {
   )
 }
 
+function downloadRenderedVideo(done: RenderDonePayload) {
+  const safePlanId = done.plan_id.replace(/[^a-zA-Z0-9_-]/g, '').slice(0, 12) || 'plan'
+  const filename = `seecript-${safePlanId}-${done.variant}.mp4`
+  const link = document.createElement('a')
+  link.href = done.video_url
+  link.download = filename
+  document.body.appendChild(link)
+  link.click()
+  link.remove()
+}
+
 function RenderResult({ done }: { done: RenderDonePayload }) {
   // 文件名规则：seecript-{plan-12位}-{variant}.{ext}——保证用户从浏览器下载下来一眼能认出
   // 哪个 plan、哪个版本，本地多版本对比时不会撞名。
@@ -2821,13 +2816,7 @@ function UploadDropzone({
 // 未拆解样例拦截弹窗已移除——stage-15 用 ReferencePicker 取代该 gate:
 // 资产库为空时 ReferencePicker 直接引导去素材库,不再有"选了样例又没拆解"的中间态。
 
-/**
- * v2 画布功能介绍卡（2026-09-23 重写）：原 stage-76「占位需手挑」说明随 step2/step3 合并
- * 改版——预览弹窗 + 可折叠 tab + 画布结构操作是新交互主轴。内容由「功能介绍」tab 承载，
- * 首访自动展开一次（localStorage 静音逻辑在 canvasTab state 里，见 toggleCanvasTab）。
- */
-const STEP2_PLACEHOLDER_HINT_KEY = 'seecript.step2.placeholder.dismissed.v3'
-
+/** 画布工具条「功能介绍」展开的说明。 */
 function CanvasGuideCard() {
   return (
     <div className="flex items-start gap-3 rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-xs text-amber-900 dark:border-amber-700 dark:bg-amber-900/30 dark:text-amber-100">
@@ -2841,16 +2830,13 @@ function CanvasGuideCard() {
             （实拍块一分为二）。Esc / 点空白处关弹窗。
           </li>
           <li>
-            <b>拖动段落块</b> 横向重排叙事顺序；<b>点连线</b> 改转场；<b>中键</b> 唤出功能盘，<b>右键</b> 撤销上一步。
+            <b>拖动段落块</b> 横向重排；<b>点连线</b> 改转场；<b>右键</b> 唤出功能盘。撤销在工具条，Ctrl+Z 同样可用。
           </li>
           <li>
-            <b>「时间轴」tab</b> → 四轨细节视图：包装轨（标题条 / 贴纸 / 字幕开关）、口播轨（TTS 合成 / 音色）、
-            BGM。内容轨按段聚合：✏ 改段属性、▾ 展开分镜，点分镜小块进「单镜编辑」弹窗（换源 / 手动裁剪切片）。
+            画布下面是独立<b>时间轴</b>：视频块、字幕、口播、音乐。拖时间轴上沿可以拉高。
           </li>
           <li>
-            <b>选段做补全</b>：点段落块选中段 → 下方
-            <span className="mx-0.5 rounded bg-amber-200/60 px-1 font-mono dark:bg-amber-700/40">补全工作台</span>
-            出现「字卡画面 / AI 生图 / AI 视频」三种入口，针对整段补画面。
+            <b>空槽右键</b>选字卡 / 生图 / 合成视频后，表单在画布底边展开。结构迁移对照只作参考，不要求补满每一段。
           </li>
           <li>
             <b>素材库卡片拖到块内分镜槽</b> → 直接换源；槽左上角徽章 = 匹配状态：

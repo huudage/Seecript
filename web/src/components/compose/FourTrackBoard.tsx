@@ -378,6 +378,8 @@ export function FourTrackBoard({
   const voiceoverEnabled = plan.settings.voiceover_enabled
   const ticks = useMemo(() => makeTicks(total), [total])
   const showSecondaryTracks = phase === 'full'
+  // PRD-v2 §8 cuts TTS. Keep the track markup, but do not mount it.
+  const showVoiceoverTrack = false as boolean
 
   // stage-37：sections 模式下 ▾ 按钮展开看分镜，再点分镜 → ShotEditDialog
   const [expandedSectionIds, setExpandedSectionIds] = useState<Set<string>>(() => new Set())
@@ -1287,8 +1289,8 @@ export function FourTrackBoard({
       </TrackRow>
       )}
 
-      {/* ===================== 口播轨（step3 才显，TTS 合成开关与音色） ===================== */}
-      {showSecondaryTracks && (
+      {/* PRD-v2 §8：口播 TTS 已从产品路径拿掉，文案只走字幕轨。 */}
+      {showSecondaryTracks && showVoiceoverTrack && (
       <TrackRow
         label="口播轨"
         hint={voiceoverEnabled ? `${scenes.filter((s) => s.voiceover_url).length}/${scenes.length} 已合成` : '已关闭（视频走纯背景音乐）'}

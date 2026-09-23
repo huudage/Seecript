@@ -25,7 +25,7 @@ export function RenderConfirmChecklist({
         <div>
           <h3 className="text-sm font-semibold">渲染确认清单</h3>
           <p className="mt-1 text-[11px] text-muted-foreground">
-            还有 {items.length} 项没定。逐项处理完再提交，系统不会在出片前自动补缺口。
+            结构还是初稿时需要先定稿。空槽不挡出片，系统也不会自动补缺口。
           </p>
         </div>
         <ul className="min-h-0 flex-1 space-y-2 overflow-y-auto">
