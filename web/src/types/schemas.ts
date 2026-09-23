@@ -171,7 +171,7 @@ export interface RhythmCurve {
   bgm_energy: number[]
   /** [已弃用] 整体 BPM。 */
   tempo_bpm?: number | null
-  /** R1：基于段落结构低频平滑的情绪走势（0..1）。前端蓝线展示。 */
+  /** 旧 manifest 可能带情绪走势。v2 不再计算、不再画。 */
   mood_curve?: number[]
   /** R1：BGM 与情绪走势的契合度评分（0..1）。null 表示无 BGM 或样本不足。 */
   bgm_fit_score?: number | null
@@ -1045,9 +1045,14 @@ export interface Plan {
   bgm: BGMConfig
   /** 创作设置回写。 */
   settings: ComposeSettings
+  /**
+   * v2 D4：新鲜 plan/build 为 false（画布半透明 +「AI 初稿」贴纸），点定稿后为 true。
+   * 老 plan 缺字段时视为已定稿。
+   */
+  structure_confirmed?: boolean
   /** 本次 plan/build 注入的个性知识库规则总数（0 = 默认库以外没有命中项目级规则）。 */
   kb_rules_applied?: number
-  /** stage-28 LLM 多信号情绪曲线；老 plan 为 null（Compose EmotionCurveCard 时 fallback 不画）。 */
+  /** 旧 plan 可能带情绪曲线；v2 不再计算、不再展示。 */
   emotion_curve?: EmotionCurve | null
 }
 
@@ -1067,6 +1072,8 @@ export interface PlanBuildRequest {
   fills: FillResult[]
   /** 增量重建：透传上一版 plan.adapted_sections，跳过 LLM 段落改编（修复 5→4 抖动 bug）。 */
   reuse_sections?: AdaptedSection[]
+  /** 增量重建时透传上一版确认态。新鲜构建由后端一律写成初稿，本字段不生效。 */
+  structure_confirmed?: boolean
   variant: Variant
 }
 

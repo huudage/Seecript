@@ -458,15 +458,6 @@ async def decompose(
         nl_prompt=nl_prompt,
     )
 
-    # ---- 6b. R1：基于段落结构计算情绪走势 + BGM 契合度 ----
-    mood_curve = _build_mood_curve(rhythm.times, sections)
-    fit_score, fit_note = _bgm_fit(rhythm.bgm_energy, mood_curve)
-    rhythm = rhythm.model_copy(update={
-        "mood_curve": mood_curve,
-        "bgm_fit_score": fit_score,
-        "bgm_fit_note": fit_note,
-    })
-
     # ---- 6c. stage-23 全片复盘：亮点 + 改进 + 总评 ----
     push("video_analysis", 96, {"note": "LLM 全片复盘：亮点 / 改进建议 / 总评"})
     analysis = await _video_analysis(understanding, sections, shots, audio_understanding)
@@ -475,31 +466,6 @@ async def decompose(
         "improvements": len(analysis.improvements),
         "overall_score": analysis.overall_score,
     })
-
-    # ---- 6d. stage-28 LLM 多信号情绪曲线：综合段落 + 镜头 + BGM + 全片复盘 ----
-    push("emotion_curve", 98, {"note": "LLM 综合打分情绪曲线"})
-    try:
-        from .emotion_agent import score_emotion as _score_emotion
-        emotion = await _score_emotion(
-            sections=sections,
-            shots=shots,
-            total_duration=total_duration,
-            bgm_analysis=audio_understanding,
-            bgm_energy=rhythm.bgm_energy,
-            bgm_times=rhythm.times,
-            understanding=understanding,
-            sample_analysis=analysis,
-            intent=None,  # 拆解阶段无用户意图
-        )
-        rhythm = rhythm.model_copy(update={"emotion": emotion})
-        push("emotion_curve", 99, {
-            "backend": emotion.backend,
-            "anchors": len(emotion.anchors),
-            "peaks": len(emotion.peaks),
-            "valleys": len(emotion.valleys),
-        })
-    except Exception as exc:  # noqa: BLE001
-        log.warning("[decompose] emotion scoring outer failure: %s", exc)
 
     # ---- 7. 打包 PackagingProfile（video_type 仍驱动包装风格）----
     subtitle_styles = [s for sh in shots for s in (sh.tags or []) if isinstance(s, str) and "字幕" in s]
@@ -1511,120 +1477,4 @@ def _compute_climax(
             return float(rhythm.times[peak_idx])
 
     return float(total_duration * 0.6)
-
-
-# ----------------------------- 情绪走势曲线 + BGM 契合度（R1） ---------------------
-
-# 角色 → 情绪基准（0..1）。无峰值类模式（stepwise/listicle/info_dense/vlog）整片只在 0.3-0.5 间起伏。
-_ROLE_MOOD_BASE: dict[str, float] = {
-    # dramatic
-    "opening": 0.35, "development": 0.40, "climax": 0.85, "closing": 0.30,
-    # stepwise
-    "intro": 0.35, "recap": 0.30,
-    # listicle
-    "hook": 0.40, "closer": 0.30,
-    # atmospheric
-    "establish": 0.35, "flow": 0.40, "peak": 0.80, "resolve": 0.30,
-    # info_dense
-    "title_card": 0.40, "info_block": 0.40, "payoff": 0.50,
-    # vlog
-    "intro_scene": 0.35, "wrap_up": 0.30,
-}
-
-
-def _role_mood_value(role: str) -> float:
-    """role → mood 基准。step_N / item_N / daily_N 走 main 类默认。"""
-    if role in _ROLE_MOOD_BASE:
-        return _ROLE_MOOD_BASE[role]
-    if role.startswith("step_"):
-        return 0.40
-    if role.startswith("item_"):
-        return 0.42
-    if role.startswith("daily_"):
-        return 0.45
-    return 0.40  # 未知 role 当 main 类
-
-
-def _smooth(values: list[float], window: int) -> list[float]:
-    """简单滑动平均（无 numpy 依赖）。window<2 时返回原值。"""
-    if window < 2 or len(values) < 2:
-        return list(values)
-    n = len(values)
-    out: list[float] = []
-    half = window // 2
-    for i in range(n):
-        lo = max(0, i - half)
-        hi = min(n, i + half + 1)
-        seg = values[lo:hi]
-        out.append(sum(seg) / len(seg))
-    return out
-
-
-def _pearson(xs: list[float], ys: list[float]) -> Optional[float]:
-    """两个等长序列的 Pearson 相关系数。退化情况返回 None。"""
-    n = len(xs)
-    if n < 3 or n != len(ys):
-        return None
-    mx = sum(xs) / n
-    my = sum(ys) / n
-    num = sum((x - mx) * (y - my) for x, y in zip(xs, ys))
-    dx = sum((x - mx) ** 2 for x in xs) ** 0.5
-    dy = sum((y - my) ** 2 for y in ys) ** 0.5
-    if dx == 0 or dy == 0:
-        return None
-    return num / (dx * dy)
-
-
-def _build_mood_curve(times: list[float], sections: list[Section]) -> list[float]:
-    """按段落基准 + 滑动平均生成情绪走势曲线。
-
-    - 每个采样时间点落到包含它的 section（按 start ≤ t < end），取该 role 的 mood_base
-    - 全曲线滑动平均一遍（窗口 ~10% 采样数,至少 3）做低频平滑——避免段落跳变出现台阶
-    """
-    if not times or not sections:
-        return []
-    sorted_sec = sorted(sections, key=lambda s: s.start)
-
-    def _mood_at(t: float) -> float:
-        for sec in sorted_sec:
-            if sec.start <= t < sec.end:
-                return _role_mood_value(sec.role)
-        # 边界：超出最后一段（浮点尾零）落到最后一段 mood
-        return _role_mood_value(sorted_sec[-1].role)
-
-    raw = [_mood_at(t) for t in times]
-    window = max(3, len(times) // 10)
-    return [round(v, 3) for v in _smooth(raw, window)]
-
-
-def _bgm_fit(bgm_energy: list[float], mood_curve: list[float]) -> tuple[Optional[float], Optional[str]]:
-    """计算 BGM 与 mood_curve 的契合度评分 + 一句话评注。
-
-    Pearson 相关系数 → 0..1 评分（负相关也映到 0..1,但 note 会指出"反向"）。
-    """
-    if not bgm_energy or not mood_curve:
-        return None, "本样例没有可分析的 BGM 信号"
-    n = min(len(bgm_energy), len(mood_curve))
-    bgm = bgm_energy[:n]
-    mood = mood_curve[:n]
-    # bgm 归一化（mood 已是 0..1）
-    bmin, bmax = min(bgm), max(bgm)
-    span = bmax - bmin
-    if span < 1e-6:
-        return 0.5, "BGM 能量整体平稳,与视频结构高低无明显关联"
-    bgm_norm = [(b - bmin) / span for b in bgm]
-    corr = _pearson(bgm_norm, mood)
-    if corr is None:
-        return None, "BGM 数据样本不足以判断契合度"
-    score = round(max(0.0, min(1.0, (corr + 1.0) / 2.0)), 3)
-    if corr >= 0.55:
-        note = "BGM 起伏与视频结构同步,峰值段也跟着抬升,情绪铺垫到位"
-    elif corr >= 0.2:
-        note = "BGM 整体起伏方向与结构一致,但局部细节匹配一般"
-    elif corr > -0.2:
-        note = "BGM 能量整体平稳,与视频结构高低无明显关联"
-    else:
-        note = "BGM 能量走向与视频结构相反,情绪铺垫可能错位"
-    return score, note
-
 

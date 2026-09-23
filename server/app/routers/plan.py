@@ -317,93 +317,6 @@ async def _attach_bgm_llm_analysis(
     return bgm
 
 
-def _adapted_sections_to_emotion_input(plan: Plan) -> list:
-    """把 plan.adapted_sections 包成 emotion_agent 能用的有 start/end 的 duck-type。
-
-    AdaptedSection 自身不带绝对时间——按 main_track 内的 Scene.parent_section_id 反推
-    每段在时间线上的实际 start/end。无 main_track 命中时按 order × duration_seconds 累加兜底。
-    """
-    if not plan.adapted_sections:
-        return []
-    # 按 parent_section_id 聚合 main_track scenes
-    by_parent: dict[str, list[Scene]] = {}
-    for sc in plan.main_track:
-        if sc.parent_section_id:
-            by_parent.setdefault(sc.parent_section_id, []).append(sc)
-
-    out = []
-    cursor = 0.0
-    for sec in sorted(plan.adapted_sections, key=lambda s: s.order):
-        scs = by_parent.get(sec.section_id, [])
-        if scs:
-            start = min(sc.start for sc in scs)
-            end = max(sc.start + sc.duration for sc in scs)
-        else:
-            start = cursor
-            end = cursor + sec.duration_seconds
-            cursor = end
-
-        # 用一个 Section-like 简单对象，含 emotion_agent 需要的全部字段
-        class _Sec:
-            pass
-
-        s = _Sec()
-        s.role = sec.role
-        s.theme = sec.theme
-        s.start = float(start)
-        s.end = float(end)
-        s.summary = sec.content_description  # emotion_agent 优先取 summary,缺时取 content_description
-        s.content_description = sec.content_description
-        s.shot_indices = []
-        out.append(s)
-    return out
-
-
-def _auto_align_bgm_to_emotion(plan: Plan) -> None:
-    """委派给 services.plans.bgm_align——抽到 service 层是为了让单测能绕开 router import 链。
-
-    详见 services/plans/bgm_align.py 的 docstring（含算法、clamp 策略、调用时机）。
-    """
-    from ..services.plans.bgm_align import auto_align_bgm_to_emotion as _impl
-    _impl(plan)
-
-
-async def _compute_plan_emotion(plan: Plan) -> Optional["EmotionCurve"]:
-    """跑一次 LLM 多信号情绪曲线打分；失败回 None（不抛）。
-
-    被 build_plan 收尾、PATCH /plan/{id}/bgm（换曲后自动重算）、
-    POST /plan/{id}/recompute-emotion（手动重算）三处复用。
-    """
-    try:
-        from ..services.agent.emotion_agent import (
-            PlanIntent as _PlanIntent,
-            score_emotion as _score_emotion,
-        )
-        primary_manifest = None
-        if plan.reference_versions:
-            rv0 = plan.reference_versions[0]
-            primary_manifest = manifest_store.load_version(rv0.sample_id, rv0.slot_id)
-        intent = _PlanIntent(
-            brief=plan.brief,
-            video_goal=plan.video_goal,
-            migration_preference=plan.settings.migration_preference,
-        )
-        pseudo_sections = _adapted_sections_to_emotion_input(plan)
-        return await _score_emotion(
-            sections=pseudo_sections,
-            shots=plan.main_track,
-            total_duration=plan.duration_seconds,
-            bgm_analysis=plan.bgm.analysis if plan.bgm else None,
-            bgm_energy=None,
-            understanding=primary_manifest.understanding if primary_manifest else None,
-            sample_analysis=primary_manifest.analysis if primary_manifest else None,
-            intent=intent,
-        )
-    except Exception as exc:  # noqa: BLE001
-        log.warning("[plan] emotion 计算失败 plan=%s: %s", plan.plan_id, exc)
-        return None
-
-
 @router.post("/plan/build", response_model=Plan)
 async def build_plan(req: PlanBuildRequest) -> Plan:
     plan_id = f"plan-{uuid.uuid4().hex[:10]}"
@@ -1054,6 +967,12 @@ async def build_plan(req: PlanBuildRequest) -> Plan:
             video_goal=req.video_goal or "",
         ),
         settings=settings,
+        # 新鲜改编一律是初稿；增量复用段落时带着上一版确认态，避免补缺口把已定稿打回草稿。
+        structure_confirmed=(
+            (req.structure_confirmed if req.structure_confirmed is not None else True)
+            if req.reuse_sections
+            else False
+        ),
     )
     # 个性知识库注入统计：本次 plan/build 实际"看到"了多少条 KB 规则。
     # 与 plan_agent 内部注入逻辑独立计算同一份数据——前端徽标用此字段。
@@ -1069,17 +988,6 @@ async def build_plan(req: PlanBuildRequest) -> Plan:
         plan.initial_snapshot = _profile_to_snapshot(plan)
     except Exception as exc:  # noqa: BLE001
         log.warning("[plan] 写 initial_snapshot 失败 plan=%s: %s", plan_id, exc)
-
-    # stage-28 LLM 多信号情绪曲线 ----
-    plan.emotion_curve = await _compute_plan_emotion(plan)
-    if plan.emotion_curve:
-        log.info(
-            "[plan] emotion_curve plan=%s backend=%s anchors=%d peaks=%d",
-            plan_id, plan.emotion_curve.backend,
-            len(plan.emotion_curve.anchors), len(plan.emotion_curve.peaks),
-        )
-    # stage-60：BGM 高潮自动切片对齐内容高潮（用户上传 BGM 后听不到好听段的根因）
-    _auto_align_bgm_to_emotion(plan)
 
     plan_store.put(plan)
 
@@ -1200,13 +1108,6 @@ async def patch_plan_bgm(plan_id: str, body: PlanBgmPatch) -> Plan:
             setattr(bgm, field, patch[field])
 
     plan.bgm = bgm
-    # BGM 切换 / 锚点改变 → 情绪曲线过期，自动重算（失败回 None 不阻塞）
-    if "bgm_asset_id" in patch:
-        plan.emotion_curve = await _compute_plan_emotion(plan)
-        # 换 BGM 后 anchor 已被 _build_bgm_config 重置为 0，安全地按高潮重新对齐；
-        # 若同一 PATCH 又显式设了 video_anchor_seconds（手拖），用户意图覆盖自动对齐
-        if "video_anchor_seconds" not in patch or patch.get("video_anchor_seconds") is None:
-            _auto_align_bgm_to_emotion(plan)
     plan_store.put(plan)
     log.info(
         "[plan] bgm patched plan=%s asset=%s anchor=%.2fs vol=%.2f duck=%s",
@@ -1224,26 +1125,6 @@ async def delete_plan_bgm(plan_id: str) -> Plan:
     plan.bgm = BGMConfig()
     plan_store.put(plan)
     log.info("[plan] bgm cleared plan=%s", plan_id)
-    return plan
-
-
-@router.post("/plan/{plan_id}/recompute-emotion", response_model=Plan)
-async def recompute_emotion(plan_id: str) -> Plan:
-    """手动重算情绪曲线——前端 EmotionCurveCard 的 ↻ 重算按钮。
-
-    BGM 切换走 PATCH /plan/{id}/bgm 自动重算；本接口用于：
-    - main_track 编辑后用户主动刷新
-    - migration_preference 切到 amp_emotion 后想立即看到曲线整体抬高
-    """
-    plan = plan_store.get(plan_id)
-    if plan is None:
-        raise HTTPException(status_code=404, detail=f"plan_id 不存在：{plan_id}")
-    plan.emotion_curve = await _compute_plan_emotion(plan)
-    plan_store.put(plan)
-    log.info(
-        "[plan] emotion 手动重算 plan=%s backend=%s",
-        plan_id, plan.emotion_curve.backend if plan.emotion_curve else "-",
-    )
     return plan
 
 
@@ -1295,21 +1176,24 @@ async def patch_plan_settings(plan_id: str, body: PlanSettingsPatch) -> Plan:
     return plan
 
 
-class RegenerateNarrationsRequest(BaseModel):
-    """POST /plan/{plan_id}/regenerate-narrations 入参（v2 功能盘「配口播」）。
-
-    - section_ids：限定只重写这些段（缺省 = 全部，v1 行为）
-    - apply=False：dry-run，只返回建议不落盘——盘内配口播走 diff 确认门（F10 ②）
-    """
-    section_ids: Optional[list[str]] = Field(default=None, min_length=1)
-    apply: bool = Field(default=True)
-
-
 class NarrationProposal(BaseModel):
     """单镜口播建议（dry-run 与 apply 都带，供前端 diff）。"""
     scene_id: str
     old_narration: Optional[str] = None
     new_narration: str
+
+
+class RegenerateNarrationsRequest(BaseModel):
+    """POST /plan/{plan_id}/regenerate-narrations 入参（v2 功能盘「配口播」）。
+
+    - section_ids：限定只重写这些段（缺省 = 全部，v1 行为）
+    - apply=False：dry-run，只返回建议不落盘——盘内配口播走 diff 确认门（F10 ②）
+    - proposals：确认门带回的原文。apply=True 且带了 proposals 时按原文落盘，不再调 LLM，
+      避免用户确认的句子和写入的句子不是同一句。
+    """
+    section_ids: Optional[list[str]] = Field(default=None, min_length=1)
+    apply: bool = Field(default=True)
+    proposals: Optional[list[NarrationProposal]] = None
 
 
 class RegenerateNarrationsResponse(BaseModel):
@@ -1351,15 +1235,36 @@ async def regenerate_plan_narrations(
             )
         section_ids = req.section_ids
 
-    from ..services.agent.narration_agent import regenerate_narrations
+    if req.apply and req.proposals:
+        allowed_sections = set(section_ids) if section_ids is not None else None
+        scene_by_id = {sc.scene_id: sc for sc in plan.main_track}
+        new_narrations = {}
+        for proposal in req.proposals:
+            scene = scene_by_id.get(proposal.scene_id)
+            if scene is None:
+                raise HTTPException(
+                    status_code=422,
+                    detail=f"scene_id 不存在：{proposal.scene_id}",
+                )
+            if allowed_sections is not None and scene.parent_section_id not in allowed_sections:
+                raise HTTPException(
+                    status_code=422,
+                    detail=f"scene {proposal.scene_id} 不在 section_ids 作用域内",
+                )
+            text = proposal.new_narration.strip()
+            if text:
+                new_narrations[proposal.scene_id] = text
+    else:
+        from ..services.agent.narration_agent import regenerate_narrations
 
-    new_narrations = await regenerate_narrations(plan, section_ids=section_ids)
+        new_narrations = await regenerate_narrations(plan, section_ids=section_ids)
     if not new_narrations:
+        confirmed = bool(req.apply and req.proposals)
         return RegenerateNarrationsResponse(
             plan=plan,
             updated_scene_ids=[],
             skipped_scene_ids=[s.scene_id for s in plan.main_track],
-            note="LLM 暂不可用 / 返回不合法；保留旧 narration",
+            note="没有可写入的口播" if confirmed else "LLM 暂不可用 / 返回不合法；保留旧 narration",
             applied=False,
         )
 
@@ -1411,6 +1316,24 @@ async def regenerate_plan_narrations(
         applied=req.apply,
         proposals=proposals,
     )
+
+
+@router.post("/plan/{plan_id}/confirm-structure", response_model=Plan)
+async def confirm_plan_structure(plan_id: str) -> Plan:
+    """把 AI 初稿标成定稿（v2 D4 · F10 ①）。
+
+    人拖改画布是即时生效的，定稿是另一次显式确认：未定稿的 plan 不进渲染。
+    重复调用幂等，不改主轨内容。
+    """
+    plan = plan_store.get(plan_id)
+    if plan is None:
+        raise HTTPException(status_code=404, detail=f"plan_id 不存在：{plan_id}")
+    if plan.structure_confirmed:
+        return plan
+    plan.structure_confirmed = True
+    plan_store.put(plan)
+    log.info("[plan] structure confirmed plan=%s", plan_id)
+    return plan
 
 
 class SceneEditPatch(BaseModel):
@@ -1849,6 +1772,28 @@ async def append_plan_section(plan_id: str, body: SectionsAppendRequest) -> Plan
         order=0,
         duration_seconds=max(2.0, min(30.0, target_dur)),
     )
+
+    # 空白实拍槽：不带 material_id 时不物化素材，落一个待拖入的空槽。
+    if body.source == "user_material" and not body.material_id:
+        blank = skeleton_scene.model_copy(update={
+            "source": "user_material",
+            "source_ref": f"text-card-fill-empty-{new_sec_id}",
+            "needs_fill": True,
+            "user_edited": False,
+            "shot_subject": "待拖入素材",
+        })
+        final_sec = skeleton_sec.model_copy(update={"theme": "新视频块"})
+        try:
+            info = canvas_ops.append_section(plan, final_sec, blank)
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        _rebuild_subtitle_packaging(plan)
+        plan_store.put(plan)
+        log.info(
+            "[plan] blank video block appended plan=%s sec=%s scene=%s",
+            plan_id, info["section_id"], info["scene_id"],
+        )
+        return plan
 
     swap_body = SceneSwapSourceRequest(
         source=body.source,

@@ -15,6 +15,7 @@ import '@xyflow/react/dist/style.css'
 
 import { CopilotDial, type DialAction } from '@/components/compose/CopilotDial'
 import { CANVAS_MATERIAL_MIME, hasCanvasMaterialPayload } from '@/lib/dnd'
+import { isUnfilledScene } from '@/lib/renderChecklist'
 import { getSectionMeta } from '@/lib/sections'
 import { TRANSITION_LABEL } from '@/lib/transitions'
 import { cn } from '@/lib/utils'
@@ -143,6 +144,10 @@ export interface SectionBlockNodeData {
   gapStatus: 'ok' | 'warn' | 'miss' | null
   filled: boolean
   selected: boolean
+  /** v2 D4：整片仍是 AI 初稿时块半透明，并挂「AI 初稿」贴纸。 */
+  draft: boolean
+  insights?: Record<string, { summary: string; tags: string[] }>
+  onDismissInsight?: (sceneId: string) => void
   /** 切分入口（US-3.5）：选中块时渲染；不可切时给 reason 提示。 */
   split: { splittable: boolean; reason?: string }
   onSplit?: (sceneId: string, splitAt: number) => void
@@ -267,7 +272,7 @@ function SplitScrubber({
 }
 
 function SectionBlockNode({ data }: NodeProps<Node<SectionBlockNodeData>>) {
-  const { section, scenes, start, end, slots, gapStatus, filled, selected } = data
+  const { section, scenes, start, end, slots, gapStatus, filled, selected, draft } = data
   const meta = getSectionMeta(section.role)
   const family = FAMILY_META[roleFamilyOf(section.role)]
   const duration = end - start
@@ -277,6 +282,7 @@ function SectionBlockNode({ data }: NodeProps<Node<SectionBlockNodeData>>) {
     <div
       className={cn(
         'w-60 overflow-hidden rounded-lg border bg-card shadow-sm transition-shadow',
+        draft && 'opacity-60',
         selected ? 'border-primary ring-2 ring-primary/40' : 'border-border hover:shadow-md',
       )}
     >
@@ -292,6 +298,11 @@ function SectionBlockNode({ data }: NodeProps<Node<SectionBlockNodeData>>) {
         <span className="truncate text-xs font-semibold" title={section.content_description}>
           {section.theme || meta.label}
         </span>
+        {draft && (
+          <span className="shrink-0 rounded bg-amber-500/20 px-1 text-[8px] font-semibold text-amber-700">
+            AI 初稿
+          </span>
+        )}
         <span className="ml-auto shrink-0 font-mono text-[9px] text-muted-foreground">
           {duration.toFixed(1)}s
         </span>
@@ -363,6 +374,27 @@ function SectionBlockNode({ data }: NodeProps<Node<SectionBlockNodeData>>) {
                     #{slot.scene.shot_order + 1} {slot.scene.shot_subject || slot.scene.scene_id}
                   </span>
                 </div>
+                {data.insights?.[slot.scene.scene_id] && (
+                  <div className="mt-0.5 flex items-start gap-1 rounded bg-amber-500/10 px-1 py-0.5 text-[8px] leading-tight text-amber-800">
+                    <span className="min-w-0 flex-1">
+                      {data.insights[slot.scene.scene_id].summary}
+                      {data.insights[slot.scene.scene_id].tags.length > 0
+                        ? ` · ${data.insights[slot.scene.scene_id].tags.slice(0, 3).join(' / ')}`
+                        : ''}
+                    </span>
+                    <button
+                      type="button"
+                      className="nodrag shrink-0 font-semibold"
+                      title="摘除 AI 理解贴纸"
+                      onClick={(e) => {
+                        e.stopPropagation()
+                        data.onDismissInsight?.(slot.scene.scene_id)
+                      }}
+                    >
+                      ×
+                    </button>
+                  </div>
+                )}
                 <div className="flex items-center gap-1 text-[9px] text-muted-foreground">
                   <span className="shrink-0">{slot.scene.duration.toFixed(1)}s</span>
                   {/* 块内层三轴 v0：字=字幕 题=标题条 播=口播；字/播点击进单镜编辑 */}
@@ -459,6 +491,23 @@ interface Props {
   onEditShot?: (scene: Scene, section: AdaptedSection) => void
   onEditTransition?: (sceneId: string, currentStyle: TransitionStyle | null) => void
   onRecommendPackaging?: (sceneId: string) => void
+  /** 盘内「配口播」（F10 ②）：人触发，父级打开 diff，确认前不写 plan。 */
+  onAssignVoiceover?: (sectionId: string, sectionLabel: string) => void
+  /** 盘内「局部改片」：作用域限该段，父级打开 diff。 */
+  onLocalEdit?: (sectionId: string, sectionLabel: string) => void
+  /** 实拍块「AI 理解」：贴纸，不写 plan。 */
+  onAiInsight?: (scene: Scene) => void
+  /** 实拍块「AI 裁剪」：diff 后由父级确认才换入出点。 */
+  onAiTrim?: (scene: Scene) => void
+  /** 空槽补全：字卡 / AIGC 图 / AI 合成视频，父级打开对应工作台。 */
+  onFillSlot?: (section: AdaptedSection, scene: Scene, action: 'copy' | 'aigc_image' | 'aigc') => void
+  /** 空槽「补拍清单」：给人看，不写 plan。 */
+  onShotBrief?: (scene: Scene, section: AdaptedSection) => void
+  /** 画布空白「添加视频块」。 */
+  onAppendBlock?: () => void
+  /** AI 理解贴纸，按 scene_id。可摘除。 */
+  insights?: Record<string, { summary: string; tags: string[] }>
+  onDismissInsight?: (sceneId: string) => void
   /** 段落块拖拽重排（F4/US-3.2）：父级调端点拿新 Plan 并 setPlanAndPush。 */
   onReorderSections?: (sectionIds: string[]) => void
   /** 实拍块切分（F4/US-3.5）：父级调端点拿新 Plan 并 setPlanAndPush。 */
@@ -504,6 +553,15 @@ export function StoryboardCanvas({
   onEditShot,
   onEditTransition,
   onRecommendPackaging,
+  onAssignVoiceover,
+  onLocalEdit,
+  onAiInsight,
+  onAiTrim,
+  onFillSlot,
+  onShotBrief,
+  onAppendBlock,
+  insights,
+  onDismissInsight,
   onReorderSections,
   onSplitScene,
   onAxisEdit,
@@ -638,13 +696,16 @@ export function StoryboardCanvas({
           gapStatus: b.gap?.status ?? null,
           filled: b.filled,
           selected: b.section.section_id === selectedSectionId,
+          draft: plan.structure_confirmed === false,
+          insights,
+          onDismissInsight,
           split: { splittable: b.splittable, reason: b.splitReason },
           onSplit: onSplitScene,
           onAxisEdit,
           onSwapMaterial,
         },
       })),
-    [blocks, selectedSectionId, onSplitScene, onAxisEdit, onSwapMaterial],
+    [blocks, insights, onDismissInsight, plan.structure_confirmed, selectedSectionId, onSplitScene, onAxisEdit, onSwapMaterial],
   )
 
   // 连线：叙事链序 + 转场标签（取下一块首镜的 transition_in）
@@ -791,20 +852,90 @@ export function StoryboardCanvas({
           group: 'structure',
           run: () => onEditSection(a.section, a.firstScene),
         })
+      if (onLocalEdit)
+        actions.push({
+          id: 'local-edit',
+          label: '局部改片',
+          group: 'ai',
+          run: () =>
+            onLocalEdit(a.section.section_id, a.section.theme || getSectionMeta(a.section.role).label),
+        })
       if (onRecommendPackaging)
         actions.push({
           id: 'ai-packaging',
-          label: 'AI 包装',
+          label: '包装',
           group: 'ai',
           run: () => onRecommendPackaging(a.firstScene.scene_id),
         })
+      if (onAssignVoiceover)
+        actions.push({
+          id: 'voiceover',
+          label: '配口播',
+          group: 'ai',
+          run: () =>
+            onAssignVoiceover(
+              a.section.section_id,
+              a.section.theme || getSectionMeta(a.section.role).label,
+            ),
+        })
     } else if (a.kind === 'scene') {
+      const empty = isUnfilledScene(a.scene)
+      const footage = a.scene.source === 'user_material' && !empty
+      if (footage && onAiInsight)
+        actions.push({
+          id: 'ai-insight',
+          label: 'AI 理解',
+          group: 'ai',
+          run: () => onAiInsight(a.scene),
+        })
+      if (footage && onAiTrim)
+        actions.push({
+          id: 'ai-trim',
+          label: 'AI 裁剪',
+          group: 'ai',
+          run: () => onAiTrim(a.scene),
+        })
+      if (empty && onFillSlot) {
+        actions.push({
+          id: 'fill-copy',
+          label: '生成字卡',
+          group: 'ai',
+          run: () => onFillSlot(a.section, a.scene, 'copy'),
+        })
+        actions.push({
+          id: 'fill-image',
+          label: 'AIGC 补图',
+          group: 'ai',
+          run: () => onFillSlot(a.section, a.scene, 'aigc_image'),
+        })
+        actions.push({
+          id: 'fill-t2v',
+          label: 'AI 合成视频',
+          group: 'ai',
+          run: () => onFillSlot(a.section, a.scene, 'aigc'),
+        })
+      }
+      if (empty && onShotBrief)
+        actions.push({
+          id: 'shot-brief',
+          label: '补拍清单',
+          group: 'ai',
+          run: () => onShotBrief(a.scene, a.section),
+        })
       if (onEditShot)
         actions.push({
           id: 'edit-shot',
           label: '编辑本镜',
           group: 'structure',
           run: () => onEditShot(a.scene, a.section),
+        })
+    } else if (a.kind === 'pane') {
+      if (onAppendBlock)
+        actions.push({
+          id: 'append-block',
+          label: '添加视频块',
+          group: 'structure',
+          run: () => onAppendBlock(),
         })
     } else if (a.kind === 'edge') {
       if (onEditTransition)
@@ -816,7 +947,20 @@ export function StoryboardCanvas({
         })
     }
     return actions
-  }, [dial, onEditSection, onEditShot, onEditTransition, onRecommendPackaging])
+  }, [
+    dial,
+    onAiInsight,
+    onAiTrim,
+    onAppendBlock,
+    onAssignVoiceover,
+    onEditSection,
+    onEditShot,
+    onEditTransition,
+    onFillSlot,
+    onLocalEdit,
+    onRecommendPackaging,
+    onShotBrief,
+  ])
 
   const dialAnchorLabel = (a: DialAnchorState): string => {
     switch (a.kind) {
@@ -951,7 +1095,9 @@ export function StoryboardCanvas({
           actions={dialActions}
           hint={
             dial.anchor.kind === 'pane'
-              ? '空白处暂无盘内能力 · 中键点段落块 / 分镜槽 / 连线可唤出对应动作'
+              ? onAppendBlock
+                ? '空白处可添加视频块 · 中键点段落块 / 分镜槽 / 连线可唤出对应动作'
+                : '空白处暂无盘内能力 · 中键点段落块 / 分镜槽 / 连线可唤出对应动作'
               : undefined
           }
           onClose={() => setDial(null)}

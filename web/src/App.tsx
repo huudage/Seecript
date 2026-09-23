@@ -7,11 +7,10 @@ import HomePage from '@/pages/Home'
 import LibraryPage from '@/pages/Library'
 import DecomposePage from '@/pages/Decompose'
 import ComposePage from '@/pages/Compose'
-import KnowledgePage from '@/pages/Knowledge'
 import { useProjectsStore } from '@/stores/projects'
 
 /**
- * 顶栏 = 4 模块平铺导航。
+ * 顶栏 = 创作链路导航。知识库页已按 v2 F8 移除。
  *
  * - 我的项目：项目列表
  * - 素材与灵感：热门样例 + 上传素材
@@ -27,7 +26,6 @@ const NAV_ITEMS: { to: string; label: string; requireProject: boolean; external?
   { to: '/library', label: '素材与灵感', requireProject: false },
   { to: '/decompose', label: '分析热门结构', requireProject: true },
   { to: '/workshop', label: '创作工作台', requireProject: true },
-  { to: '/knowledge', label: '我的创作偏好', requireProject: false },
 ]
 
 // 需要先选项目才能进的 path。
@@ -83,7 +81,7 @@ export default function App() {
               </ProjectGuard>
             }
           />
-          <Route path="/knowledge" element={<KnowledgePage />} />
+          <Route path="/knowledge" element={<Navigate to="/" replace />} />
           {/* 旧路由全部重定向到 /workshop */}
           <Route path="/compose" element={<Navigate to="/workshop" replace />} />
           <Route path="/migrate" element={<Navigate to="/workshop?tab=migrate" replace />} />

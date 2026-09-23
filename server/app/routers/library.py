@@ -42,11 +42,10 @@ router = APIRouter()
 _SAMPLES_ROOT = Path(__file__).resolve().parents[2] / "samples"
 
 # === 上传到「系统样例库」的校验阈值 ===
-# 沿用 decompose.upload 的同一套约束:mp4/mov/webm,单文件 200MB,时长 3 分钟 + 20s 余量
-# (容器封装层可能比真实流多几秒)。和 decompose 那边保持一致,避免两条上传链路语义漂移。
+# 沿用 decompose.upload：mp4/mov/webm，单文件 200MB，时长 ≤60s。
 _SYSTEM_UPLOAD_ALLOWED = {"video/mp4", "video/quicktime", "video/webm"}
 _SYSTEM_UPLOAD_MAX_BYTES = 200 * 1024 * 1024
-_SYSTEM_UPLOAD_MAX_DURATION_SECONDS = 200.0
+_SYSTEM_UPLOAD_MAX_DURATION_SECONDS = 60.0
 
 
 def _load_real_manifest(sample_id: str) -> Optional[SampleManifest]:
@@ -628,7 +627,7 @@ async def upload_to_system_library(
     """把一段视频上传到「系统样例库」,落到 server/samples/<sys-hex>/video.mp4。
 
     - 仅接受 video/mp4 | video/quicktime | video/webm
-    - 单文件硬上限 200MB,时长上限 3 分钟(+ 20s 余量)
+    - 单文件硬上限 200MB，时长上限 60 秒
     - sample_id 形如 sys-<hex>,与内置 demo (sample-marketing-01 等) 不冲突
     - meta.json 记录 title/video_type/uploaded_at,供 _scan_system_library_extras 还原列表
     - 上传后调用方需走 /api/decompose 触发实际拆解,manifest 生成完才能在「样例拆解」页用
@@ -672,7 +671,7 @@ async def upload_to_system_library(
         raise HTTPException(
             status_code=413,
             detail=(
-                f"视频时长 {duration:.1f}s 超过 3 分钟上限"
+                f"视频时长 {duration:.1f}s 超过 60 秒上限"
                 f"(最长 {_SYSTEM_UPLOAD_MAX_DURATION_SECONDS:.0f}s)"
             ),
         )

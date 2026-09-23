@@ -414,12 +414,7 @@ class EmotionPoint(BaseModel):
 
 
 class EmotionCurve(BaseModel):
-    """LLM 多信号情绪曲线（拆解 + Plan 阶段都用）。
-
-    设计：LLM 输出 anchors（每段 1 个）+ peaks/valleys（≤2+2 个时刻），
-    规则层做线性插值 + peaks 凸包 + 滑动平均，得到 60 点等距曲线。
-    LLM 调用挂时回落到 `decompose_agent._build_mood_curve` 规则版（backend="rule_fallback"）。
-    """
+    """旧数据里的情绪曲线。v2 不再计算、不再展示，模型只为读出历史 JSON。"""
 
     points: list[EmotionPoint] = Field(default_factory=list, description="规则插值后的 60 点等距曲线")
     anchors: list[EmotionAnchor] = Field(default_factory=list, description="LLM 段落锚点")
@@ -441,14 +436,7 @@ class EmotionCurve(BaseModel):
 
 
 class RhythmCurve(BaseModel):
-    """节奏 / 情绪走势曲线——前端拿来画"BGM 与视频结构契合度"图。
-
-    R1 改版（2026-06）：
-    - mood_curve / bgm_fit_score / bgm_fit_note 是主用字段;前端只画 mood_curve + bgm_energy 两条平滑线
-      + 一个契合度评分文案,不再展示 cut_density / tempo_bpm。
-    - cut_density / tempo_bpm 保留为兼容字段(老 manifest 可能携带,前端忽略);新数据写空列表 / None。
-    - emotion 是 stage-28 LLM 多信号情绪曲线,优先级高于 mood_curve;前端 fallback emotion → mood_curve。
-    """
+    """镜头切换与 BGM 能量采样。情绪走势已裁剪，mood_curve / emotion 只为读出旧 manifest。"""
 
     times: list[float] = Field(..., description="采样时间点（秒）")
     bgm_energy: list[float] = Field(default_factory=list, description="librosa RMS 能量曲线,归一到 [0,1]")
@@ -2030,6 +2018,13 @@ class Plan(BaseModel):
         default_factory=ComposeSettings,
         description="创作设置回写。供 render/edit/packaging 复用。",
     )
+    structure_confirmed: bool = Field(
+        default=True,
+        description=(
+            "v2 D4：新鲜 plan/build（非增量复用段落）写成 False，画布以半透明「AI 初稿」展示，"
+            "用户点定稿后为 True。缺字段的老 plan 默认 True，避免把历史成片打回草稿。"
+        ),
+    )
     initial_snapshot: Optional["PlanSnapshot"] = Field(
         default=None,
         description=(
@@ -2050,8 +2045,7 @@ class Plan(BaseModel):
         default=None,
         description=(
             "stage-28 LLM 多信号情绪曲线（基于 plan 自身的 main_track + bgm + ref_manifest + 用户意图）。"
-            "Compose 工作坊 EmotionCurveCard 读它；BGM 切换 / migration_preference 调整后由"
-            "/plan/{id}/recompute-emotion 或 bgm/attach 自动重算。None 表示未计算（老 plan 兼容）。"
+            "v2 已裁剪：不再计算、不再展示。字段保留只为读出旧 plan。"
         ),
     )
 
@@ -2112,6 +2106,14 @@ class PlanBuildRequest(BaseModel):
             "用于『刚刚 fill 完一个 gap → 立刻重跑 plan/build 应用 fill』场景——"
             "用户只是补完缺口，没改 brief/refs/settings，不应让 LLM 把 5 段抖成 4 段。"
             "为空 → 走完整 adapt_structure。"
+        ),
+    )
+    structure_confirmed: Optional[bool] = Field(
+        default=None,
+        description=(
+            "仅增量重建（reuse_sections 非空）时透传上一版确认态。"
+            "新鲜 plan/build 一律写成初稿 False，本字段不生效。"
+            "增量且本字段缺省时保持 True，兼容还不会传确认态的老客户端。"
         ),
     )
     variant: Variant = "A"

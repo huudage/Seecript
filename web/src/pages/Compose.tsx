@@ -1,9 +1,17 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { Link, useNavigate, useSearchParams } from 'react-router-dom'
+import { Link, useSearchParams } from 'react-router-dom'
 
 import { api } from '@/api/client'
 import { deletePlanBgm, patchPlanBgm } from '@/api/bgm'
-import { patchPlanSettings, reorderSections, splitScene, swapSceneSource } from '@/api/plan'
+import {
+  appendBlankVideoBlock,
+  confirmStructure,
+  fetchSceneInsight,
+  patchPlanSettings,
+  reorderSections,
+  splitScene,
+  swapSceneSource,
+} from '@/api/plan'
 import { createSSE } from '@/api/sse'
 import { commitStep, getStepSnapshot } from '@/api/steps'
 import { deleteVoice, synthesizeAll, synthesizeOne } from '@/api/voice'
@@ -18,7 +26,14 @@ import { FillCopyPanel } from '@/components/compose/FillCopyPanel'
 import { FourTrackBoard } from '@/components/compose/FourTrackBoard'
 import { MaterialGrid } from '@/components/compose/MaterialGrid'
 import { PackagingItemEditDialog } from '@/components/compose/PackagingItemEditDialog'
+import {
+  SectionLocalEditDialog,
+  ShotBriefDialog,
+  TrimDiffDialog,
+} from '@/components/compose/DialActionDialogs'
+import { NarrationDiffDialog } from '@/components/compose/NarrationDiffDialog'
 import { ReferencePicker } from '@/components/compose/ReferencePicker'
+import { RenderConfirmChecklist } from '@/components/compose/RenderConfirmChecklist'
 import { SceneEditPanel } from '@/components/compose/SceneEditPanel'
 import { SectionEditDialog } from '@/components/compose/SectionEditDialog'
 import { ShotEditDialog } from '@/components/compose/ShotEditDialog'
@@ -30,6 +45,7 @@ import { TransitionStylePicker } from '@/components/compose/TransitionStylePicke
 import { VersionMenu } from '@/components/compose/VersionMenu'
 import { PageShell } from '@/components/layout/PageShell'
 import { PlanPlayer, type PlanPlayerHandle } from '@/components/preview/PlanPlayer'
+import { buildRenderChecklist } from '@/lib/renderChecklist'
 import { cn } from '@/lib/utils'
 import { useEditStore } from '@/stores/edit'
 import { usePlanStore } from '@/stores/plan'
@@ -41,7 +57,6 @@ import type {
   FillResult,
   Gap,
   GapDetectRequest,
-  GapFillRequest,
   Material,
   MaterialUploadResponse,
   PackagingItem,
@@ -79,7 +94,6 @@ const RENDER_STEP_ORDER = [
 
 export default function ComposePage() {
   const [searchParams, setSearchParams] = useSearchParams()
-  const navigate = useNavigate()
 
   // session store
   const selectedReferences = useSessionStore((s) => s.selectedReferences)
@@ -274,10 +288,23 @@ export default function ComposePage() {
    *  就置 true，「生成内容轨」按钮才解禁。state 仅活在当前会话内，刷页面会重置——
    *  这是有意的：换个 brief 重新跑应该重新走一次澄清。 */
   const [clarifiedOnce, setClarifiedOnce] = useState(false)
-  // 「下一步」三阶段：补缺口 → 生成包装 → 跳渲染
-  const [finalizing, setFinalizing] = useState<
-    'idle' | 'filling-gaps' | 'done'
-  >('idle')
+  // 出片收尾：确认清单清空后才 commit + 提交渲染（不再自动 copy 补缺）
+  const [finalizing, setFinalizing] = useState<'idle' | 'done'>('idle')
+  const [checklistOpen, setChecklistOpen] = useState(false)
+  const [confirmingStructure, setConfirmingStructure] = useState(false)
+  const [voiceoverTarget, setVoiceoverTarget] = useState<{
+    sectionId: string
+    label: string
+  } | null>(null)
+  const [localEditTarget, setLocalEditTarget] = useState<{
+    sectionId: string
+    label: string
+  } | null>(null)
+  const [trimTarget, setTrimTarget] = useState<{ sceneId: string; materialId: string } | null>(null)
+  const [briefSceneId, setBriefSceneId] = useState<string | null>(null)
+  const [insights, setInsights] = useState<
+    Record<string, { summary: string; tags: string[]; highlights: string[] }>
+  >({})
   // 四轨板上的轨道动作 busy 锁（区别于 filling，避免与补全面板状态混淆）
   const [trackBusy, setTrackBusy] = useState(false)
   const [bgmPickerOpen, setBgmPickerOpen] = useState(false)
@@ -354,8 +381,8 @@ export default function ComposePage() {
   }, [plan, activeStep, setActiveStep])
 
   /* --------------------- 渲染流水线（内联 · 无独立页面）--------------------- */
-  // 设计：用户点「生成视频」之后，先补缺口 + 生成包装 + commit compose，再自动 POST /render/submit
-  // 并接 SSE 流；进度状态只显示极简一行，结果视频直接落在本页底部。
+  // v2 D4：点「提交渲染」先过确认清单（未定稿 / 空槽）。清单为空才 commit + POST /render/submit。
+  // 不再在出片前自动 copy 补缺。
   const [jobId, setJobId] = useState<string | null>(null)
   const [renderStep, setRenderStep] = useState<string>('idle')
   const [renderPercent, setRenderPercent] = useState(0)
@@ -855,6 +882,7 @@ export default function ComposePage() {
             // 增量重建：fill 触发的 runAnalyze 不应让 LLM 重排段落（5→4 抖动 bug）。
             // 仅当 plan 已存在 & 是 incremental rebuild 时透传旧 sections。
             reuse_sections: isIncremental && plan?.adapted_sections ? plan.adapted_sections : undefined,
+            structure_confirmed: isIncremental ? (plan?.structure_confirmed ?? true) : undefined,
             variant: 'A',
           }
           const builtPlan = await api.post<Plan>('/plan/build', planReq)
@@ -1294,49 +1322,34 @@ export default function ComposePage() {
 
   /* --------------------- 一键收尾：补缺口 → 包装 → 渲染（全部内联） --------------------- */
 
+  const handleConfirmStructure = useCallback(async () => {
+    if (!plan || plan.structure_confirmed !== false) return
+    setConfirmingStructure(true)
+    setError(null)
+    try {
+      const next = await confirmStructure(plan.plan_id)
+      setPlanAndPush(next)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : '定稿失败')
+    } finally {
+      setConfirmingStructure(false)
+    }
+  }, [plan, setPlanAndPush])
+
   const handleProceedToRender = useCallback(async () => {
     if (!plan) return
+    if (buildRenderChecklist(plan).length > 0) {
+      setChecklistOpen(true)
+      return
+    }
     setError(null)
     setRenderError(null)
     setRenderDone(null)
+    setChecklistOpen(false)
     try {
-      // 阶段 1 · 缺口检查：把还没补上的 gap（status≠ok 且无 ok fill）顺序用文案补全。
-      // 顺序而非并发——copy 的 LLM prompt 依赖段落上下文，串行更稳，也避免配额抖动。
-      const pending = gaps.filter(
-        (g) => g.status !== 'ok' && !fills.some((f) => f.gap_id === g.gap_id && f.status === 'ok'),
-      )
-      // runAnalyze 内部 plan/build 会签发一个新 plan_id，必须用 rebuilt.plan_id 做后续 packaging，
-      // 否则包装会落到上一版 plan 上、新版没 packaging_track，渲染端拿到的就是裸 main 轨。
-      let activePlanId = plan.plan_id
-      if (pending.length > 0) {
-        setFinalizing('filling-gaps')
-        const fresh: FillResult[] = []
-        for (const gap of pending) {
-          const body: GapFillRequest = {
-            gap_id: gap.gap_id,
-            action: 'copy',
-            params: { prompt_hint: gap.requirement },
-          }
-          const result = await api.post<FillResult>('/gap/fill', body)
-          upsertFill(result)
-          fresh.push(result)
-        }
-        const nextFills = [
-          ...fills.filter((f) => !fresh.some((r) => r.gap_id === f.gap_id)),
-          ...fresh,
-        ]
-        // 用补全后的 fills 重建 plan（口播写进 scene.narration → 字幕轨能拿到）
-        const rebuilt = await runAnalyze(nextFills)
-        if (!rebuilt) {
-          setFinalizing('idle')
-          return
-        }
-        activePlanId = rebuilt.plan_id
-      }
+      const activePlanId = plan.plan_id
 
-      // 阶段 2 · 包装项不再自动批量生成（stage-63 起，用户手动单加）。直接进 commit。
-
-      // 阶段 3 · commit compose 步骤快照（顶部 nav 标 saved + current_step 推进）
+      // commit compose 步骤快照（顶部 nav 标 saved + current_step 推进）
       try {
         await commitStep(currentProjectId!, 'compose', {
           plan_id: activePlanId,
@@ -1390,12 +1403,8 @@ export default function ComposePage() {
   }, [
     currentProjectId,
     fills,
-    gaps,
     plan,
     refreshProjects,
-    runAnalyze,
-    setPlanAndPush,
-    upsertFill,
     variant,
   ])
 
@@ -1627,19 +1636,7 @@ export default function ComposePage() {
                     {plan.adapted_sections.length} 段 · {plan.main_track.length} 镜头 · 共 {plan.duration_seconds.toFixed(1)}s · 缺口 {gaps.length}
                   </p>
                 </div>
-                <div className="flex items-center gap-2">
-                  {(plan.kb_rules_applied ?? 0) > 0 && (
-                    <button
-                      type="button"
-                      onClick={() => navigate('/knowledge')}
-                      title="点击去个性知识库管理"
-                      className="flex items-center gap-1 rounded-full border border-primary/30 bg-primary/10 px-2 py-0.5 text-[11px] font-medium text-primary hover:bg-primary/20"
-                    >
-                      已应用 {plan.kb_rules_applied} 条规则 · 去管理 →
-                    </button>
-                  )}
-                  <span className="text-[10px] text-muted-foreground">{videoType}</span>
-                </div>
+                <span className="text-[10px] text-muted-foreground">{videoType}</span>
               </div>
               <div className="min-h-0 flex-1 overflow-auto rounded-md border border-border bg-background/30 p-2">
                 {effectiveManifest && (
@@ -1732,11 +1729,25 @@ export default function ComposePage() {
             </div>
           )}
             <div className="space-y-1.5">
-            <div className="flex items-center justify-between">
+            <div className="flex items-center justify-between gap-2">
               <h2 className="text-sm font-semibold">结构画布 · 段落块 × 叙事连线</h2>
-              <span className="text-[10px] text-muted-foreground">
-                {videoType} · 点段落块 → 预览弹窗
-              </span>
+              <div className="flex items-center gap-2">
+                {plan.structure_confirmed === false && (
+                  <button
+                    type="button"
+                    disabled={confirmingStructure}
+                    onClick={() => void handleConfirmStructure()}
+                    className="rounded-md bg-amber-500 px-2 py-1 text-[11px] font-medium text-white hover:bg-amber-600 disabled:opacity-50"
+                    title="拖改满意后定稿。未定稿不能提交渲染。"
+                  >
+                    {confirmingStructure ? '定稿中…' : '定稿'}
+                  </button>
+                )}
+                <span className="text-[10px] text-muted-foreground">
+                  {videoType} · 点段落块 → 预览弹窗
+                  {plan.structure_confirmed === false ? ' · 当前是 AI 初稿' : ''}
+                </span>
+              </div>
             </div>
               <StoryboardCanvas
                 plan={plan}
@@ -1767,6 +1778,59 @@ export default function ComposePage() {
                 }
                 onRecommendPackaging={(sceneId) => {
                   void handleRecommendPackagingForScene(sceneId, 'title_bar')
+                }}
+                onAssignVoiceover={(sectionId, label) => setVoiceoverTarget({ sectionId, label })}
+                onLocalEdit={(sectionId, label) => setLocalEditTarget({ sectionId, label })}
+                onAiInsight={(scene) => {
+                  void fetchSceneInsight(plan.plan_id, scene.scene_id)
+                    .then((res) => {
+                      setInsights((prev) => ({
+                        ...prev,
+                        [scene.scene_id]: {
+                          summary: res.summary,
+                          tags: res.tags,
+                          highlights: res.highlights,
+                        },
+                      }))
+                    })
+                    .catch((err: unknown) => {
+                      setError(err instanceof Error ? err.message : 'AI 理解失败')
+                    })
+                }}
+                onAiTrim={(scene) =>
+                  setTrimTarget({ sceneId: scene.scene_id, materialId: scene.source_ref })
+                }
+                onFillSlot={(section, _scene, action) => {
+                  setSelectedSectionId(section.section_id)
+                  setActionBySection((prev) => {
+                    const map = new Map(prev)
+                    map.set(section.section_id, action)
+                    return map
+                  })
+                  setVisitedFillKeys((prev) => {
+                    const key = `${section.section_id}::${action}`
+                    if (prev.has(key)) return prev
+                    const next = new Set(prev)
+                    next.add(key)
+                    return next
+                  })
+                }}
+                onShotBrief={(scene) => setBriefSceneId(scene.scene_id)}
+                onAppendBlock={() => {
+                  void appendBlankVideoBlock(plan.plan_id)
+                    .then((next) => setPlanAndPush(next))
+                    .catch((err: unknown) => {
+                      setError(err instanceof Error ? err.message : '添加视频块失败')
+                    })
+                }}
+                insights={insights}
+                onDismissInsight={(sceneId) => {
+                  setInsights((prev) => {
+                    if (!prev[sceneId]) return prev
+                    const next = { ...prev }
+                    delete next[sceneId]
+                    return next
+                  })
                 }}
                 onReorderSections={(sectionIds) => {
                   void handleCanvasReorderSections(sectionIds)
@@ -2125,33 +2189,23 @@ export default function ComposePage() {
             <h2 className="text-sm font-semibold">生成视频</h2>
             <button
               onClick={() => void handleProceedToRender()}
-              disabled={
-                analyzing ||
-                anyGapBusy ||
-                isRendering ||
-                finalizing === 'filling-gaps'
-              }
-              title="先用文案补全所有未补缺口，再直接渲染成片"
+              disabled={analyzing || anyGapBusy || isRendering}
+              title="先过渲染确认清单：未定稿和空槽处理完才提交"
               className={cn(
                 'rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90',
-                (analyzing ||
-                  anyGapBusy ||
-                  isRendering ||
-                  finalizing === 'filling-gaps') &&
-                  'cursor-not-allowed opacity-60',
+                (analyzing || anyGapBusy || isRendering) && 'cursor-not-allowed opacity-60',
               )}
             >
-              {finalizing === 'filling-gaps' && '补全剩余缺口中…'}
               {isRendering && `渲染中 · ${renderPercent}%`}
-              {!isRendering &&
-                finalizing !== 'filling-gaps' &&
-                (renderDone ? '重新生成视频' : '一键生成视频')}
+              {!isRendering && (renderDone ? '重新提交渲染' : '提交渲染')}
             </button>
             {!isRendering && finalizing === 'idle' && !renderDone && (
               <span className="text-[11px] text-muted-foreground">
-                {pendingGapsCount > 0
-                  ? `还有 ${pendingGapsCount} 段缺口未补，渲染时会先用文案自动补全`
-                  : '所有缺口已补，将直接渲染成片'}
+                {plan.structure_confirmed === false
+                  ? '结构还是 AI 初稿，定稿后才能提交'
+                  : pendingGapsCount > 0
+                    ? `还有 ${pendingGapsCount} 个空槽，提交时会先列出确认清单`
+                    : '确认清单已空，将直接提交渲染'}
               </span>
             )}
           </div>
@@ -2385,6 +2439,57 @@ export default function ComposePage() {
             </div>
           </div>
         </div>
+      )}
+
+      {checklistOpen && plan && buildRenderChecklist(plan).length > 0 && (
+        <RenderConfirmChecklist
+          items={buildRenderChecklist(plan)}
+          confirming={confirmingStructure}
+          onConfirmStructure={() => void handleConfirmStructure()}
+          onClose={() => setChecklistOpen(false)}
+        />
+      )}
+      {trimTarget && plan && (
+        <TrimDiffDialog
+          planId={plan.plan_id}
+          sceneId={trimTarget.sceneId}
+          materialId={trimTarget.materialId}
+          onClose={() => setTrimTarget(null)}
+          onApplied={(next) => {
+            setPlanAndPush(next)
+            setTrimTarget(null)
+          }}
+        />
+      )}
+      {briefSceneId && plan && (
+        <ShotBriefDialog
+          planId={plan.plan_id}
+          sceneId={briefSceneId}
+          onClose={() => setBriefSceneId(null)}
+        />
+      )}
+      {localEditTarget && plan && (
+        <SectionLocalEditDialog
+          planId={plan.plan_id}
+          sectionLabel={localEditTarget.label}
+          onClose={() => setLocalEditTarget(null)}
+          onApplied={(next) => {
+            setPlanAndPush(next)
+            setLocalEditTarget(null)
+          }}
+        />
+      )}
+      {voiceoverTarget && plan && (
+        <NarrationDiffDialog
+          planId={plan.plan_id}
+          sectionId={voiceoverTarget.sectionId}
+          sectionLabel={voiceoverTarget.label}
+          onClose={() => setVoiceoverTarget(null)}
+          onApplied={(next) => {
+            setPlanAndPush(next)
+            setVoiceoverTarget(null)
+          }}
+        />
       )}
 
     </PageShell>

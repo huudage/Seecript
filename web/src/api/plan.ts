@@ -101,24 +101,91 @@ export async function swapSceneSource(
 }
 
 /**
- * stage-28：手动触发情绪曲线重算。
- *
- * BGM 切换会自动重算（PATCH /plan/{id}/bgm 内部已 hook）；本接口用于：
- * - main_track 编辑后用户主动刷新
- * - migration_preference 切到 amp_emotion 后立即看到曲线整体抬高
- *
- * 后端跑 LLM 多信号打分；失败回落规则版（curve.backend === 'rule_fallback'）。
- */
-export async function recomputeEmotion(planId: PlanId): Promise<Plan> {
-  return await api.post<Plan>(`/plan/${planId}/recompute-emotion`, {})
-}
-
-/**
  * v2 画布（F4/US-3.2）：段落块拖拽重排。sectionIds 必须是当前全部段落 id 的重排列，
  * 后端按 parent_section_id 分组重铺主轨（清字幕 / 裁超界包装），不跑 LLM。
  */
 export async function reorderSections(planId: PlanId, sectionIds: string[]): Promise<Plan> {
   return await api.post<Plan>(`/plan/${planId}/sections/reorder`, { section_ids: sectionIds })
+}
+
+/** v2 D4：把 AI 初稿标成定稿。幂等，不改主轨。 */
+export async function confirmStructure(planId: PlanId): Promise<Plan> {
+  return await api.post<Plan>(`/plan/${planId}/confirm-structure`, {})
+}
+
+export interface NarrationProposal {
+  scene_id: string
+  old_narration?: string | null
+  new_narration: string
+}
+
+export interface RegenerateNarrationsResponse {
+  plan: Plan
+  updated_scene_ids: string[]
+  skipped_scene_ids: string[]
+  note: string
+  applied: boolean
+  proposals: NarrationProposal[]
+}
+
+/**
+ * v2 D4 配口播。apply=false 只出建议（diff 确认门）；apply=true 才写回 narration。
+ * sectionIds 缺省时重写全片，盘内动作必须带上当前段落。
+ */
+export interface SceneAiInsight {
+  plan_id: string
+  scene_id: string
+  summary: string
+  tags: string[]
+  highlights: string[]
+  source: 'llm' | 'rule'
+}
+
+export async function fetchSceneInsight(planId: PlanId, sceneId: string): Promise<SceneAiInsight> {
+  return await api.post<SceneAiInsight>(`/plan/${planId}/scene/${sceneId}/ai-insight`, {})
+}
+
+export interface SceneTrimSuggestion {
+  plan_id: string
+  scene_id: string
+  source_duration: number
+  current_in: number
+  current_out: number
+  suggested_in: number
+  suggested_out: number
+  reason: string
+  source: 'llm' | 'rule'
+}
+
+export async function fetchTrimSuggestion(planId: PlanId, sceneId: string): Promise<SceneTrimSuggestion> {
+  return await api.post<SceneTrimSuggestion>(`/plan/${planId}/scene/${sceneId}/suggest-trim`, {})
+}
+
+export interface SceneShotBrief {
+  plan_id: string
+  scene_id: string
+  what_to_shoot: string
+  duration_seconds: number
+  emotion: string
+  reference: string
+  tips: string[]
+  source: 'llm' | 'rule'
+}
+
+export async function fetchShotBrief(planId: PlanId, sceneId: string): Promise<SceneShotBrief> {
+  return await api.post<SceneShotBrief>(`/plan/${planId}/scene/${sceneId}/shot-brief`, {})
+}
+
+/** 画布空白处追加一个待拖入素材的视频块。不跑结构 LLM。 */
+export async function appendBlankVideoBlock(planId: PlanId): Promise<Plan> {
+  return await api.post<Plan>(`/plan/${planId}/sections/append`, { source: 'user_material' })
+}
+
+export async function regenerateNarrations(
+  planId: PlanId,
+  body: { section_ids?: string[]; apply: boolean; proposals?: NarrationProposal[] },
+): Promise<RegenerateNarrationsResponse> {
+  return await api.post<RegenerateNarrationsResponse>(`/plan/${planId}/regenerate-narrations`, body)
 }
 
 /**

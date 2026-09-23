@@ -509,21 +509,6 @@ function buildDemoPlan(): Plan {
     },
     settings: clone(DEMO_SETTINGS),
     kb_rules_applied: 0,
-    emotion_curve: {
-      points: [
-        { t: 0, intensity: 0.55 },
-        { t: 4.3, intensity: 0.7 },
-        { t: 9.5, intensity: 0.45 },
-        { t: 13.5, intensity: 0.85 },
-        { t: 20.5, intensity: 0.5 },
-        { t: 23.5, intensity: 0.75 },
-      ],
-      anchors: [{ section_idx: 0, intensity: 0.55, reason: '大字卡起势' }],
-      peaks: [{ t: 14.9, intensity: 0.85, reason: 'AI 光效推到情绪顶点' }],
-      valleys: [{ t: 9.5, intensity: 0.45, reason: '讲解段收力' }],
-      summary: '铺垫—收力—爆发—收尾',
-      backend: 'rule_fallback',
-    },
   }
 }
 

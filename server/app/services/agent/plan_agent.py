@@ -24,7 +24,6 @@ from .preference import preference_hint, analysis_hint
 from ...schemas import (
     AdaptedSection,
     ComposeSettings,
-    RhythmCurve,
     SampleManifest,
     Section,
     SectionRole,
@@ -264,33 +263,10 @@ def _section_proportions(sections: list[Section], duration: float) -> str:
     return " / ".join(parts)
 
 
-def _peak_times_from_rhythm(rhythm: Optional[RhythmCurve]) -> list[tuple[float, float, str]]:
-    """优先 emotion.peaks（LLM 多信号情绪曲线已标好的高潮位），回落 mood_curve max 单点。
+def _build_rhythm_block(manifests: list[SampleManifest]) -> str:
+    """把样例段落时长比例打包成给 LLM 的中文画像。
 
-    返回 [(t_秒, intensity, reason), ...]，最多 2 条；曲线太平的（max < 0.4）返回空。
-    """
-    if rhythm is None:
-        return []
-    out: list[tuple[float, float, str]] = []
-    if rhythm.emotion is not None and rhythm.emotion.peaks:
-        for p in rhythm.emotion.peaks[:2]:
-            out.append((float(p.t), float(p.intensity), (p.reason or "").strip()))
-        return out
-    if rhythm.times and rhythm.mood_curve and len(rhythm.times) == len(rhythm.mood_curve):
-        max_idx = max(range(len(rhythm.mood_curve)), key=lambda i: rhythm.mood_curve[i])
-        if rhythm.mood_curve[max_idx] >= 0.4:
-            out.append((float(rhythm.times[max_idx]), float(rhythm.mood_curve[max_idx]), ""))
-    return out
-
-
-def _build_rhythm_block(manifests: list[SampleManifest], target_total: float) -> str:
-    """把样例 manifest 的节奏 / 情绪 / 段落时长比例打包成给 LLM 的中文画像。
-
-    stage-58：取代旧的"参考风格图多模态注入"——结构迁移要传的是节奏不是画面。
-    输入：1-2 份样例 manifest + 目标总时长。
-    输出：多行 markdown 文本（无样例可用 → 空字符串，调用方据此跳过注入）。
-
-    每份样例独立一段：段落时长比例 + 情绪曲线峰值（按比例换算到新片对应秒数） + BGM 契合度备注。
+    情绪曲线已裁剪，不再注入峰值或 BGM 契合度。
     """
     if not manifests:
         return ""
@@ -305,27 +281,12 @@ def _build_rhythm_block(manifests: list[SampleManifest], target_total: float) ->
         if not proportions:
             continue
         lines.append(f"- {prefix}段落时长比例 → {proportions}")
-        peaks = _peak_times_from_rhythm(manifest.rhythm)
-        if peaks:
-            ratio = float(target_total) / dur if dur > 0 else 1.0
-            descs: list[str] = []
-            for t, inten, reason in peaks:
-                t_new = max(0.0, t * ratio)
-                desc = f"原片 {_format_seconds(t)} 处情绪到 {inten:.2f}（按比例换算到新片 {_format_seconds(t_new)} 附近）"
-                if reason:
-                    desc += f"——原因：{reason[:30]}"
-                descs.append(desc)
-            lines.append(f"- {prefix}情绪曲线峰值：{'；'.join(descs)}")
-        if manifest.rhythm and manifest.rhythm.bgm_fit_note:
-            lines.append(f"- {prefix}BGM 与结构契合度：{manifest.rhythm.bgm_fit_note[:60]}")
     if not lines:
         return ""
     return (
         "【原片节奏画像（结构迁移核心通道）】\n"
         + "\n".join(lines)
-        + "\n（请按段落时长比例与峰值位置安排新片对应段落的能量分布——"
-        "新片在按比例换算后的峰值位置应有能撑起情绪的段落，"
-        "段落 tempo 字段参照原片对应段落能量级别填。）"
+        + "\n（请按段落时长比例安排新片对应段落的长度。）"
     )
 
 
@@ -467,7 +428,7 @@ async def adapt_structure(
     )
     # stage-58：原片节奏画像注入 —— 取代旧的"参考风格图多模态注入"。
     # 结构迁移真正能用上的信号是节奏曲线与情绪峰值，不是画面气质。
-    rhythm_block = _build_rhythm_block(manifests, target_total)
+    rhythm_block = _build_rhythm_block(manifests)
     leading_blocks = [pref_block]
     if analysis_block:
         leading_blocks.append(analysis_block)

@@ -106,7 +106,7 @@ export default function LibraryPage() {
     setError(null)
     const duration = await readVideoDuration(file)
     if (duration != null && duration > VIDEO_UPLOAD_MAX_DURATION_SECONDS) {
-      setError(`视频时长 ${duration.toFixed(1)} 秒超过了 3 分钟上限，请换一个更短的视频`)
+      setError(`视频时长 ${duration.toFixed(1)} 秒超过了 60 秒上限，请换一个更短的视频，或改用系统样例`)
       return
     }
     setUploading(true)
@@ -497,7 +497,7 @@ function UploadSampleCard({
         </select>
       </label>
       <p className="text-xs text-muted-foreground">
-        mp4 / mov / webm，单个文件 ≤ 200MB、≤ 3 分钟
+        mp4 / mov / webm，单个文件 ≤ 200MB、≤ 60 秒
       </p>
       <input
         ref={inputRef}

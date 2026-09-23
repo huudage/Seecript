@@ -19,7 +19,5 @@ export async function readVideoDuration(file: File): Promise<number | null> {
   })
 }
 
-// 3 分钟 (+ 20s 余量) 上限,与后端 _USER_VIDEO_MAX_DURATION_SECONDS / _SYSTEM_UPLOAD_MAX_DURATION_SECONDS 对齐。
-// 客户端预检用 180s 是因为浏览器 HTMLVideoElement.duration 是真实视频流秒数,不掺容器封装层;
-// 后端给 200s 余量是因为 ffprobe 会算上一些封装层时间。
-export const VIDEO_UPLOAD_MAX_DURATION_SECONDS = 180
+// v2 U7：≤60s，与后端上传时长上限对齐。
+export const VIDEO_UPLOAD_MAX_DURATION_SECONDS = 60
