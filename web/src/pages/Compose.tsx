@@ -392,6 +392,11 @@ export default function ComposePage() {
     if (at == null) return
     playerRef.current?.seek(at)
     playerRef.current?.play()
+    window.requestAnimationFrame(() => {
+      playerRef.current?.seek(at)
+      playerRef.current?.play()
+      document.getElementById('live-preview')?.scrollIntoView({ block: 'nearest', behavior: 'smooth' })
+    })
   }, [])
 
   // 跨 plan 切换时重置撤销栈；同 plan_id 的 in-place 改动由各 handler 显式 pushEdit
@@ -1743,25 +1748,7 @@ export default function ComposePage() {
         </section>
 
         <section className="mt-4 space-y-3 rounded-lg border border-border bg-card p-4">
-          {/* 实时预览常驻在画布右侧：点块即播，时间轴拖动停在对应帧。 */}
-          {plan.subject_anchors && plan.subject_anchors.length > 0 && (
-            <div className="flex flex-wrap items-center gap-1.5 rounded-md border border-emerald-500/40 bg-emerald-50/60 px-2 py-1.5 text-[11px] dark:bg-emerald-950/30">
-              <span className="font-medium text-emerald-900 dark:text-emerald-200">
-                🎯 锁定可拍物体
-              </span>
-              <span className="text-emerald-700/80 dark:text-emerald-300/80">
-                （澄清阶段已确认，每个物体在视频里至少出现 1 次）
-              </span>
-              {plan.subject_anchors.map((a) => (
-                <span
-                  key={a}
-                  className="inline-flex items-center rounded-full border border-emerald-600/50 bg-white px-2 py-0.5 text-[10px] font-medium text-emerald-800 dark:bg-emerald-950 dark:text-emerald-200"
-                >
-                  {a}
-                </span>
-              ))}
-            </div>
-          )}
+          {/* 实时预览常驻在画布右侧：点块即播。 */}
             <div className="flex flex-col gap-3 xl:flex-row xl:items-start">
             <div className="min-w-0 flex-1 space-y-1.5">
             <div className="flex flex-wrap items-center justify-between gap-2">
@@ -1886,6 +1873,13 @@ export default function ComposePage() {
                   setSelectedSectionId(section.section_id)
                   setGenAnchor(anchor)
                   setFillDockOpen(true)
+                  if (plan && !gaps.some((gap) => gap.section_id === section.section_id)) {
+                    void api.post<Gap[]>('/gap/detect', {
+                      plan_id: plan.plan_id,
+                      project_id: currentProjectId,
+                      session_id: currentProjectId,
+                    }).then((detected) => setGaps(detected)).catch(() => undefined)
+                  }
                   setActionBySection((prev) => {
                     const map = new Map(prev)
                     map.set(section.section_id, action)
@@ -1899,10 +1893,7 @@ export default function ComposePage() {
                     return next
                   })
                 }}
-                onFillHoverEnd={() => {
-                  if (genHideTimer.current != null) window.clearTimeout(genHideTimer.current)
-                  genHideTimer.current = window.setTimeout(() => setFillDockOpen(false), 400)
-                }}
+                onFillHoverEnd={() => setFillDockOpen(false)}
                 onFillSlot={(section, _scene, action) => {
                   setSelectedSectionId(section.section_id)
                   setFillDockOpen(true)
@@ -1966,13 +1957,6 @@ export default function ComposePage() {
               top: Math.max(8, Math.min(genAnchor?.y ?? 80, window.innerHeight - 160)),
               display: fillDockOpen ? 'block' : 'none',
             }}
-            onMouseEnter={() => {
-              if (genHideTimer.current != null) window.clearTimeout(genHideTimer.current)
-            }}
-            onMouseLeave={() => {
-              if (genHideTimer.current != null) window.clearTimeout(genHideTimer.current)
-              genHideTimer.current = window.setTimeout(() => setFillDockOpen(false), 400)
-            }}
           >
             <div className="mb-2 text-[11px] font-semibold">
               生成 · {ACTION_TABS.find((tab) => tab.value === activeAction)?.label ?? '生成'}
@@ -2015,12 +1999,18 @@ export default function ComposePage() {
                 lastSeenGapBySectionRef.current.get(sectionId) ?? // stage-38：silent rebuild 兜底
                 null
               if (!gapForKey) {
-                // 首次进入还没见过这个 section 的 gap——render 一个隐藏占位 div
-                // 保持 React key 稳定，避免后续命中时整段重新 mount。
-                return <div key={key} style={{ display: 'none' }} aria-hidden />
+                const waiting = selectedSectionId === sectionId && activeAction === action
+                return (
+                  <div
+                    key={key}
+                    className="text-[11px] text-muted-foreground"
+                    style={{ display: waiting ? 'block' : 'none' }}
+                  >
+                    正在准备这段的生成…
+                  </div>
+                )
               }
-              const isActive =
-                selectedGap?.section_id === sectionId && activeAction === action
+              const isActive = selectedSectionId === sectionId && activeAction === action
               const fillForKey =
                 fills.find(
                   (f) =>
@@ -2087,7 +2077,7 @@ export default function ComposePage() {
           )}
 
             </div>
-            <aside className="w-full shrink-0 space-y-2 xl:sticky xl:top-4 xl:w-[240px]">
+            <aside id="live-preview" className="w-full shrink-0 space-y-2 xl:sticky xl:top-4 xl:w-[240px]">
               <div className="flex items-center justify-between text-[11px] text-muted-foreground">
                 <span className="font-medium text-foreground">实时预览</span>
                 <span className="font-mono">
@@ -2780,7 +2770,7 @@ function CanvasGuideCard() {
         <p className="font-medium">画布怎么用——段落块 · 预览 · 时间轴</p>
         <ul className="list-disc space-y-0.5 pl-4 text-amber-900/85 dark:text-amber-100/85">
           <li>
-            <b>点段落块</b>（或下方总览条分段）→ 弹出<b>实时预览</b>，从该段开始播放；块选中后底边出现
+            <b>点视频块</b>从这段开始播放右侧实时预览；块选中后底边出现
             <span className="mx-0.5 rounded bg-amber-200/60 px-1 font-mono dark:bg-amber-700/40">✂ 切分游标</span>
             （实拍块一分为二）。Esc / 点空白处关弹窗。
           </li>

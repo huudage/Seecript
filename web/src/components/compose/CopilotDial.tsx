@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react'
+import { createPortal } from 'react-dom'
 import { cn } from '@/lib/utils'
 
 /**
@@ -117,7 +118,7 @@ export function CopilotDial({
   const placed = placeActions(actions)
   const open = placed.find((item) => item.action.id === openHoverId && item.action.hover)
 
-  return (
+  return createPortal(
     <div data-copilot-dial className="fixed z-50" style={{ left: cx, top: cy }}>
       <button
         type="button"
@@ -140,7 +141,7 @@ export function CopilotDial({
               if (action.hover) showHover(action.id)
             }}
             onMouseLeave={() => {
-              if (action.hover) scheduleHide()
+              if (action.hover) return
             }}
             onClick={() => {
               if (action.hover) {
@@ -197,6 +198,7 @@ export function CopilotDial({
           {hint}
         </div>
       )}
-    </div>
+    </div>,
+    document.body,
   )
 }

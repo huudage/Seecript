@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import {
   Background,
   Handle,
@@ -6,6 +6,7 @@ import {
   Position,
   ReactFlow,
   ReactFlowProvider,
+  useNodesState,
   type Edge,
   type Node,
   type NodeChange,
@@ -53,21 +54,10 @@ import type {
 
 // 块布局：宽 240px（w-60），步进 300px——拖拽插入位按「拖拽块中心 vs 其余块原位中心」比较
 const BLOCK_SPACING = 300
-const HALF_BLOCK_W = 120
 // 与后端 canvas_ops._MIN_SHOT_SECONDS / _MIN_SECTION_SECONDS 同口径
 const REAL_SOURCES = new Set(['user_material', 'sample'])
 const MIN_SHOT_SPLIT = 0.5
 const MIN_SECTION_SPLIT = 2.0
-
-/** 拖拽块中心落在其余哪个原位槽：返回插入下标（其余块保持原相对顺序）。 */
-function insertionIndex(centerX: number, from: number, count: number): number {
-  let insert = 0
-  for (let i = 0; i < count; i++) {
-    if (i === from) continue
-    if (i * BLOCK_SPACING + HALF_BLOCK_W < centerX) insert++
-  }
-  return insert
-}
 
 /** 块内时间点 → 命中的镜 + 镜内偏移 + 是否为有效切点（实拍源且距镜两端 ≥ 0.5s）。 */
 function sceneAtTime(
@@ -119,6 +109,7 @@ export interface SectionBlockNodeData {
   onAxisEdit?: (scene: Scene, section: AdaptedSection) => void
   /** 素材库卡片 HTML5 拖到槽位换源（US-3.2）。 */
   onSwapMaterial?: (sceneId: string, materialId: string) => void
+  onPreview?: () => void
   [key: string]: unknown
 }
 
@@ -242,6 +233,7 @@ function SectionBlockNode({ data }: NodeProps<Node<SectionBlockNodeData>>) {
         draft && 'opacity-60',
         selected ? 'border-primary ring-2 ring-primary/40' : 'border-border hover:shadow-md',
       )}
+      onClick={() => data.onPreview?.()}
     >
       <Handle type="target" position={Position.Left} className="!h-2 !w-2 !border-0 !bg-zinc-400" />
       <Handle type="source" position={Position.Right} className="!h-2 !w-2 !border-0 !bg-zinc-400" />
@@ -448,6 +440,8 @@ interface Props {
     anchor: { x: number; y: number },
   ) => void
   onFillHoverEnd?: () => void
+  /** 悬停「生成」时展开的表单，挂在功能盘旁边。 */
+  fillHoverPanel?: ReactNode
   /** 自然语言改片：打开多轮对话。自进化蒸馏仍走这条对话，不另起一套。 */
   onNaturalEdit?: () => void
   /** 空槽「补拍清单」：给人看，不写 plan。 */
@@ -507,6 +501,7 @@ export function StoryboardCanvas({
   onFillSlot,
   onFillHover,
   onFillHoverEnd,
+  fillHoverPanel,
   onNaturalEdit,
   onShotBrief,
   onAppendBlock,
@@ -635,6 +630,7 @@ export function StoryboardCanvas({
       blocks.map((b, i) => ({
         id: b.section.section_id,
         type: 'sectionBlock',
+        draggable: true,
         position: { x: i * BLOCK_SPACING, y: 0 },
         data: {
           section: b.section,
@@ -652,10 +648,22 @@ export function StoryboardCanvas({
           onSplit: onSplitScene,
           onAxisEdit,
           onSwapMaterial,
+          onPreview: () => onSelectSection?.(b.section, b.firstScene, b.gap),
         },
       })),
-    [blocks, insights, onDismissInsight, plan.structure_confirmed, selectedSectionId, onSplitScene, onAxisEdit, onSwapMaterial],
+    [blocks, insights, onDismissInsight, onSelectSection, plan.structure_confirmed, selectedSectionId, onSplitScene, onAxisEdit, onSwapMaterial],
   )
+
+  const [flowNodes, setFlowNodes, onFlowNodesChange] = useNodesState(nodes)
+  const dragXRef = useRef<Record<string, number>>({})
+  useEffect(() => {
+    setFlowNodes((current) =>
+      nodes.map((node) => {
+        const prev = current.find((item) => item.id === node.id)
+        return prev ? { ...node, position: prev.position } : node
+      }),
+    )
+  }, [nodes, setFlowNodes])
 
   // 连线：叙事链序 + 转场标签（取下一块首镜的 transition_in）
   const edges = useMemo<Edge[]>(
@@ -679,59 +687,32 @@ export function StoryboardCanvas({
     [blocks],
   )
 
-  const total = plan.duration_seconds || blocks.reduce((acc, b) => acc + (b.end - b.start), 0)
-
   const handleSelect = (b: Block) => {
     onSelectSection?.(b.section, b.firstScene, b.gap)
   }
 
   /* ===================== 拖拽重排（F4/US-3.2） ===================== */
 
-  // 横向单轴重排：onNodesChange 只吸收 position 变化进覆盖位（其余变化交给 ReactFlow 内部态），
-  // 被跨越的块按「拖拽块中心 vs 其余块原位中心」实时让位，松手提交新链序。
-  const [drag, setDrag] = useState<{ id: string; x: number } | null>(null)
-
   const handleNodesChange = useCallback((changes: NodeChange<Node<SectionBlockNodeData>>[]) => {
-    for (const ch of changes) {
-      if (ch.type === 'position' && ch.dragging && ch.position && ch.id) {
-        setDrag({ id: ch.id, x: ch.position.x })
+    onFlowNodesChange(changes)
+    for (const change of changes) {
+      if (change.type === 'position' && change.position && change.id) {
+        dragXRef.current[change.id] = change.position.x
       }
     }
-  }, [])
+  }, [onFlowNodesChange])
 
   const handleNodeDragStop = useCallback(() => {
-    if (drag && onReorderSections && blocks.length > 1) {
-      const ids = blocks.map((b) => b.section.section_id)
-      const from = ids.indexOf(drag.id)
-      if (from >= 0) {
-        const insert = insertionIndex(drag.x + HALF_BLOCK_W, from, ids.length)
-        const next = [...ids]
-        next.splice(from, 1)
-        next.splice(insert, 0, drag.id)
-        if (next.join('\n') !== ids.join('\n')) onReorderSections(next)
-      }
-    }
-    setDrag(null)
-  }, [drag, blocks, onReorderSections])
-
-  // 拖拽中的实时让位布局：拖拽块跟手（y 锁 0），其余块滑向让出的槽位
-  const nodesWithDrag = useMemo<Node<SectionBlockNodeData>[]>(() => {
-    if (!drag) return nodes
-    const from = nodes.findIndex((n) => n.id === drag.id)
-    if (from < 0) return nodes
-    const insert = insertionIndex(drag.x + HALF_BLOCK_W, from, nodes.length)
-    return nodes.map((n, i) => {
-      let target: number
-      if (i === from) target = insert
-      else {
-        const k = i > from ? i - 1 : i
-        target = k < insert ? k : k + 1
-      }
-      return i === from
-        ? { ...n, position: { x: drag.x, y: 0 }, dragging: true }
-        : { ...n, position: { x: target * BLOCK_SPACING, y: 0 } }
+    if (!onReorderSections || blocks.length < 2) return
+    const ordered = [...blocks].sort((a, b) => {
+      const ax = dragXRef.current[a.section.section_id] ?? 0
+      const bx = dragXRef.current[b.section.section_id] ?? 0
+      return ax - bx
     })
-  }, [nodes, drag])
+    const next = ordered.map((block) => block.section.section_id)
+    const current = blocks.map((block) => block.section.section_id)
+    if (next.join('\n') !== current.join('\n')) onReorderSections(next)
+  }, [blocks, onReorderSections])
 
   /* ===================== 功能盘：右键唤出 ===================== */
 
@@ -935,6 +916,7 @@ export function StoryboardCanvas({
   const handleCanvasMouseDown = (e: React.MouseEvent<HTMLDivElement>) => {
     if (e.button === 0 && dial && !(e.target as Element).closest('[data-copilot-dial]')) {
       setDial(null)
+      onFillHoverEnd?.()
     }
   }
 
@@ -955,8 +937,21 @@ export function StoryboardCanvas({
           'flex h-40 items-center justify-center rounded-lg border border-dashed border-border bg-background/30 px-4 text-center text-xs text-muted-foreground',
           className,
         )}
+        onContextMenu={(event) => {
+          event.preventDefault()
+          setDial({ x: event.clientX, y: event.clientY, anchor: { kind: 'pane' }, planId: plan.plan_id })
+        }}
       >
         本 plan 没有段落块。右键空白处可以添加视频块。
+        {dial && dial.planId === plan.plan_id && (
+          <CopilotDial
+            x={dial.x}
+            y={dial.y}
+            anchorLabel="画布"
+            actions={dialActions}
+            onClose={() => setDial(null)}
+          />
+        )}
       </div>
     )
   }
@@ -972,16 +967,33 @@ export function StoryboardCanvas({
         <ReactFlowProvider>
           <ReactFlow
             key={plan.plan_id}
-            nodes={nodesWithDrag}
+            nodes={flowNodes}
             edges={edges}
             nodeTypes={nodeTypes}
             fitView
             fitViewOptions={{ padding: 0.12, maxZoom: 1 }}
-            nodesDraggable={!!onReorderSections && blocks.length > 1}
+            nodesDraggable
             nodesConnectable={false}
             edgesFocusable={false}
-            onNodesChange={onReorderSections ? handleNodesChange : undefined}
-            onNodeDragStop={onReorderSections ? handleNodeDragStop : undefined}
+            panOnDrag={[1, 2]}
+            selectionOnDrag={false}
+            onNodesChange={handleNodesChange}
+            onNodeDragStop={handleNodeDragStop}
+            onPaneContextMenu={(event) => {
+              event.preventDefault()
+              setDial({ x: event.clientX, y: event.clientY, anchor: { kind: 'pane' }, planId: plan.plan_id })
+            }}
+            onNodeContextMenu={(event, node) => {
+              event.preventDefault()
+              const block = blocks.find((item) => item.section.section_id === node.id)
+              if (!block) return
+              setDial({
+                x: event.clientX,
+                y: event.clientY,
+                anchor: { kind: 'section', section: block.section, firstScene: block.firstScene },
+                planId: plan.plan_id,
+              })
+            }}
             onNodeClick={(_, node) => {
               const b = blocks.find((x) => x.section.section_id === node.id)
               if (b) handleSelect(b)
@@ -999,39 +1011,6 @@ export function StoryboardCanvas({
         </ReactFlowProvider>
       </div>
 
-      {/* 成片总览条（F3）：按连线链序显示各块时长占比 + 总时长；点分段选段 */}
-      <div className="flex items-stretch gap-1.5">
-        <div className="flex min-w-0 flex-1 overflow-hidden rounded-md border border-border">
-          {blocks.map((b) => {
-            const w = total > 0 ? Math.max(4, ((b.end - b.start) / total) * 100) : 100 / blocks.length
-            return (
-              <button
-                key={b.section.section_id}
-                type="button"
-                onClick={() => handleSelect(b)}
-                className={cn(
-                  'flex h-7 min-w-0 items-center gap-1 overflow-hidden bg-zinc-600 px-1.5 text-[9px] font-medium transition-opacity hover:opacity-80',
-                  b.section.section_id === selectedSectionId ? 'opacity-100 ring-2 ring-inset ring-white/70' : 'opacity-70',
-                )}
-                style={{ width: `${w}%` }}
-                title={`${blockTitle(b.section)} · ${(b.end - b.start).toFixed(1)}s`}
-              >
-                <span className="truncate text-white">{blockTitle(b.section)}</span>
-                <span className="ml-auto shrink-0 font-mono text-white/85">
-                  {(b.end - b.start).toFixed(0)}s
-                </span>
-              </button>
-            )
-          })}
-        </div>
-        <div className="flex shrink-0 items-center rounded-md border border-border bg-card px-2 font-mono text-[10px] text-muted-foreground">
-          全片 {total.toFixed(1)}s · {blocks.length} 段
-        </div>
-        <div className="hidden shrink-0 items-center rounded-md border border-border bg-card px-2 text-[10px] text-muted-foreground sm:flex">
-          拖块 重排 · 右键 功能盘
-        </div>
-      </div>
-
       {dial && dial.planId === plan.plan_id && (
         <CopilotDial
           x={dial.x}
@@ -1046,10 +1025,7 @@ export function StoryboardCanvas({
               : undefined
           }
           onHoverAction={(actionId) => {
-            if (!actionId) {
-              onFillHoverEnd?.()
-              return
-            }
+            if (!actionId) return
             const fillById = {
               'fill-copy': 'copy',
               'fill-image': 'aigc_image',
@@ -1064,11 +1040,15 @@ export function StoryboardCanvas({
             if (!section || !scene) return
             const angle = action === 'copy' ? Math.PI : action === 'aigc_image' ? 0 : Math.PI / 2
             onFillHover?.(section, scene, action, {
-              x: dial.x + Math.cos(angle) * 210,
-              y: dial.y + Math.sin(angle) * 150,
+              x: dial.x + Math.cos(angle) * 120,
+              y: dial.y + Math.sin(angle) * 88,
             })
           }}
-          onClose={() => setDial(null)}
+          hoverPanel={fillHoverPanel}
+          onClose={() => {
+            setDial(null)
+            onFillHoverEnd?.()
+          }}
         />
       )}
 
