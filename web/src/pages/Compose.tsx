@@ -23,6 +23,7 @@ import { ReferencePicker } from '@/components/compose/ReferencePicker'
 import { SceneEditPanel } from '@/components/compose/SceneEditPanel'
 import { SectionEditDialog } from '@/components/compose/SectionEditDialog'
 import { ShotEditDialog } from '@/components/compose/ShotEditDialog'
+import { StoryboardCanvas } from '@/components/compose/StoryboardCanvas'
 import { StructureMapPanel } from '@/components/compose/StructureMapPanel'
 import { SubtitleEditPopover } from '@/components/compose/SubtitleEditPopover'
 import { SystemLibraryPicker } from '@/components/compose/SystemLibraryPicker'
@@ -135,6 +136,13 @@ export default function ComposePage() {
   // UI state
   const [uploading, setUploading] = useState(false)
   const [analyzing, setAnalyzing] = useState(false)
+  // v2 D1：step2 工作台视图——四轨（v1）↔ 结构画布（PRD-v2 §5.2-F3）。选择持久化。
+  const [step2BoardView, setStep2BoardView] = useState<'tracks' | 'canvas'>(() =>
+    localStorage.getItem('seecript:step2-board-view') === 'canvas' ? 'canvas' : 'tracks',
+  )
+  useEffect(() => {
+    localStorage.setItem('seecript:step2-board-view', step2BoardView)
+  }, [step2BoardView])
   // A 位（refs[0]）primary manifest fallback：sessionStore.manifest 只在 Decompose 页才会 set。
   // 用户从 ReferencePicker 直接进 Compose 时 manifest=null，导致 StructureCompareSection 看不见。
   // 这里按 selectedReferences[0] 反查 /sample/{id}/manifest，作为 sessionStore.manifest 的兜底。
@@ -1783,9 +1791,52 @@ export default function ComposePage() {
               是 step2 的主战场。 */}
           <div className="space-y-1.5">
             <div className="flex items-center justify-between">
-              <h2 className="text-sm font-semibold">样例视频轨道 ↔ 新内容轨</h2>
-              <span className="text-[10px] text-muted-foreground">{videoType}</span>
+              <h2 className="text-sm font-semibold">
+                {step2BoardView === 'canvas' ? '结构画布 · 段落块 × 叙事连线' : '样例视频轨道 ↔ 新内容轨'}
+              </h2>
+              <div className="flex items-center gap-2">
+                <span className="text-[10px] text-muted-foreground">{videoType}</span>
+                <div className="flex overflow-hidden rounded-md border border-border text-[11px]">
+                  {(
+                    [
+                      { value: 'tracks', label: '四轨' },
+                      { value: 'canvas', label: '画布' },
+                    ] as const
+                  ).map((v) => (
+                    <button
+                      key={v.value}
+                      type="button"
+                      onClick={() => setStep2BoardView(v.value)}
+                      className={cn(
+                        'px-2.5 py-1 transition-colors',
+                        step2BoardView === v.value
+                          ? 'bg-primary/10 font-medium text-primary'
+                          : 'bg-background text-muted-foreground hover:bg-secondary',
+                      )}
+                    >
+                      {v.label}
+                    </button>
+                  ))}
+                </div>
+              </div>
             </div>
+            {step2BoardView === 'canvas' ? (
+              <StoryboardCanvas
+                plan={plan}
+                gaps={gaps}
+                filledGapIds={filledGapIds}
+                materials={sortedMaterials}
+                fills={fills}
+                selectedSectionId={selectedSectionId}
+                selectedSceneId={effectiveSelectedSceneId}
+                onSelectSection={(section, firstScene) => {
+                  setSelectedSceneId(firstScene.scene_id)
+                  setSelectedPackagingItemId(null)
+                  setSelectedSectionId(section.section_id)
+                  seekPlayer(firstScene.start)
+                }}
+              />
+            ) : (
             <FourTrackBoard
                 plan={plan}
                 gaps={gaps}
@@ -1854,6 +1905,7 @@ export default function ComposePage() {
                   setEditingShot({ scene, section })
                 }
               />
+            )}
 
           {/* stage-36：缺口补全工作台移到右列 FourTrackBoard 正下方。
               这样左侧实时预览 sticky 不滚走，用户切段后视线在 [选段 → 工作台 → 预览]
