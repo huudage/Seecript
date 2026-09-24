@@ -5,8 +5,10 @@ import { api } from '@/api/client'
 import { deletePlanBgm, patchPlanBgm } from '@/api/bgm'
 import {
   appendBlankVideoBlock,
+  appendPlanSection,
   confirmStructure,
   fetchSceneInsight,
+  patchPlanScene,
   patchPlanSettings,
   reorderSections,
   splitScene,
@@ -15,6 +17,7 @@ import {
 import { createSSE } from '@/api/sse'
 import { commitStep, getStepSnapshot } from '@/api/steps'
 import { deleteVoice, synthesizeAll, synthesizeOne } from '@/api/voice'
+import { BlockInspectDialog } from '@/components/compose/BlockInspectDialog'
 import { BgmPickerDialog } from '@/components/compose/BgmPickerDialog'
 import { BriefInput } from '@/components/compose/BriefInput'
 import { ClarifyPanel } from '@/components/compose/ClarifyPanel'
@@ -291,6 +294,9 @@ export default function ComposePage() {
     label: string
   } | null>(null)
   const [trimTarget, setTrimTarget] = useState<{ sceneId: string; materialId: string } | null>(null)
+  const [inspectSceneId, setInspectSceneId] = useState<string | null>(null)
+  const [paneBusy, setPaneBusy] = useState(false)
+  const [pendingImages, setPendingImages] = useState<{ id: string; prompt: string; duration: number }[]>([])
   const [briefSceneId, setBriefSceneId] = useState<string | null>(null)
   const [insights, setInsights] = useState<
     Record<string, { summary: string; tags: string[]; highlights: string[] }>
@@ -395,7 +401,6 @@ export default function ComposePage() {
     window.requestAnimationFrame(() => {
       playerRef.current?.seek(at)
       playerRef.current?.play()
-      document.getElementById('live-preview')?.scrollIntoView({ block: 'nearest', behavior: 'smooth' })
     })
   }, [])
 
@@ -1751,78 +1756,80 @@ export default function ComposePage() {
           {/* 实时预览常驻在画布右侧：点块即播。 */}
             <div className="flex flex-col gap-3 xl:flex-row xl:items-start">
             <div className="min-w-0 flex-1 space-y-1.5">
-            <div className="flex flex-wrap items-center justify-between gap-2">
+            <div className="flex items-center">
               <h2 className="text-sm font-semibold">结构画布</h2>
-              <div className="flex flex-wrap items-center gap-1.5">
-                <button
-                  type="button"
-                  onClick={handleUndo}
-                  disabled={!canUndo}
-                  title={canUndo ? '撤销上一步' : '没有可撤销的操作'}
-                  className={cn(
-                    'rounded-md border border-border bg-background px-2 py-1 text-[11px] hover:bg-secondary',
-                    !canUndo && 'cursor-not-allowed opacity-40',
-                  )}
-                >
-                  撤销
-                </button>
-                <button
-                  type="button"
-                  onClick={handleRedo}
-                  disabled={!canRedo}
-                  title="重做"
-                  className={cn(
-                    'rounded-md border border-border bg-background px-2 py-1 text-[11px] hover:bg-secondary',
-                    !canRedo && 'cursor-not-allowed opacity-40',
-                  )}
-                >
-                  重做
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setHelpOpen((v) => !v)}
-                  className={cn(
-                    'rounded-md border px-2 py-1 text-[11px]',
-                    helpOpen ? 'border-primary/50 bg-primary/10 text-primary' : 'border-border bg-background hover:bg-secondary',
-                  )}
-                >
-                  功能介绍 {helpOpen ? '▾' : '▸'}
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setStructureOpen((v) => !v)}
-                  disabled={!effectiveManifest}
-                  title={effectiveManifest ? '对照样例结构，只作参考' : '还没有样例结构'}
-                  className={cn(
-                    'rounded-md border px-2 py-1 text-[11px]',
-                    structureOpen ? 'border-primary/50 bg-primary/10 text-primary' : 'border-border bg-background hover:bg-secondary',
-                    !effectiveManifest && 'cursor-not-allowed opacity-40',
-                  )}
-                >
-                  结构迁移对比 {structureOpen ? '▾' : '▸'}
-                </button>
-                <button
-                  type="button"
-                  onClick={() => openPreview(0)}
-                  className="rounded-md border border-border bg-background px-2 py-1 text-[11px] hover:bg-secondary"
-                  title="从片头开始播放右侧实时预览"
-                >
-                  播放整片
-                </button>
-                {plan.structure_confirmed === false && (
-                  <button
-                    type="button"
-                    disabled={confirmingStructure}
-                    onClick={() => void handleConfirmStructure()}
-                    className="rounded-md bg-amber-500 px-2 py-1 text-[11px] font-medium text-white hover:bg-amber-600 disabled:opacity-50"
-                    title="拖改满意后定稿。未定稿不能提交渲染。"
-                  >
-                    {confirmingStructure ? '定稿中…' : '定稿'}
-                  </button>
-                )}
-              </div>
             </div>
               <StoryboardCanvas
+                toolbar={
+                  <>
+                    <button
+                      type="button"
+                      onClick={handleUndo}
+                      disabled={!canUndo}
+                      title={canUndo ? '撤销上一步' : '没有可撤销的操作'}
+                      className={cn(
+                        'rounded-md border border-border bg-background px-2 py-1 text-[11px] hover:bg-secondary',
+                        !canUndo && 'cursor-not-allowed opacity-40',
+                      )}
+                    >
+                      撤销
+                    </button>
+                    <button
+                      type="button"
+                      onClick={handleRedo}
+                      disabled={!canRedo}
+                      title="重做"
+                      className={cn(
+                        'rounded-md border border-border bg-background px-2 py-1 text-[11px] hover:bg-secondary',
+                        !canRedo && 'cursor-not-allowed opacity-40',
+                      )}
+                    >
+                      重做
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setHelpOpen((v) => !v)}
+                      className={cn(
+                        'rounded-md border px-2 py-1 text-[11px]',
+                        helpOpen ? 'border-primary/50 bg-primary/10 text-primary' : 'border-border bg-background hover:bg-secondary',
+                      )}
+                    >
+                      功能介绍 {helpOpen ? '▾' : '▸'}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setStructureOpen((v) => !v)}
+                      disabled={!effectiveManifest}
+                      title={effectiveManifest ? '对照样例结构，只作参考' : '还没有样例结构'}
+                      className={cn(
+                        'rounded-md border px-2 py-1 text-[11px]',
+                        structureOpen ? 'border-primary/50 bg-primary/10 text-primary' : 'border-border bg-background hover:bg-secondary',
+                        !effectiveManifest && 'cursor-not-allowed opacity-40',
+                      )}
+                    >
+                      结构迁移对比 {structureOpen ? '▾' : '▸'}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => openPreview(0)}
+                      className="rounded-md border border-border bg-background px-2 py-1 text-[11px] hover:bg-secondary"
+                      title="从片头开始播放右侧实时预览"
+                    >
+                      播放整片
+                    </button>
+                    {plan.structure_confirmed === false && (
+                      <button
+                        type="button"
+                        disabled={confirmingStructure}
+                        onClick={() => void handleConfirmStructure()}
+                        className="rounded-md bg-amber-500 px-2 py-1 text-[11px] font-medium text-white hover:bg-amber-600 disabled:opacity-50"
+                        title="拖改满意后定稿。未定稿不能提交渲染。"
+                      >
+                        {confirmingStructure ? '定稿中…' : '定稿'}
+                      </button>
+                    )}
+                  </>
+                }
                 plan={plan}
                 gaps={gaps}
                 filledGapIds={filledGapIds}
@@ -1834,7 +1841,70 @@ export default function ComposePage() {
                   setSelectedSceneId(firstScene.scene_id)
                   setSelectedPackagingItemId(null)
                   setSelectedSectionId(section.section_id)
-                  openPreview(firstScene.start)
+                }}
+                onInspectBlock={(_section, scene) => setInspectSceneId(scene.scene_id)}
+                paneBusy={paneBusy}
+                pendingImages={pendingImages}
+                onPaneCard={(input) => {
+                  setPaneBusy(true)
+                  void appendPlanSection(plan.plan_id, {
+                    source: 'text_card',
+                    main_text: input.mainText,
+                    duration_seconds: input.duration,
+                  })
+                    .then((next) => setPlanAndPush(next))
+                    .catch((err: unknown) => setError(err instanceof Error ? err.message : '生字卡失败'))
+                    .finally(() => setPaneBusy(false))
+                }}
+                onPaneImage={(input) => {
+                  const jobId = `pending-img-${Date.now()}`
+                  setPendingImages((prev) => [
+                    ...prev,
+                    { id: jobId, prompt: input.prompt.slice(0, 18), duration: input.duration },
+                  ])
+                  setPaneBusy(true)
+                  void appendPlanSection(plan.plan_id, {
+                    source: 'aigc_image',
+                    prompt_hint: input.prompt,
+                    duration_seconds: input.duration,
+                    render_motion: input.motion,
+                  })
+                    .then((next) => setPlanAndPush(next))
+                    .catch((err: unknown) => setError(err instanceof Error ? err.message : '生图失败'))
+                    .finally(() => {
+                      setPendingImages((prev) => prev.filter((job) => job.id !== jobId))
+                      setPaneBusy(false)
+                    })
+                }}
+                onPaneMaterial={(materialId) => {
+                  setPaneBusy(true)
+                  void appendPlanSection(plan.plan_id, { source: 'user_material', material_id: materialId })
+                    .then((next) => setPlanAndPush(next))
+                    .catch((err: unknown) => setError(err instanceof Error ? err.message : '添加素材失败'))
+                    .finally(() => setPaneBusy(false))
+                }}
+                onBlockSubtitle={(scene, text) => {
+                  setPaneBusy(true)
+                  void patchPlanScene(plan.plan_id, scene.scene_id, { narration: text })
+                    .then(() => patchPlanSettings(plan.plan_id, { subtitle_enabled: true }))
+                    .then((next) => setPlanAndPush(next))
+                    .catch((err: unknown) => setError(err instanceof Error ? err.message : '字幕保存失败'))
+                    .finally(() => setPaneBusy(false))
+                }}
+                onBlockPackaging={(scene, start, end, kind, text) => {
+                  setPaneBusy(true)
+                  const item: PackagingItem = {
+                    item_id: `blk-${kind}-${scene.scene_id}`,
+                    kind,
+                    start,
+                    end: Math.max(start + 0.2, end),
+                    text: text || null,
+                    style: { color: '#FFFFFF', position: kind === 'cover' ? 'center' : 'bottom' },
+                  }
+                  void api.post<Plan>('/packaging/items/place', { plan_id: plan.plan_id, item })
+                    .then((next) => setPlanAndPush(next))
+                    .catch((err: unknown) => setError(err instanceof Error ? err.message : '包装保存失败'))
+                    .finally(() => setPaneBusy(false))
                 }}
                 onEditSection={(section, firstScene) =>
                   setEditingSection({ section, firstScene })
@@ -2378,6 +2448,23 @@ export default function ComposePage() {
           onClose={() => setChecklistOpen(false)}
         />
       )}
+      {inspectSceneId && plan && (() => {
+        const scene = plan.main_track.find((item) => item.scene_id === inspectSceneId)
+        if (!scene) return null
+        return (
+          <BlockInspectDialog
+            planId={plan.plan_id}
+            scene={scene}
+            materials={sortedMaterials}
+            onClose={() => setInspectSceneId(null)}
+            onPlan={(next) => {
+              setPlanAndPush(next)
+              setInspectSceneId(null)
+            }}
+          />
+        )
+      })()}
+
       {trimTarget && plan && (
         <TrimDiffDialog
           planId={plan.plan_id}

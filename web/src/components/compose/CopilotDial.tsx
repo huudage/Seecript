@@ -186,7 +186,7 @@ export function CopilotDial({
         >
           <div className="max-h-[70vh] overflow-auto rounded-lg border border-border bg-card p-3 text-left shadow-xl">
             <div className="mb-2 text-[11px] font-semibold text-foreground">
-              生成 · {open.action.hoverTitle}
+              {open.action.hoverTitle || open.action.label}
             </div>
             {hoverPanel}
           </div>

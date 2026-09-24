@@ -4,7 +4,7 @@ Adapter + Factory，业务码依赖抽象 `LLMClient`，不直接接 provider。
 
 Providers：
 - `MockLLMClient`      离线 fixture；产品全链路 mock 模式必经
-- `DoubaoArkLLMClient` 火山方舟 OpenAI 兼容 /chat/completions（默认 Doubao-Seed-2.0-lite）
+- `DoubaoArkLLMClient` 火山方舟 Responses API `/responses`（默认 doubao-seed-2-1-lite）
 - `DeepSeekLLMClient`  保留旧 provider；DeepSeek 也是 OpenAI 兼容
 
 接口：
@@ -12,7 +12,7 @@ Providers：
 - `complete_json`        封装：reply → json.loads（带一次 retry）
 - `complete_with_tools`  Module 7 自然语言改片专用：返回 tool_calls 列表
 - `complete_multimodal`  多模态：文字 + 图像（缩略图列表）→ 文字回复
-                         doubao-seed-2.0-lite 已替代独立 VLM client，画面理解全走这里。
+                         doubao-seed-2.1-lite 已替代独立 VLM client，画面理解全走这里。
 """
 from __future__ import annotations
 
@@ -584,11 +584,58 @@ class _OpenAICompatLLMClient(LLMClient):
 # --------------------------------------------------------------------------
 # Doubao Ark (火山方舟) — 默认 LLM provider
 # --------------------------------------------------------------------------
-class DoubaoArkLLMClient(_OpenAICompatLLMClient):
-    """火山方舟 ark.cn-beijing.volces.com/api/v3 ——与 OpenAI Chat API 完全兼容。
+def _openai_tools_to_responses(tools: list[dict]) -> list[dict]:
+    """Chat Completions 的 function 工具嵌在 function 对象里；Responses API 把 name 平铺到工具上。"""
+    converted: list[dict] = []
+    for tool in tools:
+        if tool.get("type") == "function" and isinstance(tool.get("function"), dict):
+            function = tool["function"]
+            converted.append({
+                "type": "function",
+                "name": function.get("name", ""),
+                "description": function.get("description", ""),
+                "parameters": function.get("parameters") or {"type": "object", "properties": {}},
+            })
+        else:
+            converted.append(tool)
+    return converted
 
-    `ark_llm_model` 实际是 endpoint_id（如 `ep-20260508213828-7ntjl`），方舟侧把它
-    路由到具体的 Doubao-Seed-2.0-lite / 1.5-pro 模型实例。"""
+
+def _responses_output_text(data: dict) -> str:
+    parts: list[str] = []
+    for item in data.get("output") or []:
+        if not isinstance(item, dict) or item.get("type") != "message":
+            continue
+        for part in item.get("content") or []:
+            if isinstance(part, dict) and part.get("type") == "output_text" and isinstance(part.get("text"), str):
+                parts.append(part["text"])
+    return "".join(parts).strip()
+
+
+def _responses_tool_calls(data: dict) -> list[dict]:
+    parsed: list[dict] = []
+    for item in data.get("output") or []:
+        if not isinstance(item, dict) or item.get("type") != "function_call":
+            continue
+        raw_args = item.get("arguments") or "{}"
+        try:
+            arguments = json.loads(raw_args) if isinstance(raw_args, str) else raw_args
+        except json.JSONDecodeError:
+            arguments = {}
+        if not isinstance(arguments, dict):
+            arguments = {}
+        parsed.append({"name": item.get("name", ""), "arguments": arguments})
+    return parsed
+
+
+class DoubaoArkLLMClient(_OpenAICompatLLMClient):
+    """火山方舟 Responses API：POST {ark_base_url}/responses。
+
+    doubao-seed-2.1-lite 的理解与文本生成走这条，而不是 /chat/completions。
+    思维链默认关掉：方舟把 reasoning token 算进 max_output_tokens，开着会把结构化 JSON 截断。
+    store=false：不把用户画面和文案存进方舟的响应缓存。
+    联网搜索不作为默认工具。示例里的 web_search 只适用于开放问答，套到拆解/改片会把外部新闻写进成片。
+    """
 
     name = "doubao_ark"
 
@@ -607,6 +654,197 @@ class DoubaoArkLLMClient(_OpenAICompatLLMClient):
             default_temperature=settings.llm_temperature,
             default_max_tokens=settings.llm_max_tokens,
         )
+
+    def _responses_payload(
+        self,
+        system: str,
+        content: list[dict] | str,
+        *,
+        max_tokens: int,
+        stream: bool,
+        tools: Optional[list[dict]] = None,
+    ) -> dict:
+        user_content = content if isinstance(content, list) else [{"type": "input_text", "text": content}]
+        payload: Dict[str, Any] = {
+            "model": self._model,
+            "stream": stream,
+            "store": False,
+            "thinking": {"type": "disabled"},
+            "max_output_tokens": max_tokens,
+            "input": [{"role": "user", "content": user_content}],
+        }
+        if system.strip():
+            payload["instructions"] = system
+        if tools:
+            payload["tools"] = _openai_tools_to_responses(tools)
+            payload["tool_choice"] = "auto"
+        return payload
+
+    async def _post_responses(self, payload: dict) -> dict:
+        url = f"{self._base_url}/responses"
+        headers = {
+            "Authorization": f"Bearer {self._api_key}",
+            "Content-Type": "application/json",
+        }
+        started = time.perf_counter()
+        try:
+            async with httpx.AsyncClient(timeout=self._timeout) as client:
+                resp = await client.post(url, headers=headers, json=payload)
+        except httpx.TimeoutException as e:
+            raise LLMError(f"{self.name} timeout after {self._timeout}s", code="LLM_TIMEOUT") from e
+        except httpx.HTTPError as e:
+            raise LLMError(f"{self.name} network error: {e}", code="LLM_NETWORK") from e
+        elapsed_ms = int((time.perf_counter() - started) * 1000)
+        if resp.status_code != HTTP_OK:
+            snippet = resp.text[:300]
+            raise LLMError(
+                f"{self.name} HTTP {resp.status_code}: {snippet}",
+                code=f"LLM_HTTP_{resp.status_code}",
+                upstream_status=resp.status_code,
+            )
+        try:
+            data = resp.json()
+        except ValueError as e:
+            raise LLMError(f"{self.name} malformed JSON response", code="LLM_BAD_RESPONSE") from e
+        usage = data.get("usage") or {}
+        log.info(
+            "%s ok | model=%s | %dms | input_tok=%s | output_tok=%s",
+            self.name, self._model, elapsed_ms,
+            usage.get("input_tokens"), usage.get("output_tokens"),
+        )
+        if data.get("status") not in (None, "completed", "incomplete"):
+            raise LLMError(
+                f"{self.name} status={data.get('status')}",
+                code="LLM_BAD_RESPONSE",
+            )
+        return data
+
+    async def complete(
+        self,
+        system: str,
+        user: str,
+        *,
+        temperature: Optional[float] = None,
+        max_tokens: Optional[int] = None,
+    ) -> str:
+        del temperature  # seed 2.1 忽略采样温度，请求里带上会和官方示例不一致
+        data = await self._post_responses(self._responses_payload(
+            system,
+            user,
+            max_tokens=self._default_max_tokens if max_tokens is None else max_tokens,
+            stream=False,
+        ))
+        text = _responses_output_text(data)
+        if not text:
+            raise LLMError(f"{self.name} empty content", code="LLM_BAD_RESPONSE")
+        return text
+
+    async def stream_complete(
+        self,
+        system: str,
+        user: str,
+        *,
+        temperature: Optional[float] = None,
+        max_tokens: Optional[int] = None,
+    ) -> AsyncIterator[str]:
+        """SSE：只把 response.output_text.delta 交给调用方。思维链摘要不进入成片文案。"""
+        del temperature
+        url = f"{self._base_url}/responses"
+        headers = {
+            "Authorization": f"Bearer {self._api_key}",
+            "Content-Type": "application/json",
+            "Accept": "text/event-stream",
+        }
+        payload = self._responses_payload(
+            system,
+            user,
+            max_tokens=self._default_max_tokens if max_tokens is None else max_tokens,
+            stream=True,
+        )
+        started = time.perf_counter()
+        try:
+            async with httpx.AsyncClient(timeout=self._timeout) as client:
+                async with client.stream("POST", url, headers=headers, json=payload) as resp:
+                    if resp.status_code != HTTP_OK:
+                        snippet = (await resp.aread()).decode("utf-8", errors="replace")[:300]
+                        raise LLMError(
+                            f"{self.name} HTTP {resp.status_code}: {snippet}",
+                            code=f"LLM_HTTP_{resp.status_code}",
+                            upstream_status=resp.status_code,
+                        )
+                    async for line in resp.aiter_lines():
+                        if not line or not line.startswith("data:"):
+                            continue
+                        body = line[5:].strip()
+                        if body == "[DONE]":
+                            break
+                        try:
+                            chunk = json.loads(body)
+                        except ValueError:
+                            continue
+                        event_type = chunk.get("type")
+                        if event_type in {"response.failed", "error"}:
+                            raise LLMError(f"{self.name} stream failed", code="LLM_BAD_RESPONSE")
+                        if event_type != "response.output_text.delta":
+                            continue
+                        delta = chunk.get("delta")
+                        if isinstance(delta, str) and delta:
+                            yield delta
+        except httpx.TimeoutException as e:
+            raise LLMError(f"{self.name} stream timeout after {self._timeout}s", code="LLM_TIMEOUT") from e
+        except httpx.HTTPError as e:
+            raise LLMError(f"{self.name} stream network error: {e}", code="LLM_NETWORK") from e
+        elapsed_ms = int((time.perf_counter() - started) * 1000)
+        log.info("%s stream ok | model=%s | %dms", self.name, self._model, elapsed_ms)
+
+    async def complete_with_tools(
+        self,
+        system: str,
+        user: str,
+        tools: list[dict],
+        *,
+        temperature: Optional[float] = None,
+        max_tokens: Optional[int] = None,
+    ) -> dict:
+        del temperature
+        data = await self._post_responses(self._responses_payload(
+            system,
+            user,
+            max_tokens=self._default_max_tokens if max_tokens is None else max_tokens,
+            stream=False,
+            tools=tools,
+        ))
+        return {"tool_calls": _responses_tool_calls(data), "content": _responses_output_text(data)}
+
+    async def complete_multimodal(
+        self,
+        system: str,
+        user_text: str,
+        images: Sequence[str | Path],
+        *,
+        temperature: Optional[float] = None,
+        max_tokens: Optional[int] = None,
+    ) -> str:
+        if not images:
+            return await self.complete(
+                system, user_text, temperature=temperature, max_tokens=max_tokens,
+            )
+        content: list[dict] = [{"type": "input_text", "text": user_text}]
+        for ref in images:
+            content.append({
+                "type": "input_image",
+                "image_url": _image_ref_to_url(ref),
+            })
+        data = await self._post_responses(self._responses_payload(
+            system,
+            content,
+            max_tokens=self._default_max_tokens if max_tokens is None else max_tokens,
+            stream=False,
+        ))
+        text = _responses_output_text(data)
+        if not text:
+            raise LLMError(f"{self.name} empty multimodal content", code="LLM_BAD_RESPONSE")
+        return text
 
 
 # --------------------------------------------------------------------------

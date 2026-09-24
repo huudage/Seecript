@@ -35,14 +35,14 @@ class Settings(BaseSettings):
 
     # === LLM ===
     # 默认 mock（不依赖任何 Key）；接到火山方舟时切到 `doubao_ark`，旧的 deepseek 仍保留。
-    # doubao-seed-2.0-lite 是多模态模型——VLM 帧打标、段落分析、缺口判定全走它，
-    # 不再保留独立 VLM/T2I 客户端。
+    # doubao-seed-2.1-lite 走方舟 Responses API（/responses），负责理解与文本生成。
+    # 画面理解不再保留独立 VLM 客户端。生视频仍走 Seedance，不走这个模型。
     llm_provider: Literal["mock", "doubao_ark", "deepseek"] = Field(default="mock")
     # --- Doubao Ark (火山方舟) ---
-    # base_url 走 OpenAI 兼容根路径；model 实际填 endpoint_id（如 ep-20260508213828-7ntjl）。
+    # base_url 是方舟 v3 根路径。LLM 打到 {base}/responses，model 用官方 model id。
     ark_api_key: str = Field(default="")
     ark_base_url: str = Field(default="https://ark.cn-beijing.volces.com/api/v3")
-    ark_llm_model: str = Field(default="doubao-seed-2-0-lite")
+    ark_llm_model: str = Field(default="doubao-seed-2-1-lite-260915")
     # Seedance 2.0 fast：480p/720p、4-15s、低成本低延迟，适合 demo 高频迭代。
     # 标准版 doubao-seedance-2-0-260128 支持 1080p 但单价 + 排队耗时都更高。
     ark_t2v_model: str = Field(default="doubao-seedance-2-0-fast-260128")

@@ -1717,6 +1717,10 @@ class SectionsAppendRequest(BaseModel):
         default=None, gt=0,
         description="目标块时长；缺省按来源给一个初值，不设上下限",
     )
+    render_motion: Optional[Literal["hold", "push"]] = Field(
+        default=None,
+        description="生图后再渲染：hold=静图停留，push=缓慢推近。只对 aigc_image 生效。",
+    )
     role: Optional[SectionRole] = Field(
         default=None, description="保留字段。内容轨不再分配叙事角色，缺省 block。",
     )
@@ -1804,6 +1808,20 @@ async def append_plan_section(plan_id: str, body: SectionsAppendRequest) -> Plan
         sub_text=body.sub_text,
     )
     new_scene = await _materialize_scene_source(plan, skeleton_scene, skeleton_sec, shot_plan, swap_body)
+    if body.source == "aigc_image" and body.render_motion:
+        if body.render_motion == "hold":
+            motion_spec = AnimationSpec(
+                engine="ffmpeg", animation_type="static",
+                motion_direction="in", intensity=0,
+                transition="cut", transition_duration=0,
+            )
+        else:
+            motion_spec = AnimationSpec(
+                engine="ffmpeg", animation_type="ken-burns",
+                motion_direction="in", intensity=0.35,
+                transition="cross-fade", transition_duration=0.4,
+            )
+        new_scene = new_scene.model_copy(update={"animation_spec": motion_spec})
 
     final_sec = skeleton_sec.model_copy(update={
         "duration_seconds": round(max(0.1, new_scene.duration), 3),
@@ -2023,6 +2041,10 @@ class SceneSwapSourceRequest(BaseModel):
         description="source=text_card 时主文案；缺省走 shot.subject",
     )
     sub_text: Optional[str] = Field(default=None, max_length=40, description="source=text_card 时副文案")
+    duration_seconds: Optional[float] = Field(
+        default=None, gt=0,
+        description="source=text_card 时改块时长；给出后 scene.duration 跟随，并重铺时间轴。",
+    )
 
 
 @router.post("/plan/{plan_id}/scene/{scene_id}/swap-source", response_model=Plan)
@@ -2094,6 +2116,8 @@ async def _materialize_scene_source(
     """
     scene_id = scene.scene_id
     shot_dur = scene.duration
+    if body.source == "text_card" and body.duration_seconds is not None:
+        shot_dur = max(0.1, float(body.duration_seconds))
 
     if body.source == "text_card":
         # 直接装 TextCardSpec，不调外部
@@ -2109,6 +2133,7 @@ async def _materialize_scene_source(
         new_scene = scene.model_copy(update={
             "source": "text_card",
             "source_ref": f"text-card-swap-{scene_id}",
+            "duration": round(max(0.1, shot_dur), 3),
             "in_point": 0.0,
             "out_point": None,
             "aigc_video_urls": [],

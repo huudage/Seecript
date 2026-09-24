@@ -49,7 +49,7 @@ dig +short seecript.zlhu.asia
 ### 1.3 火山方舟（ARK）
 
 1. 控制台 [console.volcengine.com/ark](https://console.volcengine.com/ark) → API Key 管理 → 创建 Key（这是 `ARK_API_KEY`）
-2. 模型推理 → 在线推理点 → 开通 `doubao-seed-2-0-lite`（LLM）
+2. 模型推理 → 开通 `doubao-seed-2-1-lite-260915`（LLM，接口 `POST /api/v3/responses`）
 3. 视频生成 → 开通 `doubao-seedance-2-0-fast-260128`（Seedance T2V）
 4. **可选**：如果 Seedance 要走独立计费，再创建一个 Key 作 `ARK_T2V_API_KEY`；不需要就把这个字段留空，T2V client 会自动复用 `ARK_API_KEY`
 

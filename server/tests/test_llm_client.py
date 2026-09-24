@@ -5,7 +5,9 @@ import json
 
 import pytest
 
+from app.config import Settings
 from app.services.llm_client import (
+    DoubaoArkLLMClient,
     LLMError,
     MockLLMClient,
     _extract_json,
@@ -203,3 +205,92 @@ class TestErrors:
         e = LLMError("oops", code="LLM_TIMEOUT")
         assert e.code == "LLM_TIMEOUT"
         assert "oops" in str(e)
+
+
+class _FakeResponse:
+    def __init__(self, payload: dict, status_code: int = 200) -> None:
+        self.status_code = status_code
+        self._payload = payload
+        self.text = json.dumps(payload)
+
+    def json(self) -> dict:
+        return self._payload
+
+
+class _FakeAsyncClient:
+    """记录 Doubao 客户端实际 POST 的 URL 和 body，不访问网络。"""
+
+    captured: list[tuple[str, dict]] = []
+
+    def __init__(self, *args, **kwargs) -> None:
+        del args, kwargs
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *args):
+        return None
+
+    async def post(self, url, headers, json):
+        del headers
+        _FakeAsyncClient.captured.append((url, json))
+        return _FakeResponse({
+            "status": "completed",
+            "output": [{
+                "type": "message",
+                "content": [{"type": "output_text", "text": '{"ok": true}'}],
+            }],
+            "usage": {"input_tokens": 3, "output_tokens": 4},
+        })
+
+
+class TestDoubaoResponses:
+    def _client(self) -> DoubaoArkLLMClient:
+        return DoubaoArkLLMClient(Settings(
+            llm_provider="doubao_ark",
+            ark_api_key="test-key",
+            ark_llm_model="doubao-seed-2-1-lite-260915",
+        ))
+
+    @pytest.mark.asyncio
+    async def test_complete_posts_responses_api(self, monkeypatch):
+        _FakeAsyncClient.captured = []
+        monkeypatch.setattr("app.services.llm_client.httpx.AsyncClient", _FakeAsyncClient)
+        text = await self._client().complete("只输出 JSON", "ping")
+        assert text == '{"ok": true}'
+        url, body = _FakeAsyncClient.captured[-1]
+        assert url.endswith("/responses")
+        assert body["model"] == "doubao-seed-2-1-lite-260915"
+        assert body["stream"] is False
+        assert body["store"] is False
+        assert body["thinking"] == {"type": "disabled"}
+        assert body["instructions"] == "只输出 JSON"
+        assert body["input"][0]["content"][0] == {"type": "input_text", "text": "ping"}
+        assert "tools" not in body
+
+    @pytest.mark.asyncio
+    async def test_multimodal_uses_input_image(self, monkeypatch):
+        _FakeAsyncClient.captured = []
+        monkeypatch.setattr("app.services.llm_client.httpx.AsyncClient", _FakeAsyncClient)
+        await self._client().complete_multimodal("看图", "描述", ["https://example.com/a.png"])
+        _, body = _FakeAsyncClient.captured[-1]
+        parts = body["input"][0]["content"]
+        assert parts[0]["type"] == "input_text"
+        assert parts[1] == {"type": "input_image", "image_url": "https://example.com/a.png"}
+
+    @pytest.mark.asyncio
+    async def test_tools_are_flattened_for_responses(self, monkeypatch):
+        _FakeAsyncClient.captured = []
+        monkeypatch.setattr("app.services.llm_client.httpx.AsyncClient", _FakeAsyncClient)
+        tools = [{
+            "type": "function",
+            "function": {
+                "name": "edit_scene_narration",
+                "description": "改口播",
+                "parameters": {"type": "object", "properties": {}},
+            },
+        }]
+        await self._client().complete_with_tools("sys", "user", tools)
+        _, body = _FakeAsyncClient.captured[-1]
+        assert body["tools"][0]["name"] == "edit_scene_narration"
+        assert "function" not in body["tools"][0]

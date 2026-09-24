@@ -15,8 +15,15 @@ import {
 import '@xyflow/react/dist/style.css'
 
 import { CopilotDial, type DialAction } from '@/components/compose/CopilotDial'
+import {
+  CardHoverForm,
+  ImageHoverForm,
+  MaterialHoverForm,
+  PackagingHoverForm,
+  type PaneCardInput,
+  type PaneImageInput,
+} from '@/components/compose/DialHoverForms'
 import { CANVAS_MATERIAL_MIME, hasCanvasMaterialPayload } from '@/lib/dnd'
-import { isUnfilledScene } from '@/lib/renderChecklist'
 import { videoBlockTitle as blockTitle } from '@/lib/sections'
 import { TRANSITION_LABEL } from '@/lib/transitions'
 import { cn } from '@/lib/utils'
@@ -233,7 +240,6 @@ function SectionBlockNode({ data }: NodeProps<Node<SectionBlockNodeData>>) {
         draft && 'opacity-60',
         selected ? 'border-primary ring-2 ring-primary/40' : 'border-border hover:shadow-md',
       )}
-      onClick={() => data.onPreview?.()}
     >
       <Handle type="target" position={Position.Left} className="!h-2 !w-2 !border-0 !bg-zinc-400" />
       <Handle type="source" position={Position.Right} className="!h-2 !w-2 !border-0 !bg-zinc-400" />
@@ -402,7 +408,44 @@ function SectionBlockNode({ data }: NodeProps<Node<SectionBlockNodeData>>) {
   )
 }
 
-const nodeTypes = { sectionBlock: SectionBlockNode } as const
+function PendingImageNode({ data }: NodeProps<Node<{ prompt: string; duration: number }>>) {
+  return (
+    <div className="w-60 overflow-hidden rounded-lg border border-dashed border-primary/50 bg-card shadow-sm">
+      <Handle type="target" position={Position.Left} className="!h-2 !w-2 !border-0 !bg-zinc-400" />
+      <Handle type="source" position={Position.Right} className="!h-2 !w-2 !border-0 !bg-zinc-400" />
+      <div className="h-1.5 w-full bg-primary/50" />
+      <div className="flex items-center gap-1.5 px-2 pt-1.5">
+        <span className="truncate text-xs font-semibold">生图中</span>
+        <span className="ml-auto font-mono text-[9px] text-muted-foreground">{data.duration.toFixed(1)}s</span>
+      </div>
+      <div className="flex h-16 items-center justify-center gap-2 px-3 text-[11px] text-muted-foreground">
+        <span className="h-3.5 w-3.5 shrink-0 animate-spin rounded-full border-2 border-primary/25 border-t-primary" />
+        <span className="min-w-0 truncate">{data.prompt || '正在生成画面'}</span>
+      </div>
+    </div>
+  )
+}
+
+const nodeTypes = { sectionBlock: SectionBlockNode, pendingImage: PendingImageNode }
+
+function CanvasToolbarOverlay({ children }: { children: ReactNode }) {
+  if (!children) return null
+  return (
+    <div className="pointer-events-none absolute inset-x-0 top-3 z-20 flex justify-center px-3">
+      <div
+        data-canvas-toolbar
+        className="pointer-events-auto flex max-w-full flex-wrap items-center justify-center gap-1.5 rounded-lg border border-border bg-card/95 px-2 py-1 shadow-sm"
+        onMouseDown={(event) => event.stopPropagation()}
+        onContextMenu={(event) => {
+          event.preventDefault()
+          event.stopPropagation()
+        }}
+      >
+        {children}
+      </div>
+    </div>
+  )
+}
 
 /* ===================== 主组件 ===================== */
 
@@ -448,6 +491,22 @@ interface Props {
   onShotBrief?: (scene: Scene, section: AdaptedSection) => void
   /** 画布空白「添加视频块」。 */
   onAppendBlock?: () => void
+  /** 空白画布：生字卡 / 生图再渲染 / 添加素材。 */
+  onPaneCard?: (input: PaneCardInput) => void
+  onPaneImage?: (input: PaneImageInput) => void
+  onPaneMaterial?: (materialId: string) => void
+  /** 视频块右键包装（不含转场）。字幕写本镜文案；其余落到本块时间窗。 */
+  onBlockSubtitle?: (scene: Scene, text: string) => void
+  onBlockPackaging?: (
+    scene: Scene,
+    start: number,
+    end: number,
+    kind: 'title_bar' | 'sticker' | 'cover',
+    text: string,
+  ) => void
+  /** 左键视频块：弹窗播放或字卡参数，不滚动页面。 */
+  onInspectBlock?: (section: AdaptedSection, scene: Scene) => void
+  paneBusy?: boolean
   /** AI 理解贴纸，按 scene_id。可摘除。 */
   insights?: Record<string, { summary: string; tags: string[] }>
   onDismissInsight?: (sceneId: string) => void
@@ -459,6 +518,10 @@ interface Props {
   onAxisEdit?: (scene: Scene, section: AdaptedSection) => void
   /** 素材库卡片拖到槽位换源（F4/US-3.2）：父级复用 swap-source 端点。 */
   onSwapMaterial?: (sceneId: string, materialId: string) => void
+  /** 叠在画布内部、上部居中。撤销 / 介绍 / 播放整片都放这里。 */
+  toolbar?: ReactNode
+  /** 生图已落块、画面还在生成。块内显示加载，不挡右键。 */
+  pendingImages?: { id: string; prompt: string; duration: number }[]
   className?: string
 }
 
@@ -490,27 +553,23 @@ export function StoryboardCanvas({
   selectedSectionId = null,
   selectedSceneId = null,
   onSelectSection,
-  onEditSection,
-  onEditShot,
   onEditTransition,
-  onRecommendPackaging,
-  onAssignVoiceover,
-  onLocalEdit,
-  onAiInsight,
-  onAiTrim,
-  onFillSlot,
-  onFillHover,
-  onFillHoverEnd,
-  fillHoverPanel,
   onNaturalEdit,
-  onShotBrief,
-  onAppendBlock,
+  onPaneCard,
+  onPaneImage,
+  onPaneMaterial,
+  onBlockSubtitle,
+  onBlockPackaging,
+  onInspectBlock,
+  paneBusy = false,
   insights,
   onDismissInsight,
   onReorderSections,
   onSplitScene,
   onAxisEdit,
   onSwapMaterial,
+  toolbar,
+  pendingImages = [],
   className,
 }: Props) {
   const materialById = useMemo(() => {
@@ -625,9 +684,9 @@ export function StoryboardCanvas({
     return out
   }, [plan, gaps, filledGapIds, materialById, fillBySectionId, selectedSceneId])
 
-  const nodes = useMemo<Node<SectionBlockNodeData>[]>(
-    () =>
-      blocks.map((b, i) => ({
+  const nodes = useMemo<Node[]>(
+    () => [
+      ...blocks.map((b, i) => ({
         id: b.section.section_id,
         type: 'sectionBlock',
         draggable: true,
@@ -651,7 +710,15 @@ export function StoryboardCanvas({
           onPreview: () => onSelectSection?.(b.section, b.firstScene, b.gap),
         },
       })),
-    [blocks, insights, onDismissInsight, onSelectSection, plan.structure_confirmed, selectedSectionId, onSplitScene, onAxisEdit, onSwapMaterial],
+      ...pendingImages.map((job, index) => ({
+        id: job.id,
+        type: 'pendingImage',
+        draggable: false,
+        position: { x: (blocks.length + index) * BLOCK_SPACING, y: 0 },
+        data: { prompt: job.prompt, duration: job.duration },
+      })),
+    ],
+    [blocks, insights, onDismissInsight, onSelectSection, pendingImages, plan.structure_confirmed, selectedSectionId, onSplitScene, onAxisEdit, onSwapMaterial],
   )
 
   const [flowNodes, setFlowNodes, onFlowNodesChange] = useNodesState(nodes)
@@ -675,7 +742,8 @@ export function StoryboardCanvas({
           id: `edge-${b.section.section_id}-${next.section.section_id}`,
           source: b.section.section_id,
           target: next.section.section_id,
-          label: style ? TRANSITION_LABEL[style] : undefined,
+          label: style ? TRANSITION_LABEL[style] : '转场',
+          interactionWidth: 24,
           labelStyle: { fontSize: 10, fill: '#64748b' },
           labelBgStyle: { fill: '#f1f5f9', fillOpacity: 0.9 },
           labelBgPadding: [4, 2],
@@ -686,10 +754,6 @@ export function StoryboardCanvas({
       }),
     [blocks],
   )
-
-  const handleSelect = (b: Block) => {
-    onSelectSection?.(b.section, b.firstScene, b.gap)
-  }
 
   /* ===================== 拖拽重排（F4/US-3.2） ===================== */
 
@@ -724,6 +788,7 @@ export function StoryboardCanvas({
     anchor: DialAnchorState
     planId: string
   } | null>(null)
+  const [hoverActionId, setHoverActionId] = useState<string | null>(null)
 
   // 命中测试（冒泡顺序）：分镜槽 chip > 段落块节点 > 连线 > 空白画布
   const hitTestAnchor = (target: Element): DialAnchorState => {
@@ -755,150 +820,138 @@ export function StoryboardCanvas({
     return { kind: 'pane' }
   }
 
+  const pushPackaging = (actions: DialAction[]) => {
+    const items = [
+      { id: 'pkg-subtitle', label: '字幕', title: '字幕', angle: Math.PI, kind: 'subtitle' as const },
+      { id: 'pkg-title', label: '标题条', title: '标题条', angle: 0, kind: 'title_bar' as const },
+      { id: 'pkg-sticker', label: '贴纸', title: '贴纸', angle: -Math.PI / 2, kind: 'sticker' as const },
+      { id: 'pkg-cover', label: '封面', title: '封面', angle: Math.PI / 2, kind: 'cover' as const },
+    ]
+    for (const item of items) {
+      actions.push({
+        id: item.id,
+        label: item.label,
+        group: 'structure',
+        hover: true,
+        hoverTitle: item.title,
+        angle: item.angle,
+        run: () => undefined,
+      })
+    }
+  }
+
   const dialActions = useMemo<DialAction[]>(() => {
     if (!dial) return []
     const a = dial.anchor
     const actions: DialAction[] = []
-    const pushGenerate = (section: AdaptedSection, scene: Scene) => {
-      if (!onFillSlot) return
-      const items = [
-        { id: 'fill-copy', action: 'copy' as const, title: '字卡', angle: Math.PI },
-        { id: 'fill-image', action: 'aigc_image' as const, title: '图片', angle: 0 },
-        { id: 'fill-t2v', action: 'aigc' as const, title: '视频', angle: Math.PI / 2 },
-      ]
-      for (const item of items) {
+    if (a.kind === 'section' || a.kind === 'scene') {
+      pushPackaging(actions)
+    } else if (a.kind === 'pane') {
+      if (onNaturalEdit) {
         actions.push({
-          id: item.id,
-          label: '生成',
+          id: 'nl-edit',
+          label: '改片',
+          group: 'ai',
+          hoverTitle: '自然语言改片',
+          angle: -Math.PI / 2,
+          run: () => onNaturalEdit(),
+        })
+      }
+      if (onPaneCard) {
+        actions.push({
+          id: 'pane-card',
+          label: '生字卡',
           group: 'ai',
           hover: true,
-          hoverTitle: item.title,
-          angle: item.angle,
-          run: () => onFillSlot(section, scene, item.action),
+          hoverTitle: '生字卡',
+          angle: Math.PI,
+          run: () => undefined,
+        })
+      }
+      if (onPaneImage) {
+        actions.push({
+          id: 'pane-image',
+          label: '生图',
+          group: 'ai',
+          hover: true,
+          hoverTitle: '生图再渲染',
+          angle: 0,
+          run: () => undefined,
+        })
+      }
+      if (onPaneMaterial) {
+        actions.push({
+          id: 'pane-material',
+          label: '素材',
+          group: 'structure',
+          hover: true,
+          hoverTitle: '添加用户素材',
+          angle: Math.PI / 2,
+          run: () => undefined,
         })
       }
     }
-    if (a.kind === 'section') {
-      if (onNaturalEdit)
-        actions.push({
-          id: 'nl-edit',
-          label: '自然语言改片',
-          group: 'ai',
-          run: () => onNaturalEdit(),
-        })
-      pushGenerate(a.section, a.firstScene)
-      if (onEditSection)
-        actions.push({
-          id: 'edit-section',
-          label: '编辑段',
-          group: 'structure',
-          run: () => onEditSection(a.section, a.firstScene),
-        })
-      if (onLocalEdit)
-        actions.push({
-          id: 'local-edit',
-          label: '局部改片',
-          group: 'ai',
-          run: () =>
-            onLocalEdit(a.section.section_id, blockTitle(a.section)),
-        })
-      if (onRecommendPackaging)
-        actions.push({
-          id: 'ai-packaging',
-          label: '包装',
-          group: 'ai',
-          run: () => onRecommendPackaging(a.firstScene.scene_id),
-        })
-      if (onAssignVoiceover)
-        actions.push({
-          id: 'voiceover',
-          label: '配口播',
-          group: 'ai',
-          run: () =>
-            onAssignVoiceover(
-              a.section.section_id,
-              blockTitle(a.section),
-            ),
-        })
-    } else if (a.kind === 'scene') {
-      const empty = isUnfilledScene(a.scene)
-      const footage = a.scene.source === 'user_material' && !empty
-      if (footage && onAiInsight)
-        actions.push({
-          id: 'ai-insight',
-          label: 'AI 理解',
-          group: 'ai',
-          run: () => onAiInsight(a.scene),
-        })
-      if (footage && onAiTrim)
-        actions.push({
-          id: 'ai-trim',
-          label: 'AI 裁剪',
-          group: 'ai',
-          run: () => onAiTrim(a.scene),
-        })
-      if (onNaturalEdit)
-        actions.push({
-          id: 'nl-edit',
-          label: '自然语言改片',
-          group: 'ai',
-          run: () => onNaturalEdit(),
-        })
-      if (onFillSlot) pushGenerate(a.section, a.scene)
-      if (empty && onShotBrief)
-        actions.push({
-          id: 'shot-brief',
-          label: '补拍清单',
-          group: 'ai',
-          run: () => onShotBrief(a.scene, a.section),
-        })
-      if (onEditShot)
-        actions.push({
-          id: 'edit-shot',
-          label: '编辑本镜',
-          group: 'structure',
-          run: () => onEditShot(a.scene, a.section),
-        })
-    } else if (a.kind === 'pane') {
-      if (onNaturalEdit)
-        actions.push({
-          id: 'nl-edit',
-          label: '自然语言改片',
-          group: 'ai',
-          run: () => onNaturalEdit(),
-        })
-      if (onAppendBlock)
-        actions.push({
-          id: 'append-block',
-          label: '添加视频块',
-          group: 'structure',
-          run: () => onAppendBlock(),
-        })
-    } else if (a.kind === 'edge') {
-      if (onEditTransition)
-        actions.push({
-          id: 'transition',
-          label: '转场',
-          group: 'structure',
-          run: () => onEditTransition(a.sceneId, a.currentStyle),
-        })
-    }
     return actions
-  }, [
-    dial,
-    onAiInsight,
-    onAiTrim,
-    onAppendBlock,
-    onAssignVoiceover,
-    onEditSection,
-    onEditShot,
-    onEditTransition,
-    onFillSlot,
-    onNaturalEdit,
-    onLocalEdit,
-    onRecommendPackaging,
-    onShotBrief,
-  ])
+  }, [dial, onNaturalEdit, onPaneCard, onPaneImage, onPaneMaterial])
+
+  const dialHoverPanel = (() => {
+    if (!dial || !hoverActionId) return null
+    const anchor = dial.anchor
+    if (anchor.kind === 'pane') {
+      if (hoverActionId === 'pane-card' && onPaneCard) {
+        return <CardHoverForm sections={plan.adapted_sections} pending={paneBusy} onSubmit={onPaneCard} />
+      }
+      if (hoverActionId === 'pane-image' && onPaneImage) {
+        return (
+          <ImageHoverForm
+            sections={plan.adapted_sections}
+            pending={paneBusy}
+            onSubmit={(input) => {
+              onPaneImage(input)
+              setHoverActionId(null)
+              setDial(null)
+            }}
+          />
+        )
+      }
+      if (hoverActionId === 'pane-material' && onPaneMaterial) {
+        return <MaterialHoverForm materials={materials ?? []} pending={paneBusy} onPick={onPaneMaterial} />
+      }
+      return null
+    }
+    if (anchor.kind !== 'section' && anchor.kind !== 'scene') return null
+    const scene = anchor.kind === 'section' ? anchor.firstScene : anchor.scene
+    const block = blocks.find((item) => item.scenes.some((shot) => shot.scene_id === scene.scene_id))
+    const start = block?.start ?? scene.start
+    const end = block?.end ?? scene.start + scene.duration
+    const packagingKind = {
+      'pkg-title': 'title_bar',
+      'pkg-sticker': 'sticker',
+      'pkg-cover': 'cover',
+    } as const
+    if (hoverActionId === 'pkg-subtitle' && onBlockSubtitle) {
+      return (
+        <PackagingHoverForm
+          kindLabel="字幕"
+          defaultText={scene.narration ?? ''}
+          pending={paneBusy}
+          onSubmit={(text) => onBlockSubtitle(scene, text)}
+        />
+      )
+    }
+    const kind = packagingKind[hoverActionId as keyof typeof packagingKind]
+    if (kind && onBlockPackaging) {
+      return (
+        <PackagingHoverForm
+          kindLabel={kind === 'title_bar' ? '标题条' : kind === 'sticker' ? '贴纸' : '封面'}
+          defaultText=""
+          pending={paneBusy}
+          onSubmit={(text) => onBlockPackaging(scene, start, end, kind, text)}
+        />
+      )
+    }
+    return null
+  })()
 
   const dialAnchorLabel = (a: DialAnchorState): string => {
     switch (a.kind) {
@@ -915,41 +968,50 @@ export function StoryboardCanvas({
 
   const handleCanvasMouseDown = (e: React.MouseEvent<HTMLDivElement>) => {
     if (e.button === 0 && dial && !(e.target as Element).closest('[data-copilot-dial]')) {
+      setHoverActionId(null)
       setDial(null)
-      onFillHoverEnd?.()
     }
   }
 
-  const handleContextMenu = (e: React.MouseEvent<HTMLDivElement>) => {
-    e.preventDefault()
-    if ((e.target as Element).closest('[data-copilot-dial]')) {
+  const openDialFromPointer = (event: React.MouseEvent) => {
+    event.preventDefault()
+    event.stopPropagation()
+    const target = event.target as Element
+    if (target.closest('[data-canvas-toolbar]')) return
+    if (target.closest('[data-copilot-dial]')) {
+      setHoverActionId(null)
       setDial(null)
       return
     }
-    const anchor = hitTestAnchor(e.target as Element)
-    setDial({ x: e.clientX, y: e.clientY, anchor, planId: plan.plan_id })
+    const hit = hitTestAnchor(target)
+    const anchor = hit.kind === 'edge' ? { kind: 'pane' as const } : hit
+    setHoverActionId(null)
+    setDial({ x: event.clientX, y: event.clientY, anchor, planId: plan.plan_id })
   }
 
-  if (blocks.length === 0) {
+  if (blocks.length === 0 && pendingImages.length === 0) {
     return (
       <div
         className={cn(
-          'flex h-40 items-center justify-center rounded-lg border border-dashed border-border bg-background/30 px-4 text-center text-xs text-muted-foreground',
+          'relative flex h-40 items-center justify-center rounded-lg border border-dashed border-border bg-background/30 px-4 text-center text-xs text-muted-foreground',
           className,
         )}
-        onContextMenu={(event) => {
-          event.preventDefault()
-          setDial({ x: event.clientX, y: event.clientY, anchor: { kind: 'pane' }, planId: plan.plan_id })
-        }}
+        onContextMenuCapture={openDialFromPointer}
       >
-        本 plan 没有段落块。右键空白处可以添加视频块。
+        画布是空的。右键可以改片、生字卡、生图，或从素材库添加。
+        <CanvasToolbarOverlay>{toolbar}</CanvasToolbarOverlay>
         {dial && dial.planId === plan.plan_id && (
           <CopilotDial
             x={dial.x}
             y={dial.y}
             anchorLabel="画布"
             actions={dialActions}
-            onClose={() => setDial(null)}
+            hoverPanel={dialHoverPanel}
+            onHoverAction={setHoverActionId}
+            onClose={() => {
+              setHoverActionId(null)
+              setDial(null)
+            }}
           />
         )}
       </div>
@@ -960,14 +1022,15 @@ export function StoryboardCanvas({
     <div
       className={cn('flex flex-col gap-2', className)}
       onMouseDownCapture={handleCanvasMouseDown}
-      onContextMenu={handleContextMenu}
+      onContextMenuCapture={openDialFromPointer}
     >
       {/* 画布区：节点 = 段落块，连线 = 叙事顺序 + 转场；拖块重排 / 选中切分 / 点连线调转场 */}
-      <div className="h-[calc(100vh-11rem)] min-h-[640px] w-full overflow-hidden rounded-lg border border-border bg-slate-50">
+      <div className="relative h-[calc(100vh-11rem)] min-h-[640px] w-full overflow-hidden rounded-lg border border-border bg-slate-50">
+        <CanvasToolbarOverlay>{toolbar}</CanvasToolbarOverlay>
         <ReactFlowProvider>
           <ReactFlow
             key={plan.plan_id}
-            nodes={flowNodes}
+            nodes={flowNodes as Node<SectionBlockNodeData>[]}
             edges={edges}
             nodeTypes={nodeTypes}
             fitView
@@ -975,33 +1038,21 @@ export function StoryboardCanvas({
             nodesDraggable
             nodesConnectable={false}
             edgesFocusable={false}
-            panOnDrag={[1, 2]}
+            panOnDrag={[1]}
             selectionOnDrag={false}
             onNodesChange={handleNodesChange}
             onNodeDragStop={handleNodeDragStop}
-            onPaneContextMenu={(event) => {
-              event.preventDefault()
-              setDial({ x: event.clientX, y: event.clientY, anchor: { kind: 'pane' }, planId: plan.plan_id })
-            }}
-            onNodeContextMenu={(event, node) => {
-              event.preventDefault()
-              const block = blocks.find((item) => item.section.section_id === node.id)
-              if (!block) return
-              setDial({
-                x: event.clientX,
-                y: event.clientY,
-                anchor: { kind: 'section', section: block.section, firstScene: block.firstScene },
-                planId: plan.plan_id,
-              })
-            }}
             onNodeClick={(_, node) => {
               const b = blocks.find((x) => x.section.section_id === node.id)
-              if (b) handleSelect(b)
+              if (!b) return
+              onSelectSection?.(b.section, b.firstScene, b.gap)
+              onInspectBlock?.(b.section, b.firstScene)
             }}
             onEdgeClick={(_, edge) => {
               if (!onEditTransition) return
-              const next = blocks.find((b) => b.section.section_id === edge.target)
-              if (next) onEditTransition(next.firstScene.scene_id, next.firstScene.transition_in?.style ?? null)
+              const next = blocks.find((block) => block.section.section_id === edge.target)
+              if (!next) return
+              onEditTransition(next.firstScene.scene_id, next.firstScene.transition_in?.style ?? null)
             }}
             minZoom={0.4}
             maxZoom={1.6}
@@ -1017,37 +1068,16 @@ export function StoryboardCanvas({
           y={dial.y}
           anchorLabel={dialAnchorLabel(dial.anchor)}
           actions={dialActions}
+          onHoverAction={setHoverActionId}
+          hoverPanel={dialHoverPanel}
           hint={
             dial.anchor.kind === 'pane'
-              ? onAppendBlock
-                ? '空白处可添加视频块 · 右键点视频块 / 分镜槽 / 连线可唤出对应动作'
-                : '空白处暂无盘内能力 · 右键点视频块 / 分镜槽 / 连线可唤出对应动作'
-              : undefined
+              ? '空白处：改片、生字卡、生图再渲染、添加素材'
+              : '只包装这一个视频块，不含转场'
           }
-          onHoverAction={(actionId) => {
-            if (!actionId) return
-            const fillById = {
-              'fill-copy': 'copy',
-              'fill-image': 'aigc_image',
-              'fill-t2v': 'aigc',
-            } as const
-            const action = fillById[actionId as keyof typeof fillById]
-            if (!action) return
-            const anchor = dial.anchor
-            const section = anchor.kind === 'section' || anchor.kind === 'scene' ? anchor.section : null
-            const scene =
-              anchor.kind === 'section' ? anchor.firstScene : anchor.kind === 'scene' ? anchor.scene : null
-            if (!section || !scene) return
-            const angle = action === 'copy' ? Math.PI : action === 'aigc_image' ? 0 : Math.PI / 2
-            onFillHover?.(section, scene, action, {
-              x: dial.x + Math.cos(angle) * 120,
-              y: dial.y + Math.sin(angle) * 88,
-            })
-          }}
-          hoverPanel={fillHoverPanel}
           onClose={() => {
+            setHoverActionId(null)
             setDial(null)
-            onFillHoverEnd?.()
           }}
         />
       )}

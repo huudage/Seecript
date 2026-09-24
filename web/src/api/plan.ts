@@ -90,6 +90,7 @@ export interface SceneSwapSourceRequest {
   prompt_hint?: string
   main_text?: string
   sub_text?: string
+  duration_seconds?: number
 }
 
 export async function swapSceneSource(
@@ -176,9 +177,25 @@ export async function fetchShotBrief(planId: PlanId, sceneId: string): Promise<S
   return await api.post<SceneShotBrief>(`/plan/${planId}/scene/${sceneId}/shot-brief`, {})
 }
 
+export interface AppendSectionRequest {
+  source: 'user_material' | 'text_card' | 'aigc_image' | 'aigc_t2v'
+  material_id?: string
+  prompt_hint?: string
+  main_text?: string
+  sub_text?: string
+  duration_seconds?: number
+  /** 生图后再渲染：hold 静图停留，push 缓慢推近。 */
+  render_motion?: 'hold' | 'push'
+}
+
+/** 画布空白处追加视频块。不跑结构 LLM。 */
+export async function appendPlanSection(planId: PlanId, body: AppendSectionRequest): Promise<Plan> {
+  return await api.post<Plan>(`/plan/${planId}/sections/append`, body)
+}
+
 /** 画布空白处追加一个待拖入素材的视频块。不跑结构 LLM。 */
 export async function appendBlankVideoBlock(planId: PlanId): Promise<Plan> {
-  return await api.post<Plan>(`/plan/${planId}/sections/append`, { source: 'user_material' })
+  return appendPlanSection(planId, { source: 'user_material' })
 }
 
 export async function regenerateNarrations(

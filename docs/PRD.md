@@ -386,7 +386,7 @@ Home → 新建项目 → Library 选系统样例（或上传）
 
 | 依赖 | 用途 | 版本 / 配置 |
 |---|---|---|
-| **Doubao ARK Seed-2.0-lite** | 9 agent 中 6 个的 LLM 调用 | `config.py:45` `ark_llm_model="doubao-seed-2-0-lite"` |
+| **Doubao ARK Seed-2.1-lite** | 理解与文本生成（Responses API） | `config.py` `ark_llm_model="doubao-seed-2-1-lite-260915"` |
 | **Seedance 2.0 fast** | T2V 缺口补全 | `config.py:48` `ark_t2v_model="doubao-seedance-2-0-fast-260128"` + `:52` `ark_t2v_resolution="720p"` |
 | **Seedream 5.0** | 文生图缺口 | `config.py:130` `ark_seedream_model="doubao-seedream-5-0-260128"` |
 | **豆包 bigasr_auc** | ASR 转写 | `config.py:76` `doubao_resource_id="volc.bigasr.auc"` |

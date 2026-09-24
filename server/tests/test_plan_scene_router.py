@@ -421,6 +421,27 @@ def test_swap_source_no_shots_clamps_duration_to_material_length(client):
         _drop_test_material(project_id)
 
 
+def test_swap_text_card_duration_follows_request(client):
+    """字卡弹窗改时长：duration 与 text_card_spec 一起变，并重铺后面镜头的起点。"""
+    plan = _make_plan(f"plan-card-dur-{int(time.time() * 1000)}")
+    _TEST_PLAN_IDS.append(plan.plan_id)
+    plan_store.put(plan)
+
+    resp = client.post(
+        f"/api/plan/{plan.plan_id}/scene/sc-0/swap-source",
+        json={"source": "text_card", "main_text": "主标题", "sub_text": "副标题", "duration_seconds": 2.5},
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    sc0 = next(s for s in body["main_track"] if s["scene_id"] == "sc-0")
+    sc1 = next(s for s in body["main_track"] if s["scene_id"] == "sc-1")
+    assert sc0["source"] == "text_card"
+    assert sc0["text_card_spec"]["main_text"] == "主标题"
+    assert abs(sc0["duration"] - 2.5) < 0.001
+    assert abs(sc0["text_card_spec"]["duration_seconds"] - 2.5) < 0.001
+    assert abs(sc1["start"] - 2.5) < 0.001
+
+
 def test_edit_scene_duration_syncs_user_material_out_point():
     """edit.py 的 edit_scene_duration 工具改 duration 时，user_material 的 out_point 也得同步——
     否则渲染端 trim 窗口 ≠ duration，回到『裁段重复』的老路。"""
